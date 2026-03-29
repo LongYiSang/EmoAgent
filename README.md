@@ -1,29 +1,65 @@
 # EmoAgent
 
-> 一个刚开始构思的情绪感知 Agent 实验项目。
+> **"不是构建一个会说话的工具，而是塑造一个会陪伴的存在。"**
 
-EmoAgent 现在还处在很早期的阶段。
+EmoAgent 是一个部署在本地的个人情感陪伴 Agent。它有记忆、有性格、有情感连续性 —— 用户在与它交互时，能感受到"被关心"和"被记住"。同时它也具备任务执行能力，能在不破坏陪伴对话连贯性的前提下，完成文件处理、搜索研究等复杂工作。
 
-## 这是什么
+## 设计理念
 
-一个既有陪伴感+记忆，又有执行能力的 Agent。
+**会话所有权不可转移** — 用户永远在和同一个"人"对话。Emotion 根代理层始终拥有会话，Work 执行代理仅在幕后工作，用户无感知。
 
-尝试把情绪理解-模拟、记忆存储、上下文管理和任务执行放进同一个持续演化的系统里。
+**上下文隔离** — 工具执行的噪音（文件内容、搜索结果、错误堆栈）不会涌入主对话。Emo层的世界里只有用户、记忆和关系；Work 的世界里只有任务、工具和结果。
 
-## 现在在做什么
+**记忆是关系的载体，不是日志** — 长期记忆服务于"关系感"，执行日志归执行日志。两者的写入路径被架构显式分离。
 
-- 设计EmoAgent的基础架构
+## 系统架构
+
+```
+用户 ←——→ Emotion 根代理（唯一对话者）
+            ├── 人格状态（可配置 persona 文件）
+            ├── Memory 模块（关系记忆，Emotion 独占管理）
+            ├── 轻量工具（1-2 步即完成的简单任务）
+            └──→ Work 执行代理（按需委派）
+                  ├── 工具运行时（文件 / 搜索 / 研究 / 验证）
+                  ├── 执行日志
+                  └──→ TaskReport 回传 Emotion
+```
+
+详细架构设计见 [docs/architecture/架构.md](docs/architecture/架构.md)
+
+## 技术栈
+
+| | 选型 |
+|---|---|
+| 主语言 | Go（单二进制部署） |
+| AI 工具链 | Python Sidecar（后期引入） |
+| 存储 | SQLite（pure Go） |
+| LLM | HTTP + SSE 流式，兼容 OpenAI / Anthropic 协议 |
+| 前端 | 轻量 WebUI，embed.FS 打包 |
 
 ## Roadmap
 
-- [X] **Phase 0**：根据 [learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 构建一个最小的 Harness
-- [ ] **Phase 1**：设计EmoAgent基本架构
+- [x] Phase 0 · 基础实验 — 基于 [learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 构建最小 Harness 原型
+- [x] Phase 1 · 架构设计 — 确定 Emotion + Work 双核架构方案
+- [ ] Phase 2 · 基础骨架 — Go 项目结构、配置、日志、SQLite、LLM Client
+- [ ] Phase 3 · Emotion + WebUI — 主循环、persona、Session、WebSocket 聊天界面
+- [ ] Phase 4 · 工具系统 — Tool 定义规范、Handler 注册、内置基础工具
+- [ ] Phase 5 · 上下文管理 — Token 估算、摘要压缩、KeepRecent 策略
+- [ ] Phase 6 · Work 运行时 — TaskBrief、自循环执行、决策升级、TaskReport
+- [ ] ——— MVP ———
+- [ ] 持久记忆系统
+- [ ] 情感状态机（Valence/Arousal 2D 模型）
+- [ ] Python AI Sidecar（Embedding / RAG）
+- [ ] 第三方平台接入（Telegram）
+- [ ] 定时任务 / 主动关心
+
 ## 灵感来源
 
+- [learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) — Harness 工程理念
+- [PeroCore](https://github.com/YoKONCy/PeroCore) — 记忆系统参考
+- [AstrBot](https://github.com/AstrBotDevs/AstrBot) — 多平台 Bot 架构参考
 
-这个项目目前主要受到 [learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 和[AstrBot](https://github.com/AstrBotDevs/AstrBot)的启发。
-
-与其说是在“实现智能”，不如说是在认真搭建一个适合智能工作的环境。
+与其说是在"实现智能"，不如说是在认真搭建一个适合智能工作的环境。
 智能也不应该只是冰冷的执行工具。
 
 ## License
