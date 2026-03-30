@@ -45,6 +45,7 @@ data/
 logs/
 tmp/
 *.log
+/docs/todo/
 
 
 

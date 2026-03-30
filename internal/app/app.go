@@ -3,16 +3,20 @@ package app
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/longyisang/emoagent/internal/chat"
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/logger"
 	"github.com/longyisang/emoagent/internal/storage"
+	"github.com/longyisang/emoagent/internal/web"
 )
 
 const personaWatchInterval = 5 // seconds
@@ -106,11 +110,58 @@ func (a *App) Init(ctx context.Context, configPath string) error {
 	return nil
 }
 
-// Run blocks until the context is cancelled. Phase 0 has no HTTP server.
+// Run starts the HTTP server and blocks until the context is cancelled.
 func (a *App) Run(ctx context.Context) error {
-	a.Logger.Info("EmoAgent running, press Ctrl+C to stop")
-	<-ctx.Done()
-	return nil
+	if a.LLM == nil {
+		return fmt.Errorf("LLM client not initialized, cannot start server")
+	}
+
+	engine := chat.NewEngine(chat.EngineConfig{
+		LLM:          a.LLM,
+		DB:           a.DB,
+		Logger:       a.Logger,
+		Model:        a.Config.LLM.Model,
+		MaxTokens:    a.Config.LLM.MaxTokens,
+		Temperature:  a.Config.LLM.Temperature,
+		HistoryLimit: 20,
+	})
+	chatHandler := chat.NewHandler(engine, a, a.Logger)
+
+	staticSub, err := fs.Sub(web.StaticFS, "static")
+	if err != nil {
+		return fmt.Errorf("load embedded web assets: %w", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle("/ws", chatHandler)
+	mux.Handle("/", http.FileServer(http.FS(staticSub)))
+
+	addr := fmt.Sprintf("%s:%d", a.Config.Server.Host, a.Config.Server.Port)
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: mux,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		a.Logger.Info("server started", "url", fmt.Sprintf("http://%s", addr))
+		if listenErr := srv.ListenAndServe(); listenErr != nil && listenErr != http.ErrServerClosed {
+			errCh <- listenErr
+		}
+		close(errCh)
+	}()
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return srv.Shutdown(shutdownCtx)
+	case err := <-errCh:
+		if err == nil {
+			return nil
+		}
+		return err
+	}
 }
 
 // Shutdown cleanly releases resources.
@@ -167,4 +218,9 @@ func (a *App) GetPersona(name string) (*config.Persona, bool) {
 	defer a.mu.RUnlock()
 	p, ok := a.Personas[name]
 	return p, ok
+}
+
+// GetDefaultPersonaName returns the configured default persona name.
+func (a *App) GetDefaultPersonaName() string {
+	return a.Config.Personas.Default
 }

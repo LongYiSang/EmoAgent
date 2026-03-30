@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EmoAgent</title>
+  <style>
+    :root {
+      --bg: #f4efe7;
+      --panel: rgba(255,255,255,.78);
+      --text: #2f241f;
+      --muted: #7e675e;
+      --accent: #db6f4d;
+      --accent-soft: #f7d7c8;
+      --user: #2f241f;
+      --assistant: #fff8f3;
+      --border: rgba(47,36,31,.12);
+      --shadow: 0 20px 45px rgba(88,55,38,.12);
+      font-family: "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(219,111,77,.18), transparent 32%),
+        radial-gradient(circle at bottom right, rgba(143,182,166,.18), transparent 28%),
+        linear-gradient(160deg, #f7f1ea 0%, #efe5d8 100%);
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    .shell {
+      width: min(920px, 100%);
+      height: min(780px, calc(100vh - 48px));
+      background: var(--panel);
+      backdrop-filter: blur(18px);
+      border: 1px solid var(--border);
+      border-radius: 28px;
+      box-shadow: var(--shadow);
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      overflow: hidden;
+    }
+    header {
+      padding: 22px 24px 18px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 700;
+    }
+    .sub {
+      margin-top: 6px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .status {
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      white-space: nowrap;
+    }
+    .messages {
+      padding: 24px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .message {
+      max-width: min(78%, 640px);
+      padding: 14px 16px;
+      border-radius: 20px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+      border: 1px solid transparent;
+      animation: rise .2s ease-out;
+    }
+    .message.user {
+      margin-left: auto;
+      background: var(--user);
+      color: white;
+      border-bottom-right-radius: 6px;
+    }
+    .message.assistant {
+      background: var(--assistant);
+      border-color: var(--border);
+      border-bottom-left-radius: 6px;
+    }
+    .message.error {
+      background: #fff1f0;
+      border-color: rgba(176,58,46,.18);
+      color: #9d2e1f;
+    }
+    form {
+      padding: 18px 20px 20px;
+      border-top: 1px solid var(--border);
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: end;
+      background: rgba(255,255,255,.55);
+    }
+    textarea {
+      width: 100%;
+      min-height: 56px;
+      max-height: 180px;
+      resize: vertical;
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      padding: 15px 16px;
+      font: inherit;
+      color: inherit;
+      background: rgba(255,255,255,.82);
+      outline: none;
+    }
+    textarea:focus {
+      border-color: rgba(219,111,77,.45);
+      box-shadow: 0 0 0 4px rgba(219,111,77,.12);
+    }
+    button {
+      height: 56px;
+      border: 0;
+      border-radius: 18px;
+      padding: 0 22px;
+      font: inherit;
+      font-weight: 700;
+      color: white;
+      background: linear-gradient(135deg, #db6f4d, #c95735);
+      cursor: pointer;
+      transition: transform .16s ease, opacity .16s ease;
+    }
+    button:disabled,
+    textarea:disabled {
+      cursor: not-allowed;
+      opacity: .65;
+    }
+    button:not(:disabled):hover { transform: translateY(-1px); }
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @media (max-width: 720px) {
+      body { padding: 0; }
+      .shell {
+        width: 100%;
+        height: 100vh;
+        border-radius: 0;
+      }
+      .message { max-width: 88%; }
+      form { grid-template-columns: 1fr; }
+      button { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div>
+        <h1>EmoAgent</h1>
+        <div class="sub">P3 conversation loop</div>
+      </div>
+      <div class="status" id="status">Connecting...</div>
+    </header>
+    <section class="messages" id="messages"></section>
+    <form id="composer">
+      <textarea id="input" placeholder="Enter 输入 Shift+Enter 换行"></textarea>
+      <button id="send" type="submit">Send</button>
+    </form>
+  </main>
+
+  <script>
+    const statusEl = document.getElementById('status');
+    const messagesEl = document.getElementById('messages');
+    const form = document.getElementById('composer');
+    const input = document.getElementById('input');
+    const send = document.getElementById('send');
+
+    let socket;
+    let reconnectDelay = 1000;
+    let reconnectTimer;
+    let pendingAssistant = null;
+    let sending = false;
+    let manuallyClosed = false;
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+    }
+
+    function setSending(next) {
+      sending = next;
+      input.disabled = next;
+      send.disabled = next;
+      if (!next) {
+        input.focus();
+      }
+    }
+
+    function appendMessage(role, content) {
+      const node = document.createElement('div');
+      node.className = `message ${role}`;
+      node.textContent = content;
+      messagesEl.appendChild(node);
+      scrollToBottom();
+      return node;
+    }
+
+    function scrollToBottom() {
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function wsURL() {
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      return `${protocol}//${location.host}/ws`;
+    }
+
+    function connect() {
+      clearTimeout(reconnectTimer);
+      setStatus('Connecting...');
+      socket = new WebSocket(wsURL());
+
+      socket.addEventListener('open', () => {
+        reconnectDelay = 1000;
+        setStatus('Connected');
+      });
+
+      socket.addEventListener('message', (event) => {
+        const payload = JSON.parse(event.data);
+        switch (payload.type) {
+          case 'greeting':
+            appendMessage('assistant', payload.content || '');
+            break;
+          case 'stream_start':
+            pendingAssistant = appendMessage('assistant', '');
+            setSending(true);
+            break;
+          case 'stream_delta':
+            if (!pendingAssistant) {
+              pendingAssistant = appendMessage('assistant', '');
+            }
+            pendingAssistant.textContent += payload.content || '';
+            scrollToBottom();
+            break;
+          case 'stream_end':
+            pendingAssistant = null;
+            setSending(false);
+            break;
+          case 'error':
+            appendMessage('error', payload.content || 'Unknown error');
+            pendingAssistant = null;
+            setSending(false);
+            break;
+          case 'pong':
+            break;
+        }
+      });
+
+      socket.addEventListener('close', () => {
+        pendingAssistant = null;
+        setSending(false);
+        if (manuallyClosed) {
+          return;
+        }
+        setStatus(`Disconnected, retrying in ${Math.round(reconnectDelay / 1000)}s`);
+        reconnectTimer = setTimeout(connect, reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+      });
+
+      socket.addEventListener('error', () => {
+        setStatus('Connection error');
+      });
+    }
+
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const content = input.value.trim();
+      if (!content || !socket || socket.readyState !== WebSocket.OPEN || sending) {
+        return;
+      }
+      appendMessage('user', content);
+      socket.send(JSON.stringify({ type: 'message', content }));
+      input.value = '';
+      input.style.height = '56px';
+    });
+
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        form.requestSubmit();
+      }
+    });
+
+    input.addEventListener('input', () => {
+      input.style.height = '56px';
+      input.style.height = `${Math.min(input.scrollHeight, 180)}px`;
+    });
+
+    window.addEventListener('beforeunload', () => {
+      manuallyClosed = true;
+      clearTimeout(reconnectTimer);
+      if (socket && socket.readyState < WebSocket.CLOSING) {
+        socket.close();
+      }
+    });
+
+    connect();
+  </script>
+</body>
+</html>

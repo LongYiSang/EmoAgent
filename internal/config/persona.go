@@ -66,7 +66,8 @@ func LoadAllPersonas(dir string) (map[string]*Persona, error) {
 			slog.Warn("skip persona file", "file", e.Name(), "error", err)
 			continue
 		}
-		personas[p.Name] = p
+		key := strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
+		personas[key] = p
 	}
 
 	return personas, nil

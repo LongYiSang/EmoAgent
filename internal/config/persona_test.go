@@ -63,6 +63,24 @@ func TestLoadAllPersonas(t *testing.T) {
 	}
 }
 
+func TestLoadAllPersonasUsesFilenameAsKey(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "default.yaml"), []byte("name: Emo\nsystem_prompt: hi"), 0o644)
+
+	personas, err := LoadAllPersonas(dir)
+	if err != nil {
+		t.Fatalf("LoadAllPersonas: %v", err)
+	}
+
+	persona, ok := personas["default"]
+	if !ok {
+		t.Fatalf("expected personas[\"default\"] to exist, got keys: %#v", personas)
+	}
+	if persona.Name != "Emo" {
+		t.Fatalf("persona.Name = %q, want Emo", persona.Name)
+	}
+}
+
 func TestLoadAllPersonasEmptyDir(t *testing.T) {
 	personas, err := LoadAllPersonas("/nonexistent/dir")
 	if err != nil {
