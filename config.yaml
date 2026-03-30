@@ -1,0 +1,26 @@
+# EmoAgent Configuration
+
+server:
+  host: "127.0.0.1"
+  port: 8080
+
+llm:
+  provider: "openai"        # "openai" | "anthropic"
+  # base_url: "https://api.openai.com"
+  base_url: "https://api.moonshot.cn"
+  # model: "gpt-4o"
+  model: "kimi-k2.5"
+  summary_model: "kimi-k2.5"
+  max_tokens: 4096
+  temperature: 0.7
+
+db:
+  path: "./data/emo.db"
+
+log:
+  level: "info"             # "debug" | "info" | "warn" | "error"
+  format: "text"            # "text" | "json"
+
+personas:
+  dir: "./personas"
+  default: "default"
