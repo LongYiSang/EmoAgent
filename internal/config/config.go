@@ -8,11 +8,12 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig   `yaml:"server"`
-	LLM      LLMConfig      `yaml:"llm"`
-	DB       DBConfig       `yaml:"db"`
-	Log      LogConfig      `yaml:"log"`
-	Personas PersonasConfig `yaml:"personas"`
+	Server      ServerConfig   `yaml:"server"`
+	LLM         LLMConfig      `yaml:"llm"`
+	LLMProfiles []LLMProfile   `yaml:"llm_profiles"`
+	DB          DBConfig       `yaml:"db"`
+	Log         LogConfig      `yaml:"log"`
+	Personas    PersonasConfig `yaml:"personas"`
 }
 
 type ServerConfig struct {
@@ -27,6 +28,18 @@ type LLMConfig struct {
 	SummaryModel string  `yaml:"summary_model"`
 	MaxTokens    int     `yaml:"max_tokens"`
 	Temperature  float64 `yaml:"temperature"`
+	APIKeyEnv    string  `yaml:"api_key_env"`
+}
+
+type LLMProfile struct {
+	Name         string  `yaml:"name"`
+	Provider     string  `yaml:"provider"`
+	BaseURL      string  `yaml:"base_url"`
+	Model        string  `yaml:"model"`
+	SummaryModel string  `yaml:"summary_model"`
+	MaxTokens    int     `yaml:"max_tokens"`
+	Temperature  float64 `yaml:"temperature"`
+	APIKeyEnv    string  `yaml:"api_key_env"`
 }
 
 type DBConfig struct {
@@ -57,6 +70,7 @@ func DefaultConfig() *Config {
 			MaxTokens:   4096,
 			Temperature: 0.7,
 		},
+		LLMProfiles: []LLMProfile{},
 		DB: DBConfig{
 			Path: "./data/emo.db",
 		},
@@ -105,6 +119,25 @@ func (c *Config) Validate() error {
 	}
 	if c.LLM.Model == "" {
 		return fmt.Errorf("llm.model is required")
+	}
+	for i, profile := range c.LLMProfiles {
+		if err := profile.Validate(); err != nil {
+			return fmt.Errorf("llm_profiles[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// Validate checks that required fields are set.
+func (p LLMProfile) Validate() error {
+	if p.Name == "" {
+		return fmt.Errorf("name is required")
+	}
+	if p.Provider == "" {
+		return fmt.Errorf("provider is required")
+	}
+	if p.Model == "" {
+		return fmt.Errorf("model is required")
 	}
 	return nil
 }

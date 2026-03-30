@@ -1,13 +1,11 @@
 # EmoAgent Configuration
 
 server:
-  host: "127.0.0.1"         # server bind host
-  port: 8080                # server bind port
+  host: "127.0.0.1"
+  port: 8080
 
 llm:
-  # OpenAI example:
-  # base_url: "https://api.openai.com"
-  # model: "gpt-4o"
+
   # Anthropic example:
   # provider: "anthropic"
   # base_url: "https://api.anthropic.com"
@@ -15,20 +13,39 @@ llm:
   # max_completion_tokens TODO部分模型需要-暂未实现
   # thinking TODO部分模型可选-暂未实现
   # stream TODO流式传输-暂未实现
-  provider: "openai"        # "openai" | "anthropic"
+
+  provider: "openai"
   base_url: "https://api.moonshot.cn"
-  model: "kimi-k2.5"        # main conversation model
-  summary_model: "kimi-k2.5" # reserved for future summarization/compression flow
+  model: "kimi-k2.5"
+  summary_model: "kimi-k2.5"
   max_tokens: 4096
   temperature: 1
+  api_key_env: "OPENAI_API_KEY"
+
+llm_profiles:
+  - name: "default"
+    provider: "openai"
+    base_url: "https://api.openai.com"
+    model: "gpt-4o"
+    summary_model: "gpt-4o-mini"
+    max_tokens: 4096
+    temperature: 0.7
+    api_key_env: "OPENAI_API_KEY"
+  - name: "analysis"
+    provider: "anthropic"
+    base_url: "https://api.anthropic.com"
+    model: "claude-sonnet-4-20250514"
+    max_tokens: 4096
+    temperature: 0.3
+    api_key_env: "ANTHROPIC_API_KEY"
 
 db:
-  path: "./data/emo.db"     # SQLite file path
+  path: "./data/emo.db"
 
 log:
-  level: "info"             # "debug" | "info" | "warn" | "error"
-  format: "text"            # "text" | "json"
+  level: "info"
+  format: "text"
 
 personas:
-  dir: "./personas"         # hot-reload persona directory
-  default: "default"        # default persona file name, e.g. personas/default.yaml
+  dir: "./personas"
+  default: "default"

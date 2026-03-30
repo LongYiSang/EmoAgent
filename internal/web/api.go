@@ -1,0 +1,379 @@
+package web
+
+import (
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"sort"
+	"strings"
+
+	"github.com/longyisang/emoagent/internal/config"
+)
+
+// AdminApp exposes the management operations needed by the admin API.
+type AdminApp interface {
+	ListLLMProfiles() ([]config.LLMProfile, error)
+	GetLLMProfile(id string) (*config.LLMProfile, error)
+	GetActiveLLMProfile() (*config.LLMProfile, bool)
+	CreateLLMProfile(profile config.LLMProfile) error
+	UpdateLLMProfile(id string, profile config.LLMProfile) error
+	ActivateLLMProfile(id string) error
+	DeleteLLMProfile(id string) error
+	ListPersonas() map[string]*config.Persona
+	GetPersona(name string) (*config.Persona, bool)
+	CreatePersona(key string, p *config.Persona) error
+	UpdatePersona(key string, p *config.Persona) error
+	DeletePersona(key string) error
+	GetDefaultPersonaName() string
+}
+
+type APIHandler struct {
+	app    AdminApp
+	logger *slog.Logger
+}
+
+type llmProfileResponse struct {
+	ID           string  `json:"id"`
+	Name         string  `json:"name"`
+	Provider     string  `json:"provider"`
+	BaseURL      string  `json:"base_url"`
+	APIKeyEnv    string  `json:"api_key_env"`
+	Model        string  `json:"model"`
+	SummaryModel string  `json:"summary_model"`
+	MaxTokens    int     `json:"max_tokens"`
+	Temperature  float64 `json:"temperature"`
+}
+
+type llmProfilesResponse struct {
+	ActiveID string               `json:"active_id"`
+	Profiles []llmProfileResponse `json:"profiles"`
+}
+
+type personaSummary struct {
+	Key         string `json:"key"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Tone        string `json:"tone"`
+}
+
+type personasResponse struct {
+	Default  string           `json:"default"`
+	Personas []personaSummary `json:"personas"`
+}
+
+type personaDetailResponse struct {
+	Key          string   `json:"key"`
+	Name         string   `json:"name"`
+	Description  string   `json:"description"`
+	SystemPrompt string   `json:"system_prompt"`
+	Tone         string   `json:"tone"`
+	Quirks       []string `json:"quirks"`
+	Greeting     string   `json:"greeting"`
+}
+
+type llmProfileRequest struct {
+	ID           string  `json:"id"`
+	Name         string  `json:"name"`
+	Provider     string  `json:"provider"`
+	BaseURL      string  `json:"base_url"`
+	APIKeyEnv    string  `json:"api_key_env"`
+	Model        string  `json:"model"`
+	SummaryModel string  `json:"summary_model"`
+	MaxTokens    int     `json:"max_tokens"`
+	Temperature  float64 `json:"temperature"`
+}
+
+type personaRequest struct {
+	Key          string   `json:"key"`
+	Name         string   `json:"name"`
+	Description  string   `json:"description"`
+	SystemPrompt string   `json:"system_prompt"`
+	Tone         string   `json:"tone"`
+	Quirks       []string `json:"quirks"`
+	Greeting     string   `json:"greeting"`
+}
+
+func NewAPIHandler(app AdminApp, logger *slog.Logger) *APIHandler {
+	return &APIHandler{app: app, logger: logger}
+}
+
+func (h *APIHandler) HandleListLLMProfiles(w http.ResponseWriter, r *http.Request) {
+	profiles, err := h.app.ListLLMProfiles()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list llm profiles")
+		return
+	}
+
+	activeID := ""
+	if active, ok := h.app.GetActiveLLMProfile(); ok && active != nil {
+		activeID = active.Name
+	}
+
+	items := make([]llmProfileResponse, 0, len(profiles))
+	for _, profile := range profiles {
+		items = append(items, toLLMProfileResponse(profile))
+	}
+
+	writeJSON(w, http.StatusOK, llmProfilesResponse{
+		ActiveID: activeID,
+		Profiles: items,
+	})
+}
+
+func (h *APIHandler) HandleGetLLMProfile(w http.ResponseWriter, r *http.Request) {
+	profile, err := h.app.GetLLMProfile(r.PathValue("id"))
+	if err != nil {
+		h.writeLLMProfileError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toLLMProfileResponse(*profile))
+}
+
+func (h *APIHandler) HandleCreateLLMProfile(w http.ResponseWriter, r *http.Request) {
+	var req llmProfileRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	profile := config.LLMProfile{
+		Name:         firstNonEmpty(strings.TrimSpace(req.ID), strings.TrimSpace(req.Name)),
+		Provider:     strings.TrimSpace(req.Provider),
+		BaseURL:      strings.TrimSpace(req.BaseURL),
+		APIKeyEnv:    strings.TrimSpace(req.APIKeyEnv),
+		Model:        strings.TrimSpace(req.Model),
+		SummaryModel: strings.TrimSpace(req.SummaryModel),
+		MaxTokens:    req.MaxTokens,
+		Temperature:  req.Temperature,
+	}
+
+	if err := h.app.CreateLLMProfile(profile); err != nil {
+		h.writeLLMProfileError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]bool{"ok": true})
+}
+
+func (h *APIHandler) HandleUpdateLLMProfile(w http.ResponseWriter, r *http.Request) {
+	var req llmProfileRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	id := r.PathValue("id")
+	profile := config.LLMProfile{
+		Name:         id,
+		Provider:     strings.TrimSpace(req.Provider),
+		BaseURL:      strings.TrimSpace(req.BaseURL),
+		APIKeyEnv:    strings.TrimSpace(req.APIKeyEnv),
+		Model:        strings.TrimSpace(req.Model),
+		SummaryModel: strings.TrimSpace(req.SummaryModel),
+		MaxTokens:    req.MaxTokens,
+		Temperature:  req.Temperature,
+	}
+
+	if err := h.app.UpdateLLMProfile(id, profile); err != nil {
+		h.writeLLMProfileError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (h *APIHandler) HandleActivateLLMProfile(w http.ResponseWriter, r *http.Request) {
+	if err := h.app.ActivateLLMProfile(r.PathValue("id")); err != nil {
+		h.writeLLMProfileError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (h *APIHandler) HandleDeleteLLMProfile(w http.ResponseWriter, r *http.Request) {
+	if err := h.app.DeleteLLMProfile(r.PathValue("id")); err != nil {
+		h.writeLLMProfileError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (h *APIHandler) HandleListPersonas(w http.ResponseWriter, r *http.Request) {
+	personas := h.app.ListPersonas()
+	result := make([]personaSummary, 0, len(personas))
+	for key, p := range personas {
+		result = append(result, personaSummary{
+			Key:         key,
+			Name:        p.Name,
+			Description: p.Description,
+			Tone:        p.Tone,
+		})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Key < result[j].Key })
+
+	writeJSON(w, http.StatusOK, personasResponse{
+		Default:  h.app.GetDefaultPersonaName(),
+		Personas: result,
+	})
+}
+
+func (h *APIHandler) HandleGetPersona(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("name")
+	persona, ok := h.app.GetPersona(key)
+	if !ok || persona == nil {
+		writeError(w, http.StatusNotFound, "persona not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, personaDetailResponse{
+		Key:          key,
+		Name:         persona.Name,
+		Description:  persona.Description,
+		SystemPrompt: persona.SystemPrompt,
+		Tone:         persona.Tone,
+		Quirks:       append([]string(nil), persona.Quirks...),
+		Greeting:     persona.Greeting,
+	})
+}
+
+func (h *APIHandler) HandleCreatePersona(w http.ResponseWriter, r *http.Request) {
+	var req personaRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	key := firstNonEmpty(strings.TrimSpace(req.Key), strings.TrimSpace(req.Name))
+	if key == "" {
+		writeError(w, http.StatusBadRequest, "key is required")
+		return
+	}
+
+	if err := h.app.CreatePersona(key, &config.Persona{
+		Name:         firstNonEmpty(strings.TrimSpace(req.Name), key),
+		Description:  strings.TrimSpace(req.Description),
+		SystemPrompt: req.SystemPrompt,
+		Tone:         strings.TrimSpace(req.Tone),
+		Quirks:       normalizeQuirks(req.Quirks),
+		Greeting:     req.Greeting,
+	}); err != nil {
+		h.writePersonaError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]bool{"ok": true})
+}
+
+func (h *APIHandler) HandleUpdatePersona(w http.ResponseWriter, r *http.Request) {
+	var req personaRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	key := r.PathValue("name")
+	if err := h.app.UpdatePersona(key, &config.Persona{
+		Name:         strings.TrimSpace(req.Name),
+		Description:  strings.TrimSpace(req.Description),
+		SystemPrompt: req.SystemPrompt,
+		Tone:         strings.TrimSpace(req.Tone),
+		Quirks:       normalizeQuirks(req.Quirks),
+		Greeting:     req.Greeting,
+	}); err != nil {
+		h.writePersonaError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (h *APIHandler) HandleDeletePersona(w http.ResponseWriter, r *http.Request) {
+	if err := h.app.DeletePersona(r.PathValue("name")); err != nil {
+		h.writePersonaError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (h *APIHandler) writeLLMProfileError(w http.ResponseWriter, err error) {
+	switch {
+	case hasMessage(err, "llm profile already exists"):
+		writeError(w, http.StatusConflict, err.Error())
+	case hasMessage(err, "llm profile not found"):
+		writeError(w, http.StatusNotFound, err.Error())
+	case hasMessage(err, "cannot delete the active llm profile"),
+		hasMessage(err, "cannot delete the last llm profile"):
+		writeError(w, http.StatusBadRequest, err.Error())
+	default:
+		writeError(w, http.StatusBadRequest, err.Error())
+	}
+}
+
+func (h *APIHandler) writePersonaError(w http.ResponseWriter, err error) {
+	switch {
+	case hasMessage(err, "persona already exists"):
+		writeError(w, http.StatusConflict, err.Error())
+	case hasMessage(err, "persona not found"):
+		writeError(w, http.StatusNotFound, err.Error())
+	case hasMessage(err, "cannot delete the active default persona"):
+		writeError(w, http.StatusBadRequest, err.Error())
+	default:
+		writeError(w, http.StatusBadRequest, err.Error())
+	}
+}
+
+func normalizeQuirks(quirks []string) []string {
+	result := make([]string, 0, len(quirks))
+	for _, quirk := range quirks {
+		trimmed := strings.TrimSpace(quirk)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
+}
+
+func toLLMProfileResponse(profile config.LLMProfile) llmProfileResponse {
+	return llmProfileResponse{
+		ID:           profile.Name,
+		Name:         profile.Name,
+		Provider:     profile.Provider,
+		BaseURL:      profile.BaseURL,
+		APIKeyEnv:    profile.APIKeyEnv,
+		Model:        profile.Model,
+		SummaryModel: profile.SummaryModel,
+		MaxTokens:    profile.MaxTokens,
+		Temperature:  profile.Temperature,
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func hasMessage(err error, message string) bool {
+	if err == nil {
+		return false
+	}
+	return err.Error() == message
+}
+
+func readJSON(r *http.Request, target interface{}) error {
+	defer r.Body.Close()
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(target)
+}
+
+func writeJSON(w http.ResponseWriter, status int, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(data)
+}
+
+func writeError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, map[string]string{"error": message})
+}

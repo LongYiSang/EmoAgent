@@ -22,12 +22,21 @@ type Client interface {
 
 // NewClient creates a Client based on the provider in config.
 func NewClient(cfg config.LLMConfig, logger *slog.Logger) (Client, error) {
+	apiKeyEnv := cfg.APIKeyEnv
+	if apiKeyEnv == "" {
+		apiKeyEnv = defaultAPIKeyEnv(cfg.Provider)
+	}
+	if apiKeyEnv == "" {
+		return nil, fmt.Errorf("unsupported LLM provider: %s", cfg.Provider)
+	}
+
+	apiKey := os.Getenv(apiKeyEnv)
+	if apiKey == "" {
+		return nil, fmt.Errorf("%s environment variable not set", apiKeyEnv)
+	}
+
 	switch cfg.Provider {
 	case "openai":
-		apiKey := os.Getenv("OPENAI_API_KEY")
-		if apiKey == "" {
-			return nil, fmt.Errorf("OPENAI_API_KEY environment variable not set")
-		}
 		return &openaiClient{
 			baseURL:    cfg.BaseURL,
 			apiKey:     apiKey,
@@ -35,10 +44,6 @@ func NewClient(cfg config.LLMConfig, logger *slog.Logger) (Client, error) {
 			logger:     logger,
 		}, nil
 	case "anthropic":
-		apiKey := os.Getenv("ANTHROPIC_API_KEY")
-		if apiKey == "" {
-			return nil, fmt.Errorf("ANTHROPIC_API_KEY environment variable not set")
-		}
 		return &anthropicClient{
 			baseURL:    cfg.BaseURL,
 			apiKey:     apiKey,
@@ -47,6 +52,17 @@ func NewClient(cfg config.LLMConfig, logger *slog.Logger) (Client, error) {
 		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported LLM provider: %s", cfg.Provider)
+	}
+}
+
+func defaultAPIKeyEnv(provider string) string {
+	switch provider {
+	case "openai":
+		return "OPENAI_API_KEY"
+	case "anthropic":
+		return "ANTHROPIC_API_KEY"
+	default:
+		return ""
 	}
 }
 

@@ -55,6 +55,23 @@ CREATE TABLE IF NOT EXISTS schema_version (
 );
 `,
 	},
+	{
+		Version: 2,
+		SQL: `
+CREATE TABLE IF NOT EXISTS llm_profiles (
+    name          TEXT PRIMARY KEY,
+    provider      TEXT NOT NULL,
+    base_url      TEXT NOT NULL,
+    model         TEXT NOT NULL,
+    summary_model TEXT NOT NULL DEFAULT '',
+    max_tokens    INTEGER NOT NULL DEFAULT 4096,
+    temperature   REAL NOT NULL DEFAULT 0.7,
+    api_key_env   TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.

@@ -69,6 +69,21 @@
       color: var(--accent);
       white-space: nowrap;
     }
+    .admin-link {
+      display: inline-flex;
+      align-items: center;
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      color: var(--text);
+      background: rgba(255,255,255,.78);
+      border: 1px solid var(--border);
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .admin-link:hover {
+      border-color: rgba(219,111,77,.28);
+    }
     .messages {
       padding: 24px;
       overflow-y: auto;
@@ -170,7 +185,10 @@
         <h1>EmoAgent</h1>
         <div class="sub">P3 conversation loop</div>
       </div>
-      <div class="status" id="status">Connecting...</div>
+      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
+        <a class="admin-link" href="/admin.html">Admin</a>
+        <div class="status" id="status">Connecting...</div>
+      </div>
     </header>
     <section class="messages" id="messages"></section>
     <form id="composer">

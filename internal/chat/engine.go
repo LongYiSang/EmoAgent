@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/longyisang/emoagent/internal/config"
@@ -24,6 +25,7 @@ type EngineConfig struct {
 
 // Engine assembles conversation context and forwards requests to the LLM.
 type Engine struct {
+	mu           sync.RWMutex
 	llm          llm.Client
 	db           *storage.DB
 	logger       *slog.Logger
@@ -31,6 +33,19 @@ type Engine struct {
 	maxTokens    int
 	temperature  float64
 	historyLimit int
+}
+
+// UpdateConfig hot-swaps the active LLM client and request parameters for new sends.
+func (e *Engine) UpdateConfig(client llm.Client, model string, maxTokens int, temperature float64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if client != nil {
+		e.llm = client
+	}
+	e.model = model
+	e.maxTokens = maxTokens
+	e.temperature = temperature
 }
 
 // NewEngine creates a chat engine from configuration.
@@ -66,7 +81,15 @@ func (e *Engine) StartSession(ctx context.Context, personaName string) (string, 
 
 // SendMessage stores the user message, streams the model response, and persists the reply.
 func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *config.Persona, userContent string, cb func(delta string)) (string, error) {
-	if e.llm == nil {
+	e.mu.RLock()
+	client := e.llm
+	model := e.model
+	maxTokens := e.maxTokens
+	temperature := e.temperature
+	historyLimit := e.historyLimit
+	e.mu.RUnlock()
+
+	if client == nil {
 		return "", errors.New("chat engine LLM client is not configured")
 	}
 	if e.db == nil {
@@ -80,7 +103,7 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 		return "", err
 	}
 
-	history, err := e.db.GetRecentMessages(ctx, sessionID, e.historyLimit)
+	history, err := e.db.GetRecentMessages(ctx, sessionID, historyLimit)
 	if err != nil {
 		return "", err
 	}
@@ -93,12 +116,12 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 		})
 	}
 
-	resp, err := e.llm.ChatStream(ctx, llm.ChatRequest{
-		Model:       e.model,
+	resp, err := client.ChatStream(ctx, llm.ChatRequest{
+		Model:       model,
 		Messages:    messages,
 		System:      persona.SystemPrompt,
-		MaxTokens:   e.maxTokens,
-		Temperature: e.temperature,
+		MaxTokens:   maxTokens,
+		Temperature: temperature,
 		Stream:      true,
 	}, func(event llm.StreamEvent) {
 		if cb != nil && event.Content != "" {

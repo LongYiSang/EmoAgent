@@ -131,6 +131,42 @@ func TestEngineSendMessageStreamsAndPersistsConversation(t *testing.T) {
 	}
 }
 
+func TestEngineUpdateConfigAffectsSubsequentMessages(t *testing.T) {
+	firstClient := &fakeLLMClient{
+		response: &llm.ChatResponse{ID: "resp-1", Content: "first", Model: "model-a"},
+	}
+	secondClient := &fakeLLMClient{
+		response: &llm.ChatResponse{ID: "resp-2", Content: "second", Model: "model-b"},
+	}
+	engine, _, _ := newTestEngine(t, firstClient)
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	persona := &config.Persona{Name: "default", SystemPrompt: "system"}
+	if _, err := engine.SendMessage(context.Background(), sessionID, persona, "before update", nil); err != nil {
+		t.Fatalf("SendMessage(before): %v", err)
+	}
+
+	engine.UpdateConfig(secondClient, "model-b", 1024, 0.9)
+
+	if _, err := engine.SendMessage(context.Background(), sessionID, persona, "after update", nil); err != nil {
+		t.Fatalf("SendMessage(after): %v", err)
+	}
+
+	if secondClient.lastRequest.Model != "model-b" {
+		t.Fatalf("lastRequest.Model = %q, want model-b", secondClient.lastRequest.Model)
+	}
+	if secondClient.lastRequest.MaxTokens != 1024 {
+		t.Fatalf("lastRequest.MaxTokens = %d, want 1024", secondClient.lastRequest.MaxTokens)
+	}
+	if secondClient.lastRequest.Temperature != 0.9 {
+		t.Fatalf("lastRequest.Temperature = %v, want 0.9", secondClient.lastRequest.Temperature)
+	}
+}
+
 func newTestEngine(t *testing.T, client llm.Client) (*Engine, *storage.DB, *slog.Logger) {
 	t.Helper()
 

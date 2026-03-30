@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -24,7 +25,7 @@ func TestOpenAndMigrate(t *testing.T) {
 	db := testDB(t)
 
 	// Verify tables exist by querying them.
-	tables := []string{"sessions", "messages", "personas", "config_runtime", "schema_version"}
+	tables := []string{"sessions", "messages", "personas", "config_runtime", "llm_profiles", "schema_version"}
 	for _, table := range tables {
 		var name string
 		err := db.SqlDB().QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&name)
@@ -92,5 +93,91 @@ func TestUpsertPersona(t *testing.T) {
 	}
 	if len(names) != 1 || names[0] != "test" {
 		t.Errorf("ListPersonas = %v, want [test]", names)
+	}
+}
+
+func TestGetAndDeletePersona(t *testing.T) {
+	db := testDB(t)
+
+	if err := db.UpsertPersona("test", "desc", "prompt", "warm", []string{"quirk1"}, "hello"); err != nil {
+		t.Fatalf("UpsertPersona: %v", err)
+	}
+
+	record, err := db.GetPersona(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("GetPersona: %v", err)
+	}
+	if record == nil || record.Name != "test" {
+		t.Fatalf("GetPersona = %#v, want test record", record)
+	}
+
+	if err := db.DeletePersona(context.Background(), "test"); err != nil {
+		t.Fatalf("DeletePersona: %v", err)
+	}
+
+	record, err = db.GetPersona(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("GetPersona(after delete): %v", err)
+	}
+	if record != nil {
+		t.Fatalf("GetPersona(after delete) = %#v, want nil", record)
+	}
+}
+
+func TestLLMProfileCRUD(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+
+	if got, err := db.GetLLMProfile(ctx, "default"); err != nil {
+		t.Fatalf("GetLLMProfile missing: %v", err)
+	} else if got != nil {
+		t.Fatalf("GetLLMProfile missing = %#v, want nil", got)
+	}
+
+	if err := db.UpsertLLMProfile("default", "openai", "https://api.openai.com", "gpt-4o", "gpt-4o-mini", 4096, 0.7, "OPENAI_API_KEY"); err != nil {
+		t.Fatalf("UpsertLLMProfile: %v", err)
+	}
+
+	profile, err := db.GetLLMProfile(ctx, "default")
+	if err != nil {
+		t.Fatalf("GetLLMProfile: %v", err)
+	}
+	if profile == nil {
+		t.Fatal("GetLLMProfile returned nil")
+	}
+	if profile.Name != "default" || profile.APIKeyEnv != "OPENAI_API_KEY" {
+		t.Fatalf("GetLLMProfile = %#v, want name default and APIKeyEnv OPENAI_API_KEY", profile)
+	}
+
+	profiles, err := db.ListLLMProfiles()
+	if err != nil {
+		t.Fatalf("ListLLMProfiles: %v", err)
+	}
+	if len(profiles) != 1 || profiles[0].Name != "default" {
+		t.Fatalf("ListLLMProfiles = %v, want [default]", profiles)
+	}
+
+	if err := db.UpsertLLMProfile("default", "openai", "https://api.openai.com", "gpt-4o", "gpt-4.1", 2048, 0.2, "MOONSHOT_API_KEY"); err != nil {
+		t.Fatalf("UpsertLLMProfile update: %v", err)
+	}
+
+	profile, err = db.GetLLMProfile(ctx, "default")
+	if err != nil {
+		t.Fatalf("GetLLMProfile after update: %v", err)
+	}
+	if profile == nil || profile.SummaryModel != "gpt-4.1" || profile.MaxTokens != 2048 || profile.Temperature != 0.2 || profile.APIKeyEnv != "MOONSHOT_API_KEY" {
+		t.Fatalf("updated profile = %#v", profile)
+	}
+
+	if err := db.DeleteLLMProfile("default"); err != nil {
+		t.Fatalf("DeleteLLMProfile: %v", err)
+	}
+
+	profile, err = db.GetLLMProfile(ctx, "default")
+	if err != nil {
+		t.Fatalf("GetLLMProfile after delete: %v", err)
+	}
+	if profile != nil {
+		t.Fatalf("GetLLMProfile after delete = %#v, want nil", profile)
 	}
 }

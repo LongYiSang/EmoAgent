@@ -73,6 +73,42 @@ func LoadAllPersonas(dir string) (map[string]*Persona, error) {
 	return personas, nil
 }
 
+// SavePersona writes a persona to {dir}/{key}.yaml, creating the directory when needed.
+func SavePersona(dir, key string, p *Persona) error {
+	if key == "" {
+		return fmt.Errorf("persona key is required")
+	}
+	if p == nil {
+		return fmt.Errorf("persona is required")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create personas dir: %w", err)
+	}
+	data, err := yaml.Marshal(p)
+	if err != nil {
+		return fmt.Errorf("marshal persona: %w", err)
+	}
+	path := filepath.Join(dir, key+".yaml")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("write persona %s: %w", path, err)
+	}
+	return nil
+}
+
+// DeletePersonaFile removes the persona YAML file by key.
+func DeletePersonaFile(dir, key string) error {
+	if key == "" {
+		return fmt.Errorf("persona key is required")
+	}
+	for _, ext := range []string{".yaml", ".yml"} {
+		path := filepath.Join(dir, key+ext)
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove persona %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
 // WatchPersonas polls the persona directory for changes and calls onChange when files are modified.
 // It blocks until ctx is cancelled.
 func WatchPersonas(ctx context.Context, dir string, interval time.Duration, onChange func(map[string]*Persona)) {

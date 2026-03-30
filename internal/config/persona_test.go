@@ -90,3 +90,34 @@ func TestLoadAllPersonasEmptyDir(t *testing.T) {
 		t.Errorf("expected empty map, got %d", len(personas))
 	}
 }
+
+func TestSavePersonaAndDeletePersonaFile(t *testing.T) {
+	dir := t.TempDir()
+	persona := &Persona{
+		Name:         "Emo",
+		Description:  "Warm companion",
+		SystemPrompt: "You are Emo.",
+		Tone:         "warm",
+		Quirks:       []string{"gentle"},
+		Greeting:     "Hello",
+	}
+
+	if err := SavePersona(dir, "default", persona); err != nil {
+		t.Fatalf("SavePersona: %v", err)
+	}
+
+	loaded, err := LoadPersona(filepath.Join(dir, "default.yaml"))
+	if err != nil {
+		t.Fatalf("LoadPersona(saved): %v", err)
+	}
+	if loaded.Name != "Emo" {
+		t.Fatalf("loaded.Name = %q, want Emo", loaded.Name)
+	}
+
+	if err := DeletePersonaFile(dir, "default"); err != nil {
+		t.Fatalf("DeletePersonaFile: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "default.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("expected file removed, stat err = %v", err)
+	}
+}

@@ -39,6 +39,20 @@ type MessageRecord struct {
 	Metadata  string
 }
 
+// LLMProfileRecord is the DB representation of an LLM profile.
+type LLMProfileRecord struct {
+	Name         string
+	Provider     string
+	BaseURL      string
+	Model        string
+	SummaryModel string
+	MaxTokens    int
+	Temperature  float64
+	APIKeyEnv    string
+	CreatedAt    string
+	UpdatedAt    string
+}
+
 // Open creates or opens a SQLite database, sets pragmas, and runs migrations.
 func Open(path string, logger *slog.Logger) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -123,6 +137,73 @@ func (d *DB) GetAllRuntimeConfig() (map[string]string, error) {
 	return m, rows.Err()
 }
 
+// UpsertLLMProfile inserts or updates an LLM profile in the database.
+func (d *DB) UpsertLLMProfile(name, provider, baseURL, model, summaryModel string, maxTokens int, temperature float64, apiKeyEnv string) error {
+	_, err := d.db.Exec(`
+		INSERT INTO llm_profiles (
+			name, provider, base_url, model, summary_model, max_tokens, temperature, api_key_env, created_at, updated_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+		ON CONFLICT(name) DO UPDATE SET
+			provider = excluded.provider,
+			base_url = excluded.base_url,
+			model = excluded.model,
+			summary_model = excluded.summary_model,
+			max_tokens = excluded.max_tokens,
+			temperature = excluded.temperature,
+			api_key_env = excluded.api_key_env,
+			updated_at = datetime('now')
+	`, name, provider, baseURL, model, summaryModel, maxTokens, temperature, apiKeyEnv)
+	return err
+}
+
+// GetLLMProfile returns a profile by name, or nil when it does not exist.
+func (d *DB) GetLLMProfile(ctx context.Context, name string) (*LLMProfileRecord, error) {
+	row := d.db.QueryRowContext(ctx, `
+		SELECT name, provider, base_url, model, COALESCE(summary_model, ''), max_tokens, temperature, COALESCE(api_key_env, ''), created_at, updated_at
+		FROM llm_profiles
+		WHERE name = ?
+	`, name)
+
+	var record LLMProfileRecord
+	if err := row.Scan(&record.Name, &record.Provider, &record.BaseURL, &record.Model, &record.SummaryModel, &record.MaxTokens, &record.Temperature, &record.APIKeyEnv, &record.CreatedAt, &record.UpdatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &record, nil
+}
+
+// ListLLMProfiles returns all LLM profiles ordered by name.
+func (d *DB) ListLLMProfiles() ([]LLMProfileRecord, error) {
+	rows, err := d.db.Query(`
+		SELECT name, provider, base_url, model, COALESCE(summary_model, ''), max_tokens, temperature, COALESCE(api_key_env, ''), created_at, updated_at
+		FROM llm_profiles
+		ORDER BY name
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var records []LLMProfileRecord
+	for rows.Next() {
+		var record LLMProfileRecord
+		if err := rows.Scan(&record.Name, &record.Provider, &record.BaseURL, &record.Model, &record.SummaryModel, &record.MaxTokens, &record.Temperature, &record.APIKeyEnv, &record.CreatedAt, &record.UpdatedAt); err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, rows.Err()
+}
+
+// DeleteLLMProfile deletes a profile by name.
+func (d *DB) DeleteLLMProfile(name string) error {
+	_, err := d.db.Exec("DELETE FROM llm_profiles WHERE name = ?", name)
+	return err
+}
+
 // PersonaRecord is the DB representation of a persona.
 type PersonaRecord struct {
 	Name         string
@@ -167,6 +248,30 @@ func (d *DB) ListPersonas() ([]string, error) {
 		names = append(names, name)
 	}
 	return names, rows.Err()
+}
+
+// GetPersona returns a persona by name, or nil when it does not exist.
+func (d *DB) GetPersona(ctx context.Context, name string) (*PersonaRecord, error) {
+	row := d.db.QueryRowContext(ctx, `
+		SELECT name, COALESCE(description, ''), COALESCE(system_prompt, ''), COALESCE(tone, ''), COALESCE(quirks, ''), COALESCE(greeting, '')
+		FROM personas
+		WHERE name = ?
+	`, name)
+
+	var record PersonaRecord
+	if err := row.Scan(&record.Name, &record.Description, &record.SystemPrompt, &record.Tone, &record.Quirks, &record.Greeting); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &record, nil
+}
+
+// DeletePersona deletes a persona by name.
+func (d *DB) DeletePersona(ctx context.Context, name string) error {
+	_, err := d.db.ExecContext(ctx, "DELETE FROM personas WHERE name = ?", name)
+	return err
 }
 
 // CreateSession inserts a new session row.
