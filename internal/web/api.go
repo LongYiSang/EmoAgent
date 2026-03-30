@@ -2,11 +2,13 @@ package web
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
 
+	"github.com/longyisang/emoagent/internal/apperrors"
 	"github.com/longyisang/emoagent/internal/config"
 )
 
@@ -24,6 +26,7 @@ type AdminApp interface {
 	CreatePersona(key string, p *config.Persona) error
 	UpdatePersona(key string, p *config.Persona) error
 	DeletePersona(key string) error
+	ActivatePersona(key string) error
 	GetDefaultPersonaName() string
 }
 
@@ -293,30 +296,84 @@ func (h *APIHandler) HandleDeletePersona(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+func (h *APIHandler) HandleActivatePersona(w http.ResponseWriter, r *http.Request) {
+	if err := h.app.ActivatePersona(r.PathValue("name")); err != nil {
+		h.writePersonaError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 func (h *APIHandler) writeLLMProfileError(w http.ResponseWriter, err error) {
 	switch {
-	case hasMessage(err, "llm profile already exists"):
+	case errors.Is(err, apperrors.ErrLLMProfileExists):
 		writeError(w, http.StatusConflict, err.Error())
-	case hasMessage(err, "llm profile not found"):
+	case errors.Is(err, apperrors.ErrLLMProfileNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
-	case hasMessage(err, "cannot delete the active llm profile"),
-		hasMessage(err, "cannot delete the last llm profile"):
+	case errors.Is(err, apperrors.ErrCannotDeleteActiveLLMProfile),
+		errors.Is(err, apperrors.ErrCannotDeleteLastLLMProfile),
+		isLLMProfileValidationError(err):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusInternalServerError, "internal server error")
 	}
 }
 
 func (h *APIHandler) writePersonaError(w http.ResponseWriter, err error) {
 	switch {
-	case hasMessage(err, "persona already exists"):
+	case errors.Is(err, apperrors.ErrPersonaExists):
 		writeError(w, http.StatusConflict, err.Error())
-	case hasMessage(err, "persona not found"):
+	case errors.Is(err, apperrors.ErrPersonaNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
-	case hasMessage(err, "cannot delete the active default persona"):
+	case errors.Is(err, apperrors.ErrCannotDeleteDefault),
+		isPersonaValidationError(err):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusInternalServerError, "internal server error")
+	}
+}
+
+func isLLMProfileValidationError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	message := err.Error()
+	switch {
+	case strings.HasSuffix(message, " environment variable not set"):
+		return true
+	case strings.HasPrefix(message, "unsupported provider:"):
+		return true
+	case message == "name is required":
+		return true
+	case message == "base_url is required":
+		return true
+	case message == "model is required":
+		return true
+	case message == "max_tokens must be greater than 0":
+		return true
+	case message == "temperature must be between 0 and 2":
+		return true
+	default:
+		return false
+	}
+}
+
+func isPersonaValidationError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	message := err.Error()
+	switch {
+	case message == "persona is required":
+		return true
+	case message == "persona key is required":
+		return true
+	case strings.HasPrefix(message, "persona key must"):
+		return true
+	default:
+		return false
 	}
 }
 
@@ -352,13 +409,6 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func hasMessage(err error, message string) bool {
-	if err == nil {
-		return false
-	}
-	return err.Error() == message
 }
 
 func readJSON(r *http.Request, target interface{}) error {

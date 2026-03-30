@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/longyisang/emoagent/internal/apperrors"
 	"github.com/longyisang/emoagent/internal/chat"
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
@@ -24,13 +24,13 @@ import (
 const personaWatchInterval = 5 * time.Second
 
 var (
-	ErrLLMProfileExists             = errors.New("llm profile already exists")
-	ErrLLMProfileNotFound           = errors.New("llm profile not found")
-	ErrCannotDeleteActiveLLMProfile = errors.New("cannot delete the active llm profile")
-	ErrCannotDeleteLastLLMProfile   = errors.New("cannot delete the last llm profile")
-	ErrPersonaExists                = errors.New("persona already exists")
-	ErrPersonaNotFound              = errors.New("persona not found")
-	ErrCannotDeleteDefault          = errors.New("cannot delete the active default persona")
+	ErrLLMProfileExists             = apperrors.ErrLLMProfileExists
+	ErrLLMProfileNotFound           = apperrors.ErrLLMProfileNotFound
+	ErrCannotDeleteActiveLLMProfile = apperrors.ErrCannotDeleteActiveLLMProfile
+	ErrCannotDeleteLastLLMProfile   = apperrors.ErrCannotDeleteLastLLMProfile
+	ErrPersonaExists                = apperrors.ErrPersonaExists
+	ErrPersonaNotFound              = apperrors.ErrPersonaNotFound
+	ErrCannotDeleteDefault          = apperrors.ErrCannotDeleteDefault
 )
 
 // App is the top-level application container.
@@ -192,6 +192,7 @@ func registerRoutes(mux *http.ServeMux, api *web.APIHandler, chatHandler http.Ha
 	mux.HandleFunc("POST /api/personas", api.HandleCreatePersona)
 	mux.HandleFunc("GET /api/personas/{name}", api.HandleGetPersona)
 	mux.HandleFunc("PUT /api/personas/{name}", api.HandleUpdatePersona)
+	mux.HandleFunc("POST /api/personas/{name}/activate", api.HandleActivatePersona)
 	mux.HandleFunc("DELETE /api/personas/{name}", api.HandleDeletePersona)
 	mux.Handle("/ws", chatHandler)
 	mux.Handle("/", staticHandler)
@@ -453,6 +454,21 @@ func (a *App) DeletePersona(key string) error {
 	return nil
 }
 
+// ActivatePersona switches the default persona used by new chat sessions.
+func (a *App) ActivatePersona(key string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if _, exists := a.Personas[key]; !exists {
+		return ErrPersonaNotFound
+	}
+	if err := a.DB.SetRuntimeConfig("personas.default", key); err != nil {
+		return err
+	}
+	a.Config.Personas.Default = key
+	return nil
+}
+
 // ListLLMProfiles returns all stored LLM profiles sorted by name.
 func (a *App) ListLLMProfiles() ([]config.LLMProfile, error) {
 	records, err := a.DB.ListLLMProfiles()
@@ -526,9 +542,12 @@ func (a *App) UpdateLLMProfile(id string, profile config.LLMProfile) error {
 
 	active, activeOK := a.GetActiveLLMProfile()
 	isActive := activeOK && active.Name == id
+	a.mu.RLock()
+	hasClient := a.LLM != nil
+	a.mu.RUnlock()
 
 	var newClient llm.Client
-	needRebuild := isActive && (current.Provider != profile.Provider || current.BaseURL != profile.BaseURL || current.APIKeyEnv != profile.APIKeyEnv)
+	needRebuild := isActive && (!hasClient || current.Provider != profile.Provider || current.BaseURL != profile.BaseURL || current.APIKeyEnv != profile.APIKeyEnv)
 	if needRebuild {
 		newClient, err = a.buildClientForProfile(profile)
 		if err != nil {

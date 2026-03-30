@@ -21,6 +21,25 @@ type Persona struct {
 	Greeting     string   `yaml:"greeting"`
 }
 
+// ValidatePersonaKey ensures persona keys remain a single filename segment under the personas directory.
+func ValidatePersonaKey(key string) error {
+	if key == "" {
+		return fmt.Errorf("persona key is required")
+	}
+
+	cleaned := filepath.Clean(key)
+	if cleaned == "." || cleaned == ".." {
+		return fmt.Errorf("persona key must be a single path segment")
+	}
+	if strings.Contains(key, "/") || strings.Contains(key, "\\") {
+		return fmt.Errorf("persona key must not contain path separators")
+	}
+	if filepath.Base(cleaned) != cleaned {
+		return fmt.Errorf("persona key must be a single path segment")
+	}
+	return nil
+}
+
 // LoadPersona reads a single persona YAML file.
 func LoadPersona(path string) (*Persona, error) {
 	data, err := os.ReadFile(path)
@@ -75,8 +94,8 @@ func LoadAllPersonas(dir string) (map[string]*Persona, error) {
 
 // SavePersona writes a persona to {dir}/{key}.yaml, creating the directory when needed.
 func SavePersona(dir, key string, p *Persona) error {
-	if key == "" {
-		return fmt.Errorf("persona key is required")
+	if err := ValidatePersonaKey(key); err != nil {
+		return err
 	}
 	if p == nil {
 		return fmt.Errorf("persona is required")
@@ -97,8 +116,8 @@ func SavePersona(dir, key string, p *Persona) error {
 
 // DeletePersonaFile removes the persona YAML file by key.
 func DeletePersonaFile(dir, key string) error {
-	if key == "" {
-		return fmt.Errorf("persona key is required")
+	if err := ValidatePersonaKey(key); err != nil {
+		return err
 	}
 	for _, ext := range []string{".yaml", ".yml"} {
 		path := filepath.Join(dir, key+ext)

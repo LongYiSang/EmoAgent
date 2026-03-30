@@ -84,6 +84,13 @@
     .admin-link:hover {
       border-color: rgba(219,111,77,.28);
     }
+    .header-tools {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
     .messages {
       padding: 24px;
       overflow-y: auto;
@@ -183,9 +190,9 @@
     <header>
       <div>
         <h1>EmoAgent</h1>
-        <div class="sub">P3 conversation loop</div>
+        <div class="sub" id="subtitle">P3 conversation loop</div>
       </div>
-      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
+      <div class="header-tools">
         <a class="admin-link" href="/admin.html">Admin</a>
         <div class="status" id="status">Connecting...</div>
       </div>
@@ -199,6 +206,7 @@
 
   <script>
     const statusEl = document.getElementById('status');
+    const subtitleEl = document.getElementById('subtitle');
     const messagesEl = document.getElementById('messages');
     const form = document.getElementById('composer');
     const input = document.getElementById('input');
@@ -210,6 +218,7 @@
     let pendingAssistant = null;
     let sending = false;
     let manuallyClosed = false;
+    const currentPersonaKey = new URLSearchParams(location.search).get('persona') || '';
 
     function setStatus(text) {
       statusEl.textContent = text;
@@ -237,13 +246,26 @@
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
+    function updateSubtitle() {
+      if (currentPersonaKey) {
+        subtitleEl.textContent = `Persona: ${currentPersonaKey}`;
+        return;
+      }
+      subtitleEl.textContent = 'P3 conversation loop';
+    }
+
     function wsURL() {
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      return `${protocol}//${location.host}/ws`;
+      const url = new URL(`${protocol}//${location.host}/ws`);
+      if (currentPersonaKey) {
+        url.searchParams.set('persona', currentPersonaKey);
+      }
+      return url.toString();
     }
 
     function connect() {
       clearTimeout(reconnectTimer);
+      manuallyClosed = false;
       setStatus('Connecting...');
       socket = new WebSocket(wsURL());
 
@@ -330,8 +352,9 @@
         socket.close();
       }
     });
-
+    updateSubtitle();
     connect();
   </script>
 </body>
 </html>
+

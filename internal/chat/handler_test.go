@@ -45,14 +45,15 @@ func (f *fakeConversationEngine) SendMessage(_ context.Context, sessionID string
 
 type fakeAppProvider struct {
 	defaultPersona string
-	persona        *config.Persona
+	personas       map[string]*config.Persona
 }
 
 func (f *fakeAppProvider) GetPersona(name string) (*config.Persona, bool) {
-	if f.persona == nil || name != f.persona.Name {
+	persona, ok := f.personas[name]
+	if !ok || persona == nil {
 		return nil, false
 	}
-	return f.persona, true
+	return persona, true
 }
 
 func (f *fakeAppProvider) GetDefaultPersonaName() string {
@@ -147,26 +148,100 @@ func TestHandlerRepliesToPing(t *testing.T) {
 	}
 }
 
-func newTestHandler() (*Handler, *fakeConversationEngine) {
-	engine := &fakeConversationEngine{}
-	app := &fakeAppProvider{
+func TestHandlerUsesRequestedPersonaFromQuery(t *testing.T) {
+	handler, engine := newTestHandlerWithApp(&fakeAppProvider{
 		defaultPersona: "default",
-		persona: &config.Persona{
-			Name:     "default",
-			Greeting: "Hello from Emo",
+		personas: map[string]*config.Persona{
+			"default": {Name: "default", Greeting: "Hello from Emo"},
+			"neko":    {Name: "neko", Greeting: "Meow hello"},
 		},
+	})
+
+	conn := dialTestWS(t, handler, "/ws?persona=neko")
+	defer conn.Close(websocket.StatusNormalClosure, "bye")
+
+	var msg WSMessage
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(greeting): %v", err)
 	}
+	if msg.Content != "Meow hello" {
+		t.Fatalf("Content = %q, want neko greeting", msg.Content)
+	}
+	if engine.startPersona != "neko" {
+		t.Fatalf("startPersona = %q, want neko", engine.startPersona)
+	}
+}
+
+func TestHandlerFallsBackToDefaultPersona(t *testing.T) {
+	handler, engine := newTestHandler()
+
+	conn := dialTestWS(t, handler, "/ws")
+	defer conn.Close(websocket.StatusNormalClosure, "bye")
+
+	var msg WSMessage
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(greeting): %v", err)
+	}
+	if msg.Content != "Hello from Emo" {
+		t.Fatalf("Content = %q, want default greeting", msg.Content)
+	}
+	if engine.startPersona != "default" {
+		t.Fatalf("startPersona = %q, want default", engine.startPersona)
+	}
+}
+
+func TestHandlerReturnsErrorWhenRequestedPersonaMissing(t *testing.T) {
+	handler, _ := newTestHandlerWithApp(&fakeAppProvider{
+		defaultPersona: "default",
+		personas: map[string]*config.Persona{
+			"default": {Name: "default", Greeting: "Hello from Emo"},
+		},
+	})
+
+	conn := dialTestWS(t, handler, "/ws?persona=missing")
+	defer conn.Close(websocket.StatusNormalClosure, "bye")
+
+	var msg WSMessage
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(error): %v", err)
+	}
+	if msg.Type != "error" {
+		t.Fatalf("Type = %q, want error", msg.Type)
+	}
+	if !strings.Contains(msg.Content, "persona not found") {
+		t.Fatalf("Content = %q, want persona not found", msg.Content)
+	}
+}
+
+func newTestHandler() (*Handler, *fakeConversationEngine) {
+	return newTestHandlerWithApp(&fakeAppProvider{
+		defaultPersona: "default",
+		personas: map[string]*config.Persona{
+			"default": {
+				Name:     "default",
+				Greeting: "Hello from Emo",
+			},
+		},
+	})
+}
+
+func newTestHandlerWithApp(app *fakeAppProvider) (*Handler, *fakeConversationEngine) {
+	engine := &fakeConversationEngine{}
 	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
 	return NewHandler(engine, app, logger), engine
 }
 
-func dialTestWS(t *testing.T, handler *Handler) *websocket.Conn {
+func dialTestWS(t *testing.T, handler *Handler, path ...string) *websocket.Conn {
 	t.Helper()
 
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
-	url := "ws" + strings.TrimPrefix(srv.URL, "http")
+	targetPath := "/"
+	if len(path) > 0 && path[0] != "" {
+		targetPath = path[0]
+	}
+	url := "ws" + strings.TrimPrefix(srv.URL, "http") + targetPath
 	conn, _, err := websocket.Dial(context.Background(), url, nil)
 	if err != nil {
 		t.Fatalf("Dial(%s): %v", fmt.Sprintf("%s", url), err)

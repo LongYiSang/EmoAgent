@@ -4,32 +4,40 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/longyisang/emoagent/internal/apperrors"
 	"github.com/longyisang/emoagent/internal/config"
 )
 
 type fakeAdminApp struct {
-	profiles       []config.LLMProfile
-	active         *config.LLMProfile
-	personas       map[string]*config.Persona
-	defaultKey     string
-	createErr      error
-	activateErr    error
-	lastCreate     config.LLMProfile
-	lastActivate   string
-	lastPersonaKey string
-	lastPersona    *config.Persona
+	profiles            []config.LLMProfile
+	active              *config.LLMProfile
+	personas            map[string]*config.Persona
+	defaultKey          string
+	createErr           error
+	activateErr         error
+	activatePersonaErr  error
+	getErr              error
+	lastCreate          config.LLMProfile
+	lastActivate        string
+	lastPersonaActivate string
+	lastPersonaKey      string
+	lastPersona         *config.Persona
 }
 
 func (f *fakeAdminApp) ListLLMProfiles() ([]config.LLMProfile, error) {
 	return append([]config.LLMProfile(nil), f.profiles...), nil
 }
 func (f *fakeAdminApp) GetLLMProfile(id string) (*config.LLMProfile, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
 	for i := range f.profiles {
 		if f.profiles[i].Name == id {
 			cp := f.profiles[i]
@@ -67,7 +75,11 @@ func (f *fakeAdminApp) CreatePersona(key string, p *config.Persona) error {
 }
 func (f *fakeAdminApp) UpdatePersona(key string, p *config.Persona) error { return nil }
 func (f *fakeAdminApp) DeletePersona(key string) error                    { return nil }
-func (f *fakeAdminApp) GetDefaultPersonaName() string                     { return f.defaultKey }
+func (f *fakeAdminApp) ActivatePersona(key string) error {
+	f.lastPersonaActivate = key
+	return f.activatePersonaErr
+}
+func (f *fakeAdminApp) GetDefaultPersonaName() string { return f.defaultKey }
 
 func TestHandleListLLMProfiles(t *testing.T) {
 	app := &fakeAdminApp{
@@ -97,7 +109,7 @@ func TestHandleListLLMProfiles(t *testing.T) {
 }
 
 func TestHandleCreateLLMProfileMapsConflict(t *testing.T) {
-	app := &fakeAdminApp{createErr: errors.New("llm profile already exists")}
+	app := &fakeAdminApp{createErr: apperrors.ErrLLMProfileExists}
 	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	body := bytes.NewBufferString(`{"id":"default","name":"Default","provider":"openai","base_url":"https://api.openai.com","model":"gpt-4o","max_tokens":128,"temperature":0.7}`)
@@ -107,6 +119,34 @@ func TestHandleCreateLLMProfileMapsConflict(t *testing.T) {
 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409", rec.Code)
+	}
+}
+
+func TestHandleGetLLMProfileMapsWrappedNotFound(t *testing.T) {
+	app := &fakeAdminApp{getErr: fmt.Errorf("wrapped: %w", apperrors.ErrLLMProfileNotFound)}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/llm-profiles/missing", nil)
+	req.SetPathValue("id", "missing")
+	rec := httptest.NewRecorder()
+	handler.HandleGetLLMProfile(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestHandleGetLLMProfileMapsUnknownErrorToInternalServerError(t *testing.T) {
+	app := &fakeAdminApp{getErr: errors.New("db down")}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/llm-profiles/missing", nil)
+	req.SetPathValue("id", "missing")
+	rec := httptest.NewRecorder()
+	handler.HandleGetLLMProfile(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
 	}
 }
 
@@ -144,5 +184,36 @@ func TestHandleCreatePersonaFallsBackToNameAsKey(t *testing.T) {
 	}
 	if app.lastPersona == nil || app.lastPersona.Name != "default" {
 		t.Fatalf("lastPersona = %#v, want name default", app.lastPersona)
+	}
+}
+
+func TestHandleActivatePersona(t *testing.T) {
+	app := &fakeAdminApp{}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/personas/default/activate", nil)
+	req.SetPathValue("name", "default")
+	rec := httptest.NewRecorder()
+	handler.HandleActivatePersona(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if app.lastPersonaActivate != "default" {
+		t.Fatalf("lastPersonaActivate = %q, want default", app.lastPersonaActivate)
+	}
+}
+
+func TestHandleActivatePersonaMapsNotFound(t *testing.T) {
+	app := &fakeAdminApp{activatePersonaErr: apperrors.ErrPersonaNotFound}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/personas/missing/activate", nil)
+	req.SetPathValue("name", "missing")
+	rec := httptest.NewRecorder()
+	handler.HandleActivatePersona(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 }

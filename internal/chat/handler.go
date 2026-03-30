@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -52,10 +53,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	personaName := h.app.GetDefaultPersonaName()
+	personaName := h.resolvePersonaName(r)
 	persona, ok := h.app.GetPersona(personaName)
 	if !ok || persona == nil {
-		_ = writeWSMessage(ctx, conn, WSMessage{Type: "error", Content: "default persona not found"}, nil)
+		_ = writeWSMessage(ctx, conn, WSMessage{Type: "error", Content: fmt.Sprintf("persona not found: %s", personaName)}, nil)
 		return
 	}
 
@@ -113,6 +114,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+func (h *Handler) resolvePersonaName(r *http.Request) string {
+	personaName := strings.TrimSpace(r.URL.Query().Get("persona"))
+	if personaName != "" {
+		return personaName
+	}
+	return h.app.GetDefaultPersonaName()
 }
 
 func writeWSMessage(ctx context.Context, conn *websocket.Conn, msg WSMessage, mu *sync.Mutex) error {

@@ -121,3 +121,21 @@ func TestSavePersonaAndDeletePersonaFile(t *testing.T) {
 		t.Fatalf("expected file removed, stat err = %v", err)
 	}
 }
+
+func TestSavePersonaRejectsUnsafeKey(t *testing.T) {
+	dir := t.TempDir()
+
+	err := SavePersona(dir, filepath.Join("..", "escape"), &Persona{Name: "Escape"})
+	if err == nil {
+		t.Fatal("SavePersona with unsafe key returned nil error")
+	}
+}
+
+func TestDeletePersonaFileRejectsUnsafeKey(t *testing.T) {
+	dir := t.TempDir()
+
+	err := DeletePersonaFile(dir, filepath.Join("..", "escape"))
+	if err == nil {
+		t.Fatal("DeletePersonaFile with unsafe key returned nil error")
+	}
+}

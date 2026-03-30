@@ -48,3 +48,4 @@ tmp/
 /docs/todo/
 /personas/*
 !/personas/default.yaml
+/.gocache/

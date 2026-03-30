@@ -7,16 +7,21 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
+	"github.com/longyisang/emoagent/internal/chat"
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/storage"
 	"github.com/longyisang/emoagent/internal/web"
 )
 
 type routeTestAdminApp struct {
-	profiles   []config.LLMProfile
-	active     *config.LLMProfile
-	lastActive string
+	profiles            []config.LLMProfile
+	active              *config.LLMProfile
+	lastActive          string
+	defaultKey          string
+	lastPersonaActivate string
 }
 
 func (a *routeTestAdminApp) ListLLMProfiles() ([]config.LLMProfile, error) {
@@ -59,7 +64,17 @@ func (a *routeTestAdminApp) CreatePersona(key string, p *config.Persona) error {
 }
 func (a *routeTestAdminApp) UpdatePersona(key string, p *config.Persona) error { return nil }
 func (a *routeTestAdminApp) DeletePersona(key string) error                    { return nil }
-func (a *routeTestAdminApp) GetDefaultPersonaName() string                     { return "default" }
+func (a *routeTestAdminApp) ActivatePersona(key string) error {
+	a.lastPersonaActivate = key
+	a.defaultKey = key
+	return nil
+}
+func (a *routeTestAdminApp) GetDefaultPersonaName() string {
+	if a.defaultKey == "" {
+		return "default"
+	}
+	return a.defaultKey
+}
 
 func TestRunAllowsStartupWithoutLLM(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -108,8 +123,9 @@ func TestGetActiveLLMProfileReturnsCopy(t *testing.T) {
 
 func TestRegisterRoutesLLMProfileDispatch(t *testing.T) {
 	adminApp := &routeTestAdminApp{
-		profiles: []config.LLMProfile{{Name: "default", Provider: "openai", Model: "gpt-4o"}},
-		active:   &config.LLMProfile{Name: "default", Provider: "openai", Model: "gpt-4o"},
+		profiles:   []config.LLMProfile{{Name: "default", Provider: "openai", Model: "gpt-4o"}},
+		active:     &config.LLMProfile{Name: "default", Provider: "openai", Model: "gpt-4o"},
+		defaultKey: "default",
 	}
 	api := web.NewAPIHandler(adminApp, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	mux := http.NewServeMux()
@@ -205,4 +221,107 @@ func TestRegisterRoutesLLMProfileDispatch(t *testing.T) {
 			t.Fatalf("status = %d, want 404", rec.Code)
 		}
 	})
+
+	t.Run("activate persona route dispatches correctly", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/personas/default/activate", nil)
+		rec := httptest.NewRecorder()
+
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		if adminApp.lastPersonaActivate != "default" {
+			t.Fatalf("lastPersonaActivate = %q, want default", adminApp.lastPersonaActivate)
+		}
+	})
+}
+
+func TestUpdateLLMProfileRebuildsClientWhenActiveClientIsNil(t *testing.T) {
+	t.Setenv("TEST_OPENAI_API_KEY", "test-key")
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if err := db.UpsertLLMProfile("default", "openai", "https://api.openai.com", "gpt-4o-mini", "", 128, 0.2, "TEST_OPENAI_API_KEY"); err != nil {
+		t.Fatalf("UpsertLLMProfile: %v", err)
+	}
+
+	a := &App{
+		Config: &config.Config{
+			LLM: config.LLMConfig{
+				Provider:    "openai",
+				BaseURL:     "https://api.openai.com",
+				Model:       "gpt-4o-mini",
+				MaxTokens:   128,
+				Temperature: 0.2,
+				APIKeyEnv:   "TEST_OPENAI_API_KEY",
+			},
+		},
+		DB:               db,
+		Logger:           logger,
+		ActiveLLMProfile: &config.LLMProfile{Name: "default", Provider: "openai", BaseURL: "https://api.openai.com", Model: "gpt-4o-mini", MaxTokens: 128, Temperature: 0.2, APIKeyEnv: "TEST_OPENAI_API_KEY"},
+		engine:           chat.NewEngine(chat.EngineConfig{DB: db, Logger: logger, Model: "gpt-4o-mini", MaxTokens: 128, Temperature: 0.2}),
+	}
+
+	err = a.UpdateLLMProfile("default", config.LLMProfile{
+		Provider:    "openai",
+		BaseURL:     "https://api.openai.com",
+		Model:       "gpt-4.1-mini",
+		MaxTokens:   256,
+		Temperature: 0.4,
+		APIKeyEnv:   "TEST_OPENAI_API_KEY",
+	})
+	if err != nil {
+		t.Fatalf("UpdateLLMProfile: %v", err)
+	}
+	if a.LLM == nil {
+		t.Fatal("UpdateLLMProfile did not rebuild missing active client")
+	}
+	if a.ActiveLLMProfile == nil || a.ActiveLLMProfile.Model != "gpt-4.1-mini" {
+		t.Fatalf("ActiveLLMProfile = %#v, want updated model", a.ActiveLLMProfile)
+	}
+}
+
+func TestActivatePersonaUpdatesRuntimeDefault(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	a := &App{
+		Config: &config.Config{
+			Personas: config.PersonasConfig{Default: "default"},
+		},
+		DB:     db,
+		Logger: logger,
+		Personas: map[string]*config.Persona{
+			"default": {Name: "Emo"},
+			"tami":    {Name: "Tami"},
+		},
+	}
+
+	if err := a.ActivatePersona("tami"); err != nil {
+		t.Fatalf("ActivatePersona: %v", err)
+	}
+	if got := a.GetDefaultPersonaName(); got != "tami" {
+		t.Fatalf("GetDefaultPersonaName = %q, want tami", got)
+	}
+
+	value, found, err := db.GetRuntimeConfig("personas.default")
+	if err != nil {
+		t.Fatalf("GetRuntimeConfig: %v", err)
+	}
+	if !found {
+		t.Fatal("personas.default not persisted")
+	}
+	if value != "tami" {
+		t.Fatalf("personas.default = %q, want tami", value)
+	}
 }

@@ -328,21 +328,21 @@
     <section class="topbar">
       <div class="brand">
         <h1>EmoAgent Admin</h1>
-        <p>LLM Profile 列表、编辑和激活，以及 Persona 管理。页面直接通过 fetch 调用后端 REST API。</p>
+        <p>Manage LLM profiles, active switching, and personas from one page.</p>
       </div>
       <div class="top-actions">
-        <a class="pill" href="/index.html">返回聊天页</a>
-        <a class="pill primary" href="/admin.html">管理页</a>
+        <a class="pill" href="/index.html">Open Chat</a>
+        <a class="pill primary" href="/admin.html">Admin</a>
       </div>
     </section>
 
     <section class="toolbar">
       <div class="toolbar-left">
-        <div class="status" id="status">准备加载</div>
-        <div class="hint" id="summary">LLM Profiles 和 Personas 载入后可直接编辑。</div>
+        <div class="status" id="status">Ready</div>
+        <div class="hint" id="summary">LLM Profiles and Personas can be managed here.</div>
       </div>
       <div class="toolbar-right">
-        <button class="btn ghost" id="refresh-all" type="button">刷新全部</button>
+        <button class="btn ghost" id="refresh-all" type="button">Refresh All</button>
       </div>
     </section>
 
@@ -351,9 +351,9 @@
         <div class="panel-head">
           <div class="section-title">
             <h2>LLM Profiles</h2>
-            <span id="llm-count">0 项</span>
+            <span id="llm-count">0 items</span>
           </div>
-          <p>选择一个 Profile 进行编辑，激活后会立即影响聊天页。</p>
+          <p>Select a profile to edit it. Activating a profile updates the chat runtime.</p>
         </div>
         <div class="panel-body">
           <div class="list-tools">
@@ -367,17 +367,17 @@
       <section class="panel">
         <div class="panel-head">
           <div class="section-title">
-            <h2 id="llm-title">LLM 编辑区</h2>
+            <h2 id="llm-title">LLM Editor</h2>
             <span id="llm-subtitle">未选择 Profile</span>
           </div>
-          <p>这里是单个 Profile 的完整编辑表单。保存后会调用 POST/PUT /api/llm-profiles。</p>
+          <p>Edit the selected profile here. Saving will create or update one LLM profile.</p>
         </div>
         <div class="panel-body">
           <form class="editor-grid" id="llm-form">
             <div class="form-card">
               <div class="section-title">
                 <h3>基础信息</h3>
-                <span>必填字段与活跃状态</span>
+                <span>Required fields and active state</span>
               </div>
               <div class="form-row two">
                 <div class="form-row">
@@ -452,23 +452,24 @@
         <div class="panel-head">
           <div class="section-title">
             <h2>Persona 管理</h2>
-            <span id="persona-count">0 项</span>
+            <span id="persona-count">0 items</span>
           </div>
-          <p>Persona 路径里的 {name} 按 key 处理，不和展示名混淆。</p>
+          <p>Persona API routes use the internal key. Display name is only used in the UI.</p>
         </div>
         <div class="panel-body">
           <div class="list-tools">
             <button class="btn primary" id="new-persona" type="button">New Persona</button>
+            <button class="btn ghost" id="persona-activate" type="button">Activate</button>
             <button class="btn ghost" id="reload-personas" type="button">Reload</button>
           </div>
           <div class="list" id="persona-list"></div>
-          <div class="empty" id="persona-empty" hidden>还没有载入 Persona。你可以创建新项，或刷新列表读取后端数据。</div>
+          <div class="empty" id="persona-empty" hidden>No personas loaded yet. Create one or refresh to load current data.</div>
           <div style="height:14px;"></div>
 
           <form class="editor-grid" id="persona-form">
             <div class="form-card">
               <div class="section-title">
-                <h3>Persona 编辑区</h3>
+                <h3>Persona Editor</h3>
                 <span id="persona-subtitle">未选择 Persona</span>
               </div>
                 <div class="form-row two">
@@ -529,9 +530,11 @@
     const llmListEl = document.getElementById('llm-list');
     const personaListEl = document.getElementById('persona-list');
     const personaEmptyEl = document.getElementById('persona-empty');
+    const personaActivateButtonEl = document.getElementById('persona-activate');
     const toastZone = document.getElementById('toast-zone');
     const llmForm = document.getElementById('llm-form');
     const personaForm = document.getElementById('persona-form');
+
     const llmFields = {
       id: document.getElementById('llm-id'),
       name: document.getElementById('llm-name'),
@@ -543,6 +546,7 @@
       max_tokens: document.getElementById('llm-max-tokens'),
       temperature: document.getElementById('llm-temperature'),
     };
+
     const personaFields = {
       key: document.getElementById('persona-key'),
       name: document.getElementById('persona-name'),
@@ -552,29 +556,42 @@
       system_prompt: document.getElementById('persona-system-prompt'),
       quirks: document.getElementById('persona-quirks'),
     };
+
     const state = {
       llmProfiles: [],
       activeLLMId: '',
       selectedLLMId: '',
       personas: [],
       selectedPersonaKey: '',
+      defaultPersonaKey: '',
     };
+
     const API = {
       llmProfiles: '/api/llm-profiles',
       llmProfile: (id) => `/api/llm-profiles/${encodeURIComponent(id)}`,
       llmActivate: (id) => `/api/llm-profiles/${encodeURIComponent(id)}/activate`,
       personas: '/api/personas',
       persona: (name) => `/api/personas/${encodeURIComponent(name)}`,
+      personaActivate: (name) => `/api/personas/${encodeURIComponent(name)}/activate`,
     };
 
-    function setStatus(text) { statusEl.textContent = text; }
-    function setSummary(text) { summaryEl.textContent = text; }
+    function setStatus(text) {
+      statusEl.textContent = text;
+    }
+
+    function setSummary(text) {
+      summaryEl.textContent = text;
+    }
+
     function txt(value, fallback = '') {
       if (value === undefined || value === null) return fallback;
       return String(value);
     }
-    function nameOf(item) { return txt(item?.name || item?.key || item?.id); }
-    function llmIdOf(item) { return txt(item?.id || item?.name); }
+
+    function llmIdOf(item) {
+      return txt(item?.id || item?.name);
+    }
+
     function escapeHTML(text) {
       return txt(text)
         .replaceAll('&', '&amp;')
@@ -583,19 +600,30 @@
         .replaceAll('"', '&quot;')
         .replaceAll("'", '&#39;');
     }
+
     function toast(message, kind = 'ok', detail = '') {
       const node = document.createElement('div');
       node.className = `toast ${kind}`;
       node.innerHTML = `${escapeHTML(message)}${detail ? `<span class="small">${escapeHTML(detail)}</span>` : ''}`;
       toastZone.appendChild(node);
-      setTimeout(() => { node.style.opacity = '0'; node.style.transform = 'translateY(8px)'; node.style.transition = 'opacity .2s ease, transform .2s ease'; }, 2400);
+      setTimeout(() => {
+        node.style.opacity = '0';
+        node.style.transform = 'translateY(8px)';
+        node.style.transition = 'opacity .2s ease, transform .2s ease';
+      }, 2400);
       setTimeout(() => node.remove(), 2850);
     }
+
     function parseMaybeJSON(value) {
       if (value === null || value === undefined || value === '') return null;
       if (typeof value !== 'string') return value;
-      try { return JSON.parse(value); } catch { return value; }
+      try {
+        return JSON.parse(value);
+      } catch {
+        return value;
+      }
     }
+
     function normalizeLLM(profile) {
       return {
         id: txt(profile?.id || profile?.name),
@@ -609,6 +637,7 @@
         temperature: Number(profile?.temperature ?? 0),
       };
     }
+
     function normalizePersona(persona) {
       return {
         key: txt(persona?.key || persona?.id || persona?.name),
@@ -618,10 +647,11 @@
         greeting: txt(persona?.greeting),
         system_prompt: txt(persona?.system_prompt || persona?.systemPrompt),
         quirks: Array.isArray(persona?.quirks)
-          ? persona.quirks.map((q) => txt(q)).filter(Boolean)
-          : txt(persona?.quirks).split(/\r?\n/).map((q) => q.trim()).filter(Boolean),
+          ? persona.quirks.map((item) => txt(item)).filter(Boolean)
+          : txt(persona?.quirks).split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
       };
     }
+
     async function request(url, options = {}) {
       const init = { credentials: 'same-origin', headers: {}, ...options };
       if (init.body && typeof init.body === 'object' && !(init.body instanceof FormData)) {
@@ -630,12 +660,21 @@
       }
       const response = await fetch(url, init);
       const type = response.headers.get('content-type') || '';
-      const payload = type.includes('application/json') ? await response.json() : parseMaybeJSON(await response.text());
+      const payload = type.includes('application/json')
+        ? await response.json()
+        : parseMaybeJSON(await response.text());
       if (!response.ok) {
         throw new Error((payload && (payload.error || payload.message)) || response.statusText || 'Request failed');
       }
       return payload;
     }
+
+    function syncPersonaActions() {
+      const selected = state.selectedPersonaKey.trim();
+      const canActivate = selected !== '' && selected !== state.defaultPersonaKey;
+      personaActivateButtonEl.disabled = !canActivate;
+    }
+
     function clearLLMForm() {
       llmForm.reset();
       llmFields.id.value = '';
@@ -650,10 +689,11 @@
       llmFields.temperature.value = '';
       state.selectedLLMId = '';
       llmForm.dataset.mode = 'create';
-      llmTitleEl.textContent = 'LLM 编辑区';
-      llmSubtitleEl.textContent = '新建 Profile';
+      llmTitleEl.textContent = 'LLM Editor';
+      llmSubtitleEl.textContent = 'Create a new profile';
       renderLLMList();
     }
+
     function fillLLMForm(profile) {
       const data = normalizeLLM(profile);
       llmFields.id.value = data.id;
@@ -667,17 +707,25 @@
       llmFields.max_tokens.value = data.max_tokens || '';
       llmFields.temperature.value = Number.isFinite(data.temperature) ? String(data.temperature) : '';
       llmForm.dataset.mode = state.selectedLLMId ? 'edit' : 'create';
-      llmTitleEl.textContent = data.id ? `Editing: ${data.id}` : 'LLM 编辑区';
-      llmSubtitleEl.textContent = state.activeLLMId === data.id ? '当前活跃 Profile' : (data.id ? '非活跃 Profile' : '新建 Profile');
+      llmTitleEl.textContent = data.id ? `Editing: ${data.id}` : 'LLM Editor';
+      llmSubtitleEl.textContent = state.activeLLMId === data.id
+        ? 'Currently active profile'
+        : (data.id ? 'Inactive profile' : 'Create a new profile');
     }
+
     function clearPersonaForm() {
       personaForm.reset();
-      Object.values(personaFields).forEach((field) => { field.value = ''; field.readOnly = false; });
+      Object.values(personaFields).forEach((field) => {
+        field.value = '';
+        field.readOnly = false;
+      });
       state.selectedPersonaKey = '';
       personaForm.dataset.mode = 'create';
-      personaSubtitleEl.textContent = '新建 Persona';
+      personaSubtitleEl.textContent = 'Create a new persona';
       renderPersonaList();
+      syncPersonaActions();
     }
+
     function fillPersonaForm(persona) {
       const data = normalizePersona(persona);
       personaFields.key.value = data.key;
@@ -690,13 +738,15 @@
       personaFields.system_prompt.value = data.system_prompt;
       personaFields.quirks.value = data.quirks.join('\n');
       personaForm.dataset.mode = state.selectedPersonaKey ? 'edit' : 'create';
-      personaSubtitleEl.textContent = data.name ? `Editing: ${data.name}` : '新建 Persona';
+      personaSubtitleEl.textContent = data.key ? `Editing: ${data.key}` : 'Create a new persona';
+      syncPersonaActions();
     }
+
     function renderLLMList() {
       llmListEl.innerHTML = '';
-      llmCountEl.textContent = `${state.llmProfiles.length} 项`;
+      llmCountEl.textContent = `${state.llmProfiles.length} items`;
       if (!state.llmProfiles.length) {
-        llmListEl.innerHTML = '<div class="empty">暂无 LLM Profile。点击 New Profile 创建第一项。</div>';
+        llmListEl.innerHTML = '<div class="empty">No LLM profiles yet. Click New Profile to create the first one.</div>';
         return;
       }
       for (const profile of state.llmProfiles) {
@@ -719,12 +769,14 @@
         llmListEl.appendChild(button);
       }
     }
+
     function renderPersonaList() {
       personaListEl.innerHTML = '';
-      personaCountEl.textContent = `${state.personas.length} 项`;
+      personaCountEl.textContent = `${state.personas.length} items`;
       personaEmptyEl.hidden = state.personas.length > 0;
       if (!state.personas.length) {
-        personaListEl.innerHTML = '<div class="empty">暂无 Persona。点击 New Persona 创建。</div>';
+        personaListEl.innerHTML = '<div class="empty">No personas yet. Click New Persona to create one.</div>';
+        syncPersonaActions();
         return;
       }
       for (const item of state.personas) {
@@ -734,8 +786,8 @@
         button.className = `list-item ${persona.key === state.selectedPersonaKey ? 'active' : ''}`;
         button.innerHTML = `
           <div class="item-top">
-              <div class="item-title">${escapeHTML(persona.name || persona.key || '(untitled)')}</div>
-              <span class="badge ${persona.key === 'default' ? 'ok' : 'neutral'}">${persona.key === 'default' ? 'default' : 'persona'}</span>
+            <div class="item-title">${escapeHTML(persona.name || persona.key || '(untitled)')}</div>
+            <span class="badge ${persona.key === state.defaultPersonaKey ? 'ok' : 'neutral'}">${persona.key === state.defaultPersonaKey ? 'active' : 'persona'}</span>
           </div>
           <div class="item-sub">${escapeHTML(persona.description || 'No description')}</div>
           <div class="item-meta">
@@ -746,7 +798,9 @@
         button.addEventListener('click', () => selectPersona(persona.key));
         personaListEl.appendChild(button);
       }
+      syncPersonaActions();
     }
+
     function llmPayloadFromForm() {
       return {
         id: llmFields.id.value.trim(),
@@ -760,6 +814,7 @@
         temperature: Number(llmFields.temperature.value || 0),
       };
     }
+
     function personaPayloadFromForm() {
       return {
         key: personaFields.key.value.trim(),
@@ -771,18 +826,25 @@
         quirks: personaFields.quirks.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
       };
     }
+
     function validateLLM(payload) {
       if (!payload.id) throw new Error('ID is required');
       if (!payload.name) throw new Error('Name is required');
       if (!payload.provider) throw new Error('Provider is required');
       if (!payload.base_url) throw new Error('Base URL is required');
       if (!payload.model) throw new Error('Model is required');
-      if (!Number.isFinite(payload.max_tokens) || payload.max_tokens <= 0) throw new Error('Max Tokens must be greater than 0');
-      if (!Number.isFinite(payload.temperature) || payload.temperature < 0 || payload.temperature > 2) throw new Error('Temperature must be between 0 and 2');
+      if (!Number.isFinite(payload.max_tokens) || payload.max_tokens <= 0) {
+        throw new Error('Max Tokens must be greater than 0');
+      }
+      if (!Number.isFinite(payload.temperature) || payload.temperature < 0 || payload.temperature > 2) {
+        throw new Error('Temperature must be between 0 and 2');
+      }
     }
+
     function validatePersona(payload) {
       if (!payload.key) throw new Error('Persona key is required');
     }
+
     async function loadLLMProfiles() {
       setStatus('Loading LLM profiles...');
       const payload = await request(API.llmProfiles);
@@ -803,26 +865,39 @@
         const current = state.llmProfiles.find((item) => llmIdOf(item) === state.selectedLLMId);
         if (current) fillLLMForm(current);
       }
-      setSummary(`LLM Profiles: ${state.llmProfiles.length}，活跃: ${state.activeLLMId || 'none'}。`);
+      setSummary(`LLM Profiles: ${state.llmProfiles.length}, active: ${state.activeLLMId || 'none'}`);
       setStatus('LLM profiles loaded');
     }
+
     async function loadPersonas() {
       setStatus('Loading personas...');
       const payload = await request(API.personas);
       const data = payload || {};
       const rawPersonas = data.personas ?? data.items ?? data;
+      state.defaultPersonaKey = txt(data.default);
       state.personas = Array.isArray(rawPersonas)
         ? rawPersonas
         : rawPersonas && typeof rawPersonas === 'object'
           ? Object.values(rawPersonas)
           : [];
       renderPersonaList();
-      if (!state.selectedPersonaKey && state.personas.length) {
-        await selectPersona(normalizePersona(state.personas[0]).key, false);
+
+      const currentKeys = new Set(state.personas.map((item) => normalizePersona(item).key));
+      const selectedExists = state.selectedPersonaKey && currentKeys.has(state.selectedPersonaKey);
+      let fallbackKey = state.defaultPersonaKey;
+      if (!fallbackKey && state.personas.length) {
+        fallbackKey = normalizePersona(state.personas[0]).key;
       }
-      setSummary(`LLM Profiles: ${state.llmProfiles.length}，Personas: ${state.personas.length}。`);
+      if ((!selectedExists || !state.selectedPersonaKey) && fallbackKey) {
+        await selectPersona(fallbackKey, false);
+      } else if (state.selectedPersonaKey) {
+        const current = state.personas.find((item) => normalizePersona(item).key === state.selectedPersonaKey);
+        if (current) fillPersonaForm(current);
+      }
+      setSummary(`LLM Profiles: ${state.llmProfiles.length}, Personas: ${state.personas.length}, active persona: ${state.defaultPersonaKey || 'none'}`);
       setStatus('Personas loaded');
     }
+
     async function selectLLMProfile(id, fetchDetail = true) {
       if (!id) return;
       state.selectedLLMId = id;
@@ -837,11 +912,12 @@
         }
         setStatus(`Selected LLM profile: ${id}`);
       } catch (error) {
-        toast('无法加载 LLM Profile', 'err', error.message);
+        toast('Failed to load LLM profile', 'err', error.message);
         setStatus('LLM profile load failed');
       }
       renderLLMList();
     }
+
     async function selectPersona(key, fetchDetail = true) {
       if (!key) return;
       state.selectedPersonaKey = key;
@@ -856,11 +932,27 @@
         }
         setStatus(`Selected persona: ${key}`);
       } catch (error) {
-        toast('无法加载 Persona', 'err', error.message);
+        toast('Failed to load persona', 'err', error.message);
         setStatus('Persona load failed');
       }
       renderPersonaList();
+      syncPersonaActions();
     }
+
+    async function activatePersona() {
+      const key = state.selectedPersonaKey || personaFields.key.value.trim();
+      if (!key || key === state.defaultPersonaKey) return;
+      if (!confirm(`Activate Persona "${key}"? Returning to chat will start a new conversation with it.`)) return;
+      try {
+        await request(API.personaActivate(key), { method: 'POST' });
+        toast('Persona activated', 'ok', key);
+        await loadPersonas();
+        await selectPersona(key, false);
+      } catch (error) {
+        toast('Failed to activate Persona', 'err', error.message);
+      }
+    }
+
     async function saveLLMProfile(event) {
       event.preventDefault();
       const payload = llmPayloadFromForm();
@@ -871,39 +963,44 @@
           method: editingExisting ? 'PUT' : 'POST',
           body: payload,
         });
-        toast('LLM Profile 已保存', 'ok', payload.id);
+        toast('LLM profile saved', 'ok', payload.id);
         await loadLLMProfiles();
         await selectLLMProfile(payload.id, true);
       } catch (error) {
-        toast('保存 LLM Profile 失败', 'err', error.message);
+        toast('Failed to save LLM profile', 'err', error.message);
       }
     }
+
     async function activateLLMProfile() {
       const id = llmFields.id.value.trim();
       if (!id) return;
       try {
         await request(API.llmActivate(id), { method: 'POST' });
-        toast('Profile 已激活', 'ok', id);
+        toast('Profile activated', 'ok', id);
         await loadLLMProfiles();
         await selectLLMProfile(id, false);
       } catch (error) {
-        toast('激活失败', 'err', error.message);
+        toast('Failed to activate profile', 'err', error.message);
       }
     }
+
     async function deleteLLMProfile() {
       const id = llmFields.id.value.trim();
       if (!id) return;
       if (!confirm(`Delete LLM Profile "${id}"?`)) return;
       try {
         await request(API.llmProfile(id), { method: 'DELETE' });
-        toast('Profile 已删除', 'ok', id);
+        toast('Profile deleted', 'ok', id);
         clearLLMForm();
         await loadLLMProfiles();
-        if (state.llmProfiles.length) await selectLLMProfile(llmIdOf(state.llmProfiles[0]), false);
+        if (state.llmProfiles.length) {
+          await selectLLMProfile(llmIdOf(state.llmProfiles[0]), false);
+        }
       } catch (error) {
-        toast('删除失败', 'err', error.message);
+        toast('Failed to delete profile', 'err', error.message);
       }
     }
+
     async function savePersona(event) {
       event.preventDefault();
       const payload = personaPayloadFromForm();
@@ -914,28 +1011,31 @@
           method: editingExisting ? 'PUT' : 'POST',
           body: payload,
         });
-        toast('Persona 已保存', 'ok', payload.name);
+        toast('Persona saved', 'ok', payload.name || payload.key);
         await loadPersonas();
         await selectPersona(payload.key, true);
       } catch (error) {
-        toast('保存 Persona 失败', 'err', error.message);
+        toast('Failed to save Persona', 'err', error.message);
       }
     }
+
     async function deletePersona() {
       const key = personaFields.key.value.trim();
-      const name = key;
       if (!key) return;
       if (!confirm(`Delete Persona "${key}"?`)) return;
       try {
         await request(API.persona(key), { method: 'DELETE' });
-        toast('Persona 已删除', 'ok', name);
+        toast('Persona deleted', 'ok', key);
         clearPersonaForm();
         await loadPersonas();
-        if (state.personas.length) await selectPersona(normalizePersona(state.personas[0]).key, false);
+        if (state.personas.length) {
+          await selectPersona(normalizePersona(state.personas[0]).key, false);
+        }
       } catch (error) {
-        toast('删除 Persona 失败', 'err', error.message);
+        toast('Failed to delete Persona', 'err', error.message);
       }
     }
+
     function autoGrow(textarea) {
       const resize = () => {
         textarea.style.height = 'auto';
@@ -944,13 +1044,14 @@
       textarea.addEventListener('input', resize);
       resize();
     }
+
     async function refreshAll() {
       try {
         setStatus('Refreshing...');
         await Promise.all([loadLLMProfiles(), loadPersonas()]);
-        toast('数据已刷新', 'ok');
+        toast('Data refreshed', 'ok');
       } catch (error) {
-        toast('刷新失败', 'err', error.message);
+        toast('Failed to refresh data', 'err', error.message);
         setStatus('Refresh failed');
       }
     }
@@ -958,8 +1059,15 @@
     document.getElementById('refresh-all').addEventListener('click', refreshAll);
     document.getElementById('reload-profiles').addEventListener('click', loadLLMProfiles);
     document.getElementById('reload-personas').addEventListener('click', loadPersonas);
-    document.getElementById('new-profile').addEventListener('click', () => { clearLLMForm(); llmFields.id.focus(); });
-    document.getElementById('new-persona').addEventListener('click', () => { clearPersonaForm(); personaFields.key.focus(); });
+    document.getElementById('new-profile').addEventListener('click', () => {
+      clearLLMForm();
+      llmFields.id.focus();
+    });
+    document.getElementById('new-persona').addEventListener('click', () => {
+      clearPersonaForm();
+      personaFields.key.focus();
+    });
+    document.getElementById('persona-activate').addEventListener('click', activatePersona);
     document.getElementById('llm-activate').addEventListener('click', activateLLMProfile);
     document.getElementById('llm-delete').addEventListener('click', deleteLLMProfile);
     document.getElementById('persona-delete').addEventListener('click', deletePersona);
@@ -977,6 +1085,7 @@
         }
       }
     });
+
     clearLLMForm();
     clearPersonaForm();
     refreshAll();
