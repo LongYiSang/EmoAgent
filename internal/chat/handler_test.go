@@ -12,17 +12,22 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/storage"
 )
 
 type fakeConversationEngine struct {
-	startPersona string
-	sessionID    string
-	sendReply    string
-	sendErr      error
-	sendSession  string
-	sendPersona  *config.Persona
-	sendContent  string
-	deltas       []string
+	startPersona  string
+	resumeID      string
+	resumeOK      bool
+	resumePersona string
+	sessionID     string
+	sendReply     string
+	sendErr       error
+	sendSession   string
+	sendPersona   *config.Persona
+	sendContent   string
+	deltas        []string
+	history       []storage.MessageRecord
 }
 
 func (f *fakeConversationEngine) StartSession(_ context.Context, personaName string) (string, error) {
@@ -33,6 +38,18 @@ func (f *fakeConversationEngine) StartSession(_ context.Context, personaName str
 	return f.sessionID, nil
 }
 
+func (f *fakeConversationEngine) ResumeSession(_ context.Context, sessionID string, personaName string) (string, bool, error) {
+	f.resumeID = sessionID
+	f.resumePersona = personaName
+	if f.resumeOK {
+		if f.sessionID == "" {
+			f.sessionID = sessionID
+		}
+		return f.sessionID, true, nil
+	}
+	return "", false, nil
+}
+
 func (f *fakeConversationEngine) SendMessage(_ context.Context, sessionID string, persona *config.Persona, userContent string, cb func(delta string)) (string, error) {
 	f.sendSession = sessionID
 	f.sendPersona = persona
@@ -41,6 +58,13 @@ func (f *fakeConversationEngine) SendMessage(_ context.Context, sessionID string
 		cb(delta)
 	}
 	return f.sendReply, f.sendErr
+}
+
+func (f *fakeConversationEngine) GetHistory(_ context.Context, sessionID string, limit int) ([]storage.MessageRecord, error) {
+	if len(f.history) <= limit || limit <= 0 {
+		return append([]storage.MessageRecord(nil), f.history...), nil
+	}
+	return append([]storage.MessageRecord(nil), f.history[len(f.history)-limit:]...), nil
 }
 
 type fakeAppProvider struct {
@@ -60,12 +84,25 @@ func (f *fakeAppProvider) GetDefaultPersonaName() string {
 	return f.defaultPersona
 }
 
-func TestHandlerSendsGreetingOnConnect(t *testing.T) {
+func TestHandlerSendsSessionReadyAndGreetingOnNewSession(t *testing.T) {
 	handler, _ := newTestHandler()
 	conn := dialTestWS(t, handler)
 	defer conn.Close(websocket.StatusNormalClosure, "bye")
 
 	var msg WSMessage
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(session_ready): %v", err)
+	}
+	if msg.Type != "session_ready" {
+		t.Fatalf("Type = %q, want session_ready", msg.Type)
+	}
+	if msg.SessionID != "session-test" {
+		t.Fatalf("SessionID = %q, want session-test", msg.SessionID)
+	}
+	if !msg.IsNew {
+		t.Fatal("IsNew = false, want true")
+	}
+
 	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
 		t.Fatalf("Read(greeting): %v", err)
 	}
@@ -85,6 +122,10 @@ func TestHandlerStreamsAssistantResponse(t *testing.T) {
 	conn := dialTestWS(t, handler)
 	defer conn.Close(websocket.StatusNormalClosure, "bye")
 
+	var ready WSMessage
+	if err := wsjson.Read(context.Background(), conn, &ready); err != nil {
+		t.Fatalf("Read(session_ready): %v", err)
+	}
 	var greeting WSMessage
 	if err := wsjson.Read(context.Background(), conn, &greeting); err != nil {
 		t.Fatalf("Read(greeting): %v", err)
@@ -130,6 +171,10 @@ func TestHandlerRepliesToPing(t *testing.T) {
 	conn := dialTestWS(t, handler)
 	defer conn.Close(websocket.StatusNormalClosure, "bye")
 
+	var ready WSMessage
+	if err := wsjson.Read(context.Background(), conn, &ready); err != nil {
+		t.Fatalf("Read(session_ready): %v", err)
+	}
 	var greeting WSMessage
 	if err := wsjson.Read(context.Background(), conn, &greeting); err != nil {
 		t.Fatalf("Read(greeting): %v", err)
@@ -162,6 +207,12 @@ func TestHandlerUsesRequestedPersonaFromQuery(t *testing.T) {
 
 	var msg WSMessage
 	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(session_ready): %v", err)
+	}
+	if msg.Persona != "neko" {
+		t.Fatalf("Persona = %q, want neko", msg.Persona)
+	}
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
 		t.Fatalf("Read(greeting): %v", err)
 	}
 	if msg.Content != "Meow hello" {
@@ -179,6 +230,9 @@ func TestHandlerFallsBackToDefaultPersona(t *testing.T) {
 	defer conn.Close(websocket.StatusNormalClosure, "bye")
 
 	var msg WSMessage
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(session_ready): %v", err)
+	}
 	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
 		t.Fatalf("Read(greeting): %v", err)
 	}
@@ -210,6 +264,42 @@ func TestHandlerReturnsErrorWhenRequestedPersonaMissing(t *testing.T) {
 	}
 	if !strings.Contains(msg.Content, "persona not found") {
 		t.Fatalf("Content = %q, want persona not found", msg.Content)
+	}
+}
+
+func TestHandlerRestoresHistoryWithoutGreetingWhenSessionResumes(t *testing.T) {
+	handler, engine := newTestHandler()
+	engine.resumeOK = true
+	engine.sessionID = "session-restored"
+	engine.history = []storage.MessageRecord{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "hi there"},
+	}
+
+	conn := dialTestWS(t, handler, "/ws?persona=default&session_id=session-restored")
+	defer conn.Close(websocket.StatusNormalClosure, "bye")
+
+	var msg WSMessage
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(session_ready): %v", err)
+	}
+	if msg.Type != "session_ready" || msg.IsNew {
+		t.Fatalf("session_ready = %#v, want existing session", msg)
+	}
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(history): %v", err)
+	}
+	if msg.Type != "history" {
+		t.Fatalf("Type = %q, want history", msg.Type)
+	}
+	if len(msg.Messages) != 2 {
+		t.Fatalf("len(Messages) = %d, want 2", len(msg.Messages))
+	}
+	if msg.Messages[0].Content != "hello" || msg.Messages[1].Content != "hi there" {
+		t.Fatalf("Messages = %#v, want restored history", msg.Messages)
+	}
+	if engine.resumeID != "session-restored" {
+		t.Fatalf("resumeID = %q, want session-restored", engine.resumeID)
 	}
 }
 

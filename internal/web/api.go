@@ -1,15 +1,18 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/longyisang/emoagent/internal/apperrors"
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/storage"
 )
 
 // AdminApp exposes the management operations needed by the admin API.
@@ -28,6 +31,10 @@ type AdminApp interface {
 	DeletePersona(key string) error
 	ActivatePersona(key string) error
 	GetDefaultPersonaName() string
+	ListSessions(ctx context.Context, persona string, limit int) ([]storage.SessionSummary, error)
+	GetLatestSession(ctx context.Context, persona string) (*storage.SessionSummary, error)
+	GetSessionDetail(ctx context.Context, id string) (*storage.SessionRecord, []storage.MessageRecord, error)
+	DeleteSession(ctx context.Context, id string) error
 }
 
 type APIHandler struct {
@@ -304,6 +311,63 @@ func (h *APIHandler) HandleActivatePersona(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+func (h *APIHandler) HandleListSessions(w http.ResponseWriter, r *http.Request) {
+	persona := strings.TrimSpace(r.URL.Query().Get("persona"))
+	limit := 20
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid limit")
+			return
+		}
+		limit = parsed
+	}
+
+	sessions, err := h.app.ListSessions(r.Context(), persona, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list sessions")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"sessions": sessions})
+}
+
+func (h *APIHandler) HandleGetLatestSession(w http.ResponseWriter, r *http.Request) {
+	persona := strings.TrimSpace(r.URL.Query().Get("persona"))
+	session, err := h.app.GetLatestSession(r.Context(), persona)
+	if err != nil {
+		h.writeSessionError(w, err)
+		return
+	}
+	if session == nil {
+		writeError(w, http.StatusNotFound, "no sessions found")
+		return
+	}
+	writeJSON(w, http.StatusOK, session)
+}
+
+func (h *APIHandler) HandleGetSession(w http.ResponseWriter, r *http.Request) {
+	session, messages, err := h.app.GetSessionDetail(r.Context(), r.PathValue("id"))
+	if err != nil {
+		h.writeSessionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"id":         session.ID,
+		"persona":    session.Persona,
+		"created_at": session.CreatedAt,
+		"updated_at": session.UpdatedAt,
+		"messages":   messages,
+	})
+}
+
+func (h *APIHandler) HandleDeleteSession(w http.ResponseWriter, r *http.Request) {
+	if err := h.app.DeleteSession(r.Context(), r.PathValue("id")); err != nil {
+		h.writeSessionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 func (h *APIHandler) writeLLMProfileError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, apperrors.ErrLLMProfileExists):
@@ -328,6 +392,15 @@ func (h *APIHandler) writePersonaError(w http.ResponseWriter, err error) {
 	case errors.Is(err, apperrors.ErrCannotDeleteDefault),
 		isPersonaValidationError(err):
 		writeError(w, http.StatusBadRequest, err.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, "internal server error")
+	}
+}
+
+func (h *APIHandler) writeSessionError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, apperrors.ErrSessionNotFound):
+		writeError(w, http.StatusNotFound, err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, "internal server error")
 	}

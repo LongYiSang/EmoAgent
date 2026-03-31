@@ -8,6 +8,7 @@
     :root {
       --bg: #f4efe7;
       --panel: rgba(255,255,255,.78);
+      --panel-strong: rgba(255,255,255,.92);
       --text: #2f241f;
       --muted: #7e675e;
       --accent: #db6f4d;
@@ -31,8 +32,12 @@
       place-items: center;
       padding: 24px;
     }
+    button,
+    textarea {
+      font: inherit;
+    }
     .shell {
-      width: min(920px, 100%);
+      width: min(1180px, 100%);
       height: min(780px, calc(100vh - 48px));
       background: var(--panel);
       backdrop-filter: blur(18px);
@@ -40,10 +45,149 @@
       border-radius: 28px;
       box-shadow: var(--shadow);
       display: grid;
-      grid-template-rows: auto 1fr auto;
+      grid-template-columns: 290px minmax(0, 1fr);
+      overflow: hidden;
+      min-height: 0;
+    }
+    .sidebar {
+      border-right: 1px solid var(--border);
+      background: rgba(255,255,255,.58);
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      min-height: 0;
+    }
+    .sidebar-head,
+    .sidebar-actions {
+      padding: 18px;
+      border-bottom: 1px solid var(--border);
+    }
+    .sidebar-head h1 {
+      margin: 0;
+      font-size: 21px;
+      font-weight: 700;
+    }
+    .sidebar-head p {
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .sidebar-actions {
+      display: grid;
+      gap: 10px;
+    }
+    .actions-row {
+      display: flex;
+      gap: 10px;
+    }
+    .ghost-button,
+    .primary-button,
+    .session-delete,
+    .menu-button {
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      cursor: pointer;
+      transition: transform .16s ease, opacity .16s ease, border-color .16s ease;
+    }
+    .ghost-button,
+    .menu-button {
+      background: rgba(255,255,255,.88);
+      color: var(--text);
+    }
+    .primary-button {
+      background: linear-gradient(135deg, #db6f4d, #c95735);
+      color: white;
+      border-color: transparent;
+    }
+    .ghost-button,
+    .primary-button,
+    .menu-button {
+      min-height: 44px;
+      padding: 0 14px;
+      font-weight: 700;
+    }
+    .ghost-button:hover,
+    .primary-button:hover,
+    .session-delete:hover,
+    .menu-button:hover {
+      transform: translateY(-1px);
+    }
+    .session-delete {
+      width: 34px;
+      height: 34px;
+      background: rgba(255,255,255,.9);
+      color: #b44b3b;
+    }
+    .menu-button {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      width: 44px;
+      padding: 0;
+    }
+    .session-list {
+      padding: 16px;
+      overflow-y: auto;
+      display: grid;
+      gap: 10px;
+      align-content: start;
+    }
+    .session-item,
+    .session-empty {
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      background: rgba(255,255,255,.78);
+    }
+    .session-item {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      padding: 14px;
+      cursor: pointer;
+      text-align: left;
+      transition: transform .16s ease, border-color .16s ease, background .16s ease;
+    }
+    .session-item:hover {
+      transform: translateY(-1px);
+      border-color: rgba(219,111,77,.28);
+    }
+    .session-item.active {
+      border-color: rgba(219,111,77,.35);
+      background: linear-gradient(180deg, rgba(255,244,236,.95), rgba(255,255,255,.94));
+    }
+    .session-main {
+      min-width: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      min-height: 0;
+      height: 100%;
       overflow: hidden;
     }
-    header {
+    .session-title {
+      font-size: 14px;
+      font-weight: 700;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .session-meta,
+    .session-preview,
+    .session-empty {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+    .session-preview {
+      margin-top: 6px;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
+    .session-empty {
+      padding: 18px;
+    }
+    .chat-header {
       padding: 22px 24px 18px;
       border-bottom: 1px solid var(--border);
       display: flex;
@@ -51,7 +195,7 @@
       align-items: center;
       gap: 16px;
     }
-    h1 {
+    .chat-header h2 {
       margin: 0;
       font-size: 20px;
       font-weight: 700;
@@ -60,6 +204,13 @@
       margin-top: 6px;
       font-size: 13px;
       color: var(--muted);
+    }
+    .header-tools {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
     }
     .status {
       padding: 8px 12px;
@@ -84,22 +235,18 @@
     .admin-link:hover {
       border-color: rgba(219,111,77,.28);
     }
-    .header-tools {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-    }
     .messages {
       padding: 24px;
       overflow-y: auto;
       display: flex;
       flex-direction: column;
       gap: 14px;
+      min-height: 0;
+      height: 100%;
+      overscroll-behavior: contain;
     }
     .message {
-      max-width: min(78%, 640px);
+      max-width: min(78%, 680px);
       padding: 14px 16px;
       border-radius: 20px;
       line-height: 1.55;
@@ -132,6 +279,7 @@
       gap: 12px;
       align-items: end;
       background: rgba(255,255,255,.55);
+      min-height: 0;
     }
     textarea {
       width: 100%;
@@ -141,7 +289,6 @@
       border-radius: 18px;
       border: 1px solid var(--border);
       padding: 15px 16px;
-      font: inherit;
       color: inherit;
       background: rgba(255,255,255,.82);
       outline: none;
@@ -150,75 +297,133 @@
       border-color: rgba(219,111,77,.45);
       box-shadow: 0 0 0 4px rgba(219,111,77,.12);
     }
-    button {
+    .send-button {
       height: 56px;
       border: 0;
       border-radius: 18px;
       padding: 0 22px;
-      font: inherit;
       font-weight: 700;
       color: white;
       background: linear-gradient(135deg, #db6f4d, #c95735);
       cursor: pointer;
       transition: transform .16s ease, opacity .16s ease;
     }
-    button:disabled,
-    textarea:disabled {
+    .send-button:disabled,
+    textarea:disabled,
+    .ghost-button:disabled,
+    .primary-button:disabled,
+    .session-delete:disabled {
       cursor: not-allowed;
       opacity: .65;
+      transform: none;
     }
-    button:not(:disabled):hover { transform: translateY(-1px); }
     @keyframes rise {
       from { opacity: 0; transform: translateY(8px); }
       to { opacity: 1; transform: translateY(0); }
     }
-    @media (max-width: 720px) {
+    @media (max-width: 960px) {
       body { padding: 0; }
       .shell {
         width: 100%;
         height: 100vh;
         border-radius: 0;
+        grid-template-columns: 1fr;
       }
+      .sidebar {
+        position: fixed;
+        inset: 0 auto 0 0;
+        width: min(320px, 86vw);
+        z-index: 20;
+        transform: translateX(-100%);
+        transition: transform .22s ease;
+        box-shadow: 18px 0 32px rgba(47,36,31,.12);
+      }
+      .sidebar.open {
+        transform: translateX(0);
+      }
+      .menu-button {
+        display: inline-flex;
+      }
+    }
+    @media (max-width: 720px) {
       .message { max-width: 88%; }
       form { grid-template-columns: 1fr; }
-      button { width: 100%; }
+      .send-button { width: 100%; }
+      .actions-row {
+        display: grid;
+        grid-template-columns: 1fr;
+      }
     }
   </style>
 </head>
 <body>
   <main class="shell">
-    <header>
-      <div>
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-head">
         <h1>EmoAgent</h1>
-        <div class="sub" id="subtitle">P3 conversation loop</div>
+        <p id="sidebar-persona">Persona: loading...</p>
       </div>
-      <div class="header-tools">
-        <a class="admin-link" href="/admin.html">Admin</a>
-        <div class="status" id="status">Connecting...</div>
+      <div class="sidebar-actions">
+        <div class="actions-row">
+          <button class="primary-button" id="new-chat" type="button">+ New Chat</button>
+          <button class="ghost-button" id="refresh-sessions" type="button">Refresh</button>
+        </div>
       </div>
-    </header>
-    <section class="messages" id="messages"></section>
-    <form id="composer">
-      <textarea id="input" placeholder="Enter 输入 Shift+Enter 换行"></textarea>
-      <button id="send" type="submit">Send</button>
-    </form>
+      <section class="session-list" id="session-list">
+        <div class="session-empty">正在加载会话列表...</div>
+      </section>
+    </aside>
+
+    <section class="session-main">
+      <header class="chat-header">
+        <div>
+          <h2>EmoAgent</h2>
+          <div class="sub" id="subtitle">P3 conversation loop</div>
+        </div>
+        <div class="header-tools">
+          <button class="menu-button" id="toggle-sidebar" type="button">≡</button>
+          <a class="admin-link" href="/admin.html">Admin</a>
+          <div class="status" id="status">Connecting...</div>
+        </div>
+      </header>
+      <section class="messages" id="messages"></section>
+      <form id="composer">
+        <textarea id="input" placeholder="Enter 输入 Shift+Enter 换行"></textarea>
+        <button class="send-button" id="send" type="submit">Send</button>
+      </form>
+    </section>
   </main>
 
   <script>
     const statusEl = document.getElementById('status');
     const subtitleEl = document.getElementById('subtitle');
+    const sidebarPersonaEl = document.getElementById('sidebar-persona');
     const messagesEl = document.getElementById('messages');
+    const sessionListEl = document.getElementById('session-list');
+    const sidebarEl = document.getElementById('sidebar');
     const form = document.getElementById('composer');
     const input = document.getElementById('input');
     const send = document.getElementById('send');
+    const newChatButton = document.getElementById('new-chat');
+    const refreshSessionsButton = document.getElementById('refresh-sessions');
+    const toggleSidebarButton = document.getElementById('toggle-sidebar');
 
-    let socket;
+    let socket = null;
     let reconnectDelay = 1000;
-    let reconnectTimer;
+    let reconnectTimer = null;
     let pendingAssistant = null;
     let sending = false;
     let manuallyClosed = false;
-    const currentPersonaKey = new URLSearchParams(location.search).get('persona') || '';
+    let currentSessionId = new URLSearchParams(location.search).get('session_id') || '';
+    let currentPersonaKey = '';
+    let sessionList = [];
+
+    function messageField(item, field) {
+      if (!item || typeof item !== 'object') {
+        return '';
+      }
+      return item[field] ?? item[field[0].toUpperCase() + field.slice(1)] ?? '';
+    }
 
     function setStatus(text) {
       statusEl.textContent = text;
@@ -233,6 +438,11 @@
       }
     }
 
+    function clearMessages() {
+      pendingAssistant = null;
+      messagesEl.innerHTML = '';
+    }
+
     function appendMessage(role, content) {
       const node = document.createElement('div');
       node.className = `message ${role}`;
@@ -242,16 +452,124 @@
       return node;
     }
 
+    function renderHistory(messages) {
+      clearMessages();
+      for (const item of messages || []) {
+        const role = messageField(item, 'role') || 'assistant';
+        const content = messageField(item, 'content');
+        if (content) {
+          appendMessage(role, content);
+        }
+      }
+    }
+
     function scrollToBottom() {
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
     function updateSubtitle() {
+      subtitleEl.textContent = currentPersonaKey
+        ? `Persona: ${currentPersonaKey}`
+        : 'P3 conversation loop';
+      sidebarPersonaEl.textContent = currentPersonaKey
+        ? `Persona: ${currentPersonaKey}`
+        : 'Persona: loading...';
+    }
+
+    function syncURL() {
+      const url = new URL(location.href);
       if (currentPersonaKey) {
-        subtitleEl.textContent = `Persona: ${currentPersonaKey}`;
+        url.searchParams.set('persona', currentPersonaKey);
+      } else {
+        url.searchParams.delete('persona');
+      }
+      if (currentSessionId) {
+        url.searchParams.set('session_id', currentSessionId);
+      } else {
+        url.searchParams.delete('session_id');
+      }
+      history.replaceState({}, '', url);
+    }
+
+    function formatSessionTime(raw) {
+      if (!raw) {
+        return 'Unknown time';
+      }
+      const date = new Date(raw);
+      if (Number.isNaN(date.getTime())) {
+        return raw;
+      }
+      return date.toLocaleString('zh-CN', {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    }
+
+    function previewText(item) {
+      return item.LastMessage || item.last_message || item.lastMessage || 'No messages yet';
+    }
+
+    function sessionIdOf(item) {
+      return item.ID || item.id || '';
+    }
+
+    function sessionPersonaOf(item) {
+      return item.Persona || item.persona || '';
+    }
+
+    function renderSessionList() {
+      sessionListEl.innerHTML = '';
+      if (!sessionList.length) {
+        sessionListEl.innerHTML = '<div class="session-empty">当前 Persona 还没有非空会话。</div>';
         return;
       }
-      subtitleEl.textContent = 'P3 conversation loop';
+
+      for (const item of sessionList) {
+        const sessionID = sessionIdOf(item);
+        const row = document.createElement('div');
+        row.className = `session-item ${sessionID === currentSessionId ? 'active' : ''}`;
+
+        const main = document.createElement('div');
+        main.innerHTML = `
+          <div class="session-title">${formatSessionTime(item.UpdatedAt || item.updated_at || item.updatedAt)}</div>
+          <div class="session-meta">${sessionPersonaOf(item)} · ${(item.MessageCount ?? item.message_count ?? 0)} messages</div>
+          <div class="session-preview">${previewText(item)}</div>
+        `;
+
+        const deleteButton = document.createElement('button');
+        deleteButton.className = 'session-delete';
+        deleteButton.type = 'button';
+        deleteButton.textContent = '×';
+        deleteButton.title = 'Delete session';
+        deleteButton.addEventListener('click', async (event) => {
+          event.stopPropagation();
+          await deleteSession(sessionID);
+        });
+
+        row.appendChild(main);
+        row.appendChild(deleteButton);
+        row.addEventListener('click', async () => {
+          if (sessionID && sessionID !== currentSessionId) {
+            await switchSession(sessionID, sessionPersonaOf(item) || currentPersonaKey);
+          }
+        });
+        sessionListEl.appendChild(row);
+      }
+    }
+
+    async function requestJSON(url, options = {}) {
+      const response = await fetch(url, {
+        credentials: 'same-origin',
+        headers: { 'Accept': 'application/json' },
+        ...options,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.error || response.statusText || 'Request failed');
+      }
+      return payload;
     }
 
     function wsURL() {
@@ -260,7 +578,26 @@
       if (currentPersonaKey) {
         url.searchParams.set('persona', currentPersonaKey);
       }
+      if (currentSessionId) {
+        url.searchParams.set('session_id', currentSessionId);
+      }
       return url.toString();
+    }
+
+    async function closeSocket() {
+      clearTimeout(reconnectTimer);
+      if (!socket || socket.readyState >= WebSocket.CLOSING) {
+        socket = null;
+        return;
+      }
+      manuallyClosed = true;
+      await new Promise((resolve) => {
+        const current = socket;
+        current.addEventListener('close', () => resolve(), { once: true });
+        current.close();
+        setTimeout(resolve, 250);
+      });
+      socket = null;
     }
 
     function connect() {
@@ -274,9 +611,19 @@
         setStatus('Connected');
       });
 
-      socket.addEventListener('message', (event) => {
+      socket.addEventListener('message', async (event) => {
         const payload = JSON.parse(event.data);
         switch (payload.type) {
+          case 'session_ready':
+            currentSessionId = payload.session_id || payload.SessionID || currentSessionId;
+            currentPersonaKey = payload.persona || payload.Persona || currentPersonaKey;
+            syncURL();
+            updateSubtitle();
+            await loadSessionList();
+            break;
+          case 'history':
+            renderHistory(payload.messages || payload.Messages || []);
+            break;
           case 'greeting':
             appendMessage('assistant', payload.content || '');
             break;
@@ -294,11 +641,13 @@
           case 'stream_end':
             pendingAssistant = null;
             setSending(false);
+            await loadSessionList();
             break;
           case 'error':
             appendMessage('error', payload.content || 'Unknown error');
             pendingAssistant = null;
             setSending(false);
+            await loadSessionList();
             break;
           case 'pong':
             break;
@@ -308,17 +657,137 @@
       socket.addEventListener('close', () => {
         pendingAssistant = null;
         setSending(false);
+        socket = null;
         if (manuallyClosed) {
           return;
         }
         setStatus(`Disconnected, retrying in ${Math.round(reconnectDelay / 1000)}s`);
-        reconnectTimer = setTimeout(connect, reconnectDelay);
+        reconnectTimer = setTimeout(async () => {
+          clearMessages();
+          connect();
+        }, reconnectDelay);
         reconnectDelay = Math.min(reconnectDelay * 2, 30000);
       });
 
       socket.addEventListener('error', () => {
         setStatus('Connection error');
       });
+    }
+
+    async function reconnectChat({ resetMessages = true } = {}) {
+      clearTimeout(reconnectTimer);
+      if (resetMessages) {
+        clearMessages();
+      }
+      await closeSocket();
+      connect();
+    }
+
+    async function loadSessionList() {
+      if (!currentPersonaKey) {
+        sessionList = [];
+        renderSessionList();
+        return;
+      }
+      try {
+        const payload = await requestJSON(`/api/sessions?persona=${encodeURIComponent(currentPersonaKey)}&limit=20`);
+        sessionList = payload.sessions || [];
+      } catch (error) {
+        sessionList = [];
+        setStatus(error.message || 'Failed to load sessions');
+      }
+      renderSessionList();
+    }
+
+    async function loadDefaultPersona() {
+      const payload = await requestJSON('/api/personas');
+      return payload.default || 'default';
+    }
+
+    async function loadSessionDetail(id) {
+      return requestJSON(`/api/sessions/${encodeURIComponent(id)}`);
+    }
+
+    async function loadLatestSession(personaKey) {
+      try {
+        return await requestJSON(`/api/sessions/latest?persona=${encodeURIComponent(personaKey)}`);
+      } catch (error) {
+        if ((error.message || '').includes('no sessions found')) {
+          return null;
+        }
+        throw error;
+      }
+    }
+
+    async function bootstrapChat() {
+      setStatus('Loading...');
+      const params = new URLSearchParams(location.search);
+      currentPersonaKey = params.get('persona') || '';
+      currentSessionId = params.get('session_id') || '';
+
+      if (currentSessionId) {
+        if (!currentPersonaKey) {
+          try {
+            const detail = await loadSessionDetail(currentSessionId);
+            currentPersonaKey = detail.persona || detail.Persona || '';
+          } catch (error) {
+            currentSessionId = '';
+          }
+        }
+      }
+
+      if (!currentSessionId) {
+        currentPersonaKey = await loadDefaultPersona();
+        const latest = await loadLatestSession(currentPersonaKey);
+        if (latest) {
+          currentSessionId = sessionIdOf(latest);
+          currentPersonaKey = sessionPersonaOf(latest) || currentPersonaKey;
+        }
+      }
+
+      updateSubtitle();
+      syncURL();
+      await loadSessionList();
+      connect();
+    }
+
+    async function switchSession(sessionID, personaKey) {
+      currentSessionId = sessionID;
+      currentPersonaKey = personaKey || currentPersonaKey;
+      updateSubtitle();
+      syncURL();
+      renderSessionList();
+      sidebarEl.classList.remove('open');
+      await reconnectChat({ resetMessages: true });
+    }
+
+    async function startNewChat() {
+      currentSessionId = '';
+      updateSubtitle();
+      syncURL();
+      renderSessionList();
+      sidebarEl.classList.remove('open');
+      await reconnectChat({ resetMessages: true });
+    }
+
+    async function deleteSession(sessionID) {
+      if (!sessionID) {
+        return;
+      }
+      if (!confirm('Delete this session?')) {
+        return;
+      }
+      try {
+        await requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}`, { method: 'DELETE' });
+        if (sessionID === currentSessionId) {
+          await startNewChat();
+        } else {
+          await loadSessionList();
+        }
+      } catch (error) {
+        setStatus(error.message || 'Failed to delete session');
+        await loadSessionList();
+      }
     }
 
     form.addEventListener('submit', (event) => {
@@ -331,6 +800,18 @@
       socket.send(JSON.stringify({ type: 'message', content }));
       input.value = '';
       input.style.height = '56px';
+    });
+
+    newChatButton.addEventListener('click', async () => {
+      await startNewChat();
+    });
+
+    refreshSessionsButton.addEventListener('click', async () => {
+      await loadSessionList();
+    });
+
+    toggleSidebarButton.addEventListener('click', () => {
+      sidebarEl.classList.toggle('open');
     });
 
     input.addEventListener('keydown', (event) => {
@@ -352,9 +833,12 @@
         socket.close();
       }
     });
-    updateSubtitle();
-    connect();
+
+    bootstrapChat().catch((error) => {
+      setStatus(error.message || 'Failed to initialize chat');
+      clearMessages();
+      appendMessage('error', error.message || 'Failed to initialize chat');
+    });
   </script>
 </body>
 </html>
-

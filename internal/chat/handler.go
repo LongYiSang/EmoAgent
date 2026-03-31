@@ -11,12 +11,17 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/storage"
 )
 
 // WSMessage is the JSON envelope used for WebSocket chat events.
 type WSMessage struct {
-	Type    string `json:"type"`
-	Content string `json:"content,omitempty"`
+	Type      string                  `json:"type"`
+	Content   string                  `json:"content,omitempty"`
+	SessionID string                  `json:"session_id,omitempty"`
+	Persona   string                  `json:"persona,omitempty"`
+	IsNew     bool                    `json:"is_new,omitempty"`
+	Messages  []storage.MessageRecord `json:"messages,omitempty"`
 }
 
 // AppInterface exposes the persona methods the handler needs from App.
@@ -27,7 +32,9 @@ type AppInterface interface {
 
 type conversationEngine interface {
 	StartSession(ctx context.Context, personaName string) (string, error)
+	ResumeSession(ctx context.Context, sessionID string, personaName string) (string, bool, error)
 	SendMessage(ctx context.Context, sessionID string, persona *config.Persona, userContent string, cb func(delta string)) (string, error)
+	GetHistory(ctx context.Context, sessionID string, limit int) ([]storage.MessageRecord, error)
 }
 
 // Handler serves the WebSocket chat protocol.
@@ -60,16 +67,52 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessionID, err := h.engine.StartSession(ctx, personaName)
+	requestedSessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
+	sessionID, resumed, err := h.engine.ResumeSession(ctx, requestedSessionID, personaName)
 	if err != nil {
 		_ = writeWSMessage(ctx, conn, WSMessage{Type: "error", Content: err.Error()}, nil)
 		return
 	}
+	if !resumed {
+		sessionID, err = h.engine.StartSession(ctx, personaName)
+		if err != nil {
+			_ = writeWSMessage(ctx, conn, WSMessage{Type: "error", Content: err.Error()}, nil)
+			return
+		}
+	}
 
 	var writeMu sync.Mutex
-	if err := writeWSMessage(ctx, conn, WSMessage{Type: "greeting", Content: persona.Greeting}, &writeMu); err != nil {
+	if err := writeWSMessage(ctx, conn, WSMessage{
+		Type:      "session_ready",
+		SessionID: sessionID,
+		Persona:   personaName,
+		IsNew:     !resumed,
+	}, &writeMu); err != nil {
 		cancel()
 		return
+	}
+	if resumed {
+		history, err := h.engine.GetHistory(ctx, sessionID, 50)
+		if err != nil {
+			_ = writeWSMessage(ctx, conn, WSMessage{Type: "error", Content: err.Error()}, &writeMu)
+			return
+		}
+		if len(history) > 0 {
+			if err := writeWSMessage(ctx, conn, WSMessage{Type: "history", Messages: history}, &writeMu); err != nil {
+				cancel()
+				return
+			}
+		} else if persona.Greeting != "" {
+			if err := writeWSMessage(ctx, conn, WSMessage{Type: "greeting", Content: persona.Greeting}, &writeMu); err != nil {
+				cancel()
+				return
+			}
+		}
+	} else if persona.Greeting != "" {
+		if err := writeWSMessage(ctx, conn, WSMessage{Type: "greeting", Content: persona.Greeting}, &writeMu); err != nil {
+			cancel()
+			return
+		}
 	}
 
 	for {

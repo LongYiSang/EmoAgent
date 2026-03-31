@@ -10,4 +10,5 @@ var (
 	ErrPersonaExists                = errors.New("persona already exists")
 	ErrPersonaNotFound              = errors.New("persona not found")
 	ErrCannotDeleteDefault          = errors.New("cannot delete the active default persona")
+	ErrSessionNotFound              = errors.New("session not found")
 )

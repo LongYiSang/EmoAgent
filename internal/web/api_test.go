@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,22 +14,31 @@ import (
 
 	"github.com/longyisang/emoagent/internal/apperrors"
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/storage"
 )
 
 type fakeAdminApp struct {
 	profiles            []config.LLMProfile
 	active              *config.LLMProfile
 	personas            map[string]*config.Persona
+	sessions            []storage.SessionSummary
+	sessionDetail       *storage.SessionRecord
+	sessionMessages     []storage.MessageRecord
 	defaultKey          string
 	createErr           error
 	activateErr         error
 	activatePersonaErr  error
 	getErr              error
+	sessionErr          error
+	deleteSessionErr    error
 	lastCreate          config.LLMProfile
 	lastActivate        string
 	lastPersonaActivate string
 	lastPersonaKey      string
 	lastPersona         *config.Persona
+	lastSessionPersona  string
+	lastSessionLimit    int
+	lastDeleteSessionID string
 }
 
 func (f *fakeAdminApp) ListLLMProfiles() ([]config.LLMProfile, error) {
@@ -80,6 +90,35 @@ func (f *fakeAdminApp) ActivatePersona(key string) error {
 	return f.activatePersonaErr
 }
 func (f *fakeAdminApp) GetDefaultPersonaName() string { return f.defaultKey }
+func (f *fakeAdminApp) ListSessions(_ context.Context, persona string, limit int) ([]storage.SessionSummary, error) {
+	f.lastSessionPersona = persona
+	f.lastSessionLimit = limit
+	if f.sessionErr != nil {
+		return nil, f.sessionErr
+	}
+	return append([]storage.SessionSummary(nil), f.sessions...), nil
+}
+func (f *fakeAdminApp) GetLatestSession(_ context.Context, persona string) (*storage.SessionSummary, error) {
+	f.lastSessionPersona = persona
+	if f.sessionErr != nil {
+		return nil, f.sessionErr
+	}
+	if len(f.sessions) == 0 {
+		return nil, nil
+	}
+	session := f.sessions[0]
+	return &session, nil
+}
+func (f *fakeAdminApp) GetSessionDetail(_ context.Context, id string) (*storage.SessionRecord, []storage.MessageRecord, error) {
+	if f.sessionErr != nil {
+		return nil, nil, f.sessionErr
+	}
+	return f.sessionDetail, append([]storage.MessageRecord(nil), f.sessionMessages...), nil
+}
+func (f *fakeAdminApp) DeleteSession(_ context.Context, id string) error {
+	f.lastDeleteSessionID = id
+	return f.deleteSessionErr
+}
 
 func TestHandleListLLMProfiles(t *testing.T) {
 	app := &fakeAdminApp{
@@ -215,5 +254,55 @@ func TestHandleActivatePersonaMapsNotFound(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestHandleListSessions(t *testing.T) {
+	app := &fakeAdminApp{
+		sessions: []storage.SessionSummary{
+			{ID: "session-1", Persona: "default", MessageCount: 2, LastMessage: "hello", UpdatedAt: "2026-03-31T12:00:00Z"},
+		},
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions?persona=default&limit=5", nil)
+	rec := httptest.NewRecorder()
+	handler.HandleListSessions(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if app.lastSessionPersona != "default" {
+		t.Fatalf("lastSessionPersona = %q, want default", app.lastSessionPersona)
+	}
+	if app.lastSessionLimit != 5 {
+		t.Fatalf("lastSessionLimit = %d, want 5", app.lastSessionLimit)
+	}
+
+	var payload struct {
+		Sessions []storage.SessionSummary `json:"sessions"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(payload.Sessions) != 1 || payload.Sessions[0].ID != "session-1" {
+		t.Fatalf("payload.Sessions = %#v, want session-1", payload.Sessions)
+	}
+}
+
+func TestHandleDeleteSessionMapsNotFound(t *testing.T) {
+	app := &fakeAdminApp{deleteSessionErr: apperrors.ErrSessionNotFound}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/missing", nil)
+	req.SetPathValue("id", "missing")
+	rec := httptest.NewRecorder()
+	handler.HandleDeleteSession(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+	if app.lastDeleteSessionID != "missing" {
+		t.Fatalf("lastDeleteSessionID = %q, want missing", app.lastDeleteSessionID)
 	}
 }

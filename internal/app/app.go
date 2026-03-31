@@ -31,6 +31,7 @@ var (
 	ErrPersonaExists                = apperrors.ErrPersonaExists
 	ErrPersonaNotFound              = apperrors.ErrPersonaNotFound
 	ErrCannotDeleteDefault          = apperrors.ErrCannotDeleteDefault
+	ErrSessionNotFound              = apperrors.ErrSessionNotFound
 )
 
 // App is the top-level application container.
@@ -91,9 +92,9 @@ func (a *App) Init(ctx context.Context, configPath string) error {
 	a.mu.Unlock()
 	a.Logger.Info("personas loaded", "count", len(personas))
 
-	for _, p := range personas {
-		if err := a.DB.UpsertPersona(p.Name, p.Description, p.SystemPrompt, p.Tone, p.Quirks, p.Greeting); err != nil {
-			a.Logger.Warn("sync persona to db failed", "name", p.Name, "error", err)
+	for key, p := range personas {
+		if err := a.DB.UpsertPersona(key, p.Name, p.Description, p.SystemPrompt, p.Tone, p.Quirks, p.Greeting); err != nil {
+			a.Logger.Warn("sync persona to db failed", "key", key, "name", p.Name, "error", err)
 		}
 	}
 
@@ -104,9 +105,9 @@ func (a *App) Init(ctx context.Context, configPath string) error {
 		a.Personas = clonePersonaMap(updated)
 		a.mu.Unlock()
 
-		for _, p := range updated {
-			if err := a.DB.UpsertPersona(p.Name, p.Description, p.SystemPrompt, p.Tone, p.Quirks, p.Greeting); err != nil {
-				a.Logger.Warn("sync updated persona failed", "name", p.Name, "error", err)
+		for key, p := range updated {
+			if err := a.DB.UpsertPersona(key, p.Name, p.Description, p.SystemPrompt, p.Tone, p.Quirks, p.Greeting); err != nil {
+				a.Logger.Warn("sync updated persona failed", "key", key, "name", p.Name, "error", err)
 			}
 		}
 		a.Logger.Info("personas reloaded", "count", len(updated))
@@ -194,6 +195,10 @@ func registerRoutes(mux *http.ServeMux, api *web.APIHandler, chatHandler http.Ha
 	mux.HandleFunc("PUT /api/personas/{name}", api.HandleUpdatePersona)
 	mux.HandleFunc("POST /api/personas/{name}/activate", api.HandleActivatePersona)
 	mux.HandleFunc("DELETE /api/personas/{name}", api.HandleDeletePersona)
+	mux.HandleFunc("GET /api/sessions", api.HandleListSessions)
+	mux.HandleFunc("GET /api/sessions/latest", api.HandleGetLatestSession)
+	mux.HandleFunc("GET /api/sessions/{id}", api.HandleGetSession)
+	mux.HandleFunc("DELETE /api/sessions/{id}", api.HandleDeleteSession)
 	mux.Handle("/ws", chatHandler)
 	mux.Handle("/", staticHandler)
 }
@@ -386,7 +391,7 @@ func (a *App) CreatePersona(key string, p *config.Persona) error {
 	if err := config.SavePersona(a.Config.Personas.Dir, key, next); err != nil {
 		return fmt.Errorf("save persona file: %w", err)
 	}
-	if err := a.DB.UpsertPersona(next.Name, next.Description, next.SystemPrompt, next.Tone, next.Quirks, next.Greeting); err != nil {
+	if err := a.DB.UpsertPersona(key, next.Name, next.Description, next.SystemPrompt, next.Tone, next.Quirks, next.Greeting); err != nil {
 		return fmt.Errorf("upsert persona: %w", err)
 	}
 	a.Personas[key] = next
@@ -404,7 +409,7 @@ func (a *App) UpdatePersona(key string, p *config.Persona) error {
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	current, exists := a.Personas[key]
+	_, exists := a.Personas[key]
 	if !exists {
 		return ErrPersonaNotFound
 	}
@@ -416,13 +421,8 @@ func (a *App) UpdatePersona(key string, p *config.Persona) error {
 	if err := config.SavePersona(a.Config.Personas.Dir, key, next); err != nil {
 		return fmt.Errorf("save persona file: %w", err)
 	}
-	if err := a.DB.UpsertPersona(next.Name, next.Description, next.SystemPrompt, next.Tone, next.Quirks, next.Greeting); err != nil {
+	if err := a.DB.UpsertPersona(key, next.Name, next.Description, next.SystemPrompt, next.Tone, next.Quirks, next.Greeting); err != nil {
 		return fmt.Errorf("upsert persona: %w", err)
-	}
-	if current.Name != "" && current.Name != next.Name {
-		if err := a.DB.DeletePersona(context.Background(), current.Name); err != nil {
-			return fmt.Errorf("delete old persona from db: %w", err)
-		}
 	}
 	a.Personas[key] = next
 	return nil
@@ -436,18 +436,14 @@ func (a *App) DeletePersona(key string) error {
 	if key == a.Config.Personas.Default {
 		return ErrCannotDeleteDefault
 	}
-	current, exists := a.Personas[key]
+	_, exists := a.Personas[key]
 	if !exists {
 		return ErrPersonaNotFound
 	}
 	if err := config.DeletePersonaFile(a.Config.Personas.Dir, key); err != nil {
 		return fmt.Errorf("delete persona file: %w", err)
 	}
-	dbKey := current.Name
-	if dbKey == "" {
-		dbKey = key
-	}
-	if err := a.DB.DeletePersona(context.Background(), dbKey); err != nil {
+	if err := a.DB.DeletePersona(context.Background(), key); err != nil {
 		return fmt.Errorf("delete persona from db: %w", err)
 	}
 	delete(a.Personas, key)
@@ -467,6 +463,44 @@ func (a *App) ActivatePersona(key string) error {
 	}
 	a.Config.Personas.Default = key
 	return nil
+}
+
+// ListSessions returns recent non-empty sessions for the given persona key.
+func (a *App) ListSessions(ctx context.Context, persona string, limit int) ([]storage.SessionSummary, error) {
+	return a.DB.ListSessions(ctx, persona, limit)
+}
+
+// GetLatestSession returns the latest non-empty session for the given persona key.
+func (a *App) GetLatestSession(ctx context.Context, persona string) (*storage.SessionSummary, error) {
+	return a.DB.GetLatestSession(ctx, persona)
+}
+
+// GetSessionDetail returns the session and all of its messages.
+func (a *App) GetSessionDetail(ctx context.Context, id string) (*storage.SessionRecord, []storage.MessageRecord, error) {
+	session, err := a.DB.GetSession(ctx, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	if session == nil {
+		return nil, nil, ErrSessionNotFound
+	}
+	messages, err := a.DB.GetAllMessages(ctx, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	return session, messages, nil
+}
+
+// DeleteSession removes a session and its messages.
+func (a *App) DeleteSession(ctx context.Context, id string) error {
+	session, err := a.DB.GetSession(ctx, id)
+	if err != nil {
+		return err
+	}
+	if session == nil {
+		return ErrSessionNotFound
+	}
+	return a.DB.DeleteSession(ctx, id)
 }
 
 // ListLLMProfiles returns all stored LLM profiles sorted by name.

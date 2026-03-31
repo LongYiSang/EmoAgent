@@ -79,6 +79,33 @@ func (e *Engine) StartSession(ctx context.Context, personaName string) (string, 
 	return sessionID, nil
 }
 
+// ResumeSession validates an existing session against the requested persona key.
+func (e *Engine) ResumeSession(ctx context.Context, sessionID string, personaKey string) (string, bool, error) {
+	if sessionID == "" {
+		return "", false, nil
+	}
+	if e.db == nil {
+		return "", false, errors.New("chat engine database is not configured")
+	}
+
+	session, err := e.db.GetSession(ctx, sessionID)
+	if err != nil {
+		return "", false, err
+	}
+	if session == nil || session.Persona != personaKey {
+		return "", false, nil
+	}
+	return sessionID, true, nil
+}
+
+// GetHistory returns the recent message history for a session.
+func (e *Engine) GetHistory(ctx context.Context, sessionID string, limit int) ([]storage.MessageRecord, error) {
+	if e.db == nil {
+		return nil, errors.New("chat engine database is not configured")
+	}
+	return e.db.GetRecentMessages(ctx, sessionID, limit)
+}
+
 // SendMessage stores the user message, streams the model response, and persists the reply.
 func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *config.Persona, userContent string, cb func(delta string)) (string, error) {
 	e.mu.RLock()
@@ -100,6 +127,9 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 	}
 
 	if err := e.db.AddMessage(ctx, uuid.NewString(), sessionID, "user", userContent); err != nil {
+		return "", err
+	}
+	if err := e.db.UpdateSessionTimestamp(ctx, sessionID); err != nil {
 		return "", err
 	}
 

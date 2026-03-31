@@ -165,3 +165,127 @@ func TestUpdateSessionTimestamp(t *testing.T) {
 		t.Fatalf("updated_at = %q, want > %q", after.UpdatedAt, before.UpdatedAt)
 	}
 }
+
+func TestListSessionsExcludesEmptySessions(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t)
+
+	if err := db.CreateSession(ctx, "empty-session", "default"); err != nil {
+		t.Fatalf("CreateSession(empty): %v", err)
+	}
+	if err := db.CreateSession(ctx, "filled-session", "default"); err != nil {
+		t.Fatalf("CreateSession(filled): %v", err)
+	}
+	if err := db.AddMessage(ctx, "msg-1", "filled-session", "user", "hello"); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+
+	sessions, err := db.ListSessions(ctx, "default", 10)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("len(sessions) = %d, want 1", len(sessions))
+	}
+	if sessions[0].ID != "filled-session" {
+		t.Fatalf("sessions[0].ID = %q, want filled-session", sessions[0].ID)
+	}
+	if sessions[0].MessageCount != 1 {
+		t.Fatalf("sessions[0].MessageCount = %d, want 1", sessions[0].MessageCount)
+	}
+	if sessions[0].LastMessage != "hello" {
+		t.Fatalf("sessions[0].LastMessage = %q, want hello", sessions[0].LastMessage)
+	}
+}
+
+func TestListSessionsByPersonaKey(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t)
+
+	if err := db.CreateSession(ctx, "default-session", "default"); err != nil {
+		t.Fatalf("CreateSession(default): %v", err)
+	}
+	if err := db.AddMessage(ctx, "msg-default", "default-session", "user", "hello"); err != nil {
+		t.Fatalf("AddMessage(default): %v", err)
+	}
+	time.Sleep(time.Millisecond)
+	if err := db.CreateSession(ctx, "neko-session", "neko"); err != nil {
+		t.Fatalf("CreateSession(neko): %v", err)
+	}
+	if err := db.AddMessage(ctx, "msg-neko", "neko-session", "assistant", "meow"); err != nil {
+		t.Fatalf("AddMessage(neko): %v", err)
+	}
+
+	sessions, err := db.ListSessions(ctx, "neko", 10)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("len(sessions) = %d, want 1", len(sessions))
+	}
+	if sessions[0].ID != "neko-session" {
+		t.Fatalf("sessions[0].ID = %q, want neko-session", sessions[0].ID)
+	}
+	if sessions[0].Persona != "neko" {
+		t.Fatalf("sessions[0].Persona = %q, want neko", sessions[0].Persona)
+	}
+}
+
+func TestGetLatestSessionExcludesEmptySessions(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t)
+
+	if err := db.CreateSession(ctx, "old-filled", "default"); err != nil {
+		t.Fatalf("CreateSession(old-filled): %v", err)
+	}
+	if err := db.AddMessage(ctx, "msg-old", "old-filled", "user", "first"); err != nil {
+		t.Fatalf("AddMessage(old-filled): %v", err)
+	}
+	time.Sleep(time.Millisecond)
+	if err := db.CreateSession(ctx, "latest-empty", "default"); err != nil {
+		t.Fatalf("CreateSession(latest-empty): %v", err)
+	}
+
+	session, err := db.GetLatestSession(ctx, "default")
+	if err != nil {
+		t.Fatalf("GetLatestSession: %v", err)
+	}
+	if session == nil {
+		t.Fatal("GetLatestSession returned nil")
+	}
+	if session.ID != "old-filled" {
+		t.Fatalf("session.ID = %q, want old-filled", session.ID)
+	}
+}
+
+func TestDeleteSessionRemovesSessionAndMessages(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t)
+
+	if err := db.CreateSession(ctx, "session-delete", "default"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := db.AddMessage(ctx, "msg-delete", "session-delete", "user", "bye"); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+
+	if err := db.DeleteSession(ctx, "session-delete"); err != nil {
+		t.Fatalf("DeleteSession: %v", err)
+	}
+
+	session, err := db.GetSession(ctx, "session-delete")
+	if err != nil {
+		t.Fatalf("GetSession(after delete): %v", err)
+	}
+	if session != nil {
+		t.Fatalf("GetSession(after delete) = %#v, want nil", session)
+	}
+
+	messages, err := db.GetRecentMessages(ctx, "session-delete", 10)
+	if err != nil {
+		t.Fatalf("GetRecentMessages(after delete): %v", err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("len(messages) = %d, want 0", len(messages))
+	}
+}

@@ -33,6 +33,50 @@ func TestOpenAndMigrate(t *testing.T) {
 			t.Errorf("table %q not found: %v", table, err)
 		}
 	}
+
+	rows, err := db.SqlDB().Query("PRAGMA table_info(personas)")
+	if err != nil {
+		t.Fatalf("PRAGMA table_info(personas): %v", err)
+	}
+	defer rows.Close()
+
+	var (
+		hasKeyColumn  bool
+		hasNameColumn bool
+		keyIsPK       bool
+	)
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal interface{}
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			t.Fatalf("Scan(table_info): %v", err)
+		}
+		switch name {
+		case "key":
+			hasKeyColumn = true
+			keyIsPK = pk == 1
+		case "name":
+			hasNameColumn = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err(): %v", err)
+	}
+	if !hasKeyColumn {
+		t.Fatal("personas table missing key column")
+	}
+	if !hasNameColumn {
+		t.Fatal("personas table missing name column")
+	}
+	if !keyIsPK {
+		t.Fatal("personas.key should be the primary key")
+	}
 }
 
 func TestRuntimeConfig(t *testing.T) {
@@ -82,7 +126,7 @@ func TestRuntimeConfig(t *testing.T) {
 func TestUpsertPersona(t *testing.T) {
 	db := testDB(t)
 
-	err := db.UpsertPersona("test", "desc", "prompt", "warm", []string{"quirk1"}, "hello")
+	err := db.UpsertPersona("test", "Display Name", "desc", "prompt", "warm", []string{"quirk1"}, "hello")
 	if err != nil {
 		t.Fatalf("UpsertPersona: %v", err)
 	}
@@ -99,7 +143,7 @@ func TestUpsertPersona(t *testing.T) {
 func TestGetAndDeletePersona(t *testing.T) {
 	db := testDB(t)
 
-	if err := db.UpsertPersona("test", "desc", "prompt", "warm", []string{"quirk1"}, "hello"); err != nil {
+	if err := db.UpsertPersona("test", "Display Name", "desc", "prompt", "warm", []string{"quirk1"}, "hello"); err != nil {
 		t.Fatalf("UpsertPersona: %v", err)
 	}
 
@@ -107,8 +151,14 @@ func TestGetAndDeletePersona(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPersona: %v", err)
 	}
-	if record == nil || record.Name != "test" {
-		t.Fatalf("GetPersona = %#v, want test record", record)
+	if record == nil {
+		t.Fatal("GetPersona returned nil")
+	}
+	if record.Key != "test" {
+		t.Fatalf("record.Key = %q, want test", record.Key)
+	}
+	if record.Name != "Display Name" {
+		t.Fatalf("record.Name = %q, want Display Name", record.Name)
 	}
 
 	if err := db.DeletePersona(context.Background(), "test"); err != nil {

@@ -29,6 +29,16 @@ type SessionRecord struct {
 	Metadata  string
 }
 
+// SessionSummary is the DB representation of a session list item.
+type SessionSummary struct {
+	ID           string
+	Persona      string
+	MessageCount int
+	LastMessage  string
+	CreatedAt    string
+	UpdatedAt    string
+}
+
 // MessageRecord is the DB representation of a chat message.
 type MessageRecord struct {
 	ID        string
@@ -206,6 +216,7 @@ func (d *DB) DeleteLLMProfile(name string) error {
 
 // PersonaRecord is the DB representation of a persona.
 type PersonaRecord struct {
+	Key          string
 	Name         string
 	Description  string
 	SystemPrompt string
@@ -215,51 +226,59 @@ type PersonaRecord struct {
 }
 
 // UpsertPersona inserts or updates a persona in the database.
-func (d *DB) UpsertPersona(name, description, systemPrompt, tone string, quirks []string, greeting string) error {
+func (d *DB) UpsertPersona(key, name, description, systemPrompt, tone string, quirks []string, greeting string) error {
+	if key == "" {
+		return errors.New("persona key is required")
+	}
+	if name == "" {
+		name = key
+	}
+
 	quirksJSON, _ := json.Marshal(quirks)
 	_, err := d.db.Exec(`
-		INSERT INTO personas (name, description, system_prompt, tone, quirks, greeting, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-		ON CONFLICT(name) DO UPDATE SET
+		INSERT INTO personas (key, name, description, system_prompt, tone, quirks, greeting, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+		ON CONFLICT(key) DO UPDATE SET
+			name = excluded.name,
 			description = excluded.description,
 			system_prompt = excluded.system_prompt,
 			tone = excluded.tone,
 			quirks = excluded.quirks,
 			greeting = excluded.greeting,
 			updated_at = datetime('now')
-	`, name, description, systemPrompt, tone, string(quirksJSON), greeting)
+	`, key, name, description, systemPrompt, tone, string(quirksJSON), greeting)
 	return err
 }
 
-// ListPersonas returns all persona names from the database.
+// ListPersonas returns all persona keys from the database.
 func (d *DB) ListPersonas() ([]string, error) {
-	rows, err := d.db.Query("SELECT name FROM personas ORDER BY name")
+	rows, err := d.db.Query("SELECT key FROM personas ORDER BY key")
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var names []string
+	var keys []string
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
+		var key string
+		if err := rows.Scan(&key); err != nil {
 			return nil, err
 		}
-		names = append(names, name)
+		keys = append(keys, key)
 	}
-	return names, rows.Err()
+	return keys, rows.Err()
 }
 
-// GetPersona returns a persona by name, or nil when it does not exist.
-func (d *DB) GetPersona(ctx context.Context, name string) (*PersonaRecord, error) {
+// GetPersona returns a persona by key, or nil when it does not exist.
+func (d *DB) GetPersona(ctx context.Context, key string) (*PersonaRecord, error) {
 	row := d.db.QueryRowContext(ctx, `
-		SELECT name, COALESCE(description, ''), COALESCE(system_prompt, ''), COALESCE(tone, ''), COALESCE(quirks, ''), COALESCE(greeting, '')
+		SELECT key, COALESCE(name, ''), COALESCE(description, ''), COALESCE(system_prompt, ''), COALESCE(tone, ''), COALESCE(quirks, ''), COALESCE(greeting, '')
 		FROM personas
-		WHERE name = ?
-	`, name)
+		WHERE key = ?
+	`, key)
 
 	var record PersonaRecord
-	if err := row.Scan(&record.Name, &record.Description, &record.SystemPrompt, &record.Tone, &record.Quirks, &record.Greeting); err != nil {
+	if err := row.Scan(&record.Key, &record.Name, &record.Description, &record.SystemPrompt, &record.Tone, &record.Quirks, &record.Greeting); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -268,9 +287,9 @@ func (d *DB) GetPersona(ctx context.Context, name string) (*PersonaRecord, error
 	return &record, nil
 }
 
-// DeletePersona deletes a persona by name.
-func (d *DB) DeletePersona(ctx context.Context, name string) error {
-	_, err := d.db.ExecContext(ctx, "DELETE FROM personas WHERE name = ?", name)
+// DeletePersona deletes a persona by key.
+func (d *DB) DeletePersona(ctx context.Context, key string) error {
+	_, err := d.db.ExecContext(ctx, "DELETE FROM personas WHERE key = ?", key)
 	return err
 }
 
@@ -307,6 +326,74 @@ func (d *DB) GetSession(ctx context.Context, id string) (*SessionRecord, error) 
 		return nil, err
 	}
 	return &record, nil
+}
+
+// ListSessions returns non-empty sessions ordered by recent activity.
+func (d *DB) ListSessions(ctx context.Context, persona string, limit int) ([]SessionSummary, error) {
+	if limit <= 0 {
+		return []SessionSummary{}, nil
+	}
+
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT s.id, s.persona, s.created_at, s.updated_at,
+		       (SELECT COUNT(*) FROM messages WHERE session_id = s.id) AS message_count,
+		       COALESCE(
+		         (SELECT SUBSTR(content, 1, 100)
+		            FROM messages
+		           WHERE session_id = s.id
+		           ORDER BY created_at DESC, rowid DESC
+		           LIMIT 1),
+		         ''
+		       ) AS last_message
+		FROM sessions s
+		WHERE (? = '' OR s.persona = ?)
+		  AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id)
+		ORDER BY s.updated_at DESC, s.created_at DESC, s.id DESC
+		LIMIT ?
+	`, persona, persona, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sessions []SessionSummary
+	for rows.Next() {
+		var summary SessionSummary
+		if err := rows.Scan(&summary.ID, &summary.Persona, &summary.CreatedAt, &summary.UpdatedAt, &summary.MessageCount, &summary.LastMessage); err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, summary)
+	}
+	return sessions, rows.Err()
+}
+
+// GetLatestSession returns the most recent non-empty session for a persona.
+func (d *DB) GetLatestSession(ctx context.Context, persona string) (*SessionSummary, error) {
+	sessions, err := d.ListSessions(ctx, persona, 1)
+	if err != nil {
+		return nil, err
+	}
+	if len(sessions) == 0 {
+		return nil, nil
+	}
+	return &sessions[0], nil
+}
+
+// DeleteSession removes a session and all of its messages.
+func (d *DB) DeleteSession(ctx context.Context, id string) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE session_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // AddMessage inserts a new chat message for a session.
@@ -363,6 +450,30 @@ func (d *DB) GetRecentMessages(ctx context.Context, sessionID string, limit int)
 
 	reverseMessages(records)
 	return records, nil
+}
+
+// GetAllMessages returns all messages for a session in ascending time order.
+func (d *DB) GetAllMessages(ctx context.Context, sessionID string) ([]MessageRecord, error) {
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT id, session_id, role, content, created_at, COALESCE(metadata, '')
+		FROM messages
+		WHERE session_id = ?
+		ORDER BY created_at ASC, rowid ASC
+	`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var records []MessageRecord
+	for rows.Next() {
+		var record MessageRecord
+		if err := rows.Scan(&record.ID, &record.SessionID, &record.Role, &record.Content, &record.CreatedAt, &record.Metadata); err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, rows.Err()
 }
 
 // UpdateSessionTimestamp updates the session's updated_at column.

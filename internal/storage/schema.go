@@ -72,6 +72,23 @@ CREATE TABLE IF NOT EXISTS llm_profiles (
 );
 `,
 	},
+	{
+		Version: 3,
+		SQL: `
+DROP TABLE IF EXISTS personas;
+
+CREATE TABLE IF NOT EXISTS personas (
+    key           TEXT PRIMARY KEY,
+    name          TEXT NOT NULL DEFAULT '',
+    description   TEXT,
+    system_prompt TEXT,
+    tone          TEXT,
+    quirks        TEXT,
+    greeting      TEXT,
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.

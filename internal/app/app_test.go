@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/longyisang/emoagent/internal/apperrors"
 	"github.com/longyisang/emoagent/internal/chat"
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/storage"
@@ -67,6 +69,18 @@ func (a *routeTestAdminApp) DeletePersona(key string) error                    {
 func (a *routeTestAdminApp) ActivatePersona(key string) error {
 	a.lastPersonaActivate = key
 	a.defaultKey = key
+	return nil
+}
+func (a *routeTestAdminApp) ListSessions(ctx context.Context, persona string, limit int) ([]storage.SessionSummary, error) {
+	return nil, nil
+}
+func (a *routeTestAdminApp) GetLatestSession(ctx context.Context, persona string) (*storage.SessionSummary, error) {
+	return nil, nil
+}
+func (a *routeTestAdminApp) GetSessionDetail(ctx context.Context, id string) (*storage.SessionRecord, []storage.MessageRecord, error) {
+	return nil, nil, nil
+}
+func (a *routeTestAdminApp) DeleteSession(ctx context.Context, id string) error {
 	return nil
 }
 func (a *routeTestAdminApp) GetDefaultPersonaName() string {
@@ -323,5 +337,155 @@ func TestActivatePersonaUpdatesRuntimeDefault(t *testing.T) {
 	}
 	if value != "tami" {
 		t.Fatalf("personas.default = %q, want tami", value)
+	}
+}
+
+func TestCreatePersonaStoresByKeyInDB(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	a := &App{
+		Config: &config.Config{
+			Personas: config.PersonasConfig{Dir: t.TempDir(), Default: "default"},
+		},
+		DB:       db,
+		Logger:   logger,
+		Personas: map[string]*config.Persona{},
+	}
+
+	err = a.CreatePersona("neko", &config.Persona{
+		Name:         "Tami",
+		Description:  "cat roommate",
+		SystemPrompt: "You are Tami.",
+		Tone:         "snarky",
+		Greeting:     "meow",
+	})
+	if err != nil {
+		t.Fatalf("CreatePersona: %v", err)
+	}
+
+	record, err := db.GetPersona(context.Background(), "neko")
+	if err != nil {
+		t.Fatalf("GetPersona: %v", err)
+	}
+	if record == nil {
+		t.Fatal("GetPersona returned nil")
+	}
+	if record.Key != "neko" {
+		t.Fatalf("record.Key = %q, want neko", record.Key)
+	}
+	if record.Name != "Tami" {
+		t.Fatalf("record.Name = %q, want Tami", record.Name)
+	}
+}
+
+func TestUpdatePersonaKeepsStableDBKeyWhenDisplayNameChanges(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	personaDir := t.TempDir()
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	a := &App{
+		Config: &config.Config{
+			Personas: config.PersonasConfig{Dir: personaDir, Default: "default"},
+		},
+		DB:     db,
+		Logger: logger,
+		Personas: map[string]*config.Persona{
+			"neko": {Name: "Tami", Description: "cat roommate"},
+		},
+	}
+
+	if err := config.SavePersona(personaDir, "neko", a.Personas["neko"]); err != nil {
+		t.Fatalf("SavePersona: %v", err)
+	}
+	if err := db.UpsertPersona("neko", "Tami", "cat roommate", "prompt", "snarky", nil, "meow"); err != nil {
+		t.Fatalf("UpsertPersona: %v", err)
+	}
+
+	err = a.UpdatePersona("neko", &config.Persona{
+		Name:         "Mimi",
+		Description:  "updated cat roommate",
+		SystemPrompt: "You are Mimi.",
+		Tone:         "cool",
+		Greeting:     "hi",
+	})
+	if err != nil {
+		t.Fatalf("UpdatePersona: %v", err)
+	}
+
+	record, err := db.GetPersona(context.Background(), "neko")
+	if err != nil {
+		t.Fatalf("GetPersona(updated): %v", err)
+	}
+	if record == nil {
+		t.Fatal("updated record missing")
+	}
+	if record.Key != "neko" {
+		t.Fatalf("record.Key = %q, want neko", record.Key)
+	}
+	if record.Name != "Mimi" {
+		t.Fatalf("record.Name = %q, want Mimi", record.Name)
+	}
+}
+
+func TestDeleteSessionReturnsNotFoundForMissingSession(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	a := &App{DB: db, Logger: logger}
+
+	err = a.DeleteSession(context.Background(), "missing")
+	if err == nil {
+		t.Fatal("DeleteSession should fail for missing session")
+	}
+	if !errors.Is(err, apperrors.ErrSessionNotFound) {
+		t.Fatalf("DeleteSession error = %v, want ErrSessionNotFound", err)
+	}
+}
+
+func TestGetSessionDetailReturnsMessages(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	a := &App{DB: db, Logger: logger}
+	ctx := context.Background()
+	if err := db.CreateSession(ctx, "session-1", "default"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := db.AddMessage(ctx, "msg-1", "session-1", "user", "hello"); err != nil {
+		t.Fatalf("AddMessage(user): %v", err)
+	}
+	if err := db.AddMessage(ctx, "msg-2", "session-1", "assistant", "hi"); err != nil {
+		t.Fatalf("AddMessage(assistant): %v", err)
+	}
+
+	session, messages, err := a.GetSessionDetail(ctx, "session-1")
+	if err != nil {
+		t.Fatalf("GetSessionDetail: %v", err)
+	}
+	if session == nil || session.ID != "session-1" {
+		t.Fatalf("session = %#v, want session-1", session)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("len(messages) = %d, want 2", len(messages))
+	}
+	if messages[0].Content != "hello" || messages[1].Content != "hi" {
+		t.Fatalf("messages = %#v, want [hello hi]", messages)
 	}
 }

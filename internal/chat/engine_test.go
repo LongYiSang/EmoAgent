@@ -167,6 +167,70 @@ func TestEngineUpdateConfigAffectsSubsequentMessages(t *testing.T) {
 	}
 }
 
+func TestEngineResumeSessionRequiresMatchingPersona(t *testing.T) {
+	engine, db, _ := newTestEngine(t, &fakeLLMClient{})
+	ctx := context.Background()
+
+	sessionID, err := engine.StartSession(ctx, "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	resumedID, ok, err := engine.ResumeSession(ctx, sessionID, "default")
+	if err != nil {
+		t.Fatalf("ResumeSession(match): %v", err)
+	}
+	if !ok || resumedID != sessionID {
+		t.Fatalf("ResumeSession(match) = (%q, %v), want (%q, true)", resumedID, ok, sessionID)
+	}
+
+	resumedID, ok, err = engine.ResumeSession(ctx, sessionID, "neko")
+	if err != nil {
+		t.Fatalf("ResumeSession(mismatch): %v", err)
+	}
+	if ok || resumedID != "" {
+		t.Fatalf("ResumeSession(mismatch) = (%q, %v), want ('', false)", resumedID, ok)
+	}
+
+	if _, err := db.GetSession(ctx, sessionID); err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+}
+
+func TestEngineGetHistoryReturnsRecentMessages(t *testing.T) {
+	engine, db, _ := newTestEngine(t, &fakeLLMClient{})
+	ctx := context.Background()
+
+	sessionID, err := engine.StartSession(ctx, "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	for i, msg := range []struct {
+		id      string
+		role    string
+		content string
+	}{
+		{id: "msg-1", role: "user", content: "hello"},
+		{id: "msg-2", role: "assistant", content: "hi"},
+		{id: "msg-3", role: "user", content: "again"},
+	} {
+		if err := db.AddMessage(ctx, msg.id, sessionID, msg.role, msg.content); err != nil {
+			t.Fatalf("AddMessage(%d): %v", i, err)
+		}
+	}
+
+	history, err := engine.GetHistory(ctx, sessionID, 2)
+	if err != nil {
+		t.Fatalf("GetHistory: %v", err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("len(history) = %d, want 2", len(history))
+	}
+	if history[0].Content != "hi" || history[1].Content != "again" {
+		t.Fatalf("history = %#v, want [hi again]", history)
+	}
+}
+
 func newTestEngine(t *testing.T, client llm.Client) (*Engine, *storage.DB, *slog.Logger) {
 	t.Helper()
 
