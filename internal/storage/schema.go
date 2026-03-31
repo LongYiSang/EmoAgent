@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
 
 CREATE TABLE IF NOT EXISTS personas (
-    name          TEXT PRIMARY KEY,
+    key           TEXT PRIMARY KEY,
+    name          TEXT NOT NULL DEFAULT '',
     description   TEXT,
     system_prompt TEXT,
     tone          TEXT,
@@ -75,18 +76,9 @@ CREATE TABLE IF NOT EXISTS llm_profiles (
 	{
 		Version: 3,
 		SQL: `
-DROP TABLE IF EXISTS personas;
-
-CREATE TABLE IF NOT EXISTS personas (
-    key           TEXT PRIMARY KEY,
-    name          TEXT NOT NULL DEFAULT '',
-    description   TEXT,
-    system_prompt TEXT,
-    tone          TEXT,
-    quirks        TEXT,
-    greeting      TEXT,
-    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
-);
+-- Personas schema was squashed into migration v1.
+-- Legacy upgrades from the old name-primary-key schema are intentionally unsupported.
+SELECT 1;
 `,
 	},
 }

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -76,6 +77,14 @@ func TestOpenAndMigrate(t *testing.T) {
 	}
 	if !keyIsPK {
 		t.Fatal("personas.key should be the primary key")
+	}
+}
+
+func TestMigrationsDoNotDropPersonasTable(t *testing.T) {
+	for _, m := range migrations {
+		if strings.Contains(strings.ToUpper(m.SQL), "DROP TABLE IF EXISTS PERSONAS") {
+			t.Fatalf("migration %d should not drop personas table", m.Version)
+		}
 	}
 }
 
