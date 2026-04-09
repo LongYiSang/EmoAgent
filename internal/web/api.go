@@ -379,6 +379,7 @@ func (h *APIHandler) writeLLMProfileError(w http.ResponseWriter, err error) {
 		isLLMProfileValidationError(err):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
+		h.logger.Error("llm profile internal error", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
 	}
 }
@@ -393,6 +394,7 @@ func (h *APIHandler) writePersonaError(w http.ResponseWriter, err error) {
 		isPersonaValidationError(err):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
+		h.logger.Error("persona internal error", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
 	}
 }
@@ -402,6 +404,7 @@ func (h *APIHandler) writeSessionError(w http.ResponseWriter, err error) {
 	case errors.Is(err, apperrors.ErrSessionNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
 	default:
+		h.logger.Error("session internal error", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
 	}
 }

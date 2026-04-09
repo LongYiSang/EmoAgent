@@ -92,6 +92,7 @@ func (c *anthropicClient) doRequest(ctx context.Context, body []byte, stream boo
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		c.logger.Error("llm http error", "status", resp.StatusCode, "body", string(respBody))
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -156,6 +157,8 @@ func (c *anthropicClient) ChatStream(ctx context.Context, req ChatRequest, cb St
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
+
+	c.logger.Debug("llm http request", "model", aReq.Model, "messages_count", len(aReq.Messages))
 
 	resp, err := c.doRequest(ctx, body, true)
 	if err != nil {

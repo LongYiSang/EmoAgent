@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -53,6 +54,7 @@ func NewHandler(engine conversationEngine, app AppInterface, logger *slog.Logger
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 	if err != nil {
+		h.logger.Error("ws accept failed", "remote", r.RemoteAddr, "error", err)
 		return
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "bye")
@@ -67,6 +69,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.logger.Info("ws connected", "remote", r.RemoteAddr, "persona", personaName)
+
 	requestedSessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
 	sessionID, resumed, err := h.engine.ResumeSession(ctx, requestedSessionID, personaName)
 	if err != nil {
@@ -80,6 +84,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	h.logger.Info("ws session ready", "session", sessionID, "persona", personaName, "resumed", resumed)
+	defer h.logger.Info("ws disconnected", "remote", r.RemoteAddr, "session", sessionID)
 
 	var writeMu sync.Mutex
 	if err := writeWSMessage(ctx, conn, WSMessage{
@@ -118,6 +124,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for {
 		var msg WSMessage
 		if err := wsjson.Read(ctx, conn, &msg); err != nil {
+			if errors.Is(err, context.Canceled) || websocket.CloseStatus(err) != -1 {
+				h.logger.Debug("ws read closed", "remote", r.RemoteAddr)
+			} else {
+				h.logger.Warn("ws read error", "remote", r.RemoteAddr, "error", err)
+			}
 			return
 		}
 
@@ -136,6 +147,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				if writeErr := writeWSMessage(ctx, conn, WSMessage{Type: "stream_delta", Content: delta}, &writeMu); writeErr != nil {
+					if !errors.Is(ctx.Err(), context.Canceled) {
+						h.logger.Warn("ws stream write failed", "session", sessionID, "error", writeErr)
+					}
 					cancel()
 				}
 			})

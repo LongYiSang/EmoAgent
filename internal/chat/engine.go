@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/longyisang/emoagent/internal/config"
@@ -127,14 +128,17 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 	}
 
 	if err := e.db.AddMessage(ctx, uuid.NewString(), sessionID, "user", userContent); err != nil {
+		e.logger.Error("failed to store user message", "session", sessionID, "error", err)
 		return "", err
 	}
 	if err := e.db.UpdateSessionTimestamp(ctx, sessionID); err != nil {
+		e.logger.Error("failed to update session timestamp", "session", sessionID, "error", err)
 		return "", err
 	}
 
 	history, err := e.db.GetRecentMessages(ctx, sessionID, historyLimit)
 	if err != nil {
+		e.logger.Error("failed to load message history", "session", sessionID, "error", err)
 		return "", err
 	}
 
@@ -146,26 +150,48 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 		})
 	}
 
-	resp, err := client.ChatStream(ctx, llm.ChatRequest{
+	req := llm.ChatRequest{
 		Model:       model,
 		Messages:    messages,
 		System:      persona.SystemPrompt,
 		MaxTokens:   maxTokens,
 		Temperature: temperature,
 		Stream:      true,
-	}, func(event llm.StreamEvent) {
+	}
+	e.logger.Info("llm request",
+		"session", sessionID,
+		"persona", persona.Name,
+		"model", model,
+		"history_len", len(messages),
+	)
+	e.logger.Debug("llm context",
+		"system", req.System,
+		"messages", messages,
+	)
+
+	start := time.Now()
+	resp, err := client.ChatStream(ctx, req, func(event llm.StreamEvent) {
 		if cb != nil && event.Content != "" {
 			cb(event.Content)
 		}
 	})
 	if err != nil {
+		e.logger.Error("llm request failed", "session", sessionID, "error", err)
 		return "", err
 	}
+	e.logger.Info("llm response",
+		"session", sessionID,
+		"duration_ms", time.Since(start).Milliseconds(),
+		"response_len", len(resp.Content),
+		"response_content", resp.Content,
+	)
 
 	if err := e.db.AddMessage(ctx, uuid.NewString(), sessionID, "assistant", resp.Content); err != nil {
+		e.logger.Error("failed to store assistant message", "session", sessionID, "error", err)
 		return "", err
 	}
 	if err := e.db.UpdateSessionTimestamp(ctx, sessionID); err != nil {
+		e.logger.Error("failed to update session timestamp", "session", sessionID, "error", err)
 		return "", err
 	}
 

@@ -196,6 +196,8 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
+	c.logger.Debug("llm http request", "model", oReq.Model, "messages_count", len(oReq.Messages))
+
 	// Use a client without timeout for streaming — context handles cancellation.
 	streamClient := &http.Client{}
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/v1/chat/completions", bytes.NewReader(body))
@@ -213,6 +215,7 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
+		c.logger.Error("llm http error", "status", resp.StatusCode, "body", string(respBody))
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
 	}
 

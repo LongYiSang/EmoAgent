@@ -240,16 +240,22 @@ func (a *App) applyRuntimeOverrides() error {
 		case "llm.temperature":
 			if f, parseErr := strconv.ParseFloat(v, 64); parseErr == nil {
 				a.Config.LLM.Temperature = f
+			} else {
+				a.Logger.Warn("invalid runtime override", "key", "llm.temperature", "value", v, "error", parseErr)
 			}
 		case "llm.max_tokens":
 			if n, parseErr := strconv.Atoi(v); parseErr == nil {
 				a.Config.LLM.MaxTokens = n
+			} else {
+				a.Logger.Warn("invalid runtime override", "key", "llm.max_tokens", "value", v, "error", parseErr)
 			}
 		case "personas.default":
 			a.Config.Personas.Default = v
 		case "server.port":
 			if n, parseErr := strconv.Atoi(v); parseErr == nil {
 				a.Config.Server.Port = n
+			} else {
+				a.Logger.Warn("invalid runtime override", "key", "server.port", "value", v, "error", parseErr)
 			}
 		}
 	}
