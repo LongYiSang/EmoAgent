@@ -271,6 +271,38 @@
       border-color: rgba(176,58,46,.18);
       color: #9d2e1f;
     }
+    .message.pending {
+      opacity: .86;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.12);
+    }
+    .message.failed {
+      border-color: rgba(180,75,59,.4);
+      box-shadow: inset 0 0 0 1px rgba(180,75,59,.2);
+    }
+    .message-content {
+      white-space: pre-wrap;
+    }
+    .message-status {
+      margin-top: 8px;
+      font-size: 12px;
+      opacity: .82;
+    }
+    .message-retry {
+      margin-top: 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 32px;
+      padding: 0 12px;
+      border: 1px solid rgba(255,255,255,.24);
+      border-radius: 999px;
+      background: rgba(255,255,255,.14);
+      color: inherit;
+      cursor: pointer;
+    }
+    .message-retry:hover {
+      border-color: rgba(255,255,255,.4);
+    }
     form {
       padding: 18px 20px 20px;
       border-top: 1px solid var(--border);
@@ -415,7 +447,7 @@
     let sending = false;
     let manuallyClosed = false;
     let wsSkipGreeting = false;
-    let sessionReadyResolve = null;
+    let connectAttempt = null;
     let currentSessionId = new URLSearchParams(location.search).get('session_id') || '';
     let currentPersonaKey = '';
     let sessionList = [];
@@ -448,9 +480,69 @@
     function appendMessage(role, content) {
       const node = document.createElement('div');
       node.className = `message ${role}`;
-      node.textContent = content;
+      const body = document.createElement('div');
+      body.className = 'message-content';
+      body.textContent = content;
+      node.appendChild(body);
       messagesEl.appendChild(node);
       scrollToBottom();
+      return node;
+    }
+
+    function setMessageContent(node, content) {
+      if (!node) {
+        return;
+      }
+      const body = node.querySelector('.message-content');
+      if (body) {
+        body.textContent = content;
+      } else {
+        node.textContent = content;
+      }
+      scrollToBottom();
+    }
+
+    function messageTextOf(node) {
+      if (!node) {
+        return '';
+      }
+      return node.dataset.messageContent || node.querySelector('.message-content')?.textContent || '';
+    }
+
+    function setLocalUserMessageState(node, state, onRetry) {
+      if (!node) {
+        return;
+      }
+
+      node.classList.toggle('pending', state === 'pending');
+      node.classList.toggle('failed', state === 'failed');
+
+      node.querySelector('.message-status')?.remove();
+      node.querySelector('.message-retry')?.remove();
+
+      if (state === 'pending' || state === 'failed') {
+        const status = document.createElement('div');
+        status.className = 'message-status';
+        status.textContent = state === 'pending' ? 'Sending...' : 'Send failed';
+        node.appendChild(status);
+      }
+
+      if (state === 'failed' && typeof onRetry === 'function') {
+        const retryButton = document.createElement('button');
+        retryButton.className = 'message-retry';
+        retryButton.type = 'button';
+        retryButton.textContent = 'Retry';
+        retryButton.addEventListener('click', () => {
+          onRetry();
+        });
+        node.appendChild(retryButton);
+      }
+    }
+
+    function appendLocalUserMessage(content) {
+      const node = appendMessage('user', content);
+      node.dataset.messageContent = content;
+      setLocalUserMessageState(node, 'pending');
       return node;
     }
 
@@ -590,6 +682,26 @@
       return url.toString();
     }
 
+    function rejectConnectAttempt(message) {
+      if (!connectAttempt || typeof connectAttempt.reject !== 'function') {
+        connectAttempt = null;
+        return;
+      }
+      const { reject } = connectAttempt;
+      connectAttempt = null;
+      reject(new Error(message || 'Failed to connect'));
+    }
+
+    function resolveConnectAttempt() {
+      if (!connectAttempt || typeof connectAttempt.resolve !== 'function') {
+        connectAttempt = null;
+        return;
+      }
+      const { resolve } = connectAttempt;
+      connectAttempt = null;
+      resolve();
+    }
+
     async function closeSocket() {
       clearTimeout(reconnectTimer);
       if (!socket || socket.readyState >= WebSocket.CLOSING) {
@@ -610,15 +722,23 @@
       clearTimeout(reconnectTimer);
       manuallyClosed = false;
       setStatus('Connecting...');
-      socket = new WebSocket(wsURL());
+      const currentSocket = new WebSocket(wsURL());
+      let handshakeFailed = false;
+      socket = currentSocket;
       wsSkipGreeting = false;
 
-      socket.addEventListener('open', () => {
+      currentSocket.addEventListener('open', () => {
+        if (socket !== currentSocket) {
+          return;
+        }
         reconnectDelay = 1000;
         setStatus('Connected');
       });
 
-      socket.addEventListener('message', async (event) => {
+      currentSocket.addEventListener('message', async (event) => {
+        if (socket !== currentSocket) {
+          return;
+        }
         const payload = JSON.parse(event.data);
         switch (payload.type) {
           case 'session_ready':
@@ -626,9 +746,8 @@
             currentPersonaKey = payload.persona || payload.Persona || currentPersonaKey;
             syncURL();
             updateSubtitle();
-            if (sessionReadyResolve) {
-              sessionReadyResolve();
-              sessionReadyResolve = null;
+            if (connectAttempt?.awaitingSessionReady) {
+              resolveConnectAttempt();
             }
             await loadSessionList();
             break;
@@ -643,8 +762,7 @@
             if (!pendingAssistant) {
               pendingAssistant = appendMessage('assistant', '');
             }
-            pendingAssistant.textContent += payload.content || '';
-            scrollToBottom();
+            setMessageContent(pendingAssistant, `${messageTextOf(pendingAssistant)}${payload.content || ''}`);
             break;
           case 'stream_end':
             pendingAssistant = null;
@@ -662,14 +780,22 @@
         }
       });
 
-      socket.addEventListener('close', () => {
+      currentSocket.addEventListener('close', () => {
+        if (socket !== currentSocket) {
+          return;
+        }
         pendingAssistant = null;
         setSending(false);
-        socket = null;
-        if (sessionReadyResolve) {
-          sessionReadyResolve = null;
+        const pendingHandshake = Boolean(connectAttempt?.awaitingSessionReady) || handshakeFailed;
+        if (pendingHandshake) {
+          rejectConnectAttempt('Failed to connect');
         }
+        socket = null;
         if (manuallyClosed) {
+          return;
+        }
+        if (pendingHandshake) {
+          setStatus('Failed to connect');
           return;
         }
         setStatus(`Disconnected, retrying in ${Math.round(reconnectDelay / 1000)}s`);
@@ -685,7 +811,14 @@
         reconnectDelay = Math.min(reconnectDelay * 2, 30000);
       });
 
-      socket.addEventListener('error', () => {
+      currentSocket.addEventListener('error', () => {
+        if (socket !== currentSocket) {
+          return;
+        }
+        if (connectAttempt?.awaitingSessionReady) {
+          handshakeFailed = true;
+          rejectConnectAttempt('Connection error');
+        }
         setStatus('Connection error');
       });
     }
@@ -694,12 +827,24 @@
       if (socket && socket.readyState === WebSocket.OPEN) {
         return;
       }
+      if (connectAttempt?.promise) {
+        return connectAttempt.promise;
+      }
       await closeSocket();
       wsSkipGreeting = true;
-      return new Promise((resolve) => {
-        sessionReadyResolve = resolve;
+      connectAttempt = {
+        resolve: null,
+        reject: null,
+        awaitingSessionReady: true,
+        initiatedBySend: true,
+        promise: null,
+      };
+      connectAttempt.promise = new Promise((resolve, reject) => {
+        connectAttempt.resolve = resolve;
+        connectAttempt.reject = reject;
         connect();
       });
+      return connectAttempt.promise;
     }
 
     async function loadSessionList() {
@@ -727,17 +872,6 @@
       return requestJSON(`/api/sessions/${encodeURIComponent(id)}`);
     }
 
-    async function loadLatestSession(personaKey) {
-      try {
-        return await requestJSON(`/api/sessions/latest?persona=${encodeURIComponent(personaKey)}`);
-      } catch (error) {
-        if ((error.message || '').includes('no sessions found')) {
-          return null;
-        }
-        throw error;
-      }
-    }
-
     async function bootstrapChat() {
       setStatus('Loading...');
       const params = new URLSearchParams(location.search);
@@ -756,15 +890,7 @@
 
       if (!currentSessionId) {
         currentPersonaKey = currentPersonaKey || await loadDefaultPersona();
-        const latest = await loadLatestSession(currentPersonaKey);
-        if (latest) {
-          currentSessionId = sessionIdOf(latest);
-          currentPersonaKey = sessionPersonaOf(latest) || currentPersonaKey;
-          try {
-            const detail = await loadSessionDetail(currentSessionId);
-            renderHistory(detail.messages || []);
-          } catch (_) { /* ignore */ }
-        }
+        clearMessages();
       }
 
       updateSubtitle();
@@ -774,19 +900,22 @@
     }
 
     async function switchSession(sessionID, personaKey) {
-      await closeSocket();
-      currentSessionId = sessionID;
-      currentPersonaKey = personaKey || currentPersonaKey;
-      clearMessages();
+      setStatus('Loading session...');
       try {
         const detail = await loadSessionDetail(sessionID);
+        await closeSocket();
+        currentSessionId = sessionID;
+        currentPersonaKey = detail.persona || detail.Persona || personaKey || currentPersonaKey;
         renderHistory(detail.messages || []);
-      } catch (_) { /* ignore */ }
-      updateSubtitle();
-      syncURL();
-      renderSessionList();
-      sidebarEl.classList.remove('open');
-      setStatus('Ready');
+        updateSubtitle();
+        syncURL();
+        renderSessionList();
+        sidebarEl.classList.remove('open');
+        setStatus('Ready');
+      } catch (error) {
+        setStatus(error.message || 'Failed to load session');
+        renderSessionList();
+      }
     }
 
     async function startNewChat() {
@@ -820,21 +949,32 @@
       }
     }
 
+    async function sendMessage(content, node) {
+      setLocalUserMessageState(node, 'pending');
+      setSending(true);
+      try {
+        await ensureConnected();
+        socket.send(JSON.stringify({ type: 'message', content }));
+        setLocalUserMessageState(node, 'sent');
+      } catch (error) {
+        setLocalUserMessageState(node, 'failed', async () => {
+          await sendMessage(content, node);
+        });
+        setSending(false);
+        setStatus(error.message || 'Failed to connect');
+      }
+    }
+
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       const content = input.value.trim();
       if (!content || sending) {
         return;
       }
-      appendMessage('user', content);
+      const userMessage = appendLocalUserMessage(content);
       input.value = '';
       input.style.height = '56px';
-      try {
-        await ensureConnected();
-        socket.send(JSON.stringify({ type: 'message', content }));
-      } catch (err) {
-        appendMessage('error', 'Failed to connect: ' + (err.message || err));
-      }
+      await sendMessage(content, userMessage);
     });
 
     newChatButton.addEventListener('click', async () => {
