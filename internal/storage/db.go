@@ -24,6 +24,7 @@ type DB struct {
 type SessionRecord struct {
 	ID        string
 	Persona   string
+	Title     string
 	CreatedAt string
 	UpdatedAt string
 	Metadata  string
@@ -33,6 +34,7 @@ type SessionRecord struct {
 type SessionSummary struct {
 	ID           string
 	Persona      string
+	Title        string
 	MessageCount int
 	LastMessage  string
 	CreatedAt    string
@@ -313,13 +315,13 @@ func (d *DB) CreateSession(ctx context.Context, id, persona string) error {
 // GetSession returns a session by id, or nil when it does not exist.
 func (d *DB) GetSession(ctx context.Context, id string) (*SessionRecord, error) {
 	row := d.db.QueryRowContext(ctx, `
-		SELECT id, persona, created_at, updated_at, COALESCE(metadata, '')
+		SELECT id, persona, title, created_at, updated_at, COALESCE(metadata, '')
 		FROM sessions
 		WHERE id = ?
 	`, id)
 
 	var record SessionRecord
-	if err := row.Scan(&record.ID, &record.Persona, &record.CreatedAt, &record.UpdatedAt, &record.Metadata); err != nil {
+	if err := row.Scan(&record.ID, &record.Persona, &record.Title, &record.CreatedAt, &record.UpdatedAt, &record.Metadata); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -335,7 +337,7 @@ func (d *DB) ListSessions(ctx context.Context, persona string, limit int) ([]Ses
 	}
 
 	rows, err := d.db.QueryContext(ctx, `
-		SELECT s.id, s.persona, s.created_at, s.updated_at,
+		SELECT s.id, s.persona, s.title, s.created_at, s.updated_at,
 		       (SELECT COUNT(*) FROM messages WHERE session_id = s.id) AS message_count,
 		       COALESCE(
 		         (SELECT SUBSTR(content, 1, 100)
@@ -359,7 +361,7 @@ func (d *DB) ListSessions(ctx context.Context, persona string, limit int) ([]Ses
 	var sessions []SessionSummary
 	for rows.Next() {
 		var summary SessionSummary
-		if err := rows.Scan(&summary.ID, &summary.Persona, &summary.CreatedAt, &summary.UpdatedAt, &summary.MessageCount, &summary.LastMessage); err != nil {
+		if err := rows.Scan(&summary.ID, &summary.Persona, &summary.Title, &summary.CreatedAt, &summary.UpdatedAt, &summary.MessageCount, &summary.LastMessage); err != nil {
 			return nil, err
 		}
 		sessions = append(sessions, summary)
@@ -394,6 +396,12 @@ func (d *DB) DeleteSession(ctx context.Context, id string) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// UpdateSessionTitle sets the title for a session.
+func (d *DB) UpdateSessionTitle(ctx context.Context, id, title string) error {
+	_, err := d.db.ExecContext(ctx, `UPDATE sessions SET title = ? WHERE id = ?`, title, id)
+	return err
 }
 
 // AddMessage inserts a new chat message for a session.

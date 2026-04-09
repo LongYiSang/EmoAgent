@@ -414,6 +414,8 @@
     let pendingAssistant = null;
     let sending = false;
     let manuallyClosed = false;
+    let wsSkipGreeting = false;
+    let sessionReadyResolve = null;
     let currentSessionId = new URLSearchParams(location.search).get('session_id') || '';
     let currentPersonaKey = '';
     let sessionList = [];
@@ -531,10 +533,11 @@
         const row = document.createElement('div');
         row.className = `session-item ${sessionID === currentSessionId ? 'active' : ''}`;
 
+        const title = item.Title || item.title || '';
         const main = document.createElement('div');
         main.innerHTML = `
-          <div class="session-title">${formatSessionTime(item.UpdatedAt || item.updated_at || item.updatedAt)}</div>
-          <div class="session-meta">${sessionPersonaOf(item)} · ${(item.MessageCount ?? item.message_count ?? 0)} messages</div>
+          <div class="session-title">${title || formatSessionTime(item.UpdatedAt || item.updated_at || item.updatedAt)}</div>
+          <div class="session-meta">${formatSessionTime(item.UpdatedAt || item.updated_at || item.updatedAt)} · ${(item.MessageCount ?? item.message_count ?? 0)} messages</div>
           <div class="session-preview">${previewText(item)}</div>
         `;
 
@@ -581,6 +584,9 @@
       if (currentSessionId) {
         url.searchParams.set('session_id', currentSessionId);
       }
+      if (wsSkipGreeting) {
+        url.searchParams.set('skip_greeting', '1');
+      }
       return url.toString();
     }
 
@@ -605,6 +611,7 @@
       manuallyClosed = false;
       setStatus('Connecting...');
       socket = new WebSocket(wsURL());
+      wsSkipGreeting = false;
 
       socket.addEventListener('open', () => {
         reconnectDelay = 1000;
@@ -619,10 +626,11 @@
             currentPersonaKey = payload.persona || payload.Persona || currentPersonaKey;
             syncURL();
             updateSubtitle();
+            if (sessionReadyResolve) {
+              sessionReadyResolve();
+              sessionReadyResolve = null;
+            }
             await loadSessionList();
-            break;
-          case 'history':
-            renderHistory(payload.messages || payload.Messages || []);
             break;
           case 'greeting':
             appendMessage('assistant', payload.content || '');
@@ -658,12 +666,20 @@
         pendingAssistant = null;
         setSending(false);
         socket = null;
+        if (sessionReadyResolve) {
+          sessionReadyResolve = null;
+        }
         if (manuallyClosed) {
           return;
         }
         setStatus(`Disconnected, retrying in ${Math.round(reconnectDelay / 1000)}s`);
         reconnectTimer = setTimeout(async () => {
-          clearMessages();
+          if (currentSessionId) {
+            try {
+              const detail = await loadSessionDetail(currentSessionId);
+              renderHistory(detail.messages || []);
+            } catch (_) { /* ignore */ }
+          }
           connect();
         }, reconnectDelay);
         reconnectDelay = Math.min(reconnectDelay * 2, 30000);
@@ -674,13 +690,16 @@
       });
     }
 
-    async function reconnectChat({ resetMessages = true } = {}) {
-      clearTimeout(reconnectTimer);
-      if (resetMessages) {
-        clearMessages();
+    async function ensureConnected() {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        return;
       }
       await closeSocket();
-      connect();
+      wsSkipGreeting = true;
+      return new Promise((resolve) => {
+        sessionReadyResolve = resolve;
+        connect();
+      });
     }
 
     async function loadSessionList() {
@@ -726,48 +745,59 @@
       currentSessionId = params.get('session_id') || '';
 
       if (currentSessionId) {
-        if (!currentPersonaKey) {
-          try {
-            const detail = await loadSessionDetail(currentSessionId);
-            currentPersonaKey = detail.persona || detail.Persona || '';
-          } catch (error) {
-            currentSessionId = '';
-          }
+        try {
+          const detail = await loadSessionDetail(currentSessionId);
+          currentPersonaKey = detail.persona || detail.Persona || currentPersonaKey;
+          renderHistory(detail.messages || []);
+        } catch (error) {
+          currentSessionId = '';
         }
       }
 
       if (!currentSessionId) {
-        currentPersonaKey = await loadDefaultPersona();
+        currentPersonaKey = currentPersonaKey || await loadDefaultPersona();
         const latest = await loadLatestSession(currentPersonaKey);
         if (latest) {
           currentSessionId = sessionIdOf(latest);
           currentPersonaKey = sessionPersonaOf(latest) || currentPersonaKey;
+          try {
+            const detail = await loadSessionDetail(currentSessionId);
+            renderHistory(detail.messages || []);
+          } catch (_) { /* ignore */ }
         }
       }
 
       updateSubtitle();
       syncURL();
       await loadSessionList();
-      connect();
+      setStatus('Ready');
     }
 
     async function switchSession(sessionID, personaKey) {
+      await closeSocket();
       currentSessionId = sessionID;
       currentPersonaKey = personaKey || currentPersonaKey;
+      clearMessages();
+      try {
+        const detail = await loadSessionDetail(sessionID);
+        renderHistory(detail.messages || []);
+      } catch (_) { /* ignore */ }
       updateSubtitle();
       syncURL();
       renderSessionList();
       sidebarEl.classList.remove('open');
-      await reconnectChat({ resetMessages: true });
+      setStatus('Ready');
     }
 
     async function startNewChat() {
+      await closeSocket();
       currentSessionId = '';
+      clearMessages();
       updateSubtitle();
       syncURL();
       renderSessionList();
       sidebarEl.classList.remove('open');
-      await reconnectChat({ resetMessages: true });
+      setStatus('Ready');
     }
 
     async function deleteSession(sessionID) {
@@ -790,16 +820,21 @@
       }
     }
 
-    form.addEventListener('submit', (event) => {
+    form.addEventListener('submit', async (event) => {
       event.preventDefault();
       const content = input.value.trim();
-      if (!content || !socket || socket.readyState !== WebSocket.OPEN || sending) {
+      if (!content || sending) {
         return;
       }
       appendMessage('user', content);
-      socket.send(JSON.stringify({ type: 'message', content }));
       input.value = '';
       input.style.height = '56px';
+      try {
+        await ensureConnected();
+        socket.send(JSON.stringify({ type: 'message', content }));
+      } catch (err) {
+        appendMessage('error', 'Failed to connect: ' + (err.message || err));
+      }
     });
 
     newChatButton.addEventListener('click', async () => {

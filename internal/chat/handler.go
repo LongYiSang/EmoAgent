@@ -97,24 +97,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		cancel()
 		return
 	}
-	if resumed {
-		history, err := h.engine.GetHistory(ctx, sessionID, 50)
-		if err != nil {
-			_ = writeWSMessage(ctx, conn, WSMessage{Type: "error", Content: err.Error()}, &writeMu)
-			return
-		}
-		if len(history) > 0 {
-			if err := writeWSMessage(ctx, conn, WSMessage{Type: "history", Messages: history}, &writeMu); err != nil {
-				cancel()
-				return
-			}
-		} else if persona.Greeting != "" {
-			if err := writeWSMessage(ctx, conn, WSMessage{Type: "greeting", Content: persona.Greeting}, &writeMu); err != nil {
-				cancel()
-				return
-			}
-		}
-	} else if persona.Greeting != "" {
+	// History is now loaded via REST on the frontend side.
+	// Only send greeting for new sessions when not skipped (i.e. user hasn't typed a message yet).
+	skipGreeting := strings.TrimSpace(r.URL.Query().Get("skip_greeting")) == "1"
+	if !resumed && !skipGreeting && persona.Greeting != "" {
 		if err := writeWSMessage(ctx, conn, WSMessage{Type: "greeting", Content: persona.Greeting}, &writeMu); err != nil {
 			cancel()
 			return

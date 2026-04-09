@@ -267,7 +267,7 @@ func TestHandlerReturnsErrorWhenRequestedPersonaMissing(t *testing.T) {
 	}
 }
 
-func TestHandlerRestoresHistoryWithoutGreetingWhenSessionResumes(t *testing.T) {
+func TestHandlerResumedSessionSendsOnlySessionReady(t *testing.T) {
 	handler, engine := newTestHandler()
 	engine.resumeOK = true
 	engine.sessionID = "session-restored"
@@ -286,20 +286,46 @@ func TestHandlerRestoresHistoryWithoutGreetingWhenSessionResumes(t *testing.T) {
 	if msg.Type != "session_ready" || msg.IsNew {
 		t.Fatalf("session_ready = %#v, want existing session", msg)
 	}
-	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
-		t.Fatalf("Read(history): %v", err)
-	}
-	if msg.Type != "history" {
-		t.Fatalf("Type = %q, want history", msg.Type)
-	}
-	if len(msg.Messages) != 2 {
-		t.Fatalf("len(Messages) = %d, want 2", len(msg.Messages))
-	}
-	if msg.Messages[0].Content != "hello" || msg.Messages[1].Content != "hi there" {
-		t.Fatalf("Messages = %#v, want restored history", msg.Messages)
-	}
 	if engine.resumeID != "session-restored" {
 		t.Fatalf("resumeID = %q, want session-restored", engine.resumeID)
+	}
+
+	// Resumed sessions no longer send history via WS (loaded via REST).
+	// Verify we can send a ping and get pong (no history/greeting in between).
+	if err := wsjson.Write(context.Background(), conn, WSMessage{Type: "ping"}); err != nil {
+		t.Fatalf("Write(ping): %v", err)
+	}
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(pong): %v", err)
+	}
+	if msg.Type != "pong" {
+		t.Fatalf("Type = %q, want pong", msg.Type)
+	}
+}
+
+func TestHandlerSkipsGreetingWhenRequested(t *testing.T) {
+	handler, _ := newTestHandler()
+
+	conn := dialTestWS(t, handler, "/ws?skip_greeting=1")
+	defer conn.Close(websocket.StatusNormalClosure, "bye")
+
+	var msg WSMessage
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(session_ready): %v", err)
+	}
+	if msg.Type != "session_ready" {
+		t.Fatalf("Type = %q, want session_ready", msg.Type)
+	}
+
+	// No greeting should follow — verify with a ping/pong round-trip.
+	if err := wsjson.Write(context.Background(), conn, WSMessage{Type: "ping"}); err != nil {
+		t.Fatalf("Write(ping): %v", err)
+	}
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(pong): %v", err)
+	}
+	if msg.Type != "pong" {
+		t.Fatalf("Type = %q, want pong (no greeting expected)", msg.Type)
 	}
 }
 

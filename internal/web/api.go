@@ -354,6 +354,7 @@ func (h *APIHandler) HandleGetSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"id":         session.ID,
 		"persona":    session.Persona,
+		"title":      session.Title,
 		"created_at": session.CreatedAt,
 		"updated_at": session.UpdatedAt,
 		"messages":   messages,

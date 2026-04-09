@@ -81,6 +81,10 @@ CREATE TABLE IF NOT EXISTS llm_profiles (
 SELECT 1;
 `,
 	},
+	{
+		Version: 4,
+		SQL:     `ALTER TABLE sessions ADD COLUMN title TEXT NOT NULL DEFAULT '';`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.

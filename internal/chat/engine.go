@@ -136,6 +136,18 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 		return "", err
 	}
 
+	// Auto-generate session title from the first user message.
+	session, err := e.db.GetSession(ctx, sessionID)
+	if err == nil && session != nil && session.Title == "" {
+		title := userContent
+		if runeCount := len([]rune(title)); runeCount > 30 {
+			title = string([]rune(title)[:30]) + "…"
+		}
+		if err := e.db.UpdateSessionTitle(ctx, sessionID, title); err != nil {
+			e.logger.Warn("failed to set session title", "session", sessionID, "error", err)
+		}
+	}
+
 	history, err := e.db.GetRecentMessages(ctx, sessionID, historyLimit)
 	if err != nil {
 		e.logger.Error("failed to load message history", "session", sessionID, "error", err)
