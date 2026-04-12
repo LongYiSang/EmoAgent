@@ -51,7 +51,7 @@ personas:
   default: "default"
 
 websearch:
-  enabled: false
+  enabled: true
   provider: tavily
   api_key_env: TAVILY_API_KEY
   max_results: 5
