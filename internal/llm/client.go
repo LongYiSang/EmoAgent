@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/longyisang/emoagent/internal/config"
@@ -82,11 +83,35 @@ type openaiRequest struct {
 	MaxTokens   int             `json:"max_tokens,omitempty"`
 	Temperature float64         `json:"temperature"`
 	Stream      bool            `json:"stream,omitempty"`
+	Tools       []openaiTool    `json:"tools,omitempty"`
 }
 
 type openaiMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string           `json:"role"`
+	Content    *string          `json:"content"`                // nil for tool_call-only assistant messages
+	ToolCalls  []openaiToolCall `json:"tool_calls,omitempty"`   // assistant tool calls
+	ToolCallID string           `json:"tool_call_id,omitempty"` // tool result message
+}
+
+type openaiTool struct {
+	Type     string             `json:"type"` // "function"
+	Function openaiToolFunction `json:"function"`
+}
+
+type openaiToolFunction struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Parameters  json.RawMessage `json:"parameters"`
+}
+
+type openaiToolCall struct {
+	ID       string `json:"id"`
+	Index    int    `json:"index,omitempty"`
+	Type     string `json:"type"` // "function"
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
 }
 
 type openaiResponse struct {
@@ -94,8 +119,10 @@ type openaiResponse struct {
 	Model   string `json:"model"`
 	Choices []struct {
 		Message struct {
-			Content string `json:"content"`
+			Content   *string          `json:"content"`
+			ToolCalls []openaiToolCall `json:"tool_calls,omitempty"`
 		} `json:"message"`
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage struct {
 		PromptTokens     int `json:"prompt_tokens"`
@@ -108,7 +135,8 @@ type openaiStreamChunk struct {
 	Model   string `json:"model"`
 	Choices []struct {
 		Delta struct {
-			Content string `json:"content"`
+			Content   *string          `json:"content"`
+			ToolCalls []openaiToolCall `json:"tool_calls,omitempty"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
@@ -118,15 +146,97 @@ type openaiStreamChunk struct {
 	} `json:"usage"`
 }
 
+func strPtr(s string) *string { return &s }
+
+func (c *openaiClient) convertTools(tools []ToolDef) []openaiTool {
+	if len(tools) == 0 {
+		return nil
+	}
+	ot := make([]openaiTool, len(tools))
+	for i, t := range tools {
+		ot[i] = openaiTool{
+			Type: "function",
+			Function: openaiToolFunction{
+				Name:        t.Name,
+				Description: t.Description,
+				Parameters:  t.InputSchema,
+			},
+		}
+	}
+	return ot
+}
+
 func (c *openaiClient) toMessages(req ChatRequest) []openaiMessage {
 	var msgs []openaiMessage
 	if req.System != "" {
-		msgs = append(msgs, openaiMessage{Role: "system", Content: req.System})
+		msgs = append(msgs, openaiMessage{Role: "system", Content: strPtr(req.System)})
 	}
 	for _, m := range req.Messages {
-		msgs = append(msgs, openaiMessage{Role: string(m.Role), Content: m.Content})
+		switch {
+		case m.Role == RoleTool && m.ToolCallID != "":
+			// Tool result message.
+			msgs = append(msgs, openaiMessage{
+				Role:       "tool",
+				Content:    strPtr(m.Content),
+				ToolCallID: m.ToolCallID,
+			})
+
+		case len(m.ContentBlocks) > 0:
+			// Structured message — extract tool_use blocks into tool_calls,
+			// and collect text blocks into content.
+			var textParts []string
+			var toolCalls []openaiToolCall
+			for _, cb := range m.ContentBlocks {
+				switch cb.Type {
+				case "text":
+					textParts = append(textParts, cb.Text)
+				case "tool_use":
+					toolCalls = append(toolCalls, openaiToolCall{
+						ID:   cb.ID,
+						Type: "function",
+						Function: struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						}{
+							Name:      cb.Name,
+							Arguments: string(cb.Input),
+						},
+					})
+				}
+			}
+
+			msg := openaiMessage{Role: string(m.Role)}
+			if len(textParts) > 0 {
+				joined := ""
+				for _, p := range textParts {
+					joined += p
+				}
+				msg.Content = strPtr(joined)
+			}
+			if len(toolCalls) > 0 {
+				msg.ToolCalls = toolCalls
+			}
+			msgs = append(msgs, msg)
+
+		default:
+			// Simple text message.
+			msgs = append(msgs, openaiMessage{Role: string(m.Role), Content: strPtr(m.Content)})
+		}
 	}
 	return msgs
+}
+
+func (c *openaiClient) toolCallsToContentBlocks(calls []openaiToolCall) []ContentBlock {
+	blocks := make([]ContentBlock, len(calls))
+	for i, tc := range calls {
+		blocks[i] = ContentBlock{
+			Type:  "tool_use",
+			ID:    tc.ID,
+			Name:  tc.Function.Name,
+			Input: json.RawMessage(tc.Function.Arguments),
+		}
+	}
+	return blocks
 }
 
 func (c *openaiClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
@@ -136,6 +246,7 @@ func (c *openaiClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
 		Stream:      false,
+		Tools:       c.convertTools(req.Tools),
 	}
 
 	body, err := json.Marshal(oReq)
@@ -166,20 +277,39 @@ func (c *openaiClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 
-	content := ""
-	if len(oResp.Choices) > 0 {
-		content = oResp.Choices[0].Message.Content
-	}
-
-	return &ChatResponse{
-		ID:      oResp.ID,
-		Content: content,
-		Model:   oResp.Model,
+	chatResp := &ChatResponse{
+		ID:    oResp.ID,
+		Model: oResp.Model,
 		Usage: Usage{
 			InputTokens:  oResp.Usage.PromptTokens,
 			OutputTokens: oResp.Usage.CompletionTokens,
 		},
-	}, nil
+	}
+
+	if len(oResp.Choices) > 0 {
+		choice := oResp.Choices[0]
+
+		// Stop reason.
+		chatResp.RawStopReason = choice.FinishReason
+		chatResp.StopReason = NormalizeStopReason("openai", choice.FinishReason)
+
+		// Content.
+		if choice.Message.Content != nil {
+			chatResp.Content = *choice.Message.Content
+			chatResp.ContentBlocks = append(chatResp.ContentBlocks, ContentBlock{
+				Type: "text",
+				Text: *choice.Message.Content,
+			})
+		}
+
+		// Tool calls.
+		if len(choice.Message.ToolCalls) > 0 {
+			chatResp.ContentBlocks = append(chatResp.ContentBlocks,
+				c.toolCallsToContentBlocks(choice.Message.ToolCalls)...)
+		}
+	}
+
+	return chatResp, nil
 }
 
 func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb StreamCallback) (*ChatResponse, error) {
@@ -189,6 +319,7 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
 		Stream:      true,
+		Tools:       c.convertTools(req.Tools),
 	}
 
 	body, err := json.Marshal(oReq)
@@ -223,6 +354,15 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 	var accumulated string
 	var chatResp ChatResponse
 
+	// State for accumulating tool calls during streaming.
+	// OpenAI streams tool calls with index-based interleaving.
+	type pendingToolCall struct {
+		id      string
+		name    string
+		argsBuf string
+	}
+	pendingCalls := make(map[int]*pendingToolCall)
+
 	for {
 		event, err := decoder.Next()
 		if err == io.EOF {
@@ -242,12 +382,40 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 		chatResp.Model = chunk.Model
 
 		if len(chunk.Choices) > 0 {
-			delta := chunk.Choices[0].Delta.Content
-			if delta != "" {
+			choice := chunk.Choices[0]
+
+			// Text delta.
+			if choice.Delta.Content != nil && *choice.Delta.Content != "" {
+				delta := *choice.Delta.Content
 				accumulated += delta
 				if cb != nil {
-					cb(StreamEvent{Content: delta})
+					cb(StreamEvent{Type: "text", Content: delta})
 				}
+			}
+
+			// Tool call deltas.
+			for _, tc := range choice.Delta.ToolCalls {
+				idx := tc.Index
+				p, ok := pendingCalls[idx]
+				if !ok {
+					p = &pendingToolCall{}
+					pendingCalls[idx] = p
+				}
+				if tc.ID != "" {
+					p.id = tc.ID
+				}
+				if tc.Function.Name != "" {
+					p.name = tc.Function.Name
+				}
+				if tc.Function.Arguments != "" {
+					p.argsBuf += tc.Function.Arguments
+				}
+			}
+
+			// Finish reason.
+			if choice.FinishReason != nil {
+				chatResp.RawStopReason = *choice.FinishReason
+				chatResp.StopReason = NormalizeStopReason("openai", *choice.FinishReason)
 			}
 		}
 
@@ -256,6 +424,38 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 				InputTokens:  chunk.Usage.PromptTokens,
 				OutputTokens: chunk.Usage.CompletionTokens,
 			}
+		}
+	}
+
+	// Build ContentBlocks from accumulated state.
+	if accumulated != "" {
+		chatResp.ContentBlocks = append(chatResp.ContentBlocks, ContentBlock{
+			Type: "text",
+			Text: accumulated,
+		})
+	}
+
+	// Finalize pending tool calls.
+	indexes := make([]int, 0, len(pendingCalls))
+	for idx := range pendingCalls {
+		indexes = append(indexes, idx)
+	}
+	sort.Ints(indexes)
+	for _, idx := range indexes {
+		p := pendingCalls[idx]
+		input := json.RawMessage(p.argsBuf)
+		if p.argsBuf == "" {
+			input = json.RawMessage("{}")
+		}
+		block := ContentBlock{
+			Type:  "tool_use",
+			ID:    p.id,
+			Name:  p.name,
+			Input: input,
+		}
+		chatResp.ContentBlocks = append(chatResp.ContentBlocks, block)
+		if cb != nil {
+			cb(StreamEvent{Type: "tool_use", ContentBlock: &block})
 		}
 	}
 

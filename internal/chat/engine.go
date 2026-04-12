@@ -191,6 +191,16 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 		e.logger.Error("llm request failed", "session", sessionID, "error", err)
 		return "", err
 	}
+
+	// Guard: if LLM returns tool_use but tool loop is not enabled, fail fast
+	// rather than persisting an empty assistant message.
+	if resp.StopReason == "tool_use" {
+		e.logger.Error("llm requested tool_use but tool loop is not enabled",
+			"session", sessionID,
+		)
+		return "", errors.New("tool_use requested but tool loop not implemented")
+	}
+
 	e.logger.Info("llm response",
 		"session", sessionID,
 		"duration_ms", time.Since(start).Milliseconds(),

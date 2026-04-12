@@ -19,6 +19,12 @@ type anthropicClient struct {
 
 // --- Anthropic Messages API types ---
 
+type anthropicToolDef struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	InputSchema json.RawMessage `json:"input_schema"`
+}
+
 type anthropicRequest struct {
 	Model       string             `json:"model"`
 	Messages    []anthropicMessage `json:"messages"`
@@ -26,31 +32,45 @@ type anthropicRequest struct {
 	MaxTokens   int                `json:"max_tokens"`
 	Temperature float64            `json:"temperature"`
 	Stream      bool               `json:"stream,omitempty"`
+	Tools       []anthropicToolDef `json:"tools,omitempty"`
 }
 
+// anthropicMessage uses interface{} for Content to support both string and
+// structured content block arrays on the wire.
 type anthropicMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string      `json:"role"`
+	Content interface{} `json:"content"`
+}
+
+// anthropicContentBlock is the wire format for Anthropic content blocks.
+type anthropicContentBlock struct {
+	Type      string          `json:"type"`
+	Text      string          `json:"text,omitempty"`
+	ID        string          `json:"id,omitempty"`          // tool_use
+	Name      string          `json:"name,omitempty"`        // tool_use
+	Input     json.RawMessage `json:"input,omitempty"`       // tool_use
+	ToolUseID string          `json:"tool_use_id,omitempty"` // tool_result (wire field name)
+	Content   string          `json:"content,omitempty"`     // tool_result
+	IsError   bool            `json:"is_error,omitempty"`    // tool_result
 }
 
 type anthropicResponse struct {
-	ID      string `json:"id"`
-	Model   string `json:"model"`
-	Content []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	} `json:"content"`
-	Usage struct {
+	ID         string                  `json:"id"`
+	Model      string                  `json:"model"`
+	Content    []anthropicContentBlock `json:"content"`
+	StopReason string                  `json:"stop_reason"`
+	Usage      struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
 	} `json:"usage"`
 }
 
 type anthropicStreamEvent struct {
-	Type  string          `json:"type"`
-	Index int             `json:"index,omitempty"`
-	Delta json.RawMessage `json:"delta,omitempty"`
-	Usage *struct {
+	Type         string                 `json:"type"`
+	Index        int                    `json:"index,omitempty"`
+	Delta        json.RawMessage        `json:"delta,omitempty"`
+	ContentBlock *anthropicContentBlock `json:"content_block,omitempty"`
+	Usage        *struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
 	} `json:"usage,omitempty"`
@@ -58,16 +78,82 @@ type anthropicStreamEvent struct {
 }
 
 type anthropicDelta struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type        string `json:"type"`
+	Text        string `json:"text,omitempty"`
+	PartialJSON string `json:"partial_json,omitempty"`
+	StopReason  string `json:"stop_reason,omitempty"`
 }
 
 func (c *anthropicClient) toMessages(req ChatRequest) []anthropicMessage {
 	var msgs []anthropicMessage
 	for _, m := range req.Messages {
-		msgs = append(msgs, anthropicMessage{Role: string(m.Role), Content: m.Content})
+		if len(m.ContentBlocks) > 0 {
+			// Structured content: convert ContentBlocks to Anthropic wire format.
+			blocks := make([]anthropicContentBlock, 0, len(m.ContentBlocks))
+			for _, cb := range m.ContentBlocks {
+				ab := anthropicContentBlock{Type: cb.Type}
+				switch cb.Type {
+				case "text":
+					ab.Text = cb.Text
+				case "tool_use":
+					ab.ID = cb.ID
+					ab.Name = cb.Name
+					ab.Input = cb.Input
+				case "tool_result":
+					ab.ToolUseID = cb.ID // ID → tool_use_id on wire
+					ab.Content = cb.Content
+					ab.IsError = cb.IsError
+				}
+				blocks = append(blocks, ab)
+			}
+			msgs = append(msgs, anthropicMessage{
+				Role:    string(m.Role),
+				Content: blocks,
+			})
+		} else {
+			// Simple text message — backward compatible.
+			msgs = append(msgs, anthropicMessage{
+				Role:    string(m.Role),
+				Content: m.Content,
+			})
+		}
 	}
 	return msgs
+}
+
+func (c *anthropicClient) convertTools(tools []ToolDef) []anthropicToolDef {
+	if len(tools) == 0 {
+		return nil
+	}
+	at := make([]anthropicToolDef, len(tools))
+	for i, t := range tools {
+		at[i] = anthropicToolDef{
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: t.InputSchema,
+		}
+	}
+	return at
+}
+
+func (c *anthropicClient) parseContentBlocks(content []anthropicContentBlock) (string, []ContentBlock) {
+	var text string
+	var blocks []ContentBlock
+	for _, ab := range content {
+		switch ab.Type {
+		case "text":
+			text += ab.Text
+			blocks = append(blocks, ContentBlock{Type: "text", Text: ab.Text})
+		case "tool_use":
+			blocks = append(blocks, ContentBlock{
+				Type:  "tool_use",
+				ID:    ab.ID,
+				Name:  ab.Name,
+				Input: ab.Input,
+			})
+		}
+	}
+	return text, blocks
 }
 
 func (c *anthropicClient) doRequest(ctx context.Context, body []byte, stream bool) (*http.Response, error) {
@@ -107,6 +193,7 @@ func (c *anthropicClient) Chat(ctx context.Context, req ChatRequest) (*ChatRespo
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
 		Stream:      false,
+		Tools:       c.convertTools(req.Tools),
 	}
 
 	body, err := json.Marshal(aReq)
@@ -125,21 +212,19 @@ func (c *anthropicClient) Chat(ctx context.Context, req ChatRequest) (*ChatRespo
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 
-	content := ""
-	for _, block := range aResp.Content {
-		if block.Type == "text" {
-			content += block.Text
-		}
-	}
+	content, contentBlocks := c.parseContentBlocks(aResp.Content)
 
 	return &ChatResponse{
-		ID:      aResp.ID,
-		Content: content,
-		Model:   aResp.Model,
+		ID:            aResp.ID,
+		Content:       content,
+		ContentBlocks: contentBlocks,
+		Model:         aResp.Model,
 		Usage: Usage{
 			InputTokens:  aResp.Usage.InputTokens,
 			OutputTokens: aResp.Usage.OutputTokens,
 		},
+		StopReason:    NormalizeStopReason("anthropic", aResp.StopReason),
+		RawStopReason: aResp.StopReason,
 	}, nil
 }
 
@@ -151,6 +236,7 @@ func (c *anthropicClient) ChatStream(ctx context.Context, req ChatRequest, cb St
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
 		Stream:      true,
+		Tools:       c.convertTools(req.Tools),
 	}
 
 	body, err := json.Marshal(aReq)
@@ -169,6 +255,14 @@ func (c *anthropicClient) ChatStream(ctx context.Context, req ChatRequest, cb St
 	decoder := NewSSEDecoder(resp.Body)
 	var accumulated string
 	var chatResp ChatResponse
+
+	// State for accumulating tool_use blocks during streaming.
+	type pendingToolUse struct {
+		id       string
+		name     string
+		inputBuf string // raw JSON accumulated from input_json_delta
+	}
+	var currentBlock *pendingToolUse
 
 	for {
 		event, err := decoder.Next()
@@ -190,18 +284,65 @@ func (c *anthropicClient) ChatStream(ctx context.Context, req ChatRequest, cb St
 			if se.Message != nil {
 				chatResp.ID = se.Message.ID
 				chatResp.Model = se.Message.Model
+				if se.Message.Usage.InputTokens > 0 {
+					chatResp.Usage.InputTokens = se.Message.Usage.InputTokens
+				}
+			}
+
+		case "content_block_start":
+			if se.ContentBlock != nil && se.ContentBlock.Type == "tool_use" {
+				currentBlock = &pendingToolUse{
+					id:   se.ContentBlock.ID,
+					name: se.ContentBlock.Name,
+				}
 			}
 
 		case "content_block_delta":
 			var delta anthropicDelta
-			if err := json.Unmarshal(se.Delta, &delta); err == nil && delta.Text != "" {
-				accumulated += delta.Text
-				if cb != nil {
-					cb(StreamEvent{Content: delta.Text})
+			if err := json.Unmarshal(se.Delta, &delta); err != nil {
+				continue
+			}
+			switch delta.Type {
+			case "text_delta":
+				if delta.Text != "" {
+					accumulated += delta.Text
+					if cb != nil {
+						cb(StreamEvent{Type: "text", Content: delta.Text})
+					}
+				}
+			case "input_json_delta":
+				if currentBlock != nil && delta.PartialJSON != "" {
+					currentBlock.inputBuf += delta.PartialJSON
 				}
 			}
 
+		case "content_block_stop":
+			if currentBlock != nil {
+				// Finalize the accumulated tool_use block.
+				block := ContentBlock{
+					Type:  "tool_use",
+					ID:    currentBlock.id,
+					Name:  currentBlock.name,
+					Input: json.RawMessage(currentBlock.inputBuf),
+				}
+				if currentBlock.inputBuf == "" {
+					block.Input = json.RawMessage("{}")
+				}
+				chatResp.ContentBlocks = append(chatResp.ContentBlocks, block)
+				if cb != nil {
+					cb(StreamEvent{Type: "tool_use", ContentBlock: &block})
+				}
+				currentBlock = nil
+			}
+
 		case "message_delta":
+			var delta anthropicDelta
+			if err := json.Unmarshal(se.Delta, &delta); err == nil {
+				if delta.StopReason != "" {
+					chatResp.RawStopReason = delta.StopReason
+					chatResp.StopReason = NormalizeStopReason("anthropic", delta.StopReason)
+				}
+			}
 			if se.Usage != nil {
 				chatResp.Usage = Usage{
 					InputTokens:  se.Usage.InputTokens,
@@ -216,6 +357,13 @@ func (c *anthropicClient) ChatStream(ctx context.Context, req ChatRequest, cb St
 
 	if cb != nil {
 		cb(StreamEvent{Done: true})
+	}
+
+	// Add text block to ContentBlocks if there was accumulated text.
+	if accumulated != "" {
+		textBlock := ContentBlock{Type: "text", Text: accumulated}
+		// Prepend text block before any tool_use blocks.
+		chatResp.ContentBlocks = append([]ContentBlock{textBlock}, chatResp.ContentBlocks...)
 	}
 
 	chatResp.Content = accumulated
