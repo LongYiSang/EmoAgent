@@ -3,9 +3,11 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"testing"
 	"time"
 
+	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/tool"
 )
 
@@ -61,7 +63,7 @@ func TestGetCurrentTimeSpec(t *testing.T) {
 
 func TestRegisterAll(t *testing.T) {
 	registry := tool.NewRegistry()
-	RegisterAll(registry)
+	RegisterAll(registry, config.DefaultConfig(), slog.Default())
 
 	specs := registry.Specs()
 	if len(specs) != 1 {
@@ -79,12 +81,71 @@ func TestRegisterAll(t *testing.T) {
 
 func TestRegisterAllPanicsOnDuplicate(t *testing.T) {
 	registry := tool.NewRegistry()
-	RegisterAll(registry)
+	RegisterAll(registry, config.DefaultConfig(), slog.Default())
 
 	defer func() {
 		if recover() == nil {
 			t.Fatal("expected panic on duplicate RegisterAll")
 		}
 	}()
-	RegisterAll(registry)
+	RegisterAll(registry, config.DefaultConfig(), slog.Default())
+}
+
+func TestRegisterAll_WebSearchDisabled(t *testing.T) {
+	cfg := config.DefaultConfig() // WebSearch.Enabled = false
+	registry := tool.NewRegistry()
+	RegisterAll(registry, cfg, slog.Default())
+
+	specs := registry.Specs()
+	if len(specs) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(specs))
+	}
+	if specs[0].Name != "get_current_time" {
+		t.Errorf("tool name = %q, want get_current_time", specs[0].Name)
+	}
+}
+
+func TestRegisterAll_WebSearchEnabled(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.WebSearch.Enabled = true
+	cfg.WebSearch.Provider = "tavily"
+	cfg.WebSearch.APIKeyEnv = "TEST_TAVILY_KEY"
+	t.Setenv("TEST_TAVILY_KEY", "fake-key")
+
+	registry := tool.NewRegistry()
+	RegisterAll(registry, cfg, slog.Default())
+
+	specs := registry.Specs()
+	if len(specs) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(specs))
+	}
+
+	var found bool
+	for _, s := range specs {
+		if s.Name == "web_search" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("web_search not found in registered specs")
+	}
+}
+
+func TestRegisterAll_WebSearchProviderFails(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.WebSearch.Enabled = true
+	cfg.WebSearch.APIKeyEnv = "NONEXISTENT_KEY_XYZ"
+	// ensure env var is not set (it shouldn't be, but unset explicitly to be safe)
+	t.Setenv("NONEXISTENT_KEY_XYZ", "")
+
+	registry := tool.NewRegistry()
+	RegisterAll(registry, cfg, slog.Default()) // must not panic
+
+	specs := registry.Specs()
+	if len(specs) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(specs))
+	}
+	if specs[0].Name != "get_current_time" {
+		t.Errorf("tool name = %q, want get_current_time", specs[0].Name)
+	}
 }

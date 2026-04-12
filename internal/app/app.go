@@ -118,7 +118,7 @@ func (a *App) Init(ctx context.Context, configPath string) error {
 
 	// Initialize tool registry with built-in tools.
 	a.toolRegistry = tool.NewRegistry()
-	builtin.RegisterAll(a.toolRegistry)
+	builtin.RegisterAll(a.toolRegistry, a.Config, a.Logger)
 	a.Logger.Info("tool registry initialized", "tools", len(a.toolRegistry.Specs()))
 
 	a.Logger.Info("EmoAgent initialized")

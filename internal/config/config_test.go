@@ -86,3 +86,53 @@ func TestValidateInvalidPort(t *testing.T) {
 		t.Error("expected validation error for port 0")
 	}
 }
+
+func TestDefaultWebSearchConfig(t *testing.T) {
+	cfg := DefaultConfig()
+	ws := cfg.WebSearch
+	if ws.Enabled != false {
+		t.Errorf("default websearch.enabled = %v, want false", ws.Enabled)
+	}
+	if ws.Provider != "tavily" {
+		t.Errorf("default websearch.provider = %q, want tavily", ws.Provider)
+	}
+	if ws.APIKeyEnv != "TAVILY_API_KEY" {
+		t.Errorf("default websearch.api_key_env = %q, want TAVILY_API_KEY", ws.APIKeyEnv)
+	}
+	if ws.MaxResults != 5 {
+		t.Errorf("default websearch.max_results = %d, want 5", ws.MaxResults)
+	}
+	if ws.TimeoutSec != 30 {
+		t.Errorf("default websearch.timeout_sec = %d, want 30", ws.TimeoutSec)
+	}
+	if ws.IncludeAnswer != false {
+		t.Errorf("default websearch.include_answer = %v, want false", ws.IncludeAnswer)
+	}
+}
+
+func TestWebSearchValidateEnabled(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.WebSearch.Enabled = true
+	// valid: provider and api_key_env are both set from defaults
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected no validation error with valid websearch config, got: %v", err)
+	}
+}
+
+func TestWebSearchValidateEmptyProvider(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.WebSearch.Enabled = true
+	cfg.WebSearch.Provider = ""
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected validation error when websearch.provider is empty")
+	}
+}
+
+func TestWebSearchValidateEmptyAPIKeyEnv(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.WebSearch.Enabled = true
+	cfg.WebSearch.APIKeyEnv = ""
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected validation error when websearch.api_key_env is empty")
+	}
+}

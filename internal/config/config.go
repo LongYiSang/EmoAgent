@@ -13,7 +13,8 @@ type Config struct {
 	LLMProfiles []LLMProfile   `yaml:"llm_profiles"`
 	DB          DBConfig       `yaml:"db"`
 	Log         LogConfig      `yaml:"log"`
-	Personas    PersonasConfig `yaml:"personas"`
+	Personas    PersonasConfig  `yaml:"personas"`
+	WebSearch   WebSearchConfig `yaml:"websearch"`
 }
 
 type ServerConfig struct {
@@ -56,6 +57,15 @@ type PersonasConfig struct {
 	Default string `yaml:"default"`
 }
 
+type WebSearchConfig struct {
+	Enabled       bool   `yaml:"enabled"`
+	Provider      string `yaml:"provider"`       // "tavily"
+	APIKeyEnv     string `yaml:"api_key_env"`    // "TAVILY_API_KEY"
+	MaxResults    int    `yaml:"max_results"`    // handler default cap, default 5
+	TimeoutSec    int    `yaml:"timeout_sec"`    // HTTP timeout seconds, default 30
+	IncludeAnswer bool   `yaml:"include_answer"` // default false
+}
+
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
@@ -81,6 +91,13 @@ func DefaultConfig() *Config {
 		Personas: PersonasConfig{
 			Dir:     "./personas",
 			Default: "default",
+		},
+		WebSearch: WebSearchConfig{
+			Enabled:    false,
+			Provider:   "tavily",
+			APIKeyEnv:  "TAVILY_API_KEY",
+			MaxResults: 5,
+			TimeoutSec: 30,
 		},
 	}
 }
@@ -123,6 +140,14 @@ func (c *Config) Validate() error {
 	for i, profile := range c.LLMProfiles {
 		if err := profile.Validate(); err != nil {
 			return fmt.Errorf("llm_profiles[%d]: %w", i, err)
+		}
+	}
+	if c.WebSearch.Enabled {
+		if c.WebSearch.Provider == "" {
+			return fmt.Errorf("websearch.provider is required when websearch is enabled")
+		}
+		if c.WebSearch.APIKeyEnv == "" {
+			return fmt.Errorf("websearch.api_key_env is required when websearch is enabled")
 		}
 	}
 	return nil
