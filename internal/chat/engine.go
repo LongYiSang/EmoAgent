@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/storage"
+	"github.com/longyisang/emoagent/internal/tool"
 )
 
 // EngineConfig defines the dependencies for Engine.
@@ -22,6 +24,9 @@ type EngineConfig struct {
 	MaxTokens    int
 	Temperature  float64
 	HistoryLimit int
+	Provider     string           // "openai" or "anthropic", needed by ResultsToMessages
+	Registry     *tool.Registry   // nil disables tool support
+	Dispatcher   *tool.Dispatcher // nil disables tool support
 }
 
 // Engine assembles conversation context and forwards requests to the LLM.
@@ -34,16 +39,20 @@ type Engine struct {
 	maxTokens    int
 	temperature  float64
 	historyLimit int
+	provider     string
+	registry     *tool.Registry
+	dispatcher   *tool.Dispatcher
 }
 
 // UpdateConfig hot-swaps the active LLM client and request parameters for new sends.
-func (e *Engine) UpdateConfig(client llm.Client, model string, maxTokens int, temperature float64) {
+func (e *Engine) UpdateConfig(client llm.Client, provider, model string, maxTokens int, temperature float64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	if client != nil {
 		e.llm = client
 	}
+	e.provider = provider
 	e.model = model
 	e.maxTokens = maxTokens
 	e.temperature = temperature
@@ -64,6 +73,9 @@ func NewEngine(cfg EngineConfig) *Engine {
 		maxTokens:    cfg.MaxTokens,
 		temperature:  cfg.Temperature,
 		historyLimit: historyLimit,
+		provider:     cfg.Provider,
+		registry:     cfg.Registry,
+		dispatcher:   cfg.Dispatcher,
 	}
 }
 
@@ -115,6 +127,9 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 	maxTokens := e.maxTokens
 	temperature := e.temperature
 	historyLimit := e.historyLimit
+	provider := e.provider
+	registry := e.registry
+	dispatcher := e.dispatcher
 	e.mu.RUnlock()
 
 	if client == nil {
@@ -162,6 +177,15 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 		})
 	}
 
+	// maxToolRounds prevents infinite tool call loops.
+	const maxToolRounds = 10
+
+	// Populate available tools only when the execution pipeline is enabled.
+	var tools []llm.ToolDef
+	if registry != nil && dispatcher != nil {
+		tools = registry.ForScope(tool.ScopeEmotion)
+	}
+
 	req := llm.ChatRequest{
 		Model:       model,
 		Messages:    messages,
@@ -169,12 +193,14 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 		MaxTokens:   maxTokens,
 		Temperature: temperature,
 		Stream:      true,
+		Tools:       tools,
 	}
 	e.logger.Info("llm request",
 		"session", sessionID,
 		"persona", persona.Name,
 		"model", model,
 		"history_len", len(messages),
+		"tools_count", len(tools),
 	)
 	e.logger.Debug("llm context",
 		"system", req.System,
@@ -182,23 +208,71 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 	)
 
 	start := time.Now()
-	resp, err := client.ChatStream(ctx, req, func(event llm.StreamEvent) {
-		if cb != nil && event.Content != "" {
-			cb(event.Content)
-		}
-	})
-	if err != nil {
-		e.logger.Error("llm request failed", "session", sessionID, "error", err)
-		return "", err
-	}
+	var resp *llm.ChatResponse
 
-	// Guard: if LLM returns tool_use but tool loop is not enabled, fail fast
-	// rather than persisting an empty assistant message.
-	if resp.StopReason == "tool_use" {
-		e.logger.Error("llm requested tool_use but tool loop is not enabled",
-			"session", sessionID,
-		)
-		return "", errors.New("tool_use requested but tool loop not implemented")
+	for round := 0; ; round++ {
+		var roundDeltas []string
+		resp, err = client.ChatStream(ctx, req, func(event llm.StreamEvent) {
+			if event.Content != "" {
+				roundDeltas = append(roundDeltas, event.Content)
+			}
+		})
+		if err != nil {
+			e.logger.Error("llm request failed", "session", sessionID, "round", round, "error", err)
+			return "", err
+		}
+
+		if resp.StopReason != "tool_use" {
+			if cb != nil {
+				for _, delta := range roundDeltas {
+					cb(delta)
+				}
+			}
+			break
+		}
+
+		if dispatcher == nil {
+			e.logger.Error("llm requested tool_use but tool execution is disabled", "session", sessionID, "round", round)
+			return "", errors.New("tool_use requested but tool execution is not enabled")
+		}
+
+		// Safety: prevent runaway tool loops.
+		if round >= maxToolRounds {
+			e.logger.Error("tool loop exceeded max rounds", "session", sessionID, "max_rounds", maxToolRounds)
+			return "", fmt.Errorf("tool loop exceeded maximum rounds (%d)", maxToolRounds)
+		}
+
+		// --- Tool loop: execute called tools and continue. ---
+		e.logger.Info("tool_use detected", "session", sessionID, "round", round)
+
+		// 1. Append assistant message (with tool_use ContentBlocks) to in-memory
+		//    context. These intermediate messages are NOT persisted to DB.
+		assistantMsg := llm.Message{
+			Role:             llm.RoleAssistant,
+			Content:          resp.Content,
+			ContentBlocks:    resp.ContentBlocks,
+			ReasoningContent: resp.ReasoningContent,
+		}
+		messages = append(messages, assistantMsg)
+
+		// 2. Extract and execute tool calls.
+		calls := tool.ExtractToolCalls(resp)
+		if len(calls) == 0 {
+			e.logger.Warn("tool_use stop reason but no tool calls extracted", "session", sessionID)
+			break
+		}
+		for _, c := range calls {
+			e.logger.Info("tool call", "session", sessionID, "tool", c.Name, "call_id", c.ID)
+		}
+
+		results := dispatcher.ExecuteAll(ctx, calls, tool.PermReadOnly)
+
+		// 3. Convert results to provider-specific messages and append.
+		toolMsgs := tool.ResultsToMessages(provider, results)
+		messages = append(messages, toolMsgs...)
+
+		// Rebuild request for next round.
+		req.Messages = messages
 	}
 
 	e.logger.Info("llm response",
@@ -208,6 +282,7 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 		"response_content", resp.Content,
 	)
 
+	// Persist only the final assistant text reply to DB.
 	if err := e.db.AddMessage(ctx, uuid.NewString(), sessionID, "assistant", resp.Content); err != nil {
 		e.logger.Error("failed to store assistant message", "session", sessionID, "error", err)
 		return "", err

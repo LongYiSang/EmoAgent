@@ -87,10 +87,11 @@ type openaiRequest struct {
 }
 
 type openaiMessage struct {
-	Role       string           `json:"role"`
-	Content    *string          `json:"content"`                // nil for tool_call-only assistant messages
-	ToolCalls  []openaiToolCall `json:"tool_calls,omitempty"`   // assistant tool calls
-	ToolCallID string           `json:"tool_call_id,omitempty"` // tool result message
+	Role             string           `json:"role"`
+	Content          *string          `json:"content"`                     // nil for tool_call-only assistant messages
+	ReasoningContent *string          `json:"reasoning_content,omitempty"` // thinking/reasoning model output
+	ToolCalls        []openaiToolCall `json:"tool_calls,omitempty"`        // assistant tool calls
+	ToolCallID       string           `json:"tool_call_id,omitempty"`      // tool result message
 }
 
 type openaiTool struct {
@@ -119,8 +120,9 @@ type openaiResponse struct {
 	Model   string `json:"model"`
 	Choices []struct {
 		Message struct {
-			Content   *string          `json:"content"`
-			ToolCalls []openaiToolCall `json:"tool_calls,omitempty"`
+			Content          *string          `json:"content"`
+			ReasoningContent *string          `json:"reasoning_content"`
+			ToolCalls        []openaiToolCall `json:"tool_calls,omitempty"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -135,8 +137,9 @@ type openaiStreamChunk struct {
 	Model   string `json:"model"`
 	Choices []struct {
 		Delta struct {
-			Content   *string          `json:"content"`
-			ToolCalls []openaiToolCall `json:"tool_calls,omitempty"`
+			Content          *string          `json:"content"`
+			ReasoningContent *string          `json:"reasoning_content"`
+			ToolCalls        []openaiToolCall `json:"tool_calls,omitempty"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
@@ -215,6 +218,9 @@ func (c *openaiClient) toMessages(req ChatRequest) []openaiMessage {
 			}
 			if len(toolCalls) > 0 {
 				msg.ToolCalls = toolCalls
+			}
+			if m.ReasoningContent != "" {
+				msg.ReasoningContent = strPtr(m.ReasoningContent)
 			}
 			msgs = append(msgs, msg)
 
@@ -302,6 +308,11 @@ func (c *openaiClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse
 			})
 		}
 
+		// Reasoning content (thinking models).
+		if choice.Message.ReasoningContent != nil {
+			chatResp.ReasoningContent = *choice.Message.ReasoningContent
+		}
+
 		// Tool calls.
 		if len(choice.Message.ToolCalls) > 0 {
 			chatResp.ContentBlocks = append(chatResp.ContentBlocks,
@@ -352,6 +363,7 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 
 	decoder := NewSSEDecoder(resp.Body)
 	var accumulated string
+	var accumulatedReasoning string
 	var chatResp ChatResponse
 
 	// State for accumulating tool calls during streaming.
@@ -391,6 +403,11 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 				if cb != nil {
 					cb(StreamEvent{Type: "text", Content: delta})
 				}
+			}
+
+			// Reasoning content delta (thinking models).
+			if choice.Delta.ReasoningContent != nil && *choice.Delta.ReasoningContent != "" {
+				accumulatedReasoning += *choice.Delta.ReasoningContent
 			}
 
 			// Tool call deltas.
@@ -464,5 +481,6 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 	}
 
 	chatResp.Content = accumulated
+	chatResp.ReasoningContent = accumulatedReasoning
 	return &chatResp, nil
 }

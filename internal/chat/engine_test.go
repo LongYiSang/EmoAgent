@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/storage"
+	"github.com/longyisang/emoagent/internal/tool"
 )
 
 type fakeLLMClient struct {
@@ -150,7 +152,7 @@ func TestEngineUpdateConfigAffectsSubsequentMessages(t *testing.T) {
 		t.Fatalf("SendMessage(before): %v", err)
 	}
 
-	engine.UpdateConfig(secondClient, "model-b", 1024, 0.9)
+	engine.UpdateConfig(secondClient, "openai", "model-b", 1024, 0.9)
 
 	if _, err := engine.SendMessage(context.Background(), sessionID, persona, "after update", nil); err != nil {
 		t.Fatalf("SendMessage(after): %v", err)
@@ -257,4 +259,172 @@ func newTestEngine(t *testing.T, client llm.Client) (*Engine, *storage.DB, *slog
 	})
 
 	return engine, db, logger
+}
+
+// --- Tool loop tests ---
+
+// toolLoopLLMClient simulates an LLM that returns tool_use on the first call
+// and then end_turn with the final reply on the second call.
+type toolLoopLLMClient struct {
+	callCount int
+	requests  []llm.ChatRequest
+}
+
+func (c *toolLoopLLMClient) Chat(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+	panic("unexpected Chat call")
+}
+
+func (c *toolLoopLLMClient) ChatStream(_ context.Context, req llm.ChatRequest, cb llm.StreamCallback) (*llm.ChatResponse, error) {
+	c.callCount++
+	c.requests = append(c.requests, req)
+
+	if c.callCount == 1 {
+		// First call: return tool_use.
+		if cb != nil {
+			cb(llm.StreamEvent{Content: "Let me check the current time."})
+			cb(llm.StreamEvent{Done: true})
+		}
+		return &llm.ChatResponse{
+			ID:         "resp-tool",
+			Content:    "",
+			StopReason: "tool_use",
+			ContentBlocks: []llm.ContentBlock{
+				{Type: "tool_use", ID: "call_1", Name: "get_current_time", Input: json.RawMessage(`{}`)},
+			},
+		}, nil
+	}
+
+	// Second call: return final text response.
+	finalText := "It's 17:00 now!"
+	if cb != nil {
+		cb(llm.StreamEvent{Content: finalText})
+		cb(llm.StreamEvent{Done: true})
+	}
+	return &llm.ChatResponse{
+		ID:         "resp-final",
+		Content:    finalText,
+		StopReason: "end_turn",
+		ContentBlocks: []llm.ContentBlock{
+			{Type: "text", Text: finalText},
+		},
+	}, nil
+}
+
+func TestEngineToolLoopExecutesToolAndReturnsResponse(t *testing.T) {
+	mockLLM := &toolLoopLLMClient{}
+
+	// Set up registry with a simple get_current_time tool.
+	registry := tool.NewRegistry()
+	registry.Register(tool.Spec{
+		Name:        "get_current_time",
+		Description: "Get current time",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+		Scope:       tool.ScopeBoth,
+		Permission:  tool.PermReadOnly,
+	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{"current_time":"17:00:00","timezone":"CST"}`), nil
+	})
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chat.db")
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	db, err := storage.Open(path, logger)
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, logger)
+
+	engine := NewEngine(EngineConfig{
+		LLM:          mockLLM,
+		DB:           db,
+		Logger:       logger,
+		Model:        "test-model",
+		MaxTokens:    256,
+		Temperature:  0.2,
+		HistoryLimit: 20,
+		Provider:     "openai",
+		Registry:     registry,
+		Dispatcher:   dispatcher,
+	})
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	persona := &config.Persona{Name: "default", SystemPrompt: "You are warm."}
+
+	var streamed []string
+	reply, err := engine.SendMessage(context.Background(), sessionID, persona, "What time is it?", func(delta string) {
+		streamed = append(streamed, delta)
+	})
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	// Verify final reply.
+	if reply != "It's 17:00 now!" {
+		t.Fatalf("reply = %q, want %q", reply, "It's 17:00 now!")
+	}
+
+	// Verify LLM was called twice (tool_use → end_turn).
+	if mockLLM.callCount != 2 {
+		t.Fatalf("LLM call count = %d, want 2", mockLLM.callCount)
+	}
+
+	// Verify streaming delivered only the final text.
+	if len(streamed) != 1 || streamed[0] != "It's 17:00 now!" {
+		t.Fatalf("streamed = %v, want [\"It's 17:00 now!\"]", streamed)
+	}
+
+	// Verify DB has only user message + final assistant text (not intermediate tool messages).
+	messages, err := db.GetRecentMessages(context.Background(), sessionID, 10)
+	if err != nil {
+		t.Fatalf("GetRecentMessages: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("len(messages) = %d, want 2 (user + assistant)", len(messages))
+	}
+	if messages[0].Role != "user" || messages[0].Content != "What time is it?" {
+		t.Fatalf("messages[0] = %+v, want user message", messages[0])
+	}
+	if messages[1].Role != "assistant" || messages[1].Content != "It's 17:00 now!" {
+		t.Fatalf("messages[1] = %+v, want final assistant message", messages[1])
+	}
+}
+
+func TestEngineSendMessageDoesNotAdvertiseToolsWithoutDispatcher(t *testing.T) {
+	mockLLM := &fakeLLMClient{
+		response: &llm.ChatResponse{ID: "resp-plain", Content: "No tools", StopReason: "end_turn"},
+	}
+	registry := tool.NewRegistry()
+	registry.Register(tool.Spec{
+		Name:        "get_current_time",
+		Description: "Get current time",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+		Scope:       tool.ScopeBoth,
+		Permission:  tool.PermReadOnly,
+	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{"current_time":"17:00:00","timezone":"CST"}`), nil
+	})
+
+	engine, _, _ := newTestEngine(t, mockLLM)
+	engine.registry = registry
+	engine.dispatcher = nil
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	persona := &config.Persona{Name: "default", SystemPrompt: "You are warm."}
+
+	if _, err := engine.SendMessage(context.Background(), sessionID, persona, "What time is it?", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if len(mockLLM.lastRequest.Tools) != 0 {
+		t.Fatalf("Tools = %#v, want none when dispatcher is nil", mockLLM.lastRequest.Tools)
+	}
 }

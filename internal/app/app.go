@@ -18,6 +18,8 @@ import (
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/logger"
 	"github.com/longyisang/emoagent/internal/storage"
+	"github.com/longyisang/emoagent/internal/tool"
+	"github.com/longyisang/emoagent/internal/tool/builtin"
 	"github.com/longyisang/emoagent/internal/web"
 )
 
@@ -43,6 +45,7 @@ type App struct {
 	Personas         map[string]*config.Persona
 	ActiveLLMProfile *config.LLMProfile
 	engine           *chat.Engine
+	toolRegistry     *tool.Registry
 	mu               sync.RWMutex
 	cancel           context.CancelFunc
 }
@@ -113,6 +116,11 @@ func (a *App) Init(ctx context.Context, configPath string) error {
 		a.Logger.Info("personas reloaded", "count", len(updated))
 	})
 
+	// Initialize tool registry with built-in tools.
+	a.toolRegistry = tool.NewRegistry()
+	builtin.RegisterAll(a.toolRegistry)
+	a.Logger.Info("tool registry initialized", "tools", len(a.toolRegistry.Specs()))
+
 	a.Logger.Info("EmoAgent initialized")
 	return nil
 }
@@ -127,11 +135,15 @@ func (a *App) Run(ctx context.Context) error {
 	model := a.Config.LLM.Model
 	maxTokens := a.Config.LLM.MaxTokens
 	temperature := a.Config.LLM.Temperature
+	provider := a.Config.LLM.Provider
 	if activeProfile != nil {
 		model = activeProfile.Model
 		maxTokens = activeProfile.MaxTokens
 		temperature = activeProfile.Temperature
+		provider = activeProfile.Provider
 	}
+
+	dispatcher := tool.NewDispatcher(a.toolRegistry, tool.MinimalSchemaValidator{}, a.Logger)
 
 	a.engine = chat.NewEngine(chat.EngineConfig{
 		LLM:          currentClient,
@@ -141,6 +153,9 @@ func (a *App) Run(ctx context.Context) error {
 		MaxTokens:    maxTokens,
 		Temperature:  temperature,
 		HistoryLimit: 20,
+		Provider:     provider,
+		Registry:     a.toolRegistry,
+		Dispatcher:   dispatcher,
 	})
 	chatHandler := chat.NewHandler(a.engine, a, a.Logger)
 
@@ -610,7 +625,7 @@ func (a *App) UpdateLLMProfile(id string, profile config.LLMProfile) error {
 		a.mu.Unlock()
 
 		if engine != nil {
-			engine.UpdateConfig(newClient, profile.Model, profile.MaxTokens, profile.Temperature)
+			engine.UpdateConfig(newClient, profile.Provider, profile.Model, profile.MaxTokens, profile.Temperature)
 		}
 	}
 
@@ -640,7 +655,7 @@ func (a *App) ActivateLLMProfile(id string) error {
 	a.mu.Unlock()
 
 	if engine != nil {
-		engine.UpdateConfig(client, profile.Model, profile.MaxTokens, profile.Temperature)
+		engine.UpdateConfig(client, profile.Provider, profile.Model, profile.MaxTokens, profile.Temperature)
 	}
 	return nil
 }

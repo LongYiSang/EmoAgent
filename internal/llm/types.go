@@ -46,10 +46,11 @@ type ToolDef struct {
 // converts blocks to its wire format (e.g., OpenAI extracts tool_use blocks
 // into its native tool_calls array).
 type Message struct {
-	Role          Role           `json:"role"`
-	Content       string         `json:"content"`
-	ContentBlocks []ContentBlock `json:"content_blocks,omitempty"` // structured content (takes precedence when non-empty)
-	ToolCallID    string         `json:"tool_call_id,omitempty"`   // OpenAI tool result message-level field
+	Role             Role           `json:"role"`
+	Content          string         `json:"content"`
+	ContentBlocks    []ContentBlock `json:"content_blocks,omitempty"`    // structured content (takes precedence when non-empty)
+	ToolCallID       string         `json:"tool_call_id,omitempty"`      // OpenAI tool result message-level field
+	ReasoningContent string         `json:"reasoning_content,omitempty"` // thinking/reasoning model output (OpenAI-compatible)
 }
 
 // ChatRequest is a unified request to any LLM provider.
@@ -65,13 +66,14 @@ type ChatRequest struct {
 
 // ChatResponse is a unified response from any LLM provider.
 type ChatResponse struct {
-	ID            string         `json:"id"`
-	Content       string         `json:"content"`        // concatenated text (backward compat)
-	ContentBlocks []ContentBlock `json:"content_blocks"` // full structured response
-	Model         string         `json:"model"`
-	Usage         Usage          `json:"usage"`
-	StopReason    string         `json:"stop_reason"`     // normalized: "end_turn", "tool_use", "max_tokens", "content_filter", "error"
-	RawStopReason string         `json:"raw_stop_reason"` // provider's original value
+	ID               string         `json:"id"`
+	Content          string         `json:"content"`        // concatenated text (backward compat)
+	ContentBlocks    []ContentBlock `json:"content_blocks"` // full structured response
+	Model            string         `json:"model"`
+	Usage            Usage          `json:"usage"`
+	StopReason       string         `json:"stop_reason"`                 // normalized: "end_turn", "tool_use", "max_tokens", "content_filter", "error"
+	RawStopReason    string         `json:"raw_stop_reason"`             // provider's original value
+	ReasoningContent string         `json:"reasoning_content,omitempty"` // thinking/reasoning model output
 }
 
 // Usage tracks token consumption.

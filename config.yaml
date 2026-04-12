@@ -11,7 +11,7 @@ llm:
   # base_url: "https://api.anthropic.com"
   # model: "claude-sonnet-4-20250514"
   # max_completion_tokens TODO部分模型需要-暂未实现
-  # thinking TODO部分模型可选-暂未实现
+  # thinking TODO部分模型可选
   # stream TODO流式传输-暂未实现
 
   provider: "openai"
