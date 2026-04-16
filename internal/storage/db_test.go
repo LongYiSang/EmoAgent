@@ -2,11 +2,14 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/longyisang/emoagent/internal/config"
 )
 
 func testDB(t *testing.T) *DB {
@@ -193,7 +196,16 @@ func TestLLMProfileCRUD(t *testing.T) {
 		t.Fatalf("GetLLMProfile missing = %#v, want nil", got)
 	}
 
-	if err := db.UpsertLLMProfile("default", "openai", "https://api.openai.com", "gpt-4o", "gpt-4o-mini", 4096, 0.7, "OPENAI_API_KEY"); err != nil {
+	if err := db.UpsertLLMProfile(config.LLMProfile{
+		Name:         "default",
+		Provider:     "openai",
+		BaseURL:      "https://api.openai.com",
+		Model:        "gpt-4o",
+		SummaryModel: "gpt-4o-mini",
+		MaxTokens:    4096,
+		Temperature:  0.7,
+		APIKeyEnv:    "OPENAI_API_KEY",
+	}); err != nil {
 		t.Fatalf("UpsertLLMProfile: %v", err)
 	}
 
@@ -216,7 +228,16 @@ func TestLLMProfileCRUD(t *testing.T) {
 		t.Fatalf("ListLLMProfiles = %v, want [default]", profiles)
 	}
 
-	if err := db.UpsertLLMProfile("default", "openai", "https://api.openai.com", "gpt-4o", "gpt-4.1", 2048, 0.2, "MOONSHOT_API_KEY"); err != nil {
+	if err := db.UpsertLLMProfile(config.LLMProfile{
+		Name:         "default",
+		Provider:     "openai",
+		BaseURL:      "https://api.openai.com",
+		Model:        "gpt-4o",
+		SummaryModel: "gpt-4.1",
+		MaxTokens:    2048,
+		Temperature:  0.2,
+		APIKeyEnv:    "MOONSHOT_API_KEY",
+	}); err != nil {
 		t.Fatalf("UpsertLLMProfile update: %v", err)
 	}
 
@@ -238,5 +259,94 @@ func TestLLMProfileCRUD(t *testing.T) {
 	}
 	if profile != nil {
 		t.Fatalf("GetLLMProfile after delete = %#v, want nil", profile)
+	}
+}
+
+func TestLLMProfileBudgetOverridesRoundTrip(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+
+	inputBudget := 12000
+	softRatio := 0.65
+	hardRatio := 0.88
+	reserve := 2048
+	if err := db.UpsertLLMProfile(config.LLMProfile{
+		Name:                "profile-with-overrides",
+		Provider:            "openai",
+		BaseURL:             "https://api.openai.com",
+		Model:               "gpt-4o",
+		SummaryModel:        "gpt-4o-mini",
+		MaxTokens:           4096,
+		Temperature:         0.7,
+		APIKeyEnv:           "OPENAI_API_KEY",
+		InputBudgetTokens:   &inputBudget,
+		SoftCompactRatio:    &softRatio,
+		HardCompactRatio:    &hardRatio,
+		ReserveOutputTokens: &reserve,
+	}); err != nil {
+		t.Fatalf("UpsertLLMProfile: %v", err)
+	}
+
+	record, err := db.GetLLMProfile(ctx, "profile-with-overrides")
+	if err != nil {
+		t.Fatalf("GetLLMProfile: %v", err)
+	}
+	if record == nil {
+		t.Fatal("GetLLMProfile returned nil")
+	}
+	if !record.InputBudgetTokens.Valid || int(record.InputBudgetTokens.Int64) != 12000 {
+		t.Fatalf("InputBudgetTokens = %#v, want 12000", record.InputBudgetTokens)
+	}
+	if !record.SoftCompactRatio.Valid || record.SoftCompactRatio.Float64 != 0.65 {
+		t.Fatalf("SoftCompactRatio = %#v, want 0.65", record.SoftCompactRatio)
+	}
+	if !record.HardCompactRatio.Valid || record.HardCompactRatio.Float64 != 0.88 {
+		t.Fatalf("HardCompactRatio = %#v, want 0.88", record.HardCompactRatio)
+	}
+	if !record.ReserveOutputTokens.Valid || int(record.ReserveOutputTokens.Int64) != 2048 {
+		t.Fatalf("ReserveOutputTokens = %#v, want 2048", record.ReserveOutputTokens)
+	}
+}
+
+func TestAddMessageWithMetadataStoresVisibleMessageMetadata(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+
+	if err := db.CreateSession(ctx, "session-1", "default"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	metadata := map[string]any{
+		"kind":           "dialogue_user",
+		"source":         "user",
+		"token_estimate": 123,
+	}
+	if err := db.AddMessageWithMetadata(ctx, "msg-1", "session-1", "user", "hello", metadata); err != nil {
+		t.Fatalf("AddMessageWithMetadata: %v", err)
+	}
+
+	messages, err := db.GetAllMessages(ctx, "session-1")
+	if err != nil {
+		t.Fatalf("GetAllMessages: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("len(messages) = %d, want 1", len(messages))
+	}
+	if messages[0].Metadata == "" {
+		t.Fatal("Metadata is empty, want stored JSON")
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal([]byte(messages[0].Metadata), &got); err != nil {
+		t.Fatalf("Unmarshal(metadata): %v", err)
+	}
+	if got["kind"] != "dialogue_user" {
+		t.Fatalf("kind = %#v, want dialogue_user", got["kind"])
+	}
+	if got["source"] != "user" {
+		t.Fatalf("source = %#v, want user", got["source"])
+	}
+	if got["token_estimate"] != float64(123) {
+		t.Fatalf("token_estimate = %#v, want 123", got["token_estimate"])
 	}
 }

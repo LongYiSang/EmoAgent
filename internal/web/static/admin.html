@@ -435,6 +435,33 @@
               </div>
             </div>
 
+            <div class="form-card">
+              <div class="section-title">
+                <h3>Context Budget Overrides</h3>
+                <span>Leave blank to inherit the global context config</span>
+              </div>
+              <div class="form-row two">
+                <div class="form-row">
+                  <label for="llm-input-budget-tokens">Input Budget Tokens</label>
+                  <input class="input" id="llm-input-budget-tokens" name="input_budget_tokens" type="number" min="1" step="1" placeholder="inherit">
+                </div>
+                <div class="form-row">
+                  <label for="llm-reserve-output-tokens">Reserve Output Tokens</label>
+                  <input class="input" id="llm-reserve-output-tokens" name="reserve_output_tokens" type="number" min="1" step="1" placeholder="inherit">
+                </div>
+              </div>
+              <div class="form-row two">
+                <div class="form-row">
+                  <label for="llm-soft-compact-ratio">Soft Compact Ratio</label>
+                  <input class="input" id="llm-soft-compact-ratio" name="soft_compact_ratio" type="number" min="0" max="1" step="0.01" placeholder="inherit">
+                </div>
+                <div class="form-row">
+                  <label for="llm-hard-compact-ratio">Hard Compact Ratio</label>
+                  <input class="input" id="llm-hard-compact-ratio" name="hard_compact_ratio" type="number" min="0" max="1" step="0.01" placeholder="inherit">
+                </div>
+              </div>
+            </div>
+
             <div class="actions">
               <div class="left">
                 <button class="btn primary" id="llm-save" type="submit">Save Profile</button>
@@ -545,6 +572,10 @@
       summary_model: document.getElementById('llm-summary-model'),
       max_tokens: document.getElementById('llm-max-tokens'),
       temperature: document.getElementById('llm-temperature'),
+      input_budget_tokens: document.getElementById('llm-input-budget-tokens'),
+      soft_compact_ratio: document.getElementById('llm-soft-compact-ratio'),
+      hard_compact_ratio: document.getElementById('llm-hard-compact-ratio'),
+      reserve_output_tokens: document.getElementById('llm-reserve-output-tokens'),
     };
 
     const personaFields = {
@@ -585,6 +616,11 @@
 
     function txt(value, fallback = '') {
       if (value === undefined || value === null) return fallback;
+      return String(value);
+    }
+
+    function numText(value) {
+      if (value === undefined || value === null || value === '') return '';
       return String(value);
     }
 
@@ -635,6 +671,10 @@
         summary_model: txt(profile?.summary_model || profile?.summaryModel),
         max_tokens: Number(profile?.max_tokens ?? profile?.maxTokens ?? 0) || 0,
         temperature: Number(profile?.temperature ?? 0),
+        input_budget_tokens: profile?.input_budget_tokens ?? profile?.inputBudgetTokens ?? null,
+        soft_compact_ratio: profile?.soft_compact_ratio ?? profile?.softCompactRatio ?? null,
+        hard_compact_ratio: profile?.hard_compact_ratio ?? profile?.hardCompactRatio ?? null,
+        reserve_output_tokens: profile?.reserve_output_tokens ?? profile?.reserveOutputTokens ?? null,
       };
     }
 
@@ -687,6 +727,10 @@
       llmFields.summary_model.value = '';
       llmFields.max_tokens.value = '';
       llmFields.temperature.value = '';
+      llmFields.input_budget_tokens.value = '';
+      llmFields.soft_compact_ratio.value = '';
+      llmFields.hard_compact_ratio.value = '';
+      llmFields.reserve_output_tokens.value = '';
       state.selectedLLMId = '';
       llmForm.dataset.mode = 'create';
       llmTitleEl.textContent = 'LLM Editor';
@@ -706,6 +750,10 @@
       llmFields.summary_model.value = data.summary_model;
       llmFields.max_tokens.value = data.max_tokens || '';
       llmFields.temperature.value = Number.isFinite(data.temperature) ? String(data.temperature) : '';
+      llmFields.input_budget_tokens.value = numText(data.input_budget_tokens);
+      llmFields.soft_compact_ratio.value = numText(data.soft_compact_ratio);
+      llmFields.hard_compact_ratio.value = numText(data.hard_compact_ratio);
+      llmFields.reserve_output_tokens.value = numText(data.reserve_output_tokens);
       llmForm.dataset.mode = state.selectedLLMId ? 'edit' : 'create';
       llmTitleEl.textContent = data.id ? `Editing: ${data.id}` : 'LLM Editor';
       llmSubtitleEl.textContent = state.activeLLMId === data.id
@@ -802,6 +850,10 @@
     }
 
     function llmPayloadFromForm() {
+      const inputBudget = llmFields.input_budget_tokens.value.trim();
+      const softRatio = llmFields.soft_compact_ratio.value.trim();
+      const hardRatio = llmFields.hard_compact_ratio.value.trim();
+      const reserveOutput = llmFields.reserve_output_tokens.value.trim();
       return {
         id: llmFields.id.value.trim(),
         name: llmFields.name.value.trim(),
@@ -812,6 +864,10 @@
         summary_model: llmFields.summary_model.value.trim(),
         max_tokens: Number(llmFields.max_tokens.value || 0),
         temperature: Number(llmFields.temperature.value || 0),
+        input_budget_tokens: inputBudget === '' ? null : Number(inputBudget),
+        soft_compact_ratio: softRatio === '' ? null : Number(softRatio),
+        hard_compact_ratio: hardRatio === '' ? null : Number(hardRatio),
+        reserve_output_tokens: reserveOutput === '' ? null : Number(reserveOutput),
       };
     }
 
@@ -838,6 +894,21 @@
       }
       if (!Number.isFinite(payload.temperature) || payload.temperature < 0 || payload.temperature > 2) {
         throw new Error('Temperature must be between 0 and 2');
+      }
+      if (payload.input_budget_tokens !== null && (!Number.isFinite(payload.input_budget_tokens) || payload.input_budget_tokens <= 0)) {
+        throw new Error('Input Budget Tokens must be greater than 0');
+      }
+      if (payload.reserve_output_tokens !== null && (!Number.isFinite(payload.reserve_output_tokens) || payload.reserve_output_tokens <= 0)) {
+        throw new Error('Reserve Output Tokens must be greater than 0');
+      }
+      if (payload.soft_compact_ratio !== null && (!Number.isFinite(payload.soft_compact_ratio) || payload.soft_compact_ratio <= 0 || payload.soft_compact_ratio >= 1)) {
+        throw new Error('Soft Compact Ratio must be between 0 and 1');
+      }
+      if (payload.hard_compact_ratio !== null && (!Number.isFinite(payload.hard_compact_ratio) || payload.hard_compact_ratio <= 0 || payload.hard_compact_ratio >= 1)) {
+        throw new Error('Hard Compact Ratio must be between 0 and 1');
+      }
+      if (payload.soft_compact_ratio !== null && payload.hard_compact_ratio !== null && payload.soft_compact_ratio >= payload.hard_compact_ratio) {
+        throw new Error('Soft Compact Ratio must be less than Hard Compact Ratio');
       }
     }
 

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/longyisang/emoagent/internal/config"
 	_ "modernc.org/sqlite"
 )
 
@@ -53,16 +54,20 @@ type MessageRecord struct {
 
 // LLMProfileRecord is the DB representation of an LLM profile.
 type LLMProfileRecord struct {
-	Name         string
-	Provider     string
-	BaseURL      string
-	Model        string
-	SummaryModel string
-	MaxTokens    int
-	Temperature  float64
-	APIKeyEnv    string
-	CreatedAt    string
-	UpdatedAt    string
+	Name                string
+	Provider            string
+	BaseURL             string
+	Model               string
+	SummaryModel        string
+	MaxTokens           int
+	Temperature         float64
+	APIKeyEnv           string
+	InputBudgetTokens   sql.NullInt64
+	SoftCompactRatio    sql.NullFloat64
+	HardCompactRatio    sql.NullFloat64
+	ReserveOutputTokens sql.NullInt64
+	CreatedAt           string
+	UpdatedAt           string
 }
 
 // Open creates or opens a SQLite database, sets pragmas, and runs migrations.
@@ -150,12 +155,18 @@ func (d *DB) GetAllRuntimeConfig() (map[string]string, error) {
 }
 
 // UpsertLLMProfile inserts or updates an LLM profile in the database.
-func (d *DB) UpsertLLMProfile(name, provider, baseURL, model, summaryModel string, maxTokens int, temperature float64, apiKeyEnv string) error {
-	_, err := d.db.Exec(`
+func (d *DB) UpsertLLMProfile(profile config.LLMProfile) error {
+	inputBudgetTokens, softCompactRatio, hardCompactRatio, reserveOutputTokens, err := profileBudgetArgs(profile)
+	if err != nil {
+		return err
+	}
+	_, execErr := d.db.Exec(`
 		INSERT INTO llm_profiles (
-			name, provider, base_url, model, summary_model, max_tokens, temperature, api_key_env, created_at, updated_at
+			name, provider, base_url, model, summary_model, max_tokens, temperature, api_key_env,
+			input_budget_tokens, soft_compact_ratio, hard_compact_ratio, reserve_output_tokens,
+			created_at, updated_at
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
 		ON CONFLICT(name) DO UPDATE SET
 			provider = excluded.provider,
 			base_url = excluded.base_url,
@@ -164,21 +175,26 @@ func (d *DB) UpsertLLMProfile(name, provider, baseURL, model, summaryModel strin
 			max_tokens = excluded.max_tokens,
 			temperature = excluded.temperature,
 			api_key_env = excluded.api_key_env,
+			input_budget_tokens = excluded.input_budget_tokens,
+			soft_compact_ratio = excluded.soft_compact_ratio,
+			hard_compact_ratio = excluded.hard_compact_ratio,
+			reserve_output_tokens = excluded.reserve_output_tokens,
 			updated_at = datetime('now')
-	`, name, provider, baseURL, model, summaryModel, maxTokens, temperature, apiKeyEnv)
-	return err
+	`, profile.Name, profile.Provider, profile.BaseURL, profile.Model, profile.SummaryModel, profile.MaxTokens, profile.Temperature, profile.APIKeyEnv, inputBudgetTokens, softCompactRatio, hardCompactRatio, reserveOutputTokens)
+	return execErr
 }
 
 // GetLLMProfile returns a profile by name, or nil when it does not exist.
 func (d *DB) GetLLMProfile(ctx context.Context, name string) (*LLMProfileRecord, error) {
 	row := d.db.QueryRowContext(ctx, `
-		SELECT name, provider, base_url, model, COALESCE(summary_model, ''), max_tokens, temperature, COALESCE(api_key_env, ''), created_at, updated_at
+		SELECT name, provider, base_url, model, COALESCE(summary_model, ''), max_tokens, temperature, COALESCE(api_key_env, ''),
+		       input_budget_tokens, soft_compact_ratio, hard_compact_ratio, reserve_output_tokens, created_at, updated_at
 		FROM llm_profiles
 		WHERE name = ?
 	`, name)
 
 	var record LLMProfileRecord
-	if err := row.Scan(&record.Name, &record.Provider, &record.BaseURL, &record.Model, &record.SummaryModel, &record.MaxTokens, &record.Temperature, &record.APIKeyEnv, &record.CreatedAt, &record.UpdatedAt); err != nil {
+	if err := row.Scan(&record.Name, &record.Provider, &record.BaseURL, &record.Model, &record.SummaryModel, &record.MaxTokens, &record.Temperature, &record.APIKeyEnv, &record.InputBudgetTokens, &record.SoftCompactRatio, &record.HardCompactRatio, &record.ReserveOutputTokens, &record.CreatedAt, &record.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -190,7 +206,8 @@ func (d *DB) GetLLMProfile(ctx context.Context, name string) (*LLMProfileRecord,
 // ListLLMProfiles returns all LLM profiles ordered by name.
 func (d *DB) ListLLMProfiles() ([]LLMProfileRecord, error) {
 	rows, err := d.db.Query(`
-		SELECT name, provider, base_url, model, COALESCE(summary_model, ''), max_tokens, temperature, COALESCE(api_key_env, ''), created_at, updated_at
+		SELECT name, provider, base_url, model, COALESCE(summary_model, ''), max_tokens, temperature, COALESCE(api_key_env, ''),
+		       input_budget_tokens, soft_compact_ratio, hard_compact_ratio, reserve_output_tokens, created_at, updated_at
 		FROM llm_profiles
 		ORDER BY name
 	`)
@@ -202,7 +219,7 @@ func (d *DB) ListLLMProfiles() ([]LLMProfileRecord, error) {
 	var records []LLMProfileRecord
 	for rows.Next() {
 		var record LLMProfileRecord
-		if err := rows.Scan(&record.Name, &record.Provider, &record.BaseURL, &record.Model, &record.SummaryModel, &record.MaxTokens, &record.Temperature, &record.APIKeyEnv, &record.CreatedAt, &record.UpdatedAt); err != nil {
+		if err := rows.Scan(&record.Name, &record.Provider, &record.BaseURL, &record.Model, &record.SummaryModel, &record.MaxTokens, &record.Temperature, &record.APIKeyEnv, &record.InputBudgetTokens, &record.SoftCompactRatio, &record.HardCompactRatio, &record.ReserveOutputTokens, &record.CreatedAt, &record.UpdatedAt); err != nil {
 			return nil, err
 		}
 		records = append(records, record)
@@ -404,8 +421,19 @@ func (d *DB) UpdateSessionTitle(ctx context.Context, id, title string) error {
 	return err
 }
 
+// UpdateSessionMetadata replaces the serialized session metadata payload.
+func (d *DB) UpdateSessionMetadata(ctx context.Context, id, metadata string) error {
+	_, err := d.db.ExecContext(ctx, `UPDATE sessions SET metadata = ? WHERE id = ?`, metadata, id)
+	return err
+}
+
 // AddMessage inserts a new chat message for a session.
 func (d *DB) AddMessage(ctx context.Context, id, sessionID, role, content string) error {
+	return d.AddMessageWithMetadata(ctx, id, sessionID, role, content, nil)
+}
+
+// AddMessageWithMetadata inserts a new visible chat message and stores serialized metadata when provided.
+func (d *DB) AddMessageWithMetadata(ctx context.Context, id, sessionID, role, content string, metadata any) error {
 	if id == "" {
 		return errors.New("message id is required")
 	}
@@ -419,10 +447,15 @@ func (d *DB) AddMessage(ctx context.Context, id, sessionID, role, content string
 		return errors.New("message content is required")
 	}
 
-	_, err := d.db.ExecContext(ctx, `
-		INSERT INTO messages (id, session_id, role, content, created_at)
-		VALUES (?, ?, ?, ?, ?)
-	`, id, sessionID, role, content, nowUTC())
+	metadataJSON, err := encodeMetadata(metadata)
+	if err != nil {
+		return err
+	}
+
+	_, err = d.db.ExecContext(ctx, `
+		INSERT INTO messages (id, session_id, role, content, metadata, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, id, sessionID, role, content, metadataJSON, nowUTC())
 	return err
 }
 
@@ -511,4 +544,54 @@ func reverseMessages(records []MessageRecord) {
 	for left, right := 0, len(records)-1; left < right; left, right = left+1, right-1 {
 		records[left], records[right] = records[right], records[left]
 	}
+}
+
+func encodeMetadata(metadata any) (string, error) {
+	switch value := metadata.(type) {
+	case nil:
+		return "", nil
+	case string:
+		return value, nil
+	case []byte:
+		return string(value), nil
+	default:
+		payload, err := json.Marshal(metadata)
+		if err != nil {
+			return "", fmt.Errorf("marshal metadata: %w", err)
+		}
+		return string(payload), nil
+	}
+}
+
+func profileBudgetArgs(profile config.LLMProfile) (any, any, any, any, error) {
+	if profile.InputBudgetTokens != nil && *profile.InputBudgetTokens <= 0 {
+		return nil, nil, nil, nil, fmt.Errorf("input_budget_tokens must be > 0")
+	}
+	if profile.SoftCompactRatio != nil && (*profile.SoftCompactRatio <= 0 || *profile.SoftCompactRatio >= 1) {
+		return nil, nil, nil, nil, fmt.Errorf("soft_compact_ratio must be between 0 and 1")
+	}
+	if profile.HardCompactRatio != nil && (*profile.HardCompactRatio <= 0 || *profile.HardCompactRatio >= 1) {
+		return nil, nil, nil, nil, fmt.Errorf("hard_compact_ratio must be between 0 and 1")
+	}
+	if profile.ReserveOutputTokens != nil && *profile.ReserveOutputTokens <= 0 {
+		return nil, nil, nil, nil, fmt.Errorf("reserve_output_tokens must be > 0")
+	}
+	if profile.SoftCompactRatio != nil && profile.HardCompactRatio != nil && *profile.SoftCompactRatio >= *profile.HardCompactRatio {
+		return nil, nil, nil, nil, fmt.Errorf("soft_compact_ratio must be < hard_compact_ratio")
+	}
+	return nullableInt(profile.InputBudgetTokens), nullableFloat(profile.SoftCompactRatio), nullableFloat(profile.HardCompactRatio), nullableInt(profile.ReserveOutputTokens), nil
+}
+
+func nullableInt(value *int) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func nullableFloat(value *float64) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }

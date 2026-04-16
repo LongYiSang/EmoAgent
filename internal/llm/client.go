@@ -269,18 +269,18 @@ func (c *openaiClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("http request: %w", err)
+		return nil, wrapRequestError("openai", "chat", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
+		return nil, wrapStatusError("openai", "chat", resp.StatusCode, string(respBody))
 	}
 
 	var oResp openaiResponse
 	if err := json.NewDecoder(resp.Body).Decode(&oResp); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+		return nil, wrapDecodeError("openai", "chat", err)
 	}
 
 	chatResp := &ChatResponse{
@@ -351,14 +351,14 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 
 	resp, err := streamClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("http request: %w", err)
+		return nil, wrapRequestError("openai", "chat_stream", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		c.logger.Error("llm http error", "status", resp.StatusCode, "body", string(respBody))
-		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
+		return nil, wrapStatusError("openai", "chat_stream", resp.StatusCode, string(respBody))
 	}
 
 	decoder := NewSSEDecoder(resp.Body)
@@ -381,7 +381,7 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("sse decode: %w", err)
+			return nil, wrapStreamDecodeError("openai", "chat_stream", err)
 		}
 
 		var chunk openaiStreamChunk

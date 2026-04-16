@@ -85,6 +85,15 @@ SELECT 1;
 		Version: 4,
 		SQL:     `ALTER TABLE sessions ADD COLUMN title TEXT NOT NULL DEFAULT '';`,
 	},
+	{
+		Version: 5,
+		SQL: `
+ALTER TABLE llm_profiles ADD COLUMN input_budget_tokens INTEGER;
+ALTER TABLE llm_profiles ADD COLUMN soft_compact_ratio REAL;
+ALTER TABLE llm_profiles ADD COLUMN hard_compact_ratio REAL;
+ALTER TABLE llm_profiles ADD COLUMN reserve_output_tokens INTEGER;
+`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.

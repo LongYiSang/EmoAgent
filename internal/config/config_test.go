@@ -65,6 +65,8 @@ llm_profiles:
     max_tokens: 2048
     temperature: 0.3
     api_key_env: OPENAI_API_KEY
+    input_budget_tokens: 12000
+    reserve_output_tokens: 1024
 `), 0o644)
 
 	cfg, err := Load(path)
@@ -92,6 +94,25 @@ llm_profiles:
 	profile := cfg.LLMProfiles[0]
 	if profile.Name != "default" || profile.APIKeyEnv != "OPENAI_API_KEY" || profile.MaxTokens != 2048 {
 		t.Fatalf("llm_profiles[0] = %#v", profile)
+	}
+	if profile.InputBudgetTokens == nil || *profile.InputBudgetTokens != 12000 {
+		t.Fatalf("llm_profiles[0].input_budget_tokens = %#v, want 12000", profile.InputBudgetTokens)
+	}
+	if profile.ReserveOutputTokens == nil || *profile.ReserveOutputTokens != 1024 {
+		t.Fatalf("llm_profiles[0].reserve_output_tokens = %#v, want 1024", profile.ReserveOutputTokens)
+	}
+	effective, err := profile.ResolveContextConfig(cfg.Context)
+	if err != nil {
+		t.Fatalf("ResolveContextConfig: %v", err)
+	}
+	if effective.InputBudgetTokens != 12000 {
+		t.Fatalf("effective.input_budget_tokens = %d, want 12000", effective.InputBudgetTokens)
+	}
+	if effective.ReserveOutputTokens != 1024 {
+		t.Fatalf("effective.reserve_output_tokens = %d, want 1024", effective.ReserveOutputTokens)
+	}
+	if effective.KeepRecentUserTurns != cfg.Context.KeepRecentUserTurns {
+		t.Fatalf("effective.keep_recent_user_turns = %d, want global %d", effective.KeepRecentUserTurns, cfg.Context.KeepRecentUserTurns)
 	}
 	// Default should still apply for unset fields.
 	if cfg.DB.Path != "./data/emo.db" {
@@ -121,6 +142,23 @@ func TestValidateRejectsInvalidContextBudget(t *testing.T) {
 	cfg.Context.InputBudgetTokens = 0
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error for invalid context budget")
+	}
+}
+
+func TestValidateRejectsInvalidProfileBudgetOverrides(t *testing.T) {
+	cfg := DefaultConfig()
+	zero := 0
+	cfg.LLMProfiles = []LLMProfile{{
+		Name:              "default",
+		Provider:          "openai",
+		BaseURL:           "https://api.openai.com",
+		Model:             "gpt-4o-mini",
+		MaxTokens:         1024,
+		Temperature:       0.7,
+		InputBudgetTokens: &zero,
+	}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for invalid profile input_budget_tokens override")
 	}
 }
 

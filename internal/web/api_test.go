@@ -161,6 +161,32 @@ func TestHandleCreateLLMProfileMapsConflict(t *testing.T) {
 	}
 }
 
+func TestHandleCreateLLMProfileParsesBudgetOverrides(t *testing.T) {
+	app := &fakeAdminApp{}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	body := bytes.NewBufferString(`{"id":"default","name":"Default","provider":"openai","base_url":"https://api.openai.com","model":"gpt-4o","max_tokens":128,"temperature":0.7,"input_budget_tokens":12000,"soft_compact_ratio":0.6,"hard_compact_ratio":0.85,"reserve_output_tokens":1024}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/llm-profiles", body)
+	rec := httptest.NewRecorder()
+	handler.HandleCreateLLMProfile(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", rec.Code)
+	}
+	if app.lastCreate.InputBudgetTokens == nil || *app.lastCreate.InputBudgetTokens != 12000 {
+		t.Fatalf("InputBudgetTokens = %#v, want 12000", app.lastCreate.InputBudgetTokens)
+	}
+	if app.lastCreate.SoftCompactRatio == nil || *app.lastCreate.SoftCompactRatio != 0.6 {
+		t.Fatalf("SoftCompactRatio = %#v, want 0.6", app.lastCreate.SoftCompactRatio)
+	}
+	if app.lastCreate.HardCompactRatio == nil || *app.lastCreate.HardCompactRatio != 0.85 {
+		t.Fatalf("HardCompactRatio = %#v, want 0.85", app.lastCreate.HardCompactRatio)
+	}
+	if app.lastCreate.ReserveOutputTokens == nil || *app.lastCreate.ReserveOutputTokens != 1024 {
+		t.Fatalf("ReserveOutputTokens = %#v, want 1024", app.lastCreate.ReserveOutputTokens)
+	}
+}
+
 func TestHandleGetLLMProfileMapsWrappedNotFound(t *testing.T) {
 	app := &fakeAdminApp{getErr: fmt.Errorf("wrapped: %w", apperrors.ErrLLMProfileNotFound)}
 	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))

@@ -1,14 +1,32 @@
 package context_test
 
 import (
+	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/longyisang/emoagent/internal/config"
 	ctxpkg "github.com/longyisang/emoagent/internal/context"
+	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/storage"
 )
+
+type summaryUpdateClient struct {
+	response *llm.ChatResponse
+	err      error
+}
+
+func (c *summaryUpdateClient) Chat(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+	return c.response, c.err
+}
+
+func (c *summaryUpdateClient) ChatStream(context.Context, llm.ChatRequest, llm.StreamCallback) (*llm.ChatResponse, error) {
+	panic("unexpected ChatStream call")
+}
 
 func TestBuildEmotionContextUsesPinnedContextAndRecentTurns(t *testing.T) {
 	persona := &config.Persona{
@@ -147,4 +165,281 @@ func TestBuildEmotionContextPlacesToolDigestBeforeRecentTurns(t *testing.T) {
 	if !assembled.CompactReport.UsedToolDigest {
 		t.Fatal("CompactReport.UsedToolDigest = false, want true")
 	}
+}
+
+func TestContextStateRoundTripInSessionMetadata(t *testing.T) {
+	db := openContextTestDB(t)
+	ctx := context.Background()
+	if err := db.CreateSession(ctx, "session-1", "default"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	want := ctxpkg.ContextState{
+		ContextVersion: 1,
+		Mode:           ctxpkg.ModeEmotion,
+		RunningSummary: ctxpkg.RunningSummary{
+			SessionGoal: "ship phase 5b",
+			UserFacts:   []string{"prefers concise status"},
+			RelationshipState: ctxpkg.RelationshipState{
+				Tone:          "direct",
+				RecentEmotion: "focused",
+				PromisesMade:  []string{"report final status"},
+			},
+			OpenLoops:   []string{"wire summary runtime"},
+			Decisions:   []string{"store state in sessions.metadata"},
+			DoNotForget: []string{"do not pollute visible history"},
+		},
+		SummaryCoveredUntilMessageID: "msg-2",
+		SummaryUpdatedAt:             "2026-04-16T00:00:00Z",
+		LastCompactReason:            "summary",
+		LastInputEstimate:            321,
+		KeepRecentUserTurns:          4,
+	}
+
+	if err := ctxpkg.UpdateSessionContextState(ctx, db, "session-1", want); err != nil {
+		t.Fatalf("UpdateSessionContextState: %v", err)
+	}
+
+	got, err := ctxpkg.LoadSessionState(ctx, db, "session-1", config.ContextConfig{
+		InputBudgetTokens:    24000,
+		SoftCompactRatio:     0.75,
+		HardCompactRatio:     0.92,
+		ReserveOutputTokens:  4096,
+		KeepRecentUserTurns:  6,
+		ToolResultSoftTokens: 1000,
+		ToolResultHardTokens: 3000,
+	})
+	if err != nil {
+		t.Fatalf("LoadSessionState: %v", err)
+	}
+
+	if got.ContextVersion != 1 {
+		t.Fatalf("ContextVersion = %d, want 1", got.ContextVersion)
+	}
+	if got.SummaryCoveredUntilMessageID != "msg-2" {
+		t.Fatalf("SummaryCoveredUntilMessageID = %q, want msg-2", got.SummaryCoveredUntilMessageID)
+	}
+	if len(got.RunningSummary.RelationshipState.PromisesMade) != 1 || got.RunningSummary.RelationshipState.PromisesMade[0] != "report final status" {
+		t.Fatalf("PromisesMade = %#v, want preserved promise", got.RunningSummary.RelationshipState.PromisesMade)
+	}
+}
+
+func TestContextStateVersionUpgradeUsesDefaults(t *testing.T) {
+	db := openContextTestDB(t)
+	ctx := context.Background()
+	if err := db.CreateSession(ctx, "session-1", "default"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	legacy := `{"running_summary":{"session_goal":"legacy"},"summary_covered_until_message_id":"msg-1"}`
+	if _, err := db.SqlDB().ExecContext(ctx, `UPDATE sessions SET metadata = ? WHERE id = ?`, legacy, "session-1"); err != nil {
+		t.Fatalf("seed legacy metadata: %v", err)
+	}
+
+	got, err := ctxpkg.LoadSessionState(ctx, db, "session-1", config.ContextConfig{
+		InputBudgetTokens:    24000,
+		SoftCompactRatio:     0.75,
+		HardCompactRatio:     0.92,
+		ReserveOutputTokens:  4096,
+		KeepRecentUserTurns:  6,
+		ToolResultSoftTokens: 1000,
+		ToolResultHardTokens: 3000,
+	})
+	if err != nil {
+		t.Fatalf("LoadSessionState: %v", err)
+	}
+
+	if got.ContextVersion != 1 {
+		t.Fatalf("ContextVersion = %d, want upgraded to 1", got.ContextVersion)
+	}
+	if got.Mode != ctxpkg.ModeEmotion {
+		t.Fatalf("Mode = %q, want %q", got.Mode, ctxpkg.ModeEmotion)
+	}
+	if got.KeepRecentUserTurns != 6 {
+		t.Fatalf("KeepRecentUserTurns = %d, want 6", got.KeepRecentUserTurns)
+	}
+	if got.RunningSummary.SessionGoal != "legacy" {
+		t.Fatalf("SessionGoal = %q, want legacy", got.RunningSummary.SessionGoal)
+	}
+}
+
+func TestBuildEmotionContextWithStatePlacesRunningSummaryBeforeRecentTurns(t *testing.T) {
+	persona := &config.Persona{
+		Name:         "default",
+		SystemPrompt: "You are warm.",
+	}
+	history := []storage.MessageRecord{
+		{ID: "1", Role: "user", Content: "recent question"},
+		{ID: "2", Role: "assistant", Content: "recent answer"},
+	}
+	state := &ctxpkg.ContextState{
+		ContextVersion: 1,
+		Mode:           ctxpkg.ModeEmotion,
+		RunningSummary: ctxpkg.RunningSummary{
+			SessionGoal: "help user ship context state",
+		},
+	}
+
+	assembled, err := ctxpkg.BuildEmotionContextWithState(persona, history, state, config.ContextConfig{
+		InputBudgetTokens:    24000,
+		SoftCompactRatio:     0.75,
+		HardCompactRatio:     0.92,
+		ReserveOutputTokens:  4096,
+		KeepRecentUserTurns:  1,
+		ToolResultSoftTokens: 1000,
+		ToolResultHardTokens: 3000,
+	})
+	if err != nil {
+		t.Fatalf("BuildEmotionContextWithState: %v", err)
+	}
+
+	if len(assembled.Messages) != 3 {
+		t.Fatalf("len(Messages) = %d, want 3", len(assembled.Messages))
+	}
+	if assembled.Messages[0].Role != "user" {
+		t.Fatalf("Messages[0].Role = %q, want user", assembled.Messages[0].Role)
+	}
+	if !strings.Contains(assembled.Messages[0].Content, `"running_summary"`) {
+		t.Fatalf("Messages[0] = %#v, want running summary envelope first", assembled.Messages[0])
+	}
+	if assembled.Messages[1].Content != "recent question" {
+		t.Fatalf("Messages[1] = %#v, want recent question second", assembled.Messages[1])
+	}
+	if assembled.Messages[2].Content != "recent answer" {
+		t.Fatalf("Messages[2] = %#v, want recent answer last", assembled.Messages[2])
+	}
+}
+
+func TestCompactReportIncludesReasonAndTokenDeltas(t *testing.T) {
+	compacted, report, err := ctxpkg.ApplyReactiveCompact(
+		"session-1",
+		[]llm.Message{
+			{Role: llm.RoleUser, Content: `{"running_summary":{"session_goal":"keep summary"}}`},
+			{Role: llm.RoleUser, Content: "older user"},
+			{Role: llm.RoleAssistant, Content: "older assistant"},
+			{Role: llm.RoleUser, Content: "latest user"},
+			{Role: llm.RoleTool, ToolCallID: "call-1", Content: `{"body":"` + strings.Repeat("x", 10000) + `"}`},
+		},
+		&ctxpkg.ContextState{SummaryCoveredUntilMessageID: "msg-2"},
+		"summary-model",
+		config.ContextConfig{
+			InputBudgetTokens:    24000,
+			SoftCompactRatio:     0.75,
+			HardCompactRatio:     0.92,
+			ReserveOutputTokens:  4096,
+			KeepRecentUserTurns:  1,
+			ToolResultSoftTokens: 10,
+			ToolResultHardTokens: 20,
+		},
+	)
+	if err != nil {
+		t.Fatalf("ApplyReactiveCompact: %v", err)
+	}
+	if len(compacted) != 3 {
+		t.Fatalf("len(compacted) = %d, want 3", len(compacted))
+	}
+	if report.Mode != "reactive" {
+		t.Fatalf("Mode = %q, want reactive", report.Mode)
+	}
+	if report.CompactReason != "reactive_overflow" {
+		t.Fatalf("CompactReason = %q, want reactive_overflow", report.CompactReason)
+	}
+	if report.PreEstimatedTokens <= report.PostEstimatedTokens {
+		t.Fatalf("token delta = %d -> %d, want pre > post", report.PreEstimatedTokens, report.PostEstimatedTokens)
+	}
+	if report.SnippedToolResultsCount != 1 {
+		t.Fatalf("SnippedToolResultsCount = %d, want 1", report.SnippedToolResultsCount)
+	}
+}
+
+func TestCompactReportCarriesSummaryCoverageAndSummaryModel(t *testing.T) {
+	_, report, err := ctxpkg.ApplyReactiveCompact(
+		"session-42",
+		[]llm.Message{
+			{Role: llm.RoleUser, Content: `{"running_summary":{"session_goal":"keep summary"}}`},
+			{Role: llm.RoleUser, Content: "latest user"},
+		},
+		&ctxpkg.ContextState{SummaryCoveredUntilMessageID: "msg-9"},
+		"summary-model",
+		config.ContextConfig{
+			InputBudgetTokens:    24000,
+			SoftCompactRatio:     0.75,
+			HardCompactRatio:     0.92,
+			ReserveOutputTokens:  4096,
+			KeepRecentUserTurns:  1,
+			ToolResultSoftTokens: 1000,
+			ToolResultHardTokens: 3000,
+		},
+	)
+	if err != nil {
+		t.Fatalf("ApplyReactiveCompact: %v", err)
+	}
+	if report.SessionID != "session-42" {
+		t.Fatalf("SessionID = %q, want session-42", report.SessionID)
+	}
+	if report.SummaryCoveredUntilMessageID != "msg-9" {
+		t.Fatalf("SummaryCoveredUntilMessageID = %q, want msg-9", report.SummaryCoveredUntilMessageID)
+	}
+	if report.SummaryModel != "summary-model" {
+		t.Fatalf("SummaryModel = %q, want summary-model", report.SummaryModel)
+	}
+}
+
+func TestRunningSummaryIterativeUpdatePreservesProtectedFields(t *testing.T) {
+	client := &summaryUpdateClient{
+		response: &llm.ChatResponse{
+			ID:      "summary-1",
+			Model:   "summary-model",
+			Content: `{"running_summary":{"session_goal":"updated goal","relationship_state":{"tone":"steady","recent_emotion":"focused"},"open_loops":["new loop"],"decisions":["new decision"]}}`,
+		},
+	}
+	state := &ctxpkg.ContextState{
+		ContextVersion: 1,
+		Mode:           ctxpkg.ModeEmotion,
+		RunningSummary: ctxpkg.RunningSummary{
+			SessionGoal: "old goal",
+			RelationshipState: ctxpkg.RelationshipState{
+				PromisesMade: []string{"follow up tomorrow"},
+			},
+			DoNotForget: []string{"user needs concise updates"},
+		},
+	}
+	history := []storage.MessageRecord{
+		{ID: "m1", Role: "user", Content: "older user"},
+		{ID: "m2", Role: "assistant", Content: "older assistant"},
+		{ID: "m3", Role: "user", Content: "latest user"},
+	}
+
+	next, err := ctxpkg.UpdateRunningSummary(context.Background(), client, "summary-model", &config.Persona{Name: "default", SystemPrompt: "system"}, history, state, config.ContextConfig{
+		InputBudgetTokens:    24000,
+		SoftCompactRatio:     0.75,
+		HardCompactRatio:     0.92,
+		ReserveOutputTokens:  4096,
+		KeepRecentUserTurns:  1,
+		ToolResultSoftTokens: 1000,
+		ToolResultHardTokens: 3000,
+	})
+	if err != nil {
+		t.Fatalf("UpdateRunningSummary: %v", err)
+	}
+	if len(next.RunningSummary.RelationshipState.PromisesMade) != 1 || next.RunningSummary.RelationshipState.PromisesMade[0] != "follow up tomorrow" {
+		t.Fatalf("PromisesMade = %#v, want preserved existing promise", next.RunningSummary.RelationshipState.PromisesMade)
+	}
+	if len(next.RunningSummary.DoNotForget) != 1 || next.RunningSummary.DoNotForget[0] != "user needs concise updates" {
+		t.Fatalf("DoNotForget = %#v, want preserved existing constraint", next.RunningSummary.DoNotForget)
+	}
+	if next.RunningSummary.SessionGoal != "updated goal" {
+		t.Fatalf("SessionGoal = %q, want updated goal", next.RunningSummary.SessionGoal)
+	}
+}
+
+func openContextTestDB(t *testing.T) *storage.DB {
+	t.Helper()
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "context.db"), logger)
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
 }

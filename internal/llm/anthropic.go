@@ -172,14 +172,14 @@ func (c *anthropicClient) doRequest(ctx context.Context, body []byte, stream boo
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("http request: %w", err)
+		return nil, wrapRequestError("anthropic", "messages", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		c.logger.Error("llm http error", "status", resp.StatusCode, "body", string(respBody))
-		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
+		return nil, wrapStatusError("anthropic", "messages", resp.StatusCode, string(respBody))
 	}
 
 	return resp, nil
@@ -209,7 +209,7 @@ func (c *anthropicClient) Chat(ctx context.Context, req ChatRequest) (*ChatRespo
 
 	var aResp anthropicResponse
 	if err := json.NewDecoder(resp.Body).Decode(&aResp); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+		return nil, wrapDecodeError("anthropic", "messages", err)
 	}
 
 	content, contentBlocks := c.parseContentBlocks(aResp.Content)
@@ -270,7 +270,7 @@ func (c *anthropicClient) ChatStream(ctx context.Context, req ChatRequest, cb St
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("sse decode: %w", err)
+			return nil, wrapStreamDecodeError("anthropic", "messages_stream", err)
 		}
 
 		var se anthropicStreamEvent

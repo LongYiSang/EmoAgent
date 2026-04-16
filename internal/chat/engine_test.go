@@ -1,8 +1,10 @@
 package chat
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -16,14 +18,25 @@ import (
 )
 
 type fakeLLMClient struct {
-	lastRequest llm.ChatRequest
-	response    *llm.ChatResponse
-	err         error
-	deltas      []string
+	lastRequest  llm.ChatRequest
+	chatRequests []llm.ChatRequest
+	chatResponse *llm.ChatResponse
+	chatErr      error
+	response     *llm.ChatResponse
+	err          error
+	deltas       []string
 }
 
-func (f *fakeLLMClient) Chat(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
-	panic("unexpected Chat call")
+func (f *fakeLLMClient) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	f.chatRequests = append(f.chatRequests, req)
+	if f.chatResponse != nil || f.chatErr != nil {
+		return f.chatResponse, f.chatErr
+	}
+	return &llm.ChatResponse{
+		ID:      "summary-1",
+		Model:   req.Model,
+		Content: `{"running_summary":{"session_goal":"summarized"}}`,
+	}, nil
 }
 
 func (f *fakeLLMClient) ChatStream(_ context.Context, req llm.ChatRequest, cb llm.StreamCallback) (*llm.ChatResponse, error) {
@@ -37,6 +50,68 @@ func (f *fakeLLMClient) ChatStream(_ context.Context, req llm.ChatRequest, cb ll
 		cb(llm.StreamEvent{Done: true})
 	}
 	return f.response, f.err
+}
+
+type reactiveRetryLLMClient struct {
+	requests []llm.ChatRequest
+	errs     []error
+	response *llm.ChatResponse
+}
+
+func (c *reactiveRetryLLMClient) Chat(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+	panic("unexpected summary Chat call")
+}
+
+func (c *reactiveRetryLLMClient) ChatStream(_ context.Context, req llm.ChatRequest, cb llm.StreamCallback) (*llm.ChatResponse, error) {
+	c.requests = append(c.requests, req)
+	call := len(c.requests) - 1
+	if call < len(c.errs) && c.errs[call] != nil {
+		return nil, c.errs[call]
+	}
+	if cb != nil {
+		cb(llm.StreamEvent{Done: true})
+	}
+	return c.response, nil
+}
+
+type reactiveToolLoopLLMClient struct {
+	requests []llm.ChatRequest
+}
+
+func (c *reactiveToolLoopLLMClient) Chat(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+	panic("unexpected summary Chat call")
+}
+
+func (c *reactiveToolLoopLLMClient) ChatStream(_ context.Context, req llm.ChatRequest, cb llm.StreamCallback) (*llm.ChatResponse, error) {
+	c.requests = append(c.requests, req)
+	switch len(c.requests) {
+	case 1:
+		return nil, &llm.Error{Kind: llm.ErrorKindContextOverflow, Provider: "openai", Operation: "chat_stream", StatusCode: 400, Message: "prompt too long"}
+	case 2:
+		if cb != nil {
+			cb(llm.StreamEvent{Done: true})
+		}
+		return &llm.ChatResponse{
+			ID:         "resp-tool",
+			StopReason: "tool_use",
+			ContentBlocks: []llm.ContentBlock{
+				{Type: "tool_use", ID: "call_1", Name: "get_current_time", Input: json.RawMessage(`{}`)},
+			},
+		}, nil
+	default:
+		if cb != nil {
+			cb(llm.StreamEvent{Content: "final"})
+			cb(llm.StreamEvent{Done: true})
+		}
+		return &llm.ChatResponse{
+			ID:         "resp-final",
+			Content:    "final",
+			StopReason: "end_turn",
+			ContentBlocks: []llm.ContentBlock{
+				{Type: "text", Text: "final"},
+			},
+		}, nil
+	}
 }
 
 func TestEngineStartSessionPersistsSession(t *testing.T) {
@@ -153,7 +228,15 @@ func TestEngineUpdateConfigAffectsSubsequentMessages(t *testing.T) {
 		t.Fatalf("SendMessage(before): %v", err)
 	}
 
-	engine.UpdateConfig(secondClient, "openai", "model-b", 1024, 0.9)
+	engine.UpdateConfig(secondClient, "openai", "model-b", "summary-b", 1024, 0.9, config.ContextConfig{
+		InputBudgetTokens:    12000,
+		SoftCompactRatio:     0.70,
+		HardCompactRatio:     0.90,
+		ReserveOutputTokens:  2048,
+		KeepRecentUserTurns:  2,
+		ToolResultSoftTokens: 50,
+		ToolResultHardTokens: 100,
+	})
 
 	if _, err := engine.SendMessage(context.Background(), sessionID, persona, "after update", nil); err != nil {
 		t.Fatalf("SendMessage(after): %v", err)
@@ -167,6 +250,12 @@ func TestEngineUpdateConfigAffectsSubsequentMessages(t *testing.T) {
 	}
 	if secondClient.lastRequest.Temperature != 0.9 {
 		t.Fatalf("lastRequest.Temperature = %v, want 0.9", secondClient.lastRequest.Temperature)
+	}
+	if engine.summaryModel != "summary-b" {
+		t.Fatalf("summaryModel = %q, want summary-b", engine.summaryModel)
+	}
+	if engine.contextCfg.KeepRecentUserTurns != 2 {
+		t.Fatalf("contextCfg.KeepRecentUserTurns = %d, want 2", engine.contextCfg.KeepRecentUserTurns)
 	}
 }
 
@@ -266,11 +355,14 @@ func TestEngineSendMessageUsesAssemblerInsteadOfRecentMessagesOnly(t *testing.T)
 		t.Fatalf("SendMessage: %v", err)
 	}
 
-	if len(fakeLLM.lastRequest.Messages) != 1 {
-		t.Fatalf("len(Messages) = %d, want 1", len(fakeLLM.lastRequest.Messages))
+	if len(fakeLLM.lastRequest.Messages) != 2 {
+		t.Fatalf("len(Messages) = %d, want 2 (running summary + latest user)", len(fakeLLM.lastRequest.Messages))
 	}
-	if fakeLLM.lastRequest.Messages[0].Content != "latest user" {
-		t.Fatalf("Messages[0] = %#v, want latest user only", fakeLLM.lastRequest.Messages[0])
+	if !strings.Contains(fakeLLM.lastRequest.Messages[0].Content, `"running_summary"`) {
+		t.Fatalf("Messages[0] = %#v, want running summary envelope first", fakeLLM.lastRequest.Messages[0])
+	}
+	if fakeLLM.lastRequest.Messages[1].Content != "latest user" {
+		t.Fatalf("Messages[1] = %#v, want latest user last", fakeLLM.lastRequest.Messages[1])
 	}
 }
 
@@ -290,12 +382,13 @@ func newTestEngine(t *testing.T, client llm.Client) (*Engine, *storage.DB, *slog
 	})
 
 	engine := NewEngine(EngineConfig{
-		LLM:         client,
-		DB:          db,
-		Logger:      logger,
-		Model:       "test-model",
-		MaxTokens:   256,
-		Temperature: 0.2,
+		LLM:          client,
+		DB:           db,
+		Logger:       logger,
+		Model:        "test-model",
+		SummaryModel: "summary-model",
+		MaxTokens:    256,
+		Temperature:  0.2,
 		ContextConfig: config.ContextConfig{
 			InputBudgetTokens:    24000,
 			SoftCompactRatio:     0.75,
@@ -553,5 +646,344 @@ func TestEngineToolLoopSnipsLargeToolResult(t *testing.T) {
 	}
 	if strings.Contains(last.Content, strings.Repeat("x", 1000)) {
 		t.Fatal("tool result content still contains raw payload")
+	}
+}
+
+func TestSummaryModelFallsBackToPrimaryModelWhenEmpty(t *testing.T) {
+	fakeLLM := &fakeLLMClient{
+		response: &llm.ChatResponse{ID: "resp-1", Content: "ok", StopReason: "end_turn"},
+	}
+	engine, db, _ := newTestEngine(t, fakeLLM)
+	engine.contextCfg.KeepRecentUserTurns = 1
+	engine.summaryModel = ""
+
+	ctx := context.Background()
+	sessionID, err := engine.StartSession(ctx, "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	for _, msg := range []struct {
+		id      string
+		role    string
+		content string
+	}{
+		{id: "m1", role: "user", content: "old user"},
+		{id: "m2", role: "assistant", content: "old assistant"},
+	} {
+		if err := db.AddMessage(ctx, msg.id, sessionID, msg.role, msg.content); err != nil {
+			t.Fatalf("AddMessage(%s): %v", msg.id, err)
+		}
+	}
+
+	persona := &config.Persona{Name: "default", SystemPrompt: "system"}
+	if _, err := engine.SendMessage(ctx, sessionID, persona, "latest user", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	if len(fakeLLM.chatRequests) == 0 {
+		t.Fatal("summary Chat was not invoked")
+	}
+	if fakeLLM.chatRequests[0].Model != "test-model" {
+		t.Fatalf("summary request model = %q, want fallback test-model", fakeLLM.chatRequests[0].Model)
+	}
+}
+
+func TestSummaryFailureFallsBackWithoutBlockingChat(t *testing.T) {
+	fakeLLM := &fakeLLMClient{
+		chatErr:  errors.New("summary unavailable"),
+		response: &llm.ChatResponse{ID: "resp-1", Content: "ok", StopReason: "end_turn"},
+	}
+	engine, db, _ := newTestEngine(t, fakeLLM)
+	engine.contextCfg.KeepRecentUserTurns = 1
+
+	ctx := context.Background()
+	sessionID, err := engine.StartSession(ctx, "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if err := db.AddMessage(ctx, "old-user", sessionID, "user", "old user"); err != nil {
+		t.Fatalf("AddMessage(old-user): %v", err)
+	}
+	if err := db.AddMessage(ctx, "old-assistant", sessionID, "assistant", "old assistant"); err != nil {
+		t.Fatalf("AddMessage(old-assistant): %v", err)
+	}
+	if _, err := db.SqlDB().ExecContext(ctx, `UPDATE sessions SET metadata = ? WHERE id = ?`, "{bad json", sessionID); err != nil {
+		t.Fatalf("corrupt session metadata: %v", err)
+	}
+
+	persona := &config.Persona{Name: "default", SystemPrompt: "system"}
+	reply, err := engine.SendMessage(ctx, sessionID, persona, "latest user", nil)
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if reply != "ok" {
+		t.Fatalf("reply = %q, want ok", reply)
+	}
+	if len(fakeLLM.chatRequests) == 0 {
+		t.Fatal("summary Chat was not attempted")
+	}
+	if len(fakeLLM.lastRequest.Messages) != 1 || fakeLLM.lastRequest.Messages[0].Content != "latest user" {
+		t.Fatalf("Messages = %#v, want chat to continue with recent turn only", fakeLLM.lastRequest.Messages)
+	}
+}
+
+func TestSummaryDoesNotPolluteVisibleHistory(t *testing.T) {
+	fakeLLM := &fakeLLMClient{
+		chatResponse: &llm.ChatResponse{
+			ID:      "summary-1",
+			Model:   "summary-model",
+			Content: `{"running_summary":{"session_goal":"summarized old history"}}`,
+		},
+		response: &llm.ChatResponse{ID: "resp-1", Content: "ok", StopReason: "end_turn"},
+	}
+	engine, db, _ := newTestEngine(t, fakeLLM)
+	engine.contextCfg.KeepRecentUserTurns = 1
+	engine.summaryModel = "summary-model"
+
+	ctx := context.Background()
+	sessionID, err := engine.StartSession(ctx, "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	for _, msg := range []struct {
+		id      string
+		role    string
+		content string
+	}{
+		{id: "m1", role: "user", content: "old user"},
+		{id: "m2", role: "assistant", content: "old assistant"},
+	} {
+		if err := db.AddMessage(ctx, msg.id, sessionID, msg.role, msg.content); err != nil {
+			t.Fatalf("AddMessage(%s): %v", msg.id, err)
+		}
+	}
+
+	persona := &config.Persona{Name: "default", SystemPrompt: "system"}
+	if _, err := engine.SendMessage(ctx, sessionID, persona, "latest user", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	history, err := db.GetAllMessages(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("GetAllMessages: %v", err)
+	}
+	if len(history) != 4 {
+		t.Fatalf("len(history) = %d, want 4 visible user/assistant messages only", len(history))
+	}
+	for _, msg := range history {
+		if msg.Role != "user" && msg.Role != "assistant" {
+			t.Fatalf("unexpected visible role %q in history", msg.Role)
+		}
+		if strings.Contains(msg.Content, "running_summary") {
+			t.Fatalf("visible history polluted by summary message: %#v", msg)
+		}
+	}
+}
+
+func TestReactiveCompactRetriesOnceOnOverflow(t *testing.T) {
+	client := &reactiveRetryLLMClient{
+		errs: []error{
+			&llm.Error{Kind: llm.ErrorKindContextOverflow, Provider: "openai", Operation: "chat_stream", StatusCode: 400, Message: "prompt too long"},
+		},
+		response: &llm.ChatResponse{ID: "resp-1", Content: "ok", StopReason: "end_turn"},
+	}
+	engine, _, _ := newTestEngine(t, client)
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	persona := &config.Persona{Name: "default", SystemPrompt: "system"}
+	reply, err := engine.SendMessage(context.Background(), sessionID, persona, "latest user", nil)
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if reply != "ok" {
+		t.Fatalf("reply = %q, want ok", reply)
+	}
+	if len(client.requests) != 2 {
+		t.Fatalf("len(requests) = %d, want 2", len(client.requests))
+	}
+}
+
+func TestReactiveCompactDoesNotRetryOnTransportError(t *testing.T) {
+	client := &reactiveRetryLLMClient{
+		errs: []error{
+			&llm.Error{Kind: llm.ErrorKindTransport, Provider: "openai", Operation: "chat_stream", Message: "timeout"},
+		},
+		response: &llm.ChatResponse{ID: "resp-1", Content: "ok", StopReason: "end_turn"},
+	}
+	engine, _, _ := newTestEngine(t, client)
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	persona := &config.Persona{Name: "default", SystemPrompt: "system"}
+	if _, err := engine.SendMessage(context.Background(), sessionID, persona, "latest user", nil); err == nil {
+		t.Fatal("SendMessage should fail on transport error")
+	}
+	if len(client.requests) != 1 {
+		t.Fatalf("len(requests) = %d, want 1", len(client.requests))
+	}
+}
+
+func TestReactiveCompactStopsAfterSingleRetry(t *testing.T) {
+	client := &reactiveRetryLLMClient{
+		errs: []error{
+			&llm.Error{Kind: llm.ErrorKindContextOverflow, Provider: "openai", Operation: "chat_stream", StatusCode: 400, Message: "prompt too long"},
+			&llm.Error{Kind: llm.ErrorKindContextOverflow, Provider: "openai", Operation: "chat_stream", StatusCode: 400, Message: "prompt still too long"},
+		},
+	}
+	engine, _, _ := newTestEngine(t, client)
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	persona := &config.Persona{Name: "default", SystemPrompt: "system"}
+	if _, err := engine.SendMessage(context.Background(), sessionID, persona, "latest user", nil); err == nil {
+		t.Fatal("SendMessage should fail after the single reactive retry is exhausted")
+	}
+	if len(client.requests) != 2 {
+		t.Fatalf("len(requests) = %d, want 2", len(client.requests))
+	}
+}
+
+func TestReactiveCompactToolLoopUsesCompactedWorkingSetAfterRetry(t *testing.T) {
+	client := &reactiveToolLoopLLMClient{}
+	registry := tool.NewRegistry()
+	registry.Register(tool.Spec{
+		Name:        "get_current_time",
+		Description: "Get current time",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+		Scope:       tool.ScopeBoth,
+		Permission:  tool.PermReadOnly,
+	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{"current_time":"17:00:00","timezone":"CST"}`), nil
+	})
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chat.db")
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	db, err := storage.Open(path, logger)
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, logger)
+	engine := NewEngine(EngineConfig{
+		LLM:          client,
+		DB:           db,
+		Logger:       logger,
+		Model:        "test-model",
+		SummaryModel: "summary-model",
+		MaxTokens:    256,
+		Temperature:  0.2,
+		ContextConfig: config.ContextConfig{
+			InputBudgetTokens:    24000,
+			SoftCompactRatio:     0.75,
+			HardCompactRatio:     0.92,
+			ReserveOutputTokens:  4096,
+			KeepRecentUserTurns:  2,
+			ToolResultSoftTokens: 1000,
+			ToolResultHardTokens: 3000,
+		},
+		Provider:   "openai",
+		Registry:   registry,
+		Dispatcher: dispatcher,
+	})
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if err := db.AddMessage(context.Background(), "old-user", sessionID, "user", "old user"); err != nil {
+		t.Fatalf("AddMessage(old-user): %v", err)
+	}
+	if err := db.AddMessage(context.Background(), "old-assistant", sessionID, "assistant", "old assistant"); err != nil {
+		t.Fatalf("AddMessage(old-assistant): %v", err)
+	}
+
+	persona := &config.Persona{Name: "default", SystemPrompt: "system"}
+	reply, err := engine.SendMessage(context.Background(), sessionID, persona, "latest user", nil)
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if reply != "final" {
+		t.Fatalf("reply = %q, want final", reply)
+	}
+	if len(client.requests) != 3 {
+		t.Fatalf("len(requests) = %d, want 3", len(client.requests))
+	}
+	if len(client.requests[1].Messages) != 1 {
+		t.Fatalf("retry messages len = %d, want 1 compacted latest user only", len(client.requests[1].Messages))
+	}
+	if len(client.requests[2].Messages) != 3 {
+		t.Fatalf("post-tool-loop messages len = %d, want 3 compacted working-set messages", len(client.requests[2].Messages))
+	}
+	if client.requests[2].Messages[0].Content != "latest user" {
+		t.Fatalf("post-tool-loop first message = %#v, want latest user", client.requests[2].Messages[0])
+	}
+}
+
+func TestReactiveCompactRetryFailureLogsCompactContext(t *testing.T) {
+	client := &reactiveRetryLLMClient{
+		errs: []error{
+			&llm.Error{Kind: llm.ErrorKindContextOverflow, Provider: "openai", Operation: "chat_stream", StatusCode: 400, Message: "prompt too long"},
+			&llm.Error{Kind: llm.ErrorKindContextOverflow, Provider: "openai", Operation: "chat_stream", StatusCode: 400, Message: "prompt still too long"},
+		},
+	}
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "chat.db"), logger)
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	engine := NewEngine(EngineConfig{
+		LLM:          client,
+		DB:           db,
+		Logger:       logger,
+		Model:        "test-model",
+		SummaryModel: "summary-model",
+		MaxTokens:    256,
+		Temperature:  0.2,
+		ContextConfig: config.ContextConfig{
+			InputBudgetTokens:    24000,
+			SoftCompactRatio:     0.75,
+			HardCompactRatio:     0.92,
+			ReserveOutputTokens:  4096,
+			KeepRecentUserTurns:  1,
+			ToolResultSoftTokens: 1000,
+			ToolResultHardTokens: 3000,
+		},
+	})
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	persona := &config.Persona{Name: "default", SystemPrompt: "system"}
+	if _, err := engine.SendMessage(context.Background(), sessionID, persona, "latest user", nil); err == nil {
+		t.Fatal("SendMessage should fail after overflow retry also fails")
+	}
+
+	logOutput := logs.String()
+	if !strings.Contains(logOutput, "reactive compact retry failed") {
+		t.Fatalf("logs = %q, want retry failure log message", logOutput)
+	}
+	if !strings.Contains(logOutput, "retry_attempt=1") {
+		t.Fatalf("logs = %q, want retry_attempt field", logOutput)
+	}
+	if !strings.Contains(logOutput, "error_kind=context_overflow") {
+		t.Fatalf("logs = %q, want error_kind=context_overflow", logOutput)
+	}
+	if !strings.Contains(logOutput, "compact_reason=reactive_overflow") {
+		t.Fatalf("logs = %q, want compact_reason=reactive_overflow", logOutput)
 	}
 }

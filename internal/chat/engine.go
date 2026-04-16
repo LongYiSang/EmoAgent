@@ -23,6 +23,7 @@ type EngineConfig struct {
 	DB            *storage.DB
 	Logger        *slog.Logger
 	Model         string
+	SummaryModel  string
 	MaxTokens     int
 	Temperature   float64
 	ContextConfig config.ContextConfig
@@ -31,23 +32,34 @@ type EngineConfig struct {
 	Dispatcher    *tool.Dispatcher // nil disables tool support
 }
 
+// RuntimeConfig is the hot-swappable subset of EngineConfig used for new requests.
+type RuntimeConfig struct {
+	Provider      string
+	Model         string
+	SummaryModel  string
+	MaxTokens     int
+	Temperature   float64
+	ContextConfig config.ContextConfig
+}
+
 // Engine assembles conversation context and forwards requests to the LLM.
 type Engine struct {
-	mu          sync.RWMutex
-	llm         llm.Client
-	db          *storage.DB
-	logger      *slog.Logger
-	model       string
-	maxTokens   int
-	temperature float64
-	contextCfg  config.ContextConfig
-	provider    string
-	registry    *tool.Registry
-	dispatcher  *tool.Dispatcher
+	mu           sync.RWMutex
+	llm          llm.Client
+	db           *storage.DB
+	logger       *slog.Logger
+	model        string
+	summaryModel string
+	maxTokens    int
+	temperature  float64
+	contextCfg   config.ContextConfig
+	provider     string
+	registry     *tool.Registry
+	dispatcher   *tool.Dispatcher
 }
 
 // UpdateConfig hot-swaps the active LLM client and request parameters for new sends.
-func (e *Engine) UpdateConfig(client llm.Client, provider, model string, maxTokens int, temperature float64) {
+func (e *Engine) UpdateConfig(client llm.Client, provider, model, summaryModel string, maxTokens int, temperature float64, contextCfg config.ContextConfig) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -56,8 +68,12 @@ func (e *Engine) UpdateConfig(client llm.Client, provider, model string, maxToke
 	}
 	e.provider = provider
 	e.model = model
+	e.summaryModel = summaryModel
 	e.maxTokens = maxTokens
 	e.temperature = temperature
+	if err := contextCfg.Validate(); err == nil {
+		e.contextCfg = contextCfg
+	}
 }
 
 // NewEngine creates a chat engine from configuration.
@@ -68,16 +84,32 @@ func NewEngine(cfg EngineConfig) *Engine {
 	}
 
 	return &Engine{
-		llm:         cfg.LLM,
-		db:          cfg.DB,
-		logger:      cfg.Logger,
-		model:       cfg.Model,
-		maxTokens:   cfg.MaxTokens,
-		temperature: cfg.Temperature,
-		contextCfg:  contextCfg,
-		provider:    cfg.Provider,
-		registry:    cfg.Registry,
-		dispatcher:  cfg.Dispatcher,
+		llm:          cfg.LLM,
+		db:           cfg.DB,
+		logger:       cfg.Logger,
+		model:        cfg.Model,
+		summaryModel: cfg.SummaryModel,
+		maxTokens:    cfg.MaxTokens,
+		temperature:  cfg.Temperature,
+		contextCfg:   contextCfg,
+		provider:     cfg.Provider,
+		registry:     cfg.Registry,
+		dispatcher:   cfg.Dispatcher,
+	}
+}
+
+// RuntimeConfig returns a snapshot of the engine's active request configuration.
+func (e *Engine) RuntimeConfig() RuntimeConfig {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	return RuntimeConfig{
+		Provider:      e.provider,
+		Model:         e.model,
+		SummaryModel:  e.summaryModel,
+		MaxTokens:     e.maxTokens,
+		Temperature:   e.temperature,
+		ContextConfig: e.contextCfg,
 	}
 }
 
@@ -126,6 +158,7 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 	e.mu.RLock()
 	client := e.llm
 	model := e.model
+	summaryModel := e.summaryModel
 	maxTokens := e.maxTokens
 	temperature := e.temperature
 	contextCfg := e.contextCfg
@@ -144,7 +177,7 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 		return "", errors.New("persona is required")
 	}
 
-	if err := e.db.AddMessage(ctx, uuid.NewString(), sessionID, "user", userContent); err != nil {
+	if err := e.db.AddMessageWithMetadata(ctx, uuid.NewString(), sessionID, "user", userContent, visibleMessageMetadata("user", userContent)); err != nil {
 		e.logger.Error("failed to store user message", "session", sessionID, "error", err)
 		return "", err
 	}
@@ -171,10 +204,36 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 		return "", err
 	}
 
-	assembled, err := contextutil.BuildEmotionContext(persona, history, contextCfg)
+	state, err := contextutil.LoadSessionState(ctx, e.db, sessionID, contextCfg)
+	if err != nil {
+		e.logger.Warn("failed to load session context state", "session", sessionID, "error", err)
+		defaultState := contextutil.ContextState{
+			ContextVersion:      contextutil.CurrentContextVersion,
+			Mode:                contextutil.ModeEmotion,
+			KeepRecentUserTurns: contextCfg.KeepRecentUserTurns,
+		}
+		state = &defaultState
+	}
+
+	if nextState, updateErr := contextutil.UpdateRunningSummary(ctx, client, effectiveSummaryModel(model, summaryModel), persona, history, state, contextCfg); updateErr != nil {
+		e.logger.Warn("failed to update running summary", "session", sessionID, "error", updateErr)
+	} else {
+		state = nextState
+	}
+
+	assembled, err := contextutil.BuildEmotionContextWithState(persona, history, state, contextCfg)
 	if err != nil {
 		e.logger.Error("failed to assemble llm context", "session", sessionID, "error", err)
 		return "", err
+	}
+	if state != nil {
+		state.ContextVersion = contextutil.CurrentContextVersion
+		state.Mode = contextutil.ModeEmotion
+		state.LastInputEstimate = assembled.Budget.EstimatedTokens
+		state.KeepRecentUserTurns = contextCfg.KeepRecentUserTurns
+		if err := contextutil.UpdateSessionContextState(ctx, e.db, sessionID, *state); err != nil {
+			e.logger.Warn("failed to persist session context state", "session", sessionID, "error", err)
+		}
 	}
 	messages := append([]llm.Message(nil), assembled.Messages...)
 
@@ -211,6 +270,8 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 
 	start := time.Now()
 	var resp *llm.ChatResponse
+	reactiveRetryUsed := false
+	var reactiveRetryReport *contextutil.CompactReport
 
 	for round := 0; ; round++ {
 		var roundDeltas []string
@@ -220,6 +281,33 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 			}
 		})
 		if err != nil {
+			if !reactiveRetryUsed && llm.IsKind(err, llm.ErrorKindContextOverflow) {
+				compacted, report, compactErr := contextutil.ApplyReactiveCompact(sessionID, req.Messages, state, effectiveSummaryModel(model, summaryModel), contextCfg)
+				if compactErr != nil {
+					e.logger.Warn("reactive compact failed",
+						"session_id", sessionID,
+						"mode", "reactive",
+						"compact_reason", "reactive_overflow",
+						"retry_attempt", 1,
+						"error_kind", llm.ErrorKindContextOverflow,
+						"error", compactErr,
+					)
+					return "", err
+				}
+				report.SessionID = sessionID
+				logCompactReport(e.logger, slog.LevelInfo, report, 1, llm.ErrorKindContextOverflow, "")
+				reportCopy := report
+				reactiveRetryReport = &reportCopy
+				messages = append([]llm.Message(nil), compacted...)
+				req.Messages = messages
+				reactiveRetryUsed = true
+				round--
+				continue
+			}
+			if reactiveRetryUsed && reactiveRetryReport != nil {
+				logCompactFailure(e.logger, *reactiveRetryReport, 1, errorKindOf(err), err)
+				return "", err
+			}
 			e.logger.Error("llm request failed", "session", sessionID, "round", round, "error", err)
 			return "", err
 		}
@@ -305,7 +393,7 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 	)
 
 	// Persist only the final assistant text reply to DB.
-	if err := e.db.AddMessage(ctx, uuid.NewString(), sessionID, "assistant", resp.Content); err != nil {
+	if err := e.db.AddMessageWithMetadata(ctx, uuid.NewString(), sessionID, "assistant", resp.Content, visibleMessageMetadata("assistant", resp.Content)); err != nil {
 		e.logger.Error("failed to store assistant message", "session", sessionID, "error", err)
 		return "", err
 	}
@@ -315,4 +403,78 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 	}
 
 	return resp.Content, nil
+}
+
+func effectiveSummaryModel(model, summaryModel string) string {
+	if summaryModel != "" {
+		return summaryModel
+	}
+	return model
+}
+
+func visibleMessageMetadata(role, content string) map[string]any {
+	return map[string]any{
+		"kind":           "dialogue_" + role,
+		"source":         role,
+		"token_estimate": contextutil.EstimateTokens(content),
+	}
+}
+
+func logCompactReport(logger *slog.Logger, level slog.Level, report contextutil.CompactReport, retryAttempt int, errorKind llm.ErrorKind, message string) {
+	if logger == nil {
+		return
+	}
+	if message == "" {
+		message = "reactive compact applied"
+	}
+	record := slog.NewRecord(time.Now(), level, message, 0)
+	record.AddAttrs(
+		slog.String("session_id", report.SessionID),
+		slog.String("mode", report.Mode),
+		slog.String("compact_reason", report.CompactReason),
+		slog.Int("pre_estimated_tokens", report.PreEstimatedTokens),
+		slog.Int("post_estimated_tokens", report.PostEstimatedTokens),
+		slog.Int("kept_recent_turns", report.KeptRecentTurns),
+		slog.Int("snipped_tool_results_count", report.SnippedToolResultsCount),
+		slog.String("summary_covered_until_message_id", report.SummaryCoveredUntilMessageID),
+		slog.String("summary_model", report.SummaryModel),
+		slog.Bool("degraded", report.Degraded),
+		slog.Int("retry_attempt", retryAttempt),
+		slog.String("error_kind", string(errorKind)),
+	)
+	_ = logger.Handler().Handle(context.Background(), record)
+}
+
+func logCompactFailure(logger *slog.Logger, report contextutil.CompactReport, retryAttempt int, errorKind llm.ErrorKind, err error) {
+	if logger == nil {
+		return
+	}
+	record := slog.NewRecord(time.Now(), slog.LevelWarn, "reactive compact retry failed", 0)
+	record.AddAttrs(
+		slog.String("session_id", report.SessionID),
+		slog.String("mode", report.Mode),
+		slog.String("compact_reason", report.CompactReason),
+		slog.Int("pre_estimated_tokens", report.PreEstimatedTokens),
+		slog.Int("post_estimated_tokens", report.PostEstimatedTokens),
+		slog.Int("kept_recent_turns", report.KeptRecentTurns),
+		slog.Int("snipped_tool_results_count", report.SnippedToolResultsCount),
+		slog.String("summary_covered_until_message_id", report.SummaryCoveredUntilMessageID),
+		slog.String("summary_model", report.SummaryModel),
+		slog.Bool("degraded", report.Degraded),
+		slog.Int("retry_attempt", retryAttempt),
+		slog.String("error_kind", string(errorKind)),
+		slog.Any("error", err),
+	)
+	_ = logger.Handler().Handle(context.Background(), record)
+}
+
+func errorKindOf(err error) llm.ErrorKind {
+	if err == nil {
+		return ""
+	}
+	var llmErr *llm.Error
+	if errors.As(err, &llmErr) {
+		return llmErr.Kind
+	}
+	return ""
 }

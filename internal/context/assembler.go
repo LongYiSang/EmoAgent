@@ -9,13 +9,22 @@ import (
 	"github.com/longyisang/emoagent/internal/storage"
 )
 
-// BuildEmotionContext assembles the 5a emotion context slots without summary state.
+// BuildEmotionContext assembles the emotion context with no persisted session state.
 func BuildEmotionContext(persona *config.Persona, history []storage.MessageRecord, cfg config.ContextConfig) (AssembledContext, error) {
-	return BuildEmotionContextWithToolDigests(persona, history, nil, cfg)
+	return buildEmotionContext(persona, history, nil, nil, cfg)
 }
 
-// BuildEmotionContextWithToolDigests assembles the 5a emotion context slots with an explicit ToolDigest slot.
+// BuildEmotionContextWithState assembles the emotion context using persisted session state.
+func BuildEmotionContextWithState(persona *config.Persona, history []storage.MessageRecord, state *ContextState, cfg config.ContextConfig) (AssembledContext, error) {
+	return buildEmotionContext(persona, history, state, nil, cfg)
+}
+
+// BuildEmotionContextWithToolDigests assembles the emotion context with an explicit ToolDigest slot.
 func BuildEmotionContextWithToolDigests(persona *config.Persona, history []storage.MessageRecord, toolDigests []ToolDigest, cfg config.ContextConfig) (AssembledContext, error) {
+	return buildEmotionContext(persona, history, nil, toolDigests, cfg)
+}
+
+func buildEmotionContext(persona *config.Persona, history []storage.MessageRecord, state *ContextState, toolDigests []ToolDigest, cfg config.ContextConfig) (AssembledContext, error) {
 	if persona == nil {
 		return AssembledContext{}, fmt.Errorf("persona is required")
 	}
@@ -32,7 +41,7 @@ func BuildEmotionContextWithToolDigests(persona *config.Persona, history []stora
 		})
 	}
 
-	messages, err := composeEmotionMessages(toolDigests, recentMessages)
+	messages, err := composeEmotionMessages(state, toolDigests, recentMessages)
 	if err != nil {
 		return AssembledContext{}, err
 	}
@@ -43,21 +52,41 @@ func BuildEmotionContextWithToolDigests(persona *config.Persona, history []stora
 		Messages:    messages,
 		Budget:      budget,
 		CompactReport: CompactReport{
-			KeptRecentUserTurns: cfg.KeepRecentUserTurns,
-			SnippedToolResults:  len(toolDigests),
-			UsedToolDigest:      len(toolDigests) > 0,
-			PreEstimatedTokens:  budget.EstimatedTokens,
-			PostEstimatedTokens: budget.EstimatedTokens,
+			Mode:                    "deterministic",
+			CompactReason:           "budget_soft",
+			KeptRecentTurns:         cfg.KeepRecentUserTurns,
+			SnippedToolResultsCount: len(toolDigests),
+			PreEstimatedTokens:      budget.EstimatedTokens,
+			PostEstimatedTokens:     budget.EstimatedTokens,
+			KeptRecentUserTurns:     cfg.KeepRecentUserTurns,
+			SnippedToolResults:      len(toolDigests),
+			UsedToolDigest:          len(toolDigests) > 0,
 		},
 	}, nil
 }
 
-func composeEmotionMessages(toolDigests []ToolDigest, recentMessages []llm.Message) ([]llm.Message, error) {
-	messages := make([]llm.Message, 0, len(recentMessages)+1)
+func composeEmotionMessages(state *ContextState, toolDigests []ToolDigest, recentMessages []llm.Message) ([]llm.Message, error) {
+	capHint := len(recentMessages) + 1
+	if len(toolDigests) > 0 {
+		capHint++
+	}
+	if state != nil && !state.RunningSummary.IsZero() {
+		capHint++
+	}
+	messages := make([]llm.Message, 0, capHint)
 	for _, slot := range EmotionSlotOrder {
 		switch slot {
 		case SlotPinnedContext:
 			continue
+		case SlotRunningSummary:
+			if state == nil || state.RunningSummary.IsZero() {
+				continue
+			}
+			msg, err := buildRunningSummarySlotMessage(state.RunningSummary)
+			if err != nil {
+				return nil, err
+			}
+			messages = append(messages, msg)
 		case SlotToolDigest:
 			if len(toolDigests) == 0 {
 				continue
@@ -74,6 +103,21 @@ func composeEmotionMessages(toolDigests []ToolDigest, recentMessages []llm.Messa
 		}
 	}
 	return messages, nil
+}
+
+func buildRunningSummarySlotMessage(summary RunningSummary) (llm.Message, error) {
+	payload, err := json.Marshal(struct {
+		RunningSummary RunningSummary `json:"running_summary"`
+	}{
+		RunningSummary: normalizeRunningSummary(summary),
+	})
+	if err != nil {
+		return llm.Message{}, fmt.Errorf("marshal running summary slot: %w", err)
+	}
+	return llm.Message{
+		Role:    llm.RoleUser,
+		Content: string(payload),
+	}, nil
 }
 
 func buildToolDigestSlotMessage(toolDigests []ToolDigest) (llm.Message, error) {

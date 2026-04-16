@@ -43,15 +43,19 @@ type APIHandler struct {
 }
 
 type llmProfileResponse struct {
-	ID           string  `json:"id"`
-	Name         string  `json:"name"`
-	Provider     string  `json:"provider"`
-	BaseURL      string  `json:"base_url"`
-	APIKeyEnv    string  `json:"api_key_env"`
-	Model        string  `json:"model"`
-	SummaryModel string  `json:"summary_model"`
-	MaxTokens    int     `json:"max_tokens"`
-	Temperature  float64 `json:"temperature"`
+	ID                  string   `json:"id"`
+	Name                string   `json:"name"`
+	Provider            string   `json:"provider"`
+	BaseURL             string   `json:"base_url"`
+	APIKeyEnv           string   `json:"api_key_env"`
+	Model               string   `json:"model"`
+	SummaryModel        string   `json:"summary_model"`
+	MaxTokens           int      `json:"max_tokens"`
+	Temperature         float64  `json:"temperature"`
+	InputBudgetTokens   *int     `json:"input_budget_tokens"`
+	SoftCompactRatio    *float64 `json:"soft_compact_ratio"`
+	HardCompactRatio    *float64 `json:"hard_compact_ratio"`
+	ReserveOutputTokens *int     `json:"reserve_output_tokens"`
 }
 
 type llmProfilesResponse struct {
@@ -82,15 +86,19 @@ type personaDetailResponse struct {
 }
 
 type llmProfileRequest struct {
-	ID           string  `json:"id"`
-	Name         string  `json:"name"`
-	Provider     string  `json:"provider"`
-	BaseURL      string  `json:"base_url"`
-	APIKeyEnv    string  `json:"api_key_env"`
-	Model        string  `json:"model"`
-	SummaryModel string  `json:"summary_model"`
-	MaxTokens    int     `json:"max_tokens"`
-	Temperature  float64 `json:"temperature"`
+	ID                  string   `json:"id"`
+	Name                string   `json:"name"`
+	Provider            string   `json:"provider"`
+	BaseURL             string   `json:"base_url"`
+	APIKeyEnv           string   `json:"api_key_env"`
+	Model               string   `json:"model"`
+	SummaryModel        string   `json:"summary_model"`
+	MaxTokens           int      `json:"max_tokens"`
+	Temperature         float64  `json:"temperature"`
+	InputBudgetTokens   *int     `json:"input_budget_tokens"`
+	SoftCompactRatio    *float64 `json:"soft_compact_ratio"`
+	HardCompactRatio    *float64 `json:"hard_compact_ratio"`
+	ReserveOutputTokens *int     `json:"reserve_output_tokens"`
 }
 
 type personaRequest struct {
@@ -147,14 +155,18 @@ func (h *APIHandler) HandleCreateLLMProfile(w http.ResponseWriter, r *http.Reque
 	}
 
 	profile := config.LLMProfile{
-		Name:         firstNonEmpty(strings.TrimSpace(req.ID), strings.TrimSpace(req.Name)),
-		Provider:     strings.TrimSpace(req.Provider),
-		BaseURL:      strings.TrimSpace(req.BaseURL),
-		APIKeyEnv:    strings.TrimSpace(req.APIKeyEnv),
-		Model:        strings.TrimSpace(req.Model),
-		SummaryModel: strings.TrimSpace(req.SummaryModel),
-		MaxTokens:    req.MaxTokens,
-		Temperature:  req.Temperature,
+		Name:                firstNonEmpty(strings.TrimSpace(req.ID), strings.TrimSpace(req.Name)),
+		Provider:            strings.TrimSpace(req.Provider),
+		BaseURL:             strings.TrimSpace(req.BaseURL),
+		APIKeyEnv:           strings.TrimSpace(req.APIKeyEnv),
+		Model:               strings.TrimSpace(req.Model),
+		SummaryModel:        strings.TrimSpace(req.SummaryModel),
+		MaxTokens:           req.MaxTokens,
+		Temperature:         req.Temperature,
+		InputBudgetTokens:   req.InputBudgetTokens,
+		SoftCompactRatio:    req.SoftCompactRatio,
+		HardCompactRatio:    req.HardCompactRatio,
+		ReserveOutputTokens: req.ReserveOutputTokens,
 	}
 
 	if err := h.app.CreateLLMProfile(profile); err != nil {
@@ -173,14 +185,18 @@ func (h *APIHandler) HandleUpdateLLMProfile(w http.ResponseWriter, r *http.Reque
 
 	id := r.PathValue("id")
 	profile := config.LLMProfile{
-		Name:         id,
-		Provider:     strings.TrimSpace(req.Provider),
-		BaseURL:      strings.TrimSpace(req.BaseURL),
-		APIKeyEnv:    strings.TrimSpace(req.APIKeyEnv),
-		Model:        strings.TrimSpace(req.Model),
-		SummaryModel: strings.TrimSpace(req.SummaryModel),
-		MaxTokens:    req.MaxTokens,
-		Temperature:  req.Temperature,
+		Name:                id,
+		Provider:            strings.TrimSpace(req.Provider),
+		BaseURL:             strings.TrimSpace(req.BaseURL),
+		APIKeyEnv:           strings.TrimSpace(req.APIKeyEnv),
+		Model:               strings.TrimSpace(req.Model),
+		SummaryModel:        strings.TrimSpace(req.SummaryModel),
+		MaxTokens:           req.MaxTokens,
+		Temperature:         req.Temperature,
+		InputBudgetTokens:   req.InputBudgetTokens,
+		SoftCompactRatio:    req.SoftCompactRatio,
+		HardCompactRatio:    req.HardCompactRatio,
+		ReserveOutputTokens: req.ReserveOutputTokens,
 	}
 
 	if err := h.app.UpdateLLMProfile(id, profile); err != nil {
@@ -431,6 +447,16 @@ func isLLMProfileValidationError(err error) bool {
 		return true
 	case message == "temperature must be between 0 and 2":
 		return true
+	case message == "input_budget_tokens must be > 0":
+		return true
+	case message == "reserve_output_tokens must be > 0":
+		return true
+	case message == "soft_compact_ratio must be between 0 and 1":
+		return true
+	case message == "hard_compact_ratio must be between 0 and 1":
+		return true
+	case message == "soft_compact_ratio must be < hard_compact_ratio":
+		return true
 	default:
 		return false
 	}
@@ -467,15 +493,19 @@ func normalizeQuirks(quirks []string) []string {
 
 func toLLMProfileResponse(profile config.LLMProfile) llmProfileResponse {
 	return llmProfileResponse{
-		ID:           profile.Name,
-		Name:         profile.Name,
-		Provider:     profile.Provider,
-		BaseURL:      profile.BaseURL,
-		APIKeyEnv:    profile.APIKeyEnv,
-		Model:        profile.Model,
-		SummaryModel: profile.SummaryModel,
-		MaxTokens:    profile.MaxTokens,
-		Temperature:  profile.Temperature,
+		ID:                  profile.Name,
+		Name:                profile.Name,
+		Provider:            profile.Provider,
+		BaseURL:             profile.BaseURL,
+		APIKeyEnv:           profile.APIKeyEnv,
+		Model:               profile.Model,
+		SummaryModel:        profile.SummaryModel,
+		MaxTokens:           profile.MaxTokens,
+		Temperature:         profile.Temperature,
+		InputBudgetTokens:   profile.InputBudgetTokens,
+		SoftCompactRatio:    profile.SoftCompactRatio,
+		HardCompactRatio:    profile.HardCompactRatio,
+		ReserveOutputTokens: profile.ReserveOutputTokens,
 	}
 }
 

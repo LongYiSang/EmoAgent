@@ -18,15 +18,15 @@ llm:
   base_url: "https://api.moonshot.cn"
   model: "kimi-k2.5"
   summary_model: "kimi-k2.5"
-  max_tokens: 4096
+  max_tokens: 8192
   temperature: 1
   api_key_env: "OPENAI_API_KEY"
 
 context:
-  input_budget_tokens: 24000
+  input_budget_tokens: 216000
   soft_compact_ratio: 0.75
   hard_compact_ratio: 0.92
-  reserve_output_tokens: 4096
+  reserve_output_tokens: 16384
   keep_recent_user_turns: 6
   tool_result_soft_tokens: 1000
   tool_result_hard_tokens: 3000
@@ -52,7 +52,7 @@ db:
   path: "./data/emo.db"
 
 log:
-  level: "info"
+  level: "debug"
   format: "text"
 
 personas:

@@ -7,13 +7,15 @@ const (
 	ModeEmotion Mode = "emotion"
 	ModeWork    Mode = "work"
 
-	SlotPinnedContext EmotionSlot = "PinnedContext"
-	SlotToolDigest    EmotionSlot = "ToolDigest"
-	SlotRecentTurns   EmotionSlot = "RecentTurns"
+	SlotPinnedContext  EmotionSlot = "PinnedContext"
+	SlotRunningSummary EmotionSlot = "RunningSummary"
+	SlotToolDigest     EmotionSlot = "ToolDigest"
+	SlotRecentTurns    EmotionSlot = "RecentTurns"
 )
 
 var EmotionSlotOrder = []EmotionSlot{
 	SlotPinnedContext,
+	SlotRunningSummary,
 	SlotToolDigest,
 	SlotRecentTurns,
 }

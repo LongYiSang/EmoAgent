@@ -34,14 +34,18 @@ type LLMConfig struct {
 }
 
 type LLMProfile struct {
-	Name         string  `yaml:"name"`
-	Provider     string  `yaml:"provider"`
-	BaseURL      string  `yaml:"base_url"`
-	Model        string  `yaml:"model"`
-	SummaryModel string  `yaml:"summary_model"`
-	MaxTokens    int     `yaml:"max_tokens"`
-	Temperature  float64 `yaml:"temperature"`
-	APIKeyEnv    string  `yaml:"api_key_env"`
+	Name                string   `yaml:"name" json:"name"`
+	Provider            string   `yaml:"provider" json:"provider"`
+	BaseURL             string   `yaml:"base_url" json:"base_url"`
+	Model               string   `yaml:"model" json:"model"`
+	SummaryModel        string   `yaml:"summary_model" json:"summary_model"`
+	MaxTokens           int      `yaml:"max_tokens" json:"max_tokens"`
+	Temperature         float64  `yaml:"temperature" json:"temperature"`
+	APIKeyEnv           string   `yaml:"api_key_env" json:"api_key_env"`
+	InputBudgetTokens   *int     `yaml:"input_budget_tokens,omitempty" json:"input_budget_tokens,omitempty"`
+	SoftCompactRatio    *float64 `yaml:"soft_compact_ratio,omitempty" json:"soft_compact_ratio,omitempty"`
+	HardCompactRatio    *float64 `yaml:"hard_compact_ratio,omitempty" json:"hard_compact_ratio,omitempty"`
+	ReserveOutputTokens *int     `yaml:"reserve_output_tokens,omitempty" json:"reserve_output_tokens,omitempty"`
 }
 
 type DBConfig struct {
@@ -161,7 +165,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("context: %w", err)
 	}
 	for i, profile := range c.LLMProfiles {
-		if err := profile.Validate(); err != nil {
+		if err := profile.ValidateAgainst(c.Context); err != nil {
 			return fmt.Errorf("llm_profiles[%d]: %w", i, err)
 		}
 	}
@@ -181,13 +185,56 @@ func (p LLMProfile) Validate() error {
 	if p.Name == "" {
 		return fmt.Errorf("name is required")
 	}
-	if p.Provider == "" {
-		return fmt.Errorf("provider is required")
+	switch p.Provider {
+	case "openai", "anthropic":
+	default:
+		return fmt.Errorf("unsupported provider: %s", p.Provider)
+	}
+	if p.BaseURL == "" {
+		return fmt.Errorf("base_url is required")
 	}
 	if p.Model == "" {
 		return fmt.Errorf("model is required")
 	}
+	if p.MaxTokens <= 0 {
+		return fmt.Errorf("max_tokens must be greater than 0")
+	}
+	if p.Temperature < 0 || p.Temperature > 2 {
+		return fmt.Errorf("temperature must be between 0 and 2")
+	}
 	return nil
+}
+
+// ValidateAgainst checks that the profile is valid and resolves cleanly against the provided base context.
+func (p LLMProfile) ValidateAgainst(base ContextConfig) error {
+	if err := p.Validate(); err != nil {
+		return err
+	}
+	if _, err := p.ResolveContextConfig(base); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ResolveContextConfig applies the profile's optional context budget overrides to the provided base config.
+func (p LLMProfile) ResolveContextConfig(base ContextConfig) (ContextConfig, error) {
+	effective := base
+	if p.InputBudgetTokens != nil {
+		effective.InputBudgetTokens = *p.InputBudgetTokens
+	}
+	if p.SoftCompactRatio != nil {
+		effective.SoftCompactRatio = *p.SoftCompactRatio
+	}
+	if p.HardCompactRatio != nil {
+		effective.HardCompactRatio = *p.HardCompactRatio
+	}
+	if p.ReserveOutputTokens != nil {
+		effective.ReserveOutputTokens = *p.ReserveOutputTokens
+	}
+	if err := effective.Validate(); err != nil {
+		return ContextConfig{}, err
+	}
+	return effective, nil
 }
 
 func (c ContextConfig) Validate() error {

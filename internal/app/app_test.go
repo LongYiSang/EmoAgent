@@ -261,7 +261,16 @@ func TestUpdateLLMProfileRebuildsClientWhenActiveClientIsNil(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	if err := db.UpsertLLMProfile("default", "openai", "https://api.openai.com", "gpt-4o-mini", "", 128, 0.2, "TEST_OPENAI_API_KEY"); err != nil {
+	if err := db.UpsertLLMProfile(config.LLMProfile{
+		Name:         "default",
+		Provider:     "openai",
+		BaseURL:      "https://api.openai.com",
+		Model:        "gpt-4o-mini",
+		SummaryModel: "",
+		MaxTokens:    128,
+		Temperature:  0.2,
+		APIKeyEnv:    "TEST_OPENAI_API_KEY",
+	}); err != nil {
 		t.Fatalf("UpsertLLMProfile: %v", err)
 	}
 
@@ -278,7 +287,7 @@ func TestUpdateLLMProfileRebuildsClientWhenActiveClientIsNil(t *testing.T) {
 		},
 		DB:               db,
 		Logger:           logger,
-		ActiveLLMProfile: &config.LLMProfile{Name: "default", Provider: "openai", BaseURL: "https://api.openai.com", Model: "gpt-4o-mini", MaxTokens: 128, Temperature: 0.2, APIKeyEnv: "TEST_OPENAI_API_KEY"},
+		ActiveLLMProfile: &config.LLMProfile{Name: "default", Provider: "openai", BaseURL: "https://api.openai.com", Model: "gpt-4o-mini", MaxTokens: 128, Temperature: 0.2, APIKeyEnv: "TEST_OPENAI_API_KEY", InputBudgetTokens: intPtr(9000), ReserveOutputTokens: intPtr(512)},
 		engine:           chat.NewEngine(chat.EngineConfig{DB: db, Logger: logger, Model: "gpt-4o-mini", MaxTokens: 128, Temperature: 0.2}),
 	}
 
@@ -489,3 +498,223 @@ func TestGetSessionDetailReturnsMessages(t *testing.T) {
 		t.Fatalf("messages = %#v, want [hello hi]", messages)
 	}
 }
+
+func TestRunPassesSummaryModelAndContextConfigToEngine(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	a := &App{
+		Config: &config.Config{
+			Server: config.ServerConfig{Host: "127.0.0.1", Port: 0},
+			LLM: config.LLMConfig{
+				Model:        "primary-model",
+				SummaryModel: "summary-model",
+				MaxTokens:    64,
+				Temperature:  0.3,
+			},
+			Context: config.ContextConfig{
+				InputBudgetTokens:    111,
+				SoftCompactRatio:     0.60,
+				HardCompactRatio:     0.80,
+				ReserveOutputTokens:  22,
+				KeepRecentUserTurns:  3,
+				ToolResultSoftTokens: 44,
+				ToolResultHardTokens: 55,
+			},
+		},
+		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		ActiveLLMProfile: &config.LLMProfile{Name: "active", Provider: "openai", Model: "profile-model", SummaryModel: "profile-summary", MaxTokens: 128, Temperature: 0.1, InputBudgetTokens: intPtr(9000), ReserveOutputTokens: intPtr(512)},
+	}
+
+	if err := a.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if a.engine == nil {
+		t.Fatal("engine was not initialized")
+	}
+
+	runtimeCfg := a.engine.RuntimeConfig()
+	if runtimeCfg.Model != "profile-model" {
+		t.Fatalf("runtime model = %q, want profile-model", runtimeCfg.Model)
+	}
+	if runtimeCfg.SummaryModel != "profile-summary" {
+		t.Fatalf("runtime summary model = %q, want profile-summary", runtimeCfg.SummaryModel)
+	}
+	if runtimeCfg.ContextConfig.KeepRecentUserTurns != 3 {
+		t.Fatalf("runtime keep recent = %d, want 3", runtimeCfg.ContextConfig.KeepRecentUserTurns)
+	}
+	if runtimeCfg.ContextConfig.InputBudgetTokens != 9000 {
+		t.Fatalf("runtime input budget = %d, want 9000", runtimeCfg.ContextConfig.InputBudgetTokens)
+	}
+	if runtimeCfg.ContextConfig.ReserveOutputTokens != 512 {
+		t.Fatalf("runtime reserve output = %d, want 512", runtimeCfg.ContextConfig.ReserveOutputTokens)
+	}
+	if runtimeCfg.ContextConfig.SoftCompactRatio != 0.60 {
+		t.Fatalf("runtime soft ratio = %v, want 0.60", runtimeCfg.ContextConfig.SoftCompactRatio)
+	}
+}
+
+func TestUpdateLLMProfilePassesSummaryModelAndContextConfigToEngine(t *testing.T) {
+	t.Setenv("TEST_OPENAI_API_KEY", "test-key")
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if err := db.UpsertLLMProfile(config.LLMProfile{
+		Name:         "default",
+		Provider:     "openai",
+		BaseURL:      "https://api.openai.com",
+		Model:        "gpt-4o-mini",
+		SummaryModel: "",
+		MaxTokens:    128,
+		Temperature:  0.2,
+		APIKeyEnv:    "TEST_OPENAI_API_KEY",
+	}); err != nil {
+		t.Fatalf("UpsertLLMProfile: %v", err)
+	}
+
+	a := &App{
+		Config: &config.Config{
+			LLM: config.LLMConfig{
+				Provider:    "openai",
+				BaseURL:     "https://api.openai.com",
+				Model:       "gpt-4o-mini",
+				MaxTokens:   128,
+				Temperature: 0.2,
+				APIKeyEnv:   "TEST_OPENAI_API_KEY",
+			},
+			Context: config.ContextConfig{
+				InputBudgetTokens:    999,
+				SoftCompactRatio:     0.65,
+				HardCompactRatio:     0.85,
+				ReserveOutputTokens:  100,
+				KeepRecentUserTurns:  7,
+				ToolResultSoftTokens: 88,
+				ToolResultHardTokens: 99,
+			},
+		},
+		DB:               db,
+		Logger:           logger,
+		ActiveLLMProfile: &config.LLMProfile{Name: "default", Provider: "openai", BaseURL: "https://api.openai.com", Model: "gpt-4o-mini", MaxTokens: 128, Temperature: 0.2, APIKeyEnv: "TEST_OPENAI_API_KEY", ReserveOutputTokens: intPtr(4096)},
+		engine:           chat.NewEngine(chat.EngineConfig{DB: db, Logger: logger, Model: "gpt-4o-mini", MaxTokens: 128, Temperature: 0.2, ContextConfig: config.DefaultConfig().Context}),
+	}
+
+	err = a.UpdateLLMProfile("default", config.LLMProfile{
+		Provider:     "openai",
+		BaseURL:      "https://api.openai.com",
+		Model:        "gpt-4.1-mini",
+		SummaryModel: "gpt-4.1-nano",
+		MaxTokens:    256,
+		Temperature:  0.4,
+		APIKeyEnv:    "TEST_OPENAI_API_KEY",
+	})
+	if err != nil {
+		t.Fatalf("UpdateLLMProfile: %v", err)
+	}
+
+	runtimeCfg := a.engine.RuntimeConfig()
+	if runtimeCfg.SummaryModel != "gpt-4.1-nano" {
+		t.Fatalf("runtime summary model = %q, want gpt-4.1-nano", runtimeCfg.SummaryModel)
+	}
+	if runtimeCfg.ContextConfig.KeepRecentUserTurns != 7 {
+		t.Fatalf("runtime keep recent = %d, want 7", runtimeCfg.ContextConfig.KeepRecentUserTurns)
+	}
+	if runtimeCfg.ContextConfig.InputBudgetTokens != 999 {
+		t.Fatalf("runtime input budget = %d, want 999", runtimeCfg.ContextConfig.InputBudgetTokens)
+	}
+	if runtimeCfg.ContextConfig.ReserveOutputTokens != 100 {
+		t.Fatalf("runtime reserve output = %d, want 100", runtimeCfg.ContextConfig.ReserveOutputTokens)
+	}
+}
+
+func TestActivateLLMProfilePassesSummaryModelAndContextConfigToEngine(t *testing.T) {
+	t.Setenv("TEST_OPENAI_API_KEY", "test-key")
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if err := db.UpsertLLMProfile(config.LLMProfile{
+		Name:         "default",
+		Provider:     "openai",
+		BaseURL:      "https://api.openai.com",
+		Model:        "gpt-4o-mini",
+		SummaryModel: "gpt-4o-mini",
+		MaxTokens:    128,
+		Temperature:  0.2,
+		APIKeyEnv:    "TEST_OPENAI_API_KEY",
+	}); err != nil {
+		t.Fatalf("UpsertLLMProfile(default): %v", err)
+	}
+	if err := db.UpsertLLMProfile(config.LLMProfile{
+		Name:                "alt",
+		Provider:            "openai",
+		BaseURL:             "https://api.openai.com",
+		Model:               "gpt-4.1-mini",
+		SummaryModel:        "gpt-4.1-nano",
+		MaxTokens:           256,
+		Temperature:         0.1,
+		APIKeyEnv:           "TEST_OPENAI_API_KEY",
+		InputBudgetTokens:   intPtr(8888),
+		SoftCompactRatio:    floatPtr(0.72),
+		ReserveOutputTokens: intPtr(512),
+	}); err != nil {
+		t.Fatalf("UpsertLLMProfile(alt): %v", err)
+	}
+
+	a := &App{
+		Config: &config.Config{
+			Context: config.ContextConfig{
+				InputBudgetTokens:    321,
+				SoftCompactRatio:     0.66,
+				HardCompactRatio:     0.88,
+				ReserveOutputTokens:  123,
+				KeepRecentUserTurns:  5,
+				ToolResultSoftTokens: 77,
+				ToolResultHardTokens: 111,
+			},
+		},
+		DB:               db,
+		Logger:           logger,
+		ActiveLLMProfile: &config.LLMProfile{Name: "default", Provider: "openai", BaseURL: "https://api.openai.com", Model: "gpt-4o-mini", SummaryModel: "gpt-4o-mini", MaxTokens: 128, Temperature: 0.2, APIKeyEnv: "TEST_OPENAI_API_KEY"},
+		engine:           chat.NewEngine(chat.EngineConfig{DB: db, Logger: logger, Model: "gpt-4o-mini", MaxTokens: 128, Temperature: 0.2, ContextConfig: config.DefaultConfig().Context}),
+	}
+
+	if err := a.ActivateLLMProfile("alt"); err != nil {
+		t.Fatalf("ActivateLLMProfile: %v", err)
+	}
+
+	runtimeCfg := a.engine.RuntimeConfig()
+	if runtimeCfg.Model != "gpt-4.1-mini" {
+		t.Fatalf("runtime model = %q, want gpt-4.1-mini", runtimeCfg.Model)
+	}
+	if runtimeCfg.SummaryModel != "gpt-4.1-nano" {
+		t.Fatalf("runtime summary model = %q, want gpt-4.1-nano", runtimeCfg.SummaryModel)
+	}
+	if runtimeCfg.ContextConfig.KeepRecentUserTurns != 5 {
+		t.Fatalf("runtime keep recent = %d, want 5", runtimeCfg.ContextConfig.KeepRecentUserTurns)
+	}
+	if runtimeCfg.ContextConfig.InputBudgetTokens != 8888 {
+		t.Fatalf("runtime input budget = %d, want 8888", runtimeCfg.ContextConfig.InputBudgetTokens)
+	}
+	if runtimeCfg.ContextConfig.SoftCompactRatio != 0.72 {
+		t.Fatalf("runtime soft ratio = %v, want 0.72", runtimeCfg.ContextConfig.SoftCompactRatio)
+	}
+	if runtimeCfg.ContextConfig.HardCompactRatio != 0.88 {
+		t.Fatalf("runtime hard ratio = %v, want 0.88", runtimeCfg.ContextConfig.HardCompactRatio)
+	}
+	if runtimeCfg.ContextConfig.ReserveOutputTokens != 512 {
+		t.Fatalf("runtime reserve output = %d, want 512", runtimeCfg.ContextConfig.ReserveOutputTokens)
+	}
+}
+
+func intPtr(v int) *int { return &v }
+
+func floatPtr(v float64) *float64 { return &v }

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -127,20 +128,29 @@ func (a *App) Init(ctx context.Context, configPath string) error {
 
 // Run starts the HTTP server and blocks until the context is cancelled.
 func (a *App) Run(ctx context.Context) error {
+	cfg := config.DefaultConfig()
+	if a.Config != nil {
+		cfg = a.Config
+	}
+
 	a.mu.RLock()
 	activeProfile := cloneLLMProfile(a.ActiveLLMProfile)
 	currentClient := a.LLM
 	a.mu.RUnlock()
 
-	model := a.Config.LLM.Model
-	maxTokens := a.Config.LLM.MaxTokens
-	temperature := a.Config.LLM.Temperature
-	provider := a.Config.LLM.Provider
+	model := cfg.LLM.Model
+	summaryModel := cfg.LLM.SummaryModel
+	maxTokens := cfg.LLM.MaxTokens
+	temperature := cfg.LLM.Temperature
+	provider := cfg.LLM.Provider
+	contextCfg := a.globalContextConfig()
 	if activeProfile != nil {
 		model = activeProfile.Model
+		summaryModel = activeProfile.SummaryModel
 		maxTokens = activeProfile.MaxTokens
 		temperature = activeProfile.Temperature
 		provider = activeProfile.Provider
+		contextCfg = a.effectiveContextForProfile(*activeProfile)
 	}
 
 	dispatcher := tool.NewDispatcher(a.toolRegistry, tool.MinimalSchemaValidator{}, a.Logger)
@@ -150,9 +160,10 @@ func (a *App) Run(ctx context.Context) error {
 		DB:            a.DB,
 		Logger:        a.Logger,
 		Model:         model,
+		SummaryModel:  summaryModel,
 		MaxTokens:     maxTokens,
 		Temperature:   temperature,
-		ContextConfig: a.Config.Context,
+		ContextConfig: contextCfg,
 		Provider:      provider,
 		Registry:      a.toolRegistry,
 		Dispatcher:    dispatcher,
@@ -169,7 +180,7 @@ func (a *App) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
 	registerRoutes(mux, api, chatHandler, http.FileServer(http.FS(staticSub)))
 
-	addr := fmt.Sprintf("%s:%d", a.Config.Server.Host, a.Config.Server.Port)
+	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	srv := &http.Server{
 		Addr:    addr,
 		Handler: mux,
@@ -303,7 +314,10 @@ func (a *App) bootstrapLLMProfiles() error {
 	if err := validateLLMProfile(seed); err != nil {
 		return err
 	}
-	if err := a.DB.UpsertLLMProfile(seed.Name, seed.Provider, seed.BaseURL, seed.Model, seed.SummaryModel, seed.MaxTokens, seed.Temperature, seed.APIKeyEnv); err != nil {
+	if _, err := seed.ResolveContextConfig(a.globalContextConfig()); err != nil {
+		return err
+	}
+	if err := a.DB.UpsertLLMProfile(seed); err != nil {
 		return err
 	}
 	return nil
@@ -567,6 +581,9 @@ func (a *App) CreateLLMProfile(profile config.LLMProfile) error {
 	if err := validateLLMProfile(profile); err != nil {
 		return err
 	}
+	if _, err := profile.ResolveContextConfig(a.globalContextConfig()); err != nil {
+		return err
+	}
 
 	existing, err := a.DB.GetLLMProfile(context.Background(), profile.Name)
 	if err != nil {
@@ -576,13 +593,16 @@ func (a *App) CreateLLMProfile(profile config.LLMProfile) error {
 		return ErrLLMProfileExists
 	}
 
-	return a.DB.UpsertLLMProfile(profile.Name, profile.Provider, profile.BaseURL, profile.Model, profile.SummaryModel, profile.MaxTokens, profile.Temperature, profile.APIKeyEnv)
+	return a.DB.UpsertLLMProfile(profile)
 }
 
 // UpdateLLMProfile updates an existing LLM profile.
 func (a *App) UpdateLLMProfile(id string, profile config.LLMProfile) error {
 	profile.Name = id
 	if err := validateLLMProfile(profile); err != nil {
+		return err
+	}
+	if _, err := profile.ResolveContextConfig(a.globalContextConfig()); err != nil {
 		return err
 	}
 
@@ -610,7 +630,7 @@ func (a *App) UpdateLLMProfile(id string, profile config.LLMProfile) error {
 		}
 	}
 
-	if err := a.DB.UpsertLLMProfile(profile.Name, profile.Provider, profile.BaseURL, profile.Model, profile.SummaryModel, profile.MaxTokens, profile.Temperature, profile.APIKeyEnv); err != nil {
+	if err := a.DB.UpsertLLMProfile(profile); err != nil {
 		return err
 	}
 
@@ -625,7 +645,7 @@ func (a *App) UpdateLLMProfile(id string, profile config.LLMProfile) error {
 		a.mu.Unlock()
 
 		if engine != nil {
-			engine.UpdateConfig(newClient, profile.Provider, profile.Model, profile.MaxTokens, profile.Temperature)
+			engine.UpdateConfig(newClient, profile.Provider, profile.Model, profile.SummaryModel, profile.MaxTokens, profile.Temperature, a.effectiveContextForProfile(profile))
 		}
 	}
 
@@ -655,7 +675,7 @@ func (a *App) ActivateLLMProfile(id string) error {
 	a.mu.Unlock()
 
 	if engine != nil {
-		engine.UpdateConfig(client, profile.Provider, profile.Model, profile.MaxTokens, profile.Temperature)
+		engine.UpdateConfig(client, profile.Provider, profile.Model, profile.SummaryModel, profile.MaxTokens, profile.Temperature, a.effectiveContextForProfile(*profile))
 	}
 	return nil
 }
@@ -700,6 +720,9 @@ func (a *App) buildClientForProfile(profile config.LLMProfile) (llm.Client, erro
 }
 
 func (a *App) syncConfigLLMFromProfileLocked(profile config.LLMProfile) {
+	if a.Config == nil {
+		return
+	}
 	a.Config.LLM.Provider = profile.Provider
 	a.Config.LLM.BaseURL = profile.BaseURL
 	a.Config.LLM.APIKeyEnv = profile.APIKeyEnv
@@ -709,40 +732,45 @@ func (a *App) syncConfigLLMFromProfileLocked(profile config.LLMProfile) {
 	a.Config.LLM.Temperature = profile.Temperature
 }
 
+func (a *App) effectiveContextForProfile(profile config.LLMProfile) config.ContextConfig {
+	base := a.globalContextConfig()
+	effective, err := profile.ResolveContextConfig(base)
+	if err != nil {
+		if a.Logger != nil {
+			a.Logger.Warn("resolve context config for profile failed", "profile", profile.Name, "error", err)
+		}
+		return base
+	}
+	return effective
+}
+
+func (a *App) globalContextConfig() config.ContextConfig {
+	if a != nil && a.Config != nil {
+		if err := a.Config.Context.Validate(); err == nil {
+			return a.Config.Context
+		}
+	}
+	return config.DefaultConfig().Context
+}
+
 func validateLLMProfile(profile config.LLMProfile) error {
-	if profile.Name == "" {
-		return fmt.Errorf("name is required")
-	}
-	switch profile.Provider {
-	case "openai", "anthropic":
-	default:
-		return fmt.Errorf("unsupported provider: %s", profile.Provider)
-	}
-	if profile.BaseURL == "" {
-		return fmt.Errorf("base_url is required")
-	}
-	if profile.Model == "" {
-		return fmt.Errorf("model is required")
-	}
-	if profile.MaxTokens <= 0 {
-		return fmt.Errorf("max_tokens must be greater than 0")
-	}
-	if profile.Temperature < 0 || profile.Temperature > 2 {
-		return fmt.Errorf("temperature must be between 0 and 2")
-	}
-	return nil
+	return profile.Validate()
 }
 
 func llmProfileFromRecord(record storage.LLMProfileRecord) config.LLMProfile {
 	return config.LLMProfile{
-		Name:         record.Name,
-		Provider:     record.Provider,
-		BaseURL:      record.BaseURL,
-		APIKeyEnv:    record.APIKeyEnv,
-		Model:        record.Model,
-		SummaryModel: record.SummaryModel,
-		MaxTokens:    record.MaxTokens,
-		Temperature:  record.Temperature,
+		Name:                record.Name,
+		Provider:            record.Provider,
+		BaseURL:             record.BaseURL,
+		APIKeyEnv:           record.APIKeyEnv,
+		Model:               record.Model,
+		SummaryModel:        record.SummaryModel,
+		MaxTokens:           record.MaxTokens,
+		Temperature:         record.Temperature,
+		InputBudgetTokens:   nullableIntPtr(record.InputBudgetTokens),
+		SoftCompactRatio:    nullableFloatPtr(record.SoftCompactRatio),
+		HardCompactRatio:    nullableFloatPtr(record.HardCompactRatio),
+		ReserveOutputTokens: nullableIntPtr(record.ReserveOutputTokens),
 	}
 }
 
@@ -751,7 +779,39 @@ func cloneLLMProfile(profile *config.LLMProfile) *config.LLMProfile {
 		return nil
 	}
 	cp := *profile
+	if profile.InputBudgetTokens != nil {
+		value := *profile.InputBudgetTokens
+		cp.InputBudgetTokens = &value
+	}
+	if profile.SoftCompactRatio != nil {
+		value := *profile.SoftCompactRatio
+		cp.SoftCompactRatio = &value
+	}
+	if profile.HardCompactRatio != nil {
+		value := *profile.HardCompactRatio
+		cp.HardCompactRatio = &value
+	}
+	if profile.ReserveOutputTokens != nil {
+		value := *profile.ReserveOutputTokens
+		cp.ReserveOutputTokens = &value
+	}
 	return &cp
+}
+
+func nullableIntPtr(value sql.NullInt64) *int {
+	if !value.Valid {
+		return nil
+	}
+	v := int(value.Int64)
+	return &v
+}
+
+func nullableFloatPtr(value sql.NullFloat64) *float64 {
+	if !value.Valid {
+		return nil
+	}
+	v := value.Float64
+	return &v
 }
 
 func clonePersona(p *config.Persona) *config.Persona {
