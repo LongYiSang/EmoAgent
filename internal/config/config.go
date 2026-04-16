@@ -8,11 +8,12 @@ import (
 )
 
 type Config struct {
-	Server      ServerConfig   `yaml:"server"`
-	LLM         LLMConfig      `yaml:"llm"`
-	LLMProfiles []LLMProfile   `yaml:"llm_profiles"`
-	DB          DBConfig       `yaml:"db"`
-	Log         LogConfig      `yaml:"log"`
+	Server      ServerConfig    `yaml:"server"`
+	LLM         LLMConfig       `yaml:"llm"`
+	Context     ContextConfig   `yaml:"context"`
+	LLMProfiles []LLMProfile    `yaml:"llm_profiles"`
+	DB          DBConfig        `yaml:"db"`
+	Log         LogConfig       `yaml:"log"`
 	Personas    PersonasConfig  `yaml:"personas"`
 	WebSearch   WebSearchConfig `yaml:"websearch"`
 }
@@ -66,6 +67,16 @@ type WebSearchConfig struct {
 	IncludeAnswer bool   `yaml:"include_answer"` // default false
 }
 
+type ContextConfig struct {
+	InputBudgetTokens    int     `yaml:"input_budget_tokens"`
+	SoftCompactRatio     float64 `yaml:"soft_compact_ratio"`
+	HardCompactRatio     float64 `yaml:"hard_compact_ratio"`
+	ReserveOutputTokens  int     `yaml:"reserve_output_tokens"`
+	KeepRecentUserTurns  int     `yaml:"keep_recent_user_turns"`
+	ToolResultSoftTokens int     `yaml:"tool_result_soft_tokens"`
+	ToolResultHardTokens int     `yaml:"tool_result_hard_tokens"`
+}
+
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
@@ -79,6 +90,15 @@ func DefaultConfig() *Config {
 			Model:       "gpt-4o",
 			MaxTokens:   4096,
 			Temperature: 0.7,
+		},
+		Context: ContextConfig{
+			InputBudgetTokens:    24000,
+			SoftCompactRatio:     0.75,
+			HardCompactRatio:     0.92,
+			ReserveOutputTokens:  4096,
+			KeepRecentUserTurns:  6,
+			ToolResultSoftTokens: 1000,
+			ToolResultHardTokens: 3000,
 		},
 		LLMProfiles: []LLMProfile{},
 		DB: DBConfig{
@@ -137,6 +157,9 @@ func (c *Config) Validate() error {
 	if c.LLM.Model == "" {
 		return fmt.Errorf("llm.model is required")
 	}
+	if err := c.Context.Validate(); err != nil {
+		return fmt.Errorf("context: %w", err)
+	}
 	for i, profile := range c.LLMProfiles {
 		if err := profile.Validate(); err != nil {
 			return fmt.Errorf("llm_profiles[%d]: %w", i, err)
@@ -163,6 +186,34 @@ func (p LLMProfile) Validate() error {
 	}
 	if p.Model == "" {
 		return fmt.Errorf("model is required")
+	}
+	return nil
+}
+
+func (c ContextConfig) Validate() error {
+	if c.InputBudgetTokens <= 0 {
+		return fmt.Errorf("input_budget_tokens must be > 0")
+	}
+	if c.ReserveOutputTokens <= 0 {
+		return fmt.Errorf("reserve_output_tokens must be > 0")
+	}
+	if c.KeepRecentUserTurns <= 0 {
+		return fmt.Errorf("keep_recent_user_turns must be > 0")
+	}
+	if c.ToolResultSoftTokens <= 0 {
+		return fmt.Errorf("tool_result_soft_tokens must be > 0")
+	}
+	if c.ToolResultHardTokens <= 0 {
+		return fmt.Errorf("tool_result_hard_tokens must be > 0")
+	}
+	if !(c.SoftCompactRatio > 0 && c.SoftCompactRatio < 1) {
+		return fmt.Errorf("soft_compact_ratio must be between 0 and 1")
+	}
+	if !(c.HardCompactRatio > 0 && c.HardCompactRatio < 1) {
+		return fmt.Errorf("hard_compact_ratio must be between 0 and 1")
+	}
+	if c.SoftCompactRatio >= c.HardCompactRatio {
+		return fmt.Errorf("soft_compact_ratio must be < hard_compact_ratio")
 	}
 	return nil
 }

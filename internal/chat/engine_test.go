@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/longyisang/emoagent/internal/config"
@@ -233,6 +234,46 @@ func TestEngineGetHistoryReturnsRecentMessages(t *testing.T) {
 	}
 }
 
+func TestEngineSendMessageUsesAssemblerInsteadOfRecentMessagesOnly(t *testing.T) {
+	fakeLLM := &fakeLLMClient{
+		response: &llm.ChatResponse{ID: "resp-asm", Content: "ok", StopReason: "end_turn"},
+	}
+	engine, db, _ := newTestEngine(t, fakeLLM)
+	ctx := context.Background()
+
+	sessionID, err := engine.StartSession(ctx, "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	for _, msg := range []struct {
+		id      string
+		role    string
+		content string
+	}{
+		{id: "m1", role: "user", content: "first user"},
+		{id: "m2", role: "assistant", content: "first answer"},
+		{id: "m3", role: "user", content: "second user"},
+		{id: "m4", role: "assistant", content: "second answer"},
+	} {
+		if err := db.AddMessage(ctx, msg.id, sessionID, msg.role, msg.content); err != nil {
+			t.Fatalf("AddMessage(%s): %v", msg.id, err)
+		}
+	}
+
+	engine.contextCfg.KeepRecentUserTurns = 1
+	persona := &config.Persona{Name: "default", SystemPrompt: "You are warm."}
+	if _, err := engine.SendMessage(ctx, sessionID, persona, "latest user", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	if len(fakeLLM.lastRequest.Messages) != 1 {
+		t.Fatalf("len(Messages) = %d, want 1", len(fakeLLM.lastRequest.Messages))
+	}
+	if fakeLLM.lastRequest.Messages[0].Content != "latest user" {
+		t.Fatalf("Messages[0] = %#v, want latest user only", fakeLLM.lastRequest.Messages[0])
+	}
+}
+
 func newTestEngine(t *testing.T, client llm.Client) (*Engine, *storage.DB, *slog.Logger) {
 	t.Helper()
 
@@ -249,13 +290,21 @@ func newTestEngine(t *testing.T, client llm.Client) (*Engine, *storage.DB, *slog
 	})
 
 	engine := NewEngine(EngineConfig{
-		LLM:          client,
-		DB:           db,
-		Logger:       logger,
-		Model:        "test-model",
-		MaxTokens:    256,
-		Temperature:  0.2,
-		HistoryLimit: 20,
+		LLM:         client,
+		DB:          db,
+		Logger:      logger,
+		Model:       "test-model",
+		MaxTokens:   256,
+		Temperature: 0.2,
+		ContextConfig: config.ContextConfig{
+			InputBudgetTokens:    24000,
+			SoftCompactRatio:     0.75,
+			HardCompactRatio:     0.92,
+			ReserveOutputTokens:  4096,
+			KeepRecentUserTurns:  6,
+			ToolResultSoftTokens: 1000,
+			ToolResultHardTokens: 3000,
+		},
 	})
 
 	return engine, db, logger
@@ -338,16 +387,24 @@ func TestEngineToolLoopExecutesToolAndReturnsResponse(t *testing.T) {
 	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, logger)
 
 	engine := NewEngine(EngineConfig{
-		LLM:          mockLLM,
-		DB:           db,
-		Logger:       logger,
-		Model:        "test-model",
-		MaxTokens:    256,
-		Temperature:  0.2,
-		HistoryLimit: 20,
-		Provider:     "openai",
-		Registry:     registry,
-		Dispatcher:   dispatcher,
+		LLM:         mockLLM,
+		DB:          db,
+		Logger:      logger,
+		Model:       "test-model",
+		MaxTokens:   256,
+		Temperature: 0.2,
+		ContextConfig: config.ContextConfig{
+			InputBudgetTokens:    24000,
+			SoftCompactRatio:     0.75,
+			HardCompactRatio:     0.92,
+			ReserveOutputTokens:  4096,
+			KeepRecentUserTurns:  6,
+			ToolResultSoftTokens: 1000,
+			ToolResultHardTokens: 3000,
+		},
+		Provider:   "openai",
+		Registry:   registry,
+		Dispatcher: dispatcher,
 	})
 
 	sessionID, err := engine.StartSession(context.Background(), "default")
@@ -426,5 +483,75 @@ func TestEngineSendMessageDoesNotAdvertiseToolsWithoutDispatcher(t *testing.T) {
 	}
 	if len(mockLLM.lastRequest.Tools) != 0 {
 		t.Fatalf("Tools = %#v, want none when dispatcher is nil", mockLLM.lastRequest.Tools)
+	}
+}
+
+func TestEngineToolLoopSnipsLargeToolResult(t *testing.T) {
+	mockLLM := &toolLoopLLMClient{}
+
+	registry := tool.NewRegistry()
+	registry.Register(tool.Spec{
+		Name:        "get_current_time",
+		Description: "Get current time",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+		Scope:       tool.ScopeBoth,
+		Permission:  tool.PermReadOnly,
+	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{"body":"` + strings.Repeat("x", 20000) + `"}`), nil
+	})
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chat.db")
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	db, err := storage.Open(path, logger)
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, logger)
+
+	engine := NewEngine(EngineConfig{
+		LLM:         mockLLM,
+		DB:          db,
+		Logger:      logger,
+		Model:       "test-model",
+		MaxTokens:   256,
+		Temperature: 0.2,
+		ContextConfig: config.ContextConfig{
+			InputBudgetTokens:    24000,
+			SoftCompactRatio:     0.75,
+			HardCompactRatio:     0.92,
+			ReserveOutputTokens:  4096,
+			KeepRecentUserTurns:  6,
+			ToolResultSoftTokens: 10,
+			ToolResultHardTokens: 20,
+		},
+		Provider:   "openai",
+		Registry:   registry,
+		Dispatcher: dispatcher,
+	})
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	persona := &config.Persona{Name: "default", SystemPrompt: "You are warm."}
+	if _, err := engine.SendMessage(context.Background(), sessionID, persona, "What time is it?", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	if len(mockLLM.requests) != 2 {
+		t.Fatalf("len(requests) = %d, want 2", len(mockLLM.requests))
+	}
+	second := mockLLM.requests[1]
+	last := second.Messages[len(second.Messages)-1]
+	if !strings.Contains(last.Content, `"is_truncated":true`) {
+		t.Fatalf("tool result content = %q, want truncated digest JSON", last.Content)
+	}
+	if strings.Contains(last.Content, strings.Repeat("x", 1000)) {
+		t.Fatal("tool result content still contains raw payload")
 	}
 }

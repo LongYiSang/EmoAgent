@@ -146,16 +146,16 @@ func (a *App) Run(ctx context.Context) error {
 	dispatcher := tool.NewDispatcher(a.toolRegistry, tool.MinimalSchemaValidator{}, a.Logger)
 
 	a.engine = chat.NewEngine(chat.EngineConfig{
-		LLM:          currentClient,
-		DB:           a.DB,
-		Logger:       a.Logger,
-		Model:        model,
-		MaxTokens:    maxTokens,
-		Temperature:  temperature,
-		HistoryLimit: 20,
-		Provider:     provider,
-		Registry:     a.toolRegistry,
-		Dispatcher:   dispatcher,
+		LLM:           currentClient,
+		DB:            a.DB,
+		Logger:        a.Logger,
+		Model:         model,
+		MaxTokens:     maxTokens,
+		Temperature:   temperature,
+		ContextConfig: a.Config.Context,
+		Provider:      provider,
+		Registry:      a.toolRegistry,
+		Dispatcher:    dispatcher,
 	})
 	chatHandler := chat.NewHandler(a.engine, a, a.Logger)
 

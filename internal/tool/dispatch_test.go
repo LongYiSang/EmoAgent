@@ -1,10 +1,12 @@
 package tool
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/longyisang/emoagent/internal/llm"
@@ -375,5 +377,45 @@ func TestExtractAndDispatchRoundTripOpenAI(t *testing.T) {
 	}
 	if msgs[0].Content != `{"time":"10:00"}` {
 		t.Errorf("Content: got %q", msgs[0].Content)
+	}
+}
+
+func TestDispatcherExecute_LogsPreviewHashAndSizeWithoutFullPayload(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	registry := NewRegistry()
+	registry.Register(Spec{
+		Name:        "large_payload",
+		Description: "returns a large payload",
+		Parameters:  json.RawMessage(`{}`),
+		Scope:       ScopeBoth,
+		Permission:  PermReadOnly,
+	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{"body":"` + strings.Repeat("x", 8000) + `"}`), nil
+	})
+
+	d := NewDispatcher(registry, &mockValidator{}, logger)
+	result := d.Execute(context.Background(), Call{
+		ID:    "call_log",
+		Name:  "large_payload",
+		Input: json.RawMessage(`{}`),
+	}, PermReadOnly)
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content)
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "preview=") {
+		t.Fatalf("logs = %q, want preview field", logOutput)
+	}
+	if !strings.Contains(logOutput, "hash=") {
+		t.Fatalf("logs = %q, want hash field", logOutput)
+	}
+	if !strings.Contains(logOutput, "size=") {
+		t.Fatalf("logs = %q, want size field", logOutput)
+	}
+	if strings.Contains(logOutput, strings.Repeat("x", 200)) {
+		t.Fatal("logs should not contain the full payload")
 	}
 }

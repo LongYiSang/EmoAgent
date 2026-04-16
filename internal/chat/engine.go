@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/longyisang/emoagent/internal/config"
+	contextutil "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/storage"
 	"github.com/longyisang/emoagent/internal/tool"
@@ -17,31 +19,31 @@ import (
 
 // EngineConfig defines the dependencies for Engine.
 type EngineConfig struct {
-	LLM          llm.Client
-	DB           *storage.DB
-	Logger       *slog.Logger
-	Model        string
-	MaxTokens    int
-	Temperature  float64
-	HistoryLimit int
-	Provider     string           // "openai" or "anthropic", needed by ResultsToMessages
-	Registry     *tool.Registry   // nil disables tool support
-	Dispatcher   *tool.Dispatcher // nil disables tool support
+	LLM           llm.Client
+	DB            *storage.DB
+	Logger        *slog.Logger
+	Model         string
+	MaxTokens     int
+	Temperature   float64
+	ContextConfig config.ContextConfig
+	Provider      string           // "openai" or "anthropic", needed by ResultsToMessages
+	Registry      *tool.Registry   // nil disables tool support
+	Dispatcher    *tool.Dispatcher // nil disables tool support
 }
 
 // Engine assembles conversation context and forwards requests to the LLM.
 type Engine struct {
-	mu           sync.RWMutex
-	llm          llm.Client
-	db           *storage.DB
-	logger       *slog.Logger
-	model        string
-	maxTokens    int
-	temperature  float64
-	historyLimit int
-	provider     string
-	registry     *tool.Registry
-	dispatcher   *tool.Dispatcher
+	mu          sync.RWMutex
+	llm         llm.Client
+	db          *storage.DB
+	logger      *slog.Logger
+	model       string
+	maxTokens   int
+	temperature float64
+	contextCfg  config.ContextConfig
+	provider    string
+	registry    *tool.Registry
+	dispatcher  *tool.Dispatcher
 }
 
 // UpdateConfig hot-swaps the active LLM client and request parameters for new sends.
@@ -60,22 +62,22 @@ func (e *Engine) UpdateConfig(client llm.Client, provider, model string, maxToke
 
 // NewEngine creates a chat engine from configuration.
 func NewEngine(cfg EngineConfig) *Engine {
-	historyLimit := cfg.HistoryLimit
-	if historyLimit <= 0 {
-		historyLimit = 20
+	contextCfg := cfg.ContextConfig
+	if err := contextCfg.Validate(); err != nil {
+		contextCfg = config.DefaultConfig().Context
 	}
 
 	return &Engine{
-		llm:          cfg.LLM,
-		db:           cfg.DB,
-		logger:       cfg.Logger,
-		model:        cfg.Model,
-		maxTokens:    cfg.MaxTokens,
-		temperature:  cfg.Temperature,
-		historyLimit: historyLimit,
-		provider:     cfg.Provider,
-		registry:     cfg.Registry,
-		dispatcher:   cfg.Dispatcher,
+		llm:         cfg.LLM,
+		db:          cfg.DB,
+		logger:      cfg.Logger,
+		model:       cfg.Model,
+		maxTokens:   cfg.MaxTokens,
+		temperature: cfg.Temperature,
+		contextCfg:  contextCfg,
+		provider:    cfg.Provider,
+		registry:    cfg.Registry,
+		dispatcher:  cfg.Dispatcher,
 	}
 }
 
@@ -126,7 +128,7 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 	model := e.model
 	maxTokens := e.maxTokens
 	temperature := e.temperature
-	historyLimit := e.historyLimit
+	contextCfg := e.contextCfg
 	provider := e.provider
 	registry := e.registry
 	dispatcher := e.dispatcher
@@ -163,19 +165,18 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 		}
 	}
 
-	history, err := e.db.GetRecentMessages(ctx, sessionID, historyLimit)
+	history, err := e.db.GetAllMessages(ctx, sessionID)
 	if err != nil {
 		e.logger.Error("failed to load message history", "session", sessionID, "error", err)
 		return "", err
 	}
 
-	messages := make([]llm.Message, 0, len(history))
-	for _, msg := range history {
-		messages = append(messages, llm.Message{
-			Role:    llm.Role(msg.Role),
-			Content: msg.Content,
-		})
+	assembled, err := contextutil.BuildEmotionContext(persona, history, contextCfg)
+	if err != nil {
+		e.logger.Error("failed to assemble llm context", "session", sessionID, "error", err)
+		return "", err
 	}
+	messages := append([]llm.Message(nil), assembled.Messages...)
 
 	// maxToolRounds prevents infinite tool call loops.
 	const maxToolRounds = 10
@@ -189,7 +190,7 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 	req := llm.ChatRequest{
 		Model:       model,
 		Messages:    messages,
-		System:      persona.SystemPrompt,
+		System:      assembled.System,
 		MaxTokens:   maxTokens,
 		Temperature: temperature,
 		Stream:      true,
@@ -200,6 +201,7 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 		"persona", persona.Name,
 		"model", model,
 		"history_len", len(messages),
+		"estimated_tokens", assembled.Budget.EstimatedTokens,
 		"tools_count", len(tools),
 	)
 	e.logger.Debug("llm context",
@@ -266,9 +268,29 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 		}
 
 		results := dispatcher.ExecuteAll(ctx, calls, tool.PermReadOnly)
+		callNames := make(map[string]string, len(calls))
+		for _, call := range calls {
+			callNames[call.ID] = call.Name
+		}
+
+		snippedResults := make([]tool.Result, len(results))
+		for i, result := range results {
+			digest := contextutil.SnipToolResult(
+				callNames[result.CallID],
+				result.CallID,
+				result.Content,
+				contextCfg.ToolResultSoftTokens,
+				contextCfg.ToolResultHardTokens,
+			)
+			snippedResults[i] = tool.Result{
+				CallID:  result.CallID,
+				Content: json.RawMessage(contextutil.ToolResultContent(digest)),
+				IsError: result.IsError,
+			}
+		}
 
 		// 3. Convert results to provider-specific messages and append.
-		toolMsgs := tool.ResultsToMessages(provider, results)
+		toolMsgs := tool.ResultsToMessages(provider, snippedResults)
 		messages = append(messages, toolMsgs...)
 
 		// Rebuild request for next round.

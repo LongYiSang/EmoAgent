@@ -22,6 +22,15 @@ llm:
   temperature: 1
   api_key_env: "OPENAI_API_KEY"
 
+context:
+  input_budget_tokens: 24000
+  soft_compact_ratio: 0.75
+  hard_compact_ratio: 0.92
+  reserve_output_tokens: 4096
+  keep_recent_user_turns: 6
+  tool_result_soft_tokens: 1000
+  tool_result_hard_tokens: 3000
+
 llm_profiles:
   - name: "default"
     provider: "openai"

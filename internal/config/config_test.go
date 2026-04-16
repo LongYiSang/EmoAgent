@@ -20,6 +20,12 @@ func TestDefaultConfig(t *testing.T) {
 	if len(cfg.LLMProfiles) != 0 {
 		t.Errorf("default llm_profiles length = %d, want 0", len(cfg.LLMProfiles))
 	}
+	if cfg.Context.InputBudgetTokens <= 0 {
+		t.Errorf("default context.input_budget_tokens = %d, want > 0", cfg.Context.InputBudgetTokens)
+	}
+	if cfg.Context.KeepRecentUserTurns <= 0 {
+		t.Errorf("default context.keep_recent_user_turns = %d, want > 0", cfg.Context.KeepRecentUserTurns)
+	}
 }
 
 func TestLoadMissingFile(t *testing.T) {
@@ -42,6 +48,14 @@ llm:
   provider: anthropic
   model: claude-sonnet-4-20250514
   api_key_env: ANTHROPIC_API_KEY
+context:
+  input_budget_tokens: 12345
+  soft_compact_ratio: 0.7
+  hard_compact_ratio: 0.9
+  reserve_output_tokens: 2048
+  keep_recent_user_turns: 4
+  tool_result_soft_tokens: 500
+  tool_result_hard_tokens: 1500
 llm_profiles:
   - name: default
     provider: openai
@@ -66,6 +80,12 @@ llm_profiles:
 	if cfg.LLM.APIKeyEnv != "ANTHROPIC_API_KEY" {
 		t.Errorf("llm.api_key_env = %q, want ANTHROPIC_API_KEY", cfg.LLM.APIKeyEnv)
 	}
+	if cfg.Context.InputBudgetTokens != 12345 {
+		t.Errorf("context.input_budget_tokens = %d, want 12345", cfg.Context.InputBudgetTokens)
+	}
+	if cfg.Context.KeepRecentUserTurns != 4 {
+		t.Errorf("context.keep_recent_user_turns = %d, want 4", cfg.Context.KeepRecentUserTurns)
+	}
 	if len(cfg.LLMProfiles) != 1 {
 		t.Fatalf("llm_profiles length = %d, want 1", len(cfg.LLMProfiles))
 	}
@@ -84,6 +104,23 @@ func TestValidateInvalidPort(t *testing.T) {
 	cfg.Server.Port = 0
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected validation error for port 0")
+	}
+}
+
+func TestValidateRejectsInvalidContextRatios(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Context.SoftCompactRatio = 0.95
+	cfg.Context.HardCompactRatio = 0.9
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for soft >= hard")
+	}
+}
+
+func TestValidateRejectsInvalidContextBudget(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Context.InputBudgetTokens = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for invalid context budget")
 	}
 }
 

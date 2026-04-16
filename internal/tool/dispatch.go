@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	contextutil "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/llm"
 )
 
@@ -96,7 +97,14 @@ func (d *Dispatcher) Execute(ctx context.Context, call Call, maxPermission Permi
 		return errorResult(call.ID, fmt.Sprintf("execution error: %v", err))
 	}
 
-	d.logger.Info("tool executed", "tool", call.Name, "call_id", call.ID)
+	digest := contextutil.SnipToolResult(call.Name, call.ID, result, maxInt, maxInt)
+	d.logger.Info("tool executed",
+		"tool", call.Name,
+		"call_id", call.ID,
+		"size", digest.Size,
+		"preview", digest.Preview,
+		"hash", digest.Hash,
+	)
 	return Result{
 		CallID:  call.ID,
 		Content: result,
@@ -170,3 +178,5 @@ func errorResult(callID, msg string) Result {
 		IsError: true,
 	}
 }
+
+const maxInt = int(^uint(0) >> 1)
