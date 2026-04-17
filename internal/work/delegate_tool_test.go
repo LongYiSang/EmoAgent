@@ -30,13 +30,54 @@ func TestDelegateTool_SchemaStaysValidatorCompatible(t *testing.T) {
 		t.Fatalf("Unmarshal returned error: %v", err)
 	}
 	props := schema["properties"].(map[string]any)
-	if len(props) != 3 {
-		t.Fatalf("schema properties = %#v, want only goal/background/permission_scope", props)
+	if len(props) != 6 {
+		t.Fatalf("schema properties = %#v, want goal/background/constraints/acceptance_criteria/permission_scope/expression_brief", props)
 	}
-	for _, name := range []string{"goal", "background", "permission_scope"} {
+	for _, name := range []string{"goal", "background", "constraints", "acceptance_criteria", "permission_scope", "expression_brief"} {
 		if _, ok := props[name]; !ok {
 			t.Fatalf("schema missing %q: %#v", name, props)
 		}
+	}
+
+	permissionScope := props["permission_scope"].(map[string]any)
+	enum := permissionScope["enum"].([]any)
+	if len(enum) != 1 || enum[0] != "read-only" {
+		t.Fatalf("permission_scope enum = %#v, want [read-only]", enum)
+	}
+
+	expressionBrief := props["expression_brief"].(map[string]any)
+	if expressionBrief["type"] != "object" {
+		t.Fatalf("expression_brief type = %#v, want object", expressionBrief["type"])
+	}
+	nestedProps := expressionBrief["properties"].(map[string]any)
+	for _, name := range []string{"tone", "directness", "user_preference_hints"} {
+		if _, ok := nestedProps[name]; !ok {
+			t.Fatalf("expression_brief missing %q: %#v", name, nestedProps)
+		}
+	}
+}
+
+func TestDelegateTool_SchemaAcceptsFullBriefInput(t *testing.T) {
+	runtime := newTestRuntime(t, &scriptedLLM{
+		responses: []*llm.ChatResponse{textResp(`{"status":"completed","summary":"ok"}`)},
+	})
+
+	spec, _ := NewDelegateTool(runtime, t.TempDir(), testLogger())
+	input := json.RawMessage(`{
+		"goal":"inspect config",
+		"background":"need a concise summary",
+		"constraints":["do not change files","prefer primary config"],
+		"acceptance_criteria":["list active ports","mention profile source"],
+		"permission_scope":"read-only",
+		"expression_brief":{
+			"tone":"calm",
+			"directness":"direct",
+			"user_preference_hints":["be concise"]
+		}
+	}`)
+
+	if err := (tool.MinimalSchemaValidator{}).Validate(spec.Parameters, input); err != nil {
+		t.Fatalf("Validate returned error: %v", err)
 	}
 }
 

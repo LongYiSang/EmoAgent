@@ -192,6 +192,9 @@ func TestRuntime_WritesToolEventsToJournal(t *testing.T) {
 			t.Fatalf("journal missing %s: %s", snippet, text)
 		}
 	}
+	if !strings.Contains(text, `"content_preview":"{\"ok\":true}"`) {
+		t.Fatalf("journal missing content_preview: %s", text)
+	}
 }
 
 func TestEstimateMessagesTokensCountsStructuredContent(t *testing.T) {

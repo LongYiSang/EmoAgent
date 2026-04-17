@@ -12,7 +12,8 @@ import (
 
 // Event is one JSONL row in the Work audit journal.
 type Event struct {
-	Timestamp time.Time `json:"timestamp"`
+	Timestamp time.Time `json:"ts"`
+	TaskID    string    `json:"task_id"`
 	Kind      string    `json:"kind"`
 	Round     int       `json:"round,omitempty"`
 	Payload   any       `json:"payload,omitempty"`
@@ -22,6 +23,7 @@ type Event struct {
 // can keep logging even when journal initialization failed.
 type Journal struct {
 	mu     sync.Mutex
+	taskID string
 	file   *os.File
 	closed bool
 	logger *slog.Logger
@@ -39,7 +41,7 @@ func Open(rootDir, taskID string, now time.Time, logger *slog.Logger) (*Journal,
 		return nil, fmt.Errorf("open journal file: %w", err)
 	}
 
-	return &Journal{file: file, logger: logger}, nil
+	return &Journal{taskID: taskID, file: file, logger: logger}, nil
 }
 
 // Write appends a single JSONL event.
@@ -57,6 +59,7 @@ func (j *Journal) Write(kind string, round int, payload any) {
 
 	line, err := json.Marshal(Event{
 		Timestamp: time.Now().UTC(),
+		TaskID:    j.taskID,
 		Kind:      kind,
 		Round:     round,
 		Payload:   payload,

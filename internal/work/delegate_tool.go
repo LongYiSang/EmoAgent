@@ -21,7 +21,18 @@ var delegateToolSchema = json.RawMessage(`{
 	"properties":{
 		"goal":{"type":"string"},
 		"background":{"type":"string"},
-		"permission_scope":{"type":"string"}
+		"constraints":{"type":"array","items":{"type":"string"}},
+		"acceptance_criteria":{"type":"array","items":{"type":"string"}},
+		"permission_scope":{"type":"string","enum":["read-only"]},
+		"expression_brief":{
+			"type":"object",
+			"properties":{
+				"tone":{"type":"string"},
+				"directness":{"type":"string"},
+				"user_preference_hints":{"type":"array","items":{"type":"string"}}
+			},
+			"additionalProperties":false
+		}
 	},
 	"required":["goal","permission_scope"],
 	"additionalProperties":false

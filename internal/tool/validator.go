@@ -5,13 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"reflect"
 )
 
 // MinimalSchemaValidator validates the small JSON Schema subset used by current tools.
 type MinimalSchemaValidator struct{}
 
 // Validate checks input against a restricted object-schema subset:
-// type, properties, required, additionalProperties, and primitive property types.
+// type, enum, properties, required, additionalProperties, and primitive or
+// array property types.
 func (MinimalSchemaValidator) Validate(schema json.RawMessage, input json.RawMessage) error {
 	var schemaValue any
 	if err := decodeJSON(schema, &schemaValue, false); err != nil {
@@ -46,13 +48,15 @@ func validateValue(schema any, value any, path string) error {
 	schemaType, _ := schemaMap["type"].(string)
 	switch schemaType {
 	case "":
-		return nil
+		// Continue so enum-only schemas still validate.
 	case "object":
 		obj, ok := value.(map[string]any)
 		if !ok {
 			return fmt.Errorf("%s: expected object", path)
 		}
-		return validateObject(schemaMap, obj, path)
+		if err := validateObject(schemaMap, obj, path); err != nil {
+			return err
+		}
 	case "string":
 		if _, ok := value.(string); !ok {
 			return fmt.Errorf("%s: expected string", path)
@@ -74,10 +78,54 @@ func validateValue(schema any, value any, path string) error {
 		if err != nil || math.Trunc(f) != f {
 			return fmt.Errorf("%s: expected integer", path)
 		}
+	case "array":
+		items, ok := value.([]any)
+		if !ok {
+			return fmt.Errorf("%s: expected array", path)
+		}
+		if err := validateArray(schemaMap, items, path); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("%s: unsupported schema type %q", path, schemaType)
 	}
 
+	if err := validateEnum(schemaMap, value, path); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func validateEnum(schema map[string]any, value any, path string) error {
+	rawEnum, ok := schema["enum"]
+	if !ok {
+		return nil
+	}
+
+	enumValues, ok := rawEnum.([]any)
+	if !ok {
+		return fmt.Errorf("%s: enum must be an array", path)
+	}
+	for _, allowed := range enumValues {
+		if reflect.DeepEqual(allowed, value) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s: value %#v not in enum", path, value)
+}
+
+func validateArray(schema map[string]any, items []any, path string) error {
+	itemSchema, ok := schema["items"]
+	if !ok {
+		return nil
+	}
+
+	for i, item := range items {
+		if err := validateValue(itemSchema, item, fmt.Sprintf("%s[%d]", path, i)); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

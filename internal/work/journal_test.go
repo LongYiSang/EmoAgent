@@ -46,6 +46,12 @@ func TestJournal_WritesExpectedEventKinds(t *testing.T) {
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
 			t.Fatalf("journal line should be valid JSON: %v", err)
 		}
+		if _, ok := event["ts"]; !ok {
+			t.Fatalf("journal event missing ts: %#v", event)
+		}
+		if event["task_id"] != "task-abc" {
+			t.Fatalf("journal event task_id = %#v, want task-abc", event["task_id"])
+		}
 		got = append(got, event["kind"].(string))
 	}
 	want := "task_start,tool_call,tool_result,task_end,task_error"

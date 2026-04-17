@@ -46,3 +46,66 @@ func TestMinimalSchemaValidator_ValidateRequiredAndTypes(t *testing.T) {
 		t.Fatal("Validate should reject missing required fields")
 	}
 }
+
+func TestMinimalSchemaValidator_ValidateArrayItems(t *testing.T) {
+	v := MinimalSchemaValidator{}
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"constraints":{"type":"array","items":{"type":"string"}}
+		},
+		"additionalProperties":false
+	}`)
+
+	if err := v.Validate(schema, json.RawMessage(`{"constraints":["a","b"]}`)); err != nil {
+		t.Fatalf("Validate returned error: %v", err)
+	}
+	if err := v.Validate(schema, json.RawMessage(`{"constraints":["a",1]}`)); err == nil {
+		t.Fatal("Validate should reject invalid array item type")
+	}
+}
+
+func TestMinimalSchemaValidator_ValidateEnum(t *testing.T) {
+	v := MinimalSchemaValidator{}
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"permission_scope":{"type":"string","enum":["read-only"]}
+		},
+		"required":["permission_scope"],
+		"additionalProperties":false
+	}`)
+
+	if err := v.Validate(schema, json.RawMessage(`{"permission_scope":"read-only"}`)); err != nil {
+		t.Fatalf("Validate returned error: %v", err)
+	}
+	if err := v.Validate(schema, json.RawMessage(`{"permission_scope":"workspace-write"}`)); err == nil {
+		t.Fatal("Validate should reject enum mismatch")
+	}
+}
+
+func TestMinimalSchemaValidator_ValidateNestedObject(t *testing.T) {
+	v := MinimalSchemaValidator{}
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"expression_brief":{
+				"type":"object",
+				"properties":{
+					"tone":{"type":"string"},
+					"directness":{"type":"string"},
+					"user_preference_hints":{"type":"array","items":{"type":"string"}}
+				},
+				"additionalProperties":false
+			}
+		},
+		"additionalProperties":false
+	}`)
+
+	if err := v.Validate(schema, json.RawMessage(`{"expression_brief":{"tone":"calm","directness":"direct","user_preference_hints":["short"]}}`)); err != nil {
+		t.Fatalf("Validate returned error: %v", err)
+	}
+	if err := v.Validate(schema, json.RawMessage(`{"expression_brief":{"unknown":"x"}}`)); err == nil {
+		t.Fatal("Validate should reject unexpected nested properties")
+	}
+}

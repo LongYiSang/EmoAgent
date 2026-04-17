@@ -89,10 +89,10 @@ func (r *Runtime) Run(ctx context.Context, brief protocol.TaskBrief, journal *Jo
 		for _, result := range results {
 			preview, truncated := truncateContent(string(result.Content), 500)
 			journal.Write("tool_result", round, map[string]any{
-				"call_id":   result.CallID,
-				"preview":   preview,
-				"truncated": truncated,
-				"is_error":  result.IsError,
+				"call_id":         result.CallID,
+				"content_preview": preview,
+				"truncated":       truncated,
+				"is_error":        result.IsError,
 			})
 		}
 
