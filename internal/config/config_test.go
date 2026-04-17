@@ -26,6 +26,18 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Context.KeepRecentUserTurns <= 0 {
 		t.Errorf("default context.keep_recent_user_turns = %d, want > 0", cfg.Context.KeepRecentUserTurns)
 	}
+	if cfg.Work.Profile != "default" {
+		t.Errorf("default work.profile = %q, want default", cfg.Work.Profile)
+	}
+	if cfg.Work.MaxToolRounds != 15 {
+		t.Errorf("default work.max_tool_rounds = %d, want 15", cfg.Work.MaxToolRounds)
+	}
+	if cfg.Work.MaxInputTokens != 100000 {
+		t.Errorf("default work.max_input_tokens = %d, want 100000", cfg.Work.MaxInputTokens)
+	}
+	if cfg.Work.JournalDir != "./logs/work" {
+		t.Errorf("default work.journal_dir = %q, want ./logs/work", cfg.Work.JournalDir)
+	}
 }
 
 func TestLoadMissingFile(t *testing.T) {
@@ -117,6 +129,18 @@ llm_profiles:
 	// Default should still apply for unset fields.
 	if cfg.DB.Path != "./data/emo.db" {
 		t.Errorf("db.path = %q, want default", cfg.DB.Path)
+	}
+	if cfg.Work.Profile != "default" {
+		t.Errorf("work.profile = %q, want default", cfg.Work.Profile)
+	}
+	if cfg.Work.MaxToolRounds != 15 {
+		t.Errorf("work.max_tool_rounds = %d, want 15", cfg.Work.MaxToolRounds)
+	}
+	if cfg.Work.MaxInputTokens != 100000 {
+		t.Errorf("work.max_input_tokens = %d, want 100000", cfg.Work.MaxInputTokens)
+	}
+	if cfg.Work.JournalDir != "./logs/work" {
+		t.Errorf("work.journal_dir = %q, want ./logs/work", cfg.Work.JournalDir)
 	}
 }
 

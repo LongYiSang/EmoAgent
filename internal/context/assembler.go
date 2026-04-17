@@ -9,6 +9,18 @@ import (
 	"github.com/longyisang/emoagent/internal/storage"
 )
 
+const delegationGuideline = `## Delegation Guideline
+
+When the user's request fits the criteria below, call delegate_to_work instead of trying to handle it yourself:
+- Requires reading files, exploring directories, or running commands.
+- Needs multi-step tool calls (3 or more steps) to complete.
+- Produces large or noisy intermediate output that should stay out of the main chat.
+- Requires verification or long-chain research.
+
+When the user just wants to talk, vent, ask a trivial factual question, or wants you to express something, handle it yourself. Do not delegate casual conversation.
+
+The TaskReport you receive is for your eyes only. Never paste raw tool output into your reply; summarize findings in your own voice.`
+
 // BuildEmotionContext assembles the emotion context with no persisted session state.
 func BuildEmotionContext(persona *config.Persona, history []storage.MessageRecord, cfg config.ContextConfig) (AssembledContext, error) {
 	return buildEmotionContext(persona, history, nil, nil, cfg)
@@ -45,9 +57,10 @@ func buildEmotionContext(persona *config.Persona, history []storage.MessageRecor
 	if err != nil {
 		return AssembledContext{}, err
 	}
-	budget := NewBudget(cfg, persona.SystemPrompt, messages)
+	system := buildEmotionSystemPrompt(persona.SystemPrompt)
+	budget := NewBudget(cfg, system, messages)
 	return AssembledContext{
-		System:      persona.SystemPrompt,
+		System:      system,
 		ToolDigests: append([]ToolDigest(nil), toolDigests...),
 		Messages:    messages,
 		Budget:      budget,
@@ -63,6 +76,13 @@ func buildEmotionContext(persona *config.Persona, history []storage.MessageRecor
 			UsedToolDigest:          len(toolDigests) > 0,
 		},
 	}, nil
+}
+
+func buildEmotionSystemPrompt(base string) string {
+	if base == "" {
+		return delegationGuideline
+	}
+	return base + "\n\n" + delegationGuideline
 }
 
 func composeEmotionMessages(state *ContextState, toolDigests []ToolDigest, recentMessages []llm.Message) ([]llm.Message, error) {

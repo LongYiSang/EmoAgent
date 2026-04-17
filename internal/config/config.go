@@ -11,6 +11,7 @@ type Config struct {
 	Server      ServerConfig    `yaml:"server"`
 	LLM         LLMConfig       `yaml:"llm"`
 	Context     ContextConfig   `yaml:"context"`
+	Work        WorkConfig      `yaml:"work"`
 	LLMProfiles []LLMProfile    `yaml:"llm_profiles"`
 	DB          DBConfig        `yaml:"db"`
 	Log         LogConfig       `yaml:"log"`
@@ -81,6 +82,28 @@ type ContextConfig struct {
 	ToolResultHardTokens int     `yaml:"tool_result_hard_tokens"`
 }
 
+type WorkConfig struct {
+	Profile        string `yaml:"profile"`
+	MaxToolRounds  int    `yaml:"max_tool_rounds"`
+	MaxInputTokens int    `yaml:"max_input_tokens"`
+	JournalDir     string `yaml:"journal_dir"`
+}
+
+func (w *WorkConfig) ApplyDefaults() {
+	if w.Profile == "" {
+		w.Profile = "default"
+	}
+	if w.MaxToolRounds == 0 {
+		w.MaxToolRounds = 15
+	}
+	if w.MaxInputTokens == 0 {
+		w.MaxInputTokens = 100000
+	}
+	if w.JournalDir == "" {
+		w.JournalDir = "./logs/work"
+	}
+}
+
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
@@ -103,6 +126,12 @@ func DefaultConfig() *Config {
 			KeepRecentUserTurns:  6,
 			ToolResultSoftTokens: 1000,
 			ToolResultHardTokens: 3000,
+		},
+		Work: WorkConfig{
+			Profile:        "default",
+			MaxToolRounds:  15,
+			MaxInputTokens: 100000,
+			JournalDir:     "./logs/work",
 		},
 		LLMProfiles: []LLMProfile{},
 		DB: DBConfig{
@@ -142,6 +171,7 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	cfg.Work.ApplyDefaults()
 
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("validate config: %w", err)

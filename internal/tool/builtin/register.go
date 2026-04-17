@@ -10,8 +10,10 @@ import (
 
 // RegisterAll registers all built-in tools with the given registry.
 // Called once during App initialization.
-func RegisterAll(registry *tool.Registry, cfg *config.Config, logger *slog.Logger) {
+func RegisterAll(registry *tool.Registry, cfg *config.Config, projectRoot string, logger *slog.Logger) {
 	registry.Register(GetCurrentTimeSpec, GetCurrentTimeHandler)
+	readFileSpec, readFileHandler := NewReadFileTool(projectRoot)
+	registry.Register(readFileSpec, readFileHandler)
 
 	registerWebSearch(registry, cfg, logger)
 

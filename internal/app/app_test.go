@@ -15,6 +15,8 @@ import (
 	"github.com/longyisang/emoagent/internal/chat"
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/storage"
+	"github.com/longyisang/emoagent/internal/tool"
+	"github.com/longyisang/emoagent/internal/tool/builtin"
 	"github.com/longyisang/emoagent/internal/web"
 )
 
@@ -712,6 +714,206 @@ func TestActivateLLMProfilePassesSummaryModelAndContextConfigToEngine(t *testing
 	}
 	if runtimeCfg.ContextConfig.ReserveOutputTokens != 512 {
 		t.Fatalf("runtime reserve output = %d, want 512", runtimeCfg.ContextConfig.ReserveOutputTokens)
+	}
+}
+
+func TestResolveWorkProfilePrefersDB(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if err := db.UpsertLLMProfile(config.LLMProfile{
+		Name:         "analysis",
+		Provider:     "openai",
+		BaseURL:      "https://api.openai.com",
+		Model:        "db-model",
+		SummaryModel: "db-summary",
+		MaxTokens:    2048,
+		Temperature:  0.2,
+		APIKeyEnv:    "TEST_OPENAI_API_KEY",
+	}); err != nil {
+		t.Fatalf("UpsertLLMProfile: %v", err)
+	}
+
+	a := &App{
+		Config: &config.Config{
+			Work: config.WorkConfig{Profile: "analysis"},
+			LLMProfiles: []config.LLMProfile{{
+				Name:         "analysis",
+				Provider:     "openai",
+				BaseURL:      "https://api.openai.com",
+				Model:        "config-model",
+				SummaryModel: "config-summary",
+				MaxTokens:    1024,
+				Temperature:  0.7,
+				APIKeyEnv:    "TEST_OPENAI_API_KEY",
+			}},
+		},
+		DB:     db,
+		Logger: logger,
+	}
+
+	profile, err := a.resolveWorkProfile()
+	if err != nil {
+		t.Fatalf("resolveWorkProfile: %v", err)
+	}
+	if profile.Model != "db-model" {
+		t.Fatalf("model = %q, want db-model", profile.Model)
+	}
+	if profile.SummaryModel != "db-summary" {
+		t.Fatalf("summary model = %q, want db-summary", profile.SummaryModel)
+	}
+}
+
+func TestResolveWorkProfileSeedsFromConfigWhenDBMissing(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	a := &App{
+		Config: &config.Config{
+			Work: config.WorkConfig{Profile: "analysis"},
+			LLMProfiles: []config.LLMProfile{{
+				Name:         "analysis",
+				Provider:     "openai",
+				BaseURL:      "https://api.openai.com",
+				Model:        "config-model",
+				SummaryModel: "config-summary",
+				MaxTokens:    1024,
+				Temperature:  0.7,
+				APIKeyEnv:    "TEST_OPENAI_API_KEY",
+			}},
+		},
+		DB:     db,
+		Logger: logger,
+	}
+
+	profile, err := a.resolveWorkProfile()
+	if err != nil {
+		t.Fatalf("resolveWorkProfile: %v", err)
+	}
+	if profile.Model != "config-model" {
+		t.Fatalf("model = %q, want config-model", profile.Model)
+	}
+
+	record, err := db.GetLLMProfile(context.Background(), "analysis")
+	if err != nil {
+		t.Fatalf("GetLLMProfile: %v", err)
+	}
+	if record == nil {
+		t.Fatal("expected seeded profile in db")
+	}
+	if record.Model != "config-model" {
+		t.Fatalf("seeded model = %q, want config-model", record.Model)
+	}
+}
+
+func TestResolveWorkProfileMissingReturnsError(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	a := &App{
+		Config: &config.Config{
+			Work: config.WorkConfig{Profile: "missing"},
+		},
+		DB:     db,
+		Logger: logger,
+	}
+
+	_, err = a.resolveWorkProfile()
+	if err == nil {
+		t.Fatal("expected error for missing work profile")
+	}
+}
+
+func TestRunAllowsStartupWhenWorkProfileUnavailable(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	cfg := config.DefaultConfig()
+	cfg.Server = config.ServerConfig{Host: "127.0.0.1", Port: 0}
+	cfg.Work.Profile = "missing"
+
+	registry := tool.NewRegistry()
+	builtin.RegisterAll(registry, cfg, t.TempDir(), logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	a := &App{
+		Config:       cfg,
+		DB:           db,
+		Logger:       logger,
+		toolRegistry: registry,
+	}
+
+	if err := a.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if _, ok := a.toolRegistry.GetSpec("delegate_to_work"); ok {
+		t.Fatal("delegate_to_work should not be registered when work profile is unavailable")
+	}
+}
+
+func TestRunRegistersDelegateToolWhenWorkProfileUsable(t *testing.T) {
+	t.Setenv("TEST_OPENAI_API_KEY", "test-key")
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if err := db.UpsertLLMProfile(config.LLMProfile{
+		Name:         "analysis",
+		Provider:     "openai",
+		BaseURL:      "https://api.openai.com",
+		Model:        "gpt-4o-mini",
+		SummaryModel: "gpt-4o-mini",
+		MaxTokens:    128,
+		Temperature:  0.2,
+		APIKeyEnv:    "TEST_OPENAI_API_KEY",
+	}); err != nil {
+		t.Fatalf("UpsertLLMProfile: %v", err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.Server = config.ServerConfig{Host: "127.0.0.1", Port: 0}
+	cfg.Work.Profile = "analysis"
+
+	registry := tool.NewRegistry()
+	builtin.RegisterAll(registry, cfg, t.TempDir(), logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	a := &App{
+		Config:       cfg,
+		DB:           db,
+		Logger:       logger,
+		toolRegistry: registry,
+	}
+
+	if err := a.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if _, ok := a.toolRegistry.GetSpec("delegate_to_work"); !ok {
+		t.Fatal("delegate_to_work should be registered when work profile is usable")
 	}
 }
 

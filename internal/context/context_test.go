@@ -53,8 +53,14 @@ func TestBuildEmotionContextUsesPinnedContextAndRecentTurns(t *testing.T) {
 		t.Fatalf("BuildEmotionContext: %v", err)
 	}
 
-	if assembled.System != "You are warm." {
-		t.Fatalf("System = %q, want %q", assembled.System, "You are warm.")
+	if !strings.HasPrefix(assembled.System, "You are warm.") {
+		t.Fatalf("System = %q, want prefix %q", assembled.System, "You are warm.")
+	}
+	if !strings.Contains(assembled.System, "Delegation Guideline") {
+		t.Fatalf("System = %q, want Delegation Guideline section", assembled.System)
+	}
+	if !strings.Contains(assembled.System, "delegate_to_work") {
+		t.Fatalf("System = %q, want delegate_to_work reference", assembled.System)
 	}
 	if len(assembled.Messages) != 2 {
 		t.Fatalf("len(Messages) = %d, want 2", len(assembled.Messages))
@@ -149,6 +155,12 @@ func TestBuildEmotionContextPlacesToolDigestBeforeRecentTurns(t *testing.T) {
 
 	if len(assembled.Messages) != 3 {
 		t.Fatalf("len(Messages) = %d, want 3", len(assembled.Messages))
+	}
+	if !strings.HasPrefix(assembled.System, "You are warm.") {
+		t.Fatalf("System = %q, want prefix %q", assembled.System, "You are warm.")
+	}
+	if !strings.Contains(assembled.System, "Delegation Guideline") {
+		t.Fatalf("System = %q, want Delegation Guideline section", assembled.System)
 	}
 	if assembled.Messages[0].Role != "user" {
 		t.Fatalf("Messages[0].Role = %q, want user", assembled.Messages[0].Role)

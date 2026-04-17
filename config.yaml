@@ -31,6 +31,12 @@ context:
   tool_result_soft_tokens: 1000
   tool_result_hard_tokens: 3000
 
+work:
+  profile: "work"
+  max_tool_rounds: 15
+  max_input_tokens: 100000
+  journal_dir: "./logs/work"
+
 llm_profiles:
   - name: "default"
     provider: "openai"
@@ -47,6 +53,13 @@ llm_profiles:
     max_tokens: 4096
     temperature: 0.3
     api_key_env: "ANTHROPIC_API_KEY"
+  - name: "work"
+    provider: "openai"
+    base_url: "https://api.deepseek.com"
+    model: "deepseek-reasoner"
+    max_tokens: 4096
+    temperature: 0.3
+    api_key_env: "OPENAI_API_KEY_2"
 
 db:
   path: "./data/emo.db"

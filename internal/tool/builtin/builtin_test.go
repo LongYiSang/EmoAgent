@@ -63,45 +63,50 @@ func TestGetCurrentTimeSpec(t *testing.T) {
 
 func TestRegisterAll(t *testing.T) {
 	registry := tool.NewRegistry()
-	RegisterAll(registry, config.DefaultConfig(), slog.Default())
+	RegisterAll(registry, config.DefaultConfig(), t.TempDir(), slog.Default())
 
 	specs := registry.Specs()
-	if len(specs) != 1 {
-		t.Fatalf("expected 1 tool, got %d", len(specs))
+	if len(specs) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(specs))
 	}
-	if specs[0].Name != "get_current_time" {
-		t.Errorf("tool name = %q", specs[0].Name)
-	}
-
-	handler, ok := registry.Get("get_current_time")
-	if !ok || handler == nil {
+	if _, ok := registry.Get("get_current_time"); !ok {
 		t.Fatal("handler not found for get_current_time")
+	}
+	if _, ok := registry.Get("read_file"); !ok {
+		t.Fatal("handler not found for read_file")
 	}
 }
 
 func TestRegisterAllPanicsOnDuplicate(t *testing.T) {
 	registry := tool.NewRegistry()
-	RegisterAll(registry, config.DefaultConfig(), slog.Default())
+	RegisterAll(registry, config.DefaultConfig(), t.TempDir(), slog.Default())
 
 	defer func() {
 		if recover() == nil {
 			t.Fatal("expected panic on duplicate RegisterAll")
 		}
 	}()
-	RegisterAll(registry, config.DefaultConfig(), slog.Default())
+	RegisterAll(registry, config.DefaultConfig(), t.TempDir(), slog.Default())
 }
 
 func TestRegisterAll_WebSearchDisabled(t *testing.T) {
 	cfg := config.DefaultConfig() // WebSearch.Enabled = false
 	registry := tool.NewRegistry()
-	RegisterAll(registry, cfg, slog.Default())
+	RegisterAll(registry, cfg, t.TempDir(), slog.Default())
 
 	specs := registry.Specs()
-	if len(specs) != 1 {
-		t.Fatalf("expected 1 tool, got %d", len(specs))
+	if len(specs) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(specs))
 	}
-	if specs[0].Name != "get_current_time" {
-		t.Errorf("tool name = %q, want get_current_time", specs[0].Name)
+	if spec, ok := registry.GetSpec("read_file"); !ok {
+		t.Fatal("read_file not found in registered specs")
+	} else {
+		if spec.Scope != tool.ScopeWork {
+			t.Fatalf("read_file scope = %q, want %q", spec.Scope, tool.ScopeWork)
+		}
+		if spec.Permission != tool.PermReadOnly {
+			t.Fatalf("read_file permission = %q, want %q", spec.Permission, tool.PermReadOnly)
+		}
 	}
 }
 
@@ -113,11 +118,11 @@ func TestRegisterAll_WebSearchEnabled(t *testing.T) {
 	t.Setenv("TEST_TAVILY_KEY", "fake-key")
 
 	registry := tool.NewRegistry()
-	RegisterAll(registry, cfg, slog.Default())
+	RegisterAll(registry, cfg, t.TempDir(), slog.Default())
 
 	specs := registry.Specs()
-	if len(specs) != 2 {
-		t.Fatalf("expected 2 tools, got %d", len(specs))
+	if len(specs) != 3 {
+		t.Fatalf("expected 3 tools, got %d", len(specs))
 	}
 
 	var found bool
@@ -139,13 +144,10 @@ func TestRegisterAll_WebSearchProviderFails(t *testing.T) {
 	t.Setenv("NONEXISTENT_KEY_XYZ", "")
 
 	registry := tool.NewRegistry()
-	RegisterAll(registry, cfg, slog.Default()) // must not panic
+	RegisterAll(registry, cfg, t.TempDir(), slog.Default()) // must not panic
 
 	specs := registry.Specs()
-	if len(specs) != 1 {
-		t.Fatalf("expected 1 tool, got %d", len(specs))
-	}
-	if specs[0].Name != "get_current_time" {
-		t.Errorf("tool name = %q, want get_current_time", specs[0].Name)
+	if len(specs) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(specs))
 	}
 }

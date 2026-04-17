@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"sync"
@@ -22,6 +23,7 @@ import (
 	"github.com/longyisang/emoagent/internal/tool"
 	"github.com/longyisang/emoagent/internal/tool/builtin"
 	"github.com/longyisang/emoagent/internal/web"
+	"github.com/longyisang/emoagent/internal/work"
 )
 
 const personaWatchInterval = 5 * time.Second
@@ -119,7 +121,11 @@ func (a *App) Init(ctx context.Context, configPath string) error {
 
 	// Initialize tool registry with built-in tools.
 	a.toolRegistry = tool.NewRegistry()
-	builtin.RegisterAll(a.toolRegistry, a.Config, a.Logger)
+	projectRoot, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get working directory: %w", err)
+	}
+	builtin.RegisterAll(a.toolRegistry, a.Config, projectRoot, a.Logger)
 	a.Logger.Info("tool registry initialized", "tools", len(a.toolRegistry.Specs()))
 
 	a.Logger.Info("EmoAgent initialized")
@@ -153,7 +159,37 @@ func (a *App) Run(ctx context.Context) error {
 		contextCfg = a.effectiveContextForProfile(*activeProfile)
 	}
 
+	if a.toolRegistry == nil {
+		projectRoot, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("get working directory: %w", err)
+		}
+		a.toolRegistry = tool.NewRegistry()
+		builtin.RegisterAll(a.toolRegistry, cfg, projectRoot, a.Logger)
+	}
+
 	dispatcher := tool.NewDispatcher(a.toolRegistry, tool.MinimalSchemaValidator{}, a.Logger)
+	if _, ok := a.toolRegistry.GetSpec("delegate_to_work"); !ok {
+		workLLM, workProfile, err := a.buildWorkClient()
+		if err != nil {
+			a.Logger.Warn("work runtime disabled", "error", err)
+		} else {
+			workRuntime := work.NewRuntime(work.RuntimeConfig{
+				LLM:            workLLM,
+				Provider:       workProfile.Provider,
+				Model:          workProfile.Model,
+				MaxTokens:      workProfile.MaxTokens,
+				Temperature:    workProfile.Temperature,
+				MaxToolRounds:  cfg.Work.MaxToolRounds,
+				MaxInputTokens: cfg.Work.MaxInputTokens,
+				Registry:       a.toolRegistry,
+				Dispatcher:     dispatcher,
+				Logger:         a.Logger,
+			})
+			delegateSpec, delegateHandler := work.NewDelegateTool(workRuntime, cfg.Work.JournalDir, a.Logger)
+			a.toolRegistry.Register(delegateSpec, delegateHandler)
+		}
+	}
 
 	a.engine = chat.NewEngine(chat.EngineConfig{
 		LLM:           currentClient,
@@ -377,6 +413,57 @@ func (a *App) loadActiveLLMProfile() error {
 	a.mu.Unlock()
 	a.Logger.Info("active llm profile loaded", "profile_name", active.Name, "provider", active.Provider, "model", active.Model)
 	return nil
+}
+
+func (a *App) resolveWorkProfile() (*config.LLMProfile, error) {
+	if a == nil || a.Config == nil {
+		return nil, fmt.Errorf("app config is not initialized")
+	}
+	if a.DB == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+
+	name := a.Config.Work.Profile
+	if name == "" {
+		name = "default"
+	}
+
+	record, err := a.DB.GetLLMProfile(context.Background(), name)
+	if err != nil {
+		return nil, err
+	}
+	if record != nil {
+		profile := llmProfileFromRecord(*record)
+		return &profile, nil
+	}
+
+	for _, profile := range a.Config.LLMProfiles {
+		if profile.Name != name {
+			continue
+		}
+		if err := validateLLMProfile(profile); err != nil {
+			return nil, err
+		}
+		if err := a.DB.UpsertLLMProfile(profile); err != nil {
+			return nil, err
+		}
+		seeded := profile
+		return &seeded, nil
+	}
+
+	return nil, fmt.Errorf("work profile %q not found in db or config.llm_profiles", name)
+}
+
+func (a *App) buildWorkClient() (llm.Client, config.LLMProfile, error) {
+	profile, err := a.resolveWorkProfile()
+	if err != nil {
+		return nil, config.LLMProfile{}, err
+	}
+	client, err := a.buildClientForProfile(*profile)
+	if err != nil {
+		return nil, config.LLMProfile{}, err
+	}
+	return client, *profile, nil
 }
 
 // GetPersona returns a persona by key.
