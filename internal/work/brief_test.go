@@ -46,8 +46,18 @@ func TestValidateAndComplete_GoalTooLongRejected(t *testing.T) {
 	}
 }
 
-func TestValidateAndComplete_NonReadOnlyRejected(t *testing.T) {
-	for _, scope := range []string{"workspace-write", "approved-destructive", "superuser"} {
+func TestValidateAndComplete_WorkspaceWriteAccepted(t *testing.T) {
+	b := &protocol.TaskBrief{
+		Goal:            "write a summary file",
+		PermissionScope: "workspace-write",
+	}
+	if err := ValidateAndComplete(b); err != nil {
+		t.Fatalf("ValidateAndComplete should accept workspace-write, got: %v", err)
+	}
+}
+
+func TestValidateAndComplete_UnsupportedScopeRejected(t *testing.T) {
+	for _, scope := range []string{"approved-destructive", "superuser", ""} {
 		t.Run(scope, func(t *testing.T) {
 			b := &protocol.TaskBrief{
 				Goal:            "edit config",
@@ -55,10 +65,7 @@ func TestValidateAndComplete_NonReadOnlyRejected(t *testing.T) {
 			}
 			err := ValidateAndComplete(b)
 			if err == nil {
-				t.Fatal("ValidateAndComplete should reject non-read-only permissions")
-			}
-			if !strings.Contains(err.Error(), "read-only") {
-				t.Fatalf("error = %q, want mention of read-only restriction", err)
+				t.Fatalf("ValidateAndComplete should reject scope %q", scope)
 			}
 		})
 	}

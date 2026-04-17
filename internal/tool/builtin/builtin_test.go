@@ -65,15 +65,15 @@ func TestRegisterAll(t *testing.T) {
 	registry := tool.NewRegistry()
 	RegisterAll(registry, config.DefaultConfig(), t.TempDir(), slog.Default())
 
+	// get_current_time, read_file, list_dir, write_file, edit_file, web_fetch (enabled by default)
 	specs := registry.Specs()
-	if len(specs) != 2 {
-		t.Fatalf("expected 2 tools, got %d", len(specs))
+	if len(specs) != 6 {
+		t.Fatalf("expected 6 tools, got %d", len(specs))
 	}
-	if _, ok := registry.Get("get_current_time"); !ok {
-		t.Fatal("handler not found for get_current_time")
-	}
-	if _, ok := registry.Get("read_file"); !ok {
-		t.Fatal("handler not found for read_file")
+	for _, name := range []string{"get_current_time", "read_file", "list_dir", "write_file", "edit_file", "web_fetch"} {
+		if _, ok := registry.Get(name); !ok {
+			t.Fatalf("handler not found for %s", name)
+		}
 	}
 }
 
@@ -90,13 +90,13 @@ func TestRegisterAllPanicsOnDuplicate(t *testing.T) {
 }
 
 func TestRegisterAll_WebSearchDisabled(t *testing.T) {
-	cfg := config.DefaultConfig() // WebSearch.Enabled = false
+	cfg := config.DefaultConfig() // WebSearch.Enabled = false, WebFetch.Enabled = true
 	registry := tool.NewRegistry()
 	RegisterAll(registry, cfg, t.TempDir(), slog.Default())
 
 	specs := registry.Specs()
-	if len(specs) != 2 {
-		t.Fatalf("expected 2 tools, got %d", len(specs))
+	if len(specs) != 6 {
+		t.Fatalf("expected 6 tools, got %d", len(specs))
 	}
 	if spec, ok := registry.GetSpec("read_file"); !ok {
 		t.Fatal("read_file not found in registered specs")
@@ -121,8 +121,8 @@ func TestRegisterAll_WebSearchEnabled(t *testing.T) {
 	RegisterAll(registry, cfg, t.TempDir(), slog.Default())
 
 	specs := registry.Specs()
-	if len(specs) != 3 {
-		t.Fatalf("expected 3 tools, got %d", len(specs))
+	if len(specs) != 7 {
+		t.Fatalf("expected 7 tools, got %d", len(specs))
 	}
 
 	var found bool
@@ -147,7 +147,8 @@ func TestRegisterAll_WebSearchProviderFails(t *testing.T) {
 	RegisterAll(registry, cfg, t.TempDir(), slog.Default()) // must not panic
 
 	specs := registry.Specs()
-	if len(specs) != 2 {
-		t.Fatalf("expected 2 tools, got %d", len(specs))
+	// web_search fails; remaining: get_current_time, read_file, list_dir, write_file, edit_file, web_fetch
+	if len(specs) != 6 {
+		t.Fatalf("expected 6 tools, got %d", len(specs))
 	}
 }

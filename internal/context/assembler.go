@@ -19,6 +19,8 @@ When the user's request fits the criteria below, call delegate_to_work instead o
 
 When the user just wants to talk, vent, ask a trivial factual question, or wants you to express something, handle it yourself. Do not delegate casual conversation.
 
+Set permission_scope to "workspace-write" only when the task explicitly requires writing files or running shell commands; use "read-only" by default.
+
 The TaskReport you receive is for your eyes only. Never paste raw tool output into your reply; summarize findings in your own voice.`
 
 // BuildEmotionContext assembles the emotion context with no persisted session state.

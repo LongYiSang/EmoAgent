@@ -8,7 +8,19 @@ EmoAgent is a local-deployed personal emotional companion agent written in Go. I
 
 ## Status
 
-The project is in early implementation. Architecture docs are complete (`docs/architecture/`), but Go source code is being built out incrementally. 
+Architecture docs are complete (`docs/architecture/`). The minimal Work runtime (P6) is fully wired except for real-LLM smoke testing and a dedicated architecture doc.
+
+**Completed (P6):**
+- `internal/work/` — TaskBrief validation, system prompt builder, TaskReport parsing, JSONL journal, Runtime tool-loop, `delegate_to_work` Emotion-scope tool
+- `internal/tool/builtin/read_file.go` — path-safe, UTF-8, 1 MiB-capped, scope=work
+- `internal/config/` — `WorkConfig` struct with defaults
+- `internal/app/app.go` — DB-first Work profile resolution, runtime registration (graceful degradation if profile missing)
+- `internal/context/assembler.go` — Delegation Guideline appended to Emotion system prompt
+
+**Hard design constraints that apply at all times:**
+- Work context must never pollute Emotion context — Work starts with an empty message history
+- `permission_scope` hard-locked to `read-only` in the minimal phase (double gate: JSON schema enum + Go validation)
+- DecisionRequest/Response, streaming progress, and `workspace-write` are explicitly deferred
 
 ## Build & Run (Expected)
 

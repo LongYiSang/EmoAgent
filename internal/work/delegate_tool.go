@@ -23,7 +23,7 @@ var delegateToolSchema = json.RawMessage(`{
 		"background":{"type":"string"},
 		"constraints":{"type":"array","items":{"type":"string"}},
 		"acceptance_criteria":{"type":"array","items":{"type":"string"}},
-		"permission_scope":{"type":"string","enum":["read-only"]},
+		"permission_scope":{"type":"string","enum":["read-only","workspace-write"]},
 		"expression_brief":{
 			"type":"object",
 			"properties":{

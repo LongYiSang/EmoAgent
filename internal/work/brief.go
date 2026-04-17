@@ -12,8 +12,8 @@ import (
 
 const maxGoalRunes = 500
 
-// ValidateAndComplete validates a TaskBrief for the minimal read-only phase
-// and fills server-owned metadata when absent.
+// ValidateAndComplete validates a TaskBrief and fills server-owned metadata when absent.
+// Accepted permission scopes: "read-only", "workspace-write".
 func ValidateAndComplete(brief *protocol.TaskBrief) error {
 	if brief == nil {
 		return fmt.Errorf("task brief is required")
@@ -24,8 +24,11 @@ func ValidateAndComplete(brief *protocol.TaskBrief) error {
 	if utf8.RuneCountInString(brief.Goal) > maxGoalRunes {
 		return fmt.Errorf("task brief goal exceeds %d runes", maxGoalRunes)
 	}
-	if brief.PermissionScope != "read-only" {
-		return fmt.Errorf("minimal phase only supports read-only permission scope")
+	switch brief.PermissionScope {
+	case "read-only", "workspace-write":
+		// accepted
+	default:
+		return fmt.Errorf("unsupported permission scope %q (accepted: read-only, workspace-write)", brief.PermissionScope)
 	}
 	if brief.TaskID == "" {
 		brief.TaskID = uuid.NewString()

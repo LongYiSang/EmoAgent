@@ -54,7 +54,14 @@ func BuildWorkSystem(brief protocol.TaskBrief) string {
 	}
 
 	b.WriteString("## Permission\n")
-	b.WriteString("You are limited to read-only operations. Do not modify files, execute destructive commands, or request permission escalation.\n\n")
+	switch brief.PermissionScope {
+	case "workspace-write":
+		b.WriteString("You may read files, list directories, write/edit files, and run shell commands (bash tool).\n")
+		b.WriteString("Do NOT touch .git, .env, or any credential/secret files. Do NOT delete or move files unless explicitly instructed.\n")
+		b.WriteString("You may not request further permission escalation.\n\n")
+	default:
+		b.WriteString("You are limited to read-only operations. Do not modify files, execute destructive commands, or request permission escalation.\n\n")
+	}
 
 	b.WriteString("## Output Contract\n")
 	b.WriteString("The final answer must be a TaskReport JSON object.\n")

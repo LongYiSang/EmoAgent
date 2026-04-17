@@ -12,12 +12,22 @@ import (
 // Called once during App initialization.
 func RegisterAll(registry *tool.Registry, cfg *config.Config, projectRoot string, logger *slog.Logger) {
 	registry.Register(GetCurrentTimeSpec, GetCurrentTimeHandler)
+
 	readFileSpec, readFileHandler := NewReadFileTool(projectRoot)
 	registry.Register(readFileSpec, readFileHandler)
 
-	registerWebSearch(registry, cfg, logger)
+	listDirSpec, listDirHandler := NewListDirTool(projectRoot)
+	registry.Register(listDirSpec, listDirHandler)
 
-	// Future built-in tools: add registerXxx() calls here.
+	writeFileSpec, writeFileHandler := NewWriteFileTool(projectRoot)
+	registry.Register(writeFileSpec, writeFileHandler)
+
+	editFileSpec, editFileHandler := NewEditFileTool(projectRoot)
+	registry.Register(editFileSpec, editFileHandler)
+
+	registerWebSearch(registry, cfg, logger)
+	registerWebFetch(registry, cfg, logger)
+	registerBash(registry, cfg, projectRoot, logger)
 }
 
 // registerWebSearch conditionally registers the web_search tool.
@@ -33,4 +43,25 @@ func registerWebSearch(registry *tool.Registry, cfg *config.Config, logger *slog
 	}
 	registry.Register(WebSearchSpec, NewWebSearchHandler(provider, cfg.WebSearch.MaxResults, logger))
 	logger.Info("web_search registered", "provider", provider.Name())
+}
+
+// registerWebFetch conditionally registers the web_fetch tool.
+func registerWebFetch(registry *tool.Registry, cfg *config.Config, logger *slog.Logger) {
+	if !cfg.WebFetch.Enabled {
+		return
+	}
+	spec, handler := NewWebFetchTool(cfg.WebFetch, logger)
+	registry.Register(spec, handler)
+	logger.Info("web_fetch registered")
+}
+
+// registerBash conditionally registers the bash tool.
+// Disabled by default — must be explicitly enabled in config for security.
+func registerBash(registry *tool.Registry, cfg *config.Config, projectRoot string, logger *slog.Logger) {
+	if !cfg.Bash.Enabled {
+		return
+	}
+	spec, handler := NewBashTool(cfg.Bash, projectRoot, logger)
+	registry.Register(spec, handler)
+	logger.Info("bash registered")
 }

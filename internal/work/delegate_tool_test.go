@@ -41,8 +41,8 @@ func TestDelegateTool_SchemaStaysValidatorCompatible(t *testing.T) {
 
 	permissionScope := props["permission_scope"].(map[string]any)
 	enum := permissionScope["enum"].([]any)
-	if len(enum) != 1 || enum[0] != "read-only" {
-		t.Fatalf("permission_scope enum = %#v, want [read-only]", enum)
+	if len(enum) != 2 || enum[0] != "read-only" || enum[1] != "workspace-write" {
+		t.Fatalf("permission_scope enum = %#v, want [read-only workspace-write]", enum)
 	}
 
 	expressionBrief := props["expression_brief"].(map[string]any)
@@ -81,7 +81,7 @@ func TestDelegateTool_SchemaAcceptsFullBriefInput(t *testing.T) {
 	}
 }
 
-func TestDelegateTool_HandlerRejectsNonReadOnly(t *testing.T) {
+func TestDelegateTool_HandlerRejectsUnsupportedScope(t *testing.T) {
 	runtime := newTestRuntime(t, &scriptedLLM{
 		responses: []*llm.ChatResponse{textResp(`{"status":"completed","summary":"ok"}`)},
 	})
@@ -89,14 +89,14 @@ func TestDelegateTool_HandlerRejectsNonReadOnly(t *testing.T) {
 	_, handler := NewDelegateTool(runtime, t.TempDir(), testLogger())
 	input, err := json.Marshal(map[string]any{
 		"goal":             "edit config",
-		"permission_scope": "workspace-write",
+		"permission_scope": "approved-destructive",
 	})
 	if err != nil {
 		t.Fatalf("Marshal returned error: %v", err)
 	}
 
 	if _, err := handler(context.Background(), input); err == nil {
-		t.Fatal("handler should reject non-read-only permission")
+		t.Fatal("handler should reject approved-destructive permission")
 	}
 }
 

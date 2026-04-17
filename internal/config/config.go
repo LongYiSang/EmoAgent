@@ -17,6 +17,47 @@ type Config struct {
 	Log         LogConfig       `yaml:"log"`
 	Personas    PersonasConfig  `yaml:"personas"`
 	WebSearch   WebSearchConfig `yaml:"websearch"`
+	WebFetch    WebFetchConfig  `yaml:"webfetch"`
+	Bash        BashConfig      `yaml:"bash"`
+}
+
+type WebFetchConfig struct {
+	Enabled      bool   `yaml:"enabled"`
+	TimeoutSec   int    `yaml:"timeout_sec"`
+	MaxBytes     int    `yaml:"max_bytes"`
+	MaxRedirects int    `yaml:"max_redirects"`
+	UserAgent    string `yaml:"user_agent"`
+}
+
+func (c *WebFetchConfig) applyDefaults() {
+	if c.TimeoutSec == 0 {
+		c.TimeoutSec = 20
+	}
+	if c.MaxBytes == 0 {
+		c.MaxBytes = 1 << 20
+	}
+	if c.MaxRedirects == 0 {
+		c.MaxRedirects = 5
+	}
+	if c.UserAgent == "" {
+		c.UserAgent = "EmoAgent/0.1"
+	}
+}
+
+type BashConfig struct {
+	Enabled        bool   `yaml:"enabled"`
+	TimeoutSec     int    `yaml:"timeout_sec"`
+	MaxOutputBytes int    `yaml:"max_output_bytes"`
+	Shell          string `yaml:"shell"`
+}
+
+func (c *BashConfig) applyDefaults() {
+	if c.TimeoutSec == 0 {
+		c.TimeoutSec = 60
+	}
+	if c.MaxOutputBytes == 0 {
+		c.MaxOutputBytes = 256 << 10 // 256 KiB
+	}
 }
 
 type ServerConfig struct {
@@ -152,6 +193,18 @@ func DefaultConfig() *Config {
 			MaxResults: 5,
 			TimeoutSec: 30,
 		},
+		WebFetch: WebFetchConfig{
+			Enabled:      true,
+			TimeoutSec:   20,
+			MaxBytes:     1 << 20,
+			MaxRedirects: 5,
+			UserAgent:    "EmoAgent/0.1",
+		},
+		Bash: BashConfig{
+			Enabled:        false,
+			TimeoutSec:     60,
+			MaxOutputBytes: 256 << 10,
+		},
 	}
 }
 
@@ -172,6 +225,8 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 	cfg.Work.ApplyDefaults()
+	cfg.WebFetch.applyDefaults()
+	cfg.Bash.applyDefaults()
 
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("validate config: %w", err)
