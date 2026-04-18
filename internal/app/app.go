@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"runtime"
 	"sort"
 	"strconv"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/logger"
+	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/storage"
 	"github.com/longyisang/emoagent/internal/tool"
 	"github.com/longyisang/emoagent/internal/tool/builtin"
@@ -49,6 +51,7 @@ type App struct {
 	ActiveLLMProfile *config.LLMProfile
 	engine           *chat.Engine
 	toolRegistry     *tool.Registry
+	environment      runtimeenv.Facts
 	mu               sync.RWMutex
 	cancel           context.CancelFunc
 }
@@ -125,7 +128,8 @@ func (a *App) Init(ctx context.Context, configPath string) error {
 	if err != nil {
 		return fmt.Errorf("get working directory: %w", err)
 	}
-	builtin.RegisterAll(a.toolRegistry, a.Config, projectRoot, a.Logger)
+	a.environment = runtimeenv.BuildEnvironmentFacts(runtime.GOOS, projectRoot, a.Config.Bash)
+	builtin.RegisterAllWithFacts(a.toolRegistry, a.Config, projectRoot, a.environment, a.Logger)
 	a.Logger.Info("tool registry initialized", "tools", len(a.toolRegistry.Specs()))
 
 	a.Logger.Info("EmoAgent initialized")
@@ -164,8 +168,15 @@ func (a *App) Run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("get working directory: %w", err)
 		}
+		a.environment = runtimeenv.BuildEnvironmentFacts(runtime.GOOS, projectRoot, cfg.Bash)
 		a.toolRegistry = tool.NewRegistry()
-		builtin.RegisterAll(a.toolRegistry, cfg, projectRoot, a.Logger)
+		builtin.RegisterAllWithFacts(a.toolRegistry, cfg, projectRoot, a.environment, a.Logger)
+	} else if a.environment.OS == "" {
+		projectRoot, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("get working directory: %w", err)
+		}
+		a.environment = runtimeenv.BuildEnvironmentFacts(runtime.GOOS, projectRoot, cfg.Bash)
 	}
 
 	dispatcher := tool.NewDispatcher(a.toolRegistry, tool.MinimalSchemaValidator{}, a.Logger)
@@ -210,6 +221,7 @@ func (a *App) Run(ctx context.Context) error {
 				Decider:                  decider,
 				MaxEscalations:           cfg.Work.MaxEscalationsPerTask,
 				PendingSnapshotMaxTokens: cfg.Work.PendingSnapshotMaxTokens,
+				EnvironmentFacts:         a.environment,
 			})
 			if _, ok := a.toolRegistry.GetSpec("finish_task"); !ok {
 				a.toolRegistry.Register(work.NewFinishTaskTool(), work.FinishTaskPlaceholderHandler)
@@ -239,6 +251,7 @@ func (a *App) Run(ctx context.Context) error {
 		Registry:      a.toolRegistry,
 		Dispatcher:    dispatcher,
 		Pending:       pendingRegistry,
+		Environment:   a.environment,
 	})
 	chatHandler := chat.NewHandler(a.engine, a, a.Logger)
 

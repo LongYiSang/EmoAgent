@@ -33,7 +33,7 @@ context:
 
 work:
   profile: "work"
-  max_tool_rounds: 15
+  max_tool_rounds: 24
   max_input_tokens: 100000
   journal_dir: "./logs/work"
 

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/runtimeenv"
 )
 
 func defaultBashCfg() config.BashConfig {
@@ -155,9 +156,36 @@ func TestBash_EmptyCommand(t *testing.T) {
 	}
 }
 
-func TestResolveShell_Override(t *testing.T) {
-	args := resolveShell("/bin/bash")
+func TestNewBashTool_WindowsDescriptionIncludesShellAndCommandHints(t *testing.T) {
+	spec, _ := NewBashToolWithFacts(defaultBashCfg(), runtimeenv.Facts{
+		OS:              "windows",
+		WorkspaceRoot:   `D:\repo`,
+		PathStyle:       "windows",
+		BashEnabled:     true,
+		ShellDisplay:    "cmd /c",
+		ShellExecutable: "cmd",
+		ShellArgsPrefix: []string{"/c"},
+	}, nil)
+
+	for _, snippet := range []string{
+		"Windows",
+		"cmd /c",
+		`workspace root D:\repo`,
+		"Do not assume Unix commands such as ls, rm, or pwd are available.",
+		"Prefer read_file, list_dir, write_file, and edit_file",
+	} {
+		if !strings.Contains(spec.Description, snippet) {
+			t.Fatalf("description missing %q: %s", snippet, spec.Description)
+		}
+	}
+}
+
+func TestResolveShellArgs_Override(t *testing.T) {
+	args := resolveShellArgs(runtimeenv.ShellSpec{
+		Executable: "/bin/bash",
+		ArgsPrefix: []string{"-c"},
+	})
 	if len(args) != 2 || args[0] != "/bin/bash" || args[1] != "-c" {
-		t.Fatalf("resolveShell = %v, want [/bin/bash -c]", args)
+		t.Fatalf("resolveShellArgs = %v, want [/bin/bash -c]", args)
 	}
 }

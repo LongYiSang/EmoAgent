@@ -5,11 +5,12 @@ import (
 	"strings"
 
 	"github.com/longyisang/emoagent/internal/protocol"
+	"github.com/longyisang/emoagent/internal/runtimeenv"
 )
 
 // BuildWorkSystem assembles the Work runtime system prompt with strict context
 // isolation from Emotion.
-func BuildWorkSystem(brief protocol.TaskBrief) string {
+func BuildWorkSystem(brief protocol.TaskBrief, env runtimeenv.Facts) string {
 	var b strings.Builder
 
 	b.WriteString("You are Work, a focused task execution subagent.\n")
@@ -54,10 +55,40 @@ func BuildWorkSystem(brief protocol.TaskBrief) string {
 		b.WriteString("\n")
 	}
 
+	shellAvailableToTask := env.BashEnabled && brief.PermissionScope == "workspace-write"
+
+	b.WriteString("## Execution Environment\n")
+	if env.OS != "" {
+		fmt.Fprintf(&b, "- OS: %s\n", env.DisplayOS())
+	}
+	if env.WorkspaceRoot != "" {
+		fmt.Fprintf(&b, "- Workspace root: %s\n", env.WorkspaceRoot)
+	}
+	if env.PathStyle != "" {
+		fmt.Fprintf(&b, "- Path style: %s\n", env.PathStyle)
+	}
+	if shellAvailableToTask && env.ShellDisplay != "" {
+		fmt.Fprintf(&b, "- Shell commands: available via %s\n", env.ShellDisplay)
+	} else {
+		if env.BashEnabled {
+			b.WriteString("- Shell commands: unavailable in this task.\n")
+		} else {
+			b.WriteString("- Shell commands: unavailable in this runtime.\n")
+		}
+	}
+	if strings.EqualFold(env.OS, "windows") {
+		b.WriteString("- Do not assume Unix tools such as ls, rm, or pwd are available.\n")
+	}
+	b.WriteString("- Prefer dedicated file tools (read_file, list_dir, write_file, edit_file) for file and directory operations.\n\n")
+
 	b.WriteString("## Permission\n")
 	switch brief.PermissionScope {
 	case "workspace-write":
-		b.WriteString("You may read files, list directories, write/edit files, and run shell commands (bash tool).\n")
+		if shellAvailableToTask {
+			b.WriteString("You may read files, list directories, write/edit files, and run shell commands (bash tool).\n")
+		} else {
+			b.WriteString("You may read files, list directories, and write/edit files. Shell commands are unavailable in this runtime.\n")
+		}
 		b.WriteString("Do NOT touch .git, .env, or any credential/secret files. Do NOT delete or move files unless explicitly instructed.\n")
 		b.WriteString("You may not request further permission escalation.\n\n")
 	default:

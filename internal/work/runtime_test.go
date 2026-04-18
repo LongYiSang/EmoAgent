@@ -13,6 +13,7 @@ import (
 	contextutil "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/protocol"
+	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/tool"
 )
 
@@ -71,6 +72,13 @@ func newTestRuntime(t *testing.T, client llm.Client) *Runtime {
 		Logger:                   testLogger(),
 		MaxEscalations:           3,
 		PendingSnapshotMaxTokens: 4000,
+		EnvironmentFacts: runtimeenv.Facts{
+			OS:            "linux",
+			WorkspaceRoot: "/repo",
+			PathStyle:     "posix",
+			BashEnabled:   true,
+			ShellDisplay:  "sh -c",
+		},
 	})
 }
 
@@ -91,6 +99,13 @@ func newTestRuntimeWithDecider(t *testing.T, client llm.Client, decider RuntimeD
 		Decider:                  decider,
 		MaxEscalations:           3,
 		PendingSnapshotMaxTokens: 4000,
+		EnvironmentFacts: runtimeenv.Facts{
+			OS:            "linux",
+			WorkspaceRoot: "/repo",
+			PathStyle:     "posix",
+			BashEnabled:   true,
+			ShellDisplay:  "sh -c",
+		},
 	})
 }
 
@@ -176,6 +191,48 @@ func TestRuntime_HappyPath(t *testing.T) {
 	}
 	if len(client.calls[0].Messages) != 0 {
 		t.Fatalf("first request should start with empty history, got %d messages", len(client.calls[0].Messages))
+	}
+}
+
+func TestRuntime_UsesEnvironmentFactsInSystemPrompt(t *testing.T) {
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			textResp(`{"status":"completed","summary":"done"}`),
+		},
+	}
+	registry, dispatcher := newTestRegistryAndDispatcher(t)
+	runtime := NewRuntime(RuntimeConfig{
+		LLM:            client,
+		Provider:       "openai",
+		Model:          "test-model",
+		MaxTokens:      2048,
+		Temperature:    0.2,
+		MaxToolRounds:  4,
+		MaxInputTokens: 100000,
+		Registry:       registry,
+		Dispatcher:     dispatcher,
+		Logger:         testLogger(),
+		EnvironmentFacts: runtimeenv.Facts{
+			OS:            "windows",
+			WorkspaceRoot: `D:\repo`,
+			PathStyle:     "windows",
+			BashEnabled:   true,
+			ShellDisplay:  "cmd /c",
+		},
+	})
+
+	outcome := runtime.Run(context.Background(), newValidatedBrief(t), nil)
+	if outcome.Report == nil {
+		t.Fatalf("Run should return report, got %#v", outcome)
+	}
+	if len(client.calls) != 1 {
+		t.Fatalf("LLM calls = %d, want 1", len(client.calls))
+	}
+	if !strings.Contains(client.calls[0].System, "OS: Windows") {
+		t.Fatalf("system prompt missing OS fact: %s", client.calls[0].System)
+	}
+	if !strings.Contains(client.calls[0].System, "Shell commands: unavailable in this task.") {
+		t.Fatalf("system prompt should mark shell unavailable for read-only tasks: %s", client.calls[0].System)
 	}
 }
 

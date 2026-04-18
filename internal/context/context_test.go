@@ -13,6 +13,7 @@ import (
 	ctxpkg "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/protocol"
+	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/storage"
 )
 
@@ -49,7 +50,7 @@ func TestBuildEmotionContextUsesPinnedContextAndRecentTurns(t *testing.T) {
 		KeepRecentUserTurns:  1,
 		ToolResultSoftTokens: 1000,
 		ToolResultHardTokens: 3000,
-	})
+	}, runtimeenv.Facts{OS: "windows"})
 	if err != nil {
 		t.Fatalf("BuildEmotionContext: %v", err)
 	}
@@ -62,6 +63,14 @@ func TestBuildEmotionContextUsesPinnedContextAndRecentTurns(t *testing.T) {
 	}
 	if !strings.Contains(assembled.System, "delegate_to_work") {
 		t.Fatalf("System = %q, want delegate_to_work reference", assembled.System)
+	}
+	if !strings.Contains(assembled.System, "Execution environment: Windows.") {
+		t.Fatalf("System = %q, want Windows environment note", assembled.System)
+	}
+	for _, forbidden := range []string{"cmd /c", "Workspace root", "Path style"} {
+		if strings.Contains(assembled.System, forbidden) {
+			t.Fatalf("Emotion prompt should stay minimal, found %q in %s", forbidden, assembled.System)
+		}
 	}
 	if len(assembled.Messages) != 2 {
 		t.Fatalf("len(Messages) = %d, want 2", len(assembled.Messages))
@@ -149,7 +158,7 @@ func TestBuildEmotionContextPlacesToolDigestBeforeRecentTurns(t *testing.T) {
 		KeepRecentUserTurns:  1,
 		ToolResultSoftTokens: 1000,
 		ToolResultHardTokens: 3000,
-	})
+	}, runtimeenv.Facts{OS: "windows"})
 	if err != nil {
 		t.Fatalf("BuildEmotionContextWithToolDigests: %v", err)
 	}
@@ -301,7 +310,7 @@ func TestBuildEmotionContextWithStatePlacesRunningSummaryBeforeRecentTurns(t *te
 		KeepRecentUserTurns:  1,
 		ToolResultSoftTokens: 1000,
 		ToolResultHardTokens: 3000,
-	})
+	}, runtimeenv.Facts{OS: "windows"})
 	if err != nil {
 		t.Fatalf("BuildEmotionContextWithState: %v", err)
 	}
@@ -355,7 +364,7 @@ func TestBuildEmotionContextWithPendingAddsResumeNote(t *testing.T) {
 		KeepRecentUserTurns:  1,
 		ToolResultSoftTokens: 1000,
 		ToolResultHardTokens: 3000,
-	})
+	}, runtimeenv.Facts{OS: "windows"})
 	if err != nil {
 		t.Fatalf("BuildEmotionContextWithPending: %v", err)
 	}

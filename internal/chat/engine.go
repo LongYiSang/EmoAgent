@@ -14,6 +14,7 @@ import (
 	contextutil "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/protocol"
+	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/storage"
 	"github.com/longyisang/emoagent/internal/tool"
 	"github.com/longyisang/emoagent/internal/work"
@@ -33,6 +34,7 @@ type EngineConfig struct {
 	Registry      *tool.Registry   // nil disables tool support
 	Dispatcher    *tool.Dispatcher // nil disables tool support
 	Pending       *work.PendingRegistry
+	Environment   runtimeenv.Facts
 }
 
 // RuntimeConfig is the hot-swappable subset of EngineConfig used for new requests.
@@ -60,6 +62,7 @@ type Engine struct {
 	registry     *tool.Registry
 	dispatcher   *tool.Dispatcher
 	pending      *work.PendingRegistry
+	environment  runtimeenv.Facts
 }
 
 // UpdateConfig hot-swaps the active LLM client and request parameters for new sends.
@@ -100,6 +103,7 @@ func NewEngine(cfg EngineConfig) *Engine {
 		registry:     cfg.Registry,
 		dispatcher:   cfg.Dispatcher,
 		pending:      cfg.Pending,
+		environment:  cfg.Environment,
 	}
 }
 
@@ -171,6 +175,7 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 	registry := e.registry
 	dispatcher := e.dispatcher
 	pending := e.pending
+	env := e.environment
 	e.mu.RUnlock()
 
 	if client == nil {
@@ -236,9 +241,9 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 
 	var assembled contextutil.AssembledContext
 	if len(pendingDecisions) > 0 {
-		assembled, err = contextutil.BuildEmotionContextWithPending(persona, history, state, pendingDecisions, contextCfg)
+		assembled, err = contextutil.BuildEmotionContextWithPending(persona, history, state, pendingDecisions, contextCfg, env)
 	} else {
-		assembled, err = contextutil.BuildEmotionContextWithState(persona, history, state, contextCfg)
+		assembled, err = contextutil.BuildEmotionContextWithState(persona, history, state, contextCfg, env)
 	}
 	if err != nil {
 		e.logger.Error("failed to assemble llm context", "session", sessionID, "error", err)

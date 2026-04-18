@@ -8,6 +8,7 @@ import (
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/protocol"
+	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/storage"
 )
 
@@ -42,26 +43,26 @@ Category guidance:
 If resume_work returns {"status":"expired"}, apologize naturally and offer to re-run the task.`
 
 // BuildEmotionContext assembles the emotion context with no persisted session state.
-func BuildEmotionContext(persona *config.Persona, history []storage.MessageRecord, cfg config.ContextConfig) (AssembledContext, error) {
-	return buildEmotionContext(persona, history, nil, nil, nil, cfg)
+func BuildEmotionContext(persona *config.Persona, history []storage.MessageRecord, cfg config.ContextConfig, env runtimeenv.Facts) (AssembledContext, error) {
+	return buildEmotionContext(persona, history, nil, nil, nil, cfg, env)
 }
 
 // BuildEmotionContextWithState assembles the emotion context using persisted session state.
-func BuildEmotionContextWithState(persona *config.Persona, history []storage.MessageRecord, state *ContextState, cfg config.ContextConfig) (AssembledContext, error) {
-	return buildEmotionContext(persona, history, state, nil, nil, cfg)
+func BuildEmotionContextWithState(persona *config.Persona, history []storage.MessageRecord, state *ContextState, cfg config.ContextConfig, env runtimeenv.Facts) (AssembledContext, error) {
+	return buildEmotionContext(persona, history, state, nil, nil, cfg, env)
 }
 
 // BuildEmotionContextWithToolDigests assembles the emotion context with an explicit ToolDigest slot.
-func BuildEmotionContextWithToolDigests(persona *config.Persona, history []storage.MessageRecord, toolDigests []ToolDigest, cfg config.ContextConfig) (AssembledContext, error) {
-	return buildEmotionContext(persona, history, nil, toolDigests, nil, cfg)
+func BuildEmotionContextWithToolDigests(persona *config.Persona, history []storage.MessageRecord, toolDigests []ToolDigest, cfg config.ContextConfig, env runtimeenv.Facts) (AssembledContext, error) {
+	return buildEmotionContext(persona, history, nil, toolDigests, nil, cfg, env)
 }
 
 // BuildEmotionContextWithPending assembles context and injects paused decision notes.
-func BuildEmotionContextWithPending(persona *config.Persona, history []storage.MessageRecord, state *ContextState, pendingDecisions []protocol.DecisionPacket, cfg config.ContextConfig) (AssembledContext, error) {
-	return buildEmotionContext(persona, history, state, nil, pendingDecisions, cfg)
+func BuildEmotionContextWithPending(persona *config.Persona, history []storage.MessageRecord, state *ContextState, pendingDecisions []protocol.DecisionPacket, cfg config.ContextConfig, env runtimeenv.Facts) (AssembledContext, error) {
+	return buildEmotionContext(persona, history, state, nil, pendingDecisions, cfg, env)
 }
 
-func buildEmotionContext(persona *config.Persona, history []storage.MessageRecord, state *ContextState, toolDigests []ToolDigest, pendingDecisions []protocol.DecisionPacket, cfg config.ContextConfig) (AssembledContext, error) {
+func buildEmotionContext(persona *config.Persona, history []storage.MessageRecord, state *ContextState, toolDigests []ToolDigest, pendingDecisions []protocol.DecisionPacket, cfg config.ContextConfig, env runtimeenv.Facts) (AssembledContext, error) {
 	if persona == nil {
 		return AssembledContext{}, fmt.Errorf("persona is required")
 	}
@@ -82,7 +83,7 @@ func buildEmotionContext(persona *config.Persona, history []storage.MessageRecor
 	if err != nil {
 		return AssembledContext{}, err
 	}
-	system := buildEmotionSystemPrompt(persona.SystemPrompt, pendingDecisions)
+	system := buildEmotionSystemPrompt(persona.SystemPrompt, pendingDecisions, env)
 	budget := NewBudget(cfg, system, messages)
 	return AssembledContext{
 		System:      system,
@@ -103,12 +104,15 @@ func buildEmotionContext(persona *config.Persona, history []storage.MessageRecor
 	}, nil
 }
 
-func buildEmotionSystemPrompt(base string, pendingDecisions []protocol.DecisionPacket) string {
+func buildEmotionSystemPrompt(base string, pendingDecisions []protocol.DecisionPacket, env runtimeenv.Facts) string {
 	var result string
 	if base == "" {
 		result = delegationGuideline
 	} else {
 		result = base + "\n\n" + delegationGuideline
+	}
+	if env.OS != "" {
+		result += "\n\nExecution environment: " + env.DisplayOS() + "."
 	}
 	if len(pendingDecisions) == 0 {
 		return result

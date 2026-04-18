@@ -2,8 +2,10 @@ package builtin
 
 import (
 	"log/slog"
+	"runtime"
 
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/tool"
 	"github.com/longyisang/emoagent/internal/tool/builtin/websearch"
 )
@@ -11,6 +13,12 @@ import (
 // RegisterAll registers all built-in tools with the given registry.
 // Called once during App initialization.
 func RegisterAll(registry *tool.Registry, cfg *config.Config, projectRoot string, logger *slog.Logger) {
+	env := runtimeenv.BuildEnvironmentFacts(runtime.GOOS, projectRoot, cfg.Bash)
+	RegisterAllWithFacts(registry, cfg, projectRoot, env, logger)
+}
+
+// RegisterAllWithFacts registers all built-in tools with explicit environment facts.
+func RegisterAllWithFacts(registry *tool.Registry, cfg *config.Config, projectRoot string, env runtimeenv.Facts, logger *slog.Logger) {
 	registry.Register(GetCurrentTimeSpec, GetCurrentTimeHandler)
 
 	readFileSpec, readFileHandler := NewReadFileTool(projectRoot)
@@ -27,7 +35,7 @@ func RegisterAll(registry *tool.Registry, cfg *config.Config, projectRoot string
 
 	registerWebSearch(registry, cfg, logger)
 	registerWebFetch(registry, cfg, logger)
-	registerBash(registry, cfg, projectRoot, logger)
+	registerBash(registry, cfg, env, logger)
 }
 
 // registerWebSearch conditionally registers the web_search tool.
@@ -57,11 +65,11 @@ func registerWebFetch(registry *tool.Registry, cfg *config.Config, logger *slog.
 
 // registerBash conditionally registers the bash tool.
 // Disabled by default — must be explicitly enabled in config for security.
-func registerBash(registry *tool.Registry, cfg *config.Config, projectRoot string, logger *slog.Logger) {
+func registerBash(registry *tool.Registry, cfg *config.Config, env runtimeenv.Facts, logger *slog.Logger) {
 	if !cfg.Bash.Enabled {
 		return
 	}
-	spec, handler := NewBashTool(cfg.Bash, projectRoot, logger)
+	spec, handler := NewBashToolWithFacts(cfg.Bash, env, logger)
 	registry.Register(spec, handler)
 	logger.Info("bash registered")
 }

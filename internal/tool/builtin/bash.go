@@ -9,9 +9,11 @@ import (
 	"log/slog"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/tool"
 )
 
@@ -19,9 +21,15 @@ const bashMaxTimeoutSec = 300
 
 // NewBashTool constructs the bash tool for Work.
 func NewBashTool(cfg config.BashConfig, projectRoot string, logger *slog.Logger) (tool.Spec, tool.Handler) {
+	facts := runtimeenv.BuildEnvironmentFacts(runtime.GOOS, projectRoot, cfg)
+	return NewBashToolWithFacts(cfg, facts, logger)
+}
+
+// NewBashToolWithFacts constructs the bash tool for Work using explicit environment facts.
+func NewBashToolWithFacts(cfg config.BashConfig, facts runtimeenv.Facts, logger *slog.Logger) (tool.Spec, tool.Handler) {
 	spec := tool.Spec{
 		Name:        "bash",
-		Description: "Run a shell command in the workspace directory. Returns stdout, stderr, exit code, and whether the process timed out. Non-zero exit codes are not errors — inspect the output to determine success.",
+		Description: buildBashDescription(facts),
 		Parameters: json.RawMessage(`{
 			"type":"object",
 			"properties":{
@@ -35,7 +43,10 @@ func NewBashTool(cfg config.BashConfig, projectRoot string, logger *slog.Logger)
 		Permission: tool.PermWorkspaceWrite,
 	}
 
-	shellArgs := resolveShell(cfg.Shell)
+	shellArgs := resolveShellArgs(runtimeenv.ShellSpec{
+		Executable: facts.ShellExecutable,
+		ArgsPrefix: facts.ShellArgsPrefix,
+	})
 
 	handler := func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 		var in struct {
@@ -62,7 +73,7 @@ func NewBashTool(cfg config.BashConfig, projectRoot string, logger *slog.Logger)
 
 		args := append(shellArgs, in.Command)
 		cmd := exec.CommandContext(runCtx, args[0], args[1:]...)
-		cmd.Dir = projectRoot
+		cmd.Dir = facts.WorkspaceRoot
 
 		cap := cfg.MaxOutputBytes
 		var stdoutBuf, stderrBuf cappedBuffer
@@ -102,15 +113,36 @@ func NewBashTool(cfg config.BashConfig, projectRoot string, logger *slog.Logger)
 	return spec, handler
 }
 
-// resolveShell returns the shell invocation prefix (e.g. ["cmd", "/c"] or ["sh", "-c"]).
-func resolveShell(override string) []string {
-	if override != "" {
-		return []string{override, "-c"}
+func buildBashDescription(facts runtimeenv.Facts) string {
+	var b strings.Builder
+	b.WriteString("Run a shell command from the workspace root ")
+	if facts.WorkspaceRoot != "" {
+		b.WriteString(facts.WorkspaceRoot)
+	} else {
+		b.WriteString(".")
 	}
-	if runtime.GOOS == "windows" {
-		return []string{"cmd", "/c"}
+	b.WriteString(". ")
+	b.WriteString("Execution environment: ")
+	b.WriteString(facts.DisplayOS())
+	if facts.ShellDisplay != "" {
+		b.WriteString(" via ")
+		b.WriteString(facts.ShellDisplay)
 	}
-	return []string{"sh", "-c"}
+	b.WriteString(". ")
+	if strings.EqualFold(facts.OS, "windows") {
+		b.WriteString("Do not assume Unix commands such as ls, rm, or pwd are available. ")
+	}
+	b.WriteString("Prefer read_file, list_dir, write_file, and edit_file for file operations. ")
+	b.WriteString("Returns stdout, stderr, exit code, and whether the process timed out. ")
+	b.WriteString("Non-zero exit codes are not errors — inspect the output to determine success.")
+	return b.String()
+}
+
+// resolveShellArgs returns the full shell invocation prefix.
+func resolveShellArgs(spec runtimeenv.ShellSpec) []string {
+	args := []string{spec.Executable}
+	args = append(args, spec.ArgsPrefix...)
+	return args
 }
 
 // cappedBuffer is an io.Writer that accepts at most cap bytes and marks itself truncated beyond that.

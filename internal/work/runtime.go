@@ -10,6 +10,7 @@ import (
 	contextutil "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/protocol"
+	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/tool"
 )
 
@@ -33,6 +34,7 @@ type RuntimeConfig struct {
 	Decider                  RuntimeDecider
 	MaxEscalations           int
 	PendingSnapshotMaxTokens int
+	EnvironmentFacts         runtimeenv.Facts
 }
 
 // RunOutcome is the result of a runtime execution.
@@ -127,7 +129,7 @@ func (r *Runtime) runLoop(
 	escalationCount int,
 	journal *Journal,
 ) RunOutcome {
-	system := BuildWorkSystem(brief)
+	system := BuildWorkSystem(brief, r.cfg.EnvironmentFacts)
 	tools := r.cfg.Registry.ForScope(tool.ScopeWork)
 	permission := tool.Permission(brief.PermissionScope)
 	messages := append([]llm.Message(nil), seedMessages...)
