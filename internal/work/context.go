@@ -63,6 +63,21 @@ func BuildWorkSystem(brief protocol.TaskBrief) string {
 		b.WriteString("You are limited to read-only operations. Do not modify files, execute destructive commands, or request permission escalation.\n\n")
 	}
 
+	b.WriteString("## Decision Escalation\n")
+	b.WriteString("When you encounter a choice you cannot resolve on your own, call the `request_decision` tool.\n")
+	b.WriteString("This applies when you face:\n")
+	b.WriteString("- Ambiguous goals or unclear user intent\n")
+	b.WriteString("- User preference dependent choices (style, naming, output format)\n")
+	b.WriteString("- Emotional or tone-sensitive decisions\n")
+	b.WriteString("- High-risk or irreversible operations\n")
+	b.WriteString("- Strategy changes that alter the task scope\n\n")
+	b.WriteString("Rules:\n")
+	b.WriteString("- request_decision MUST be the sole tool call in its round.\n")
+	b.WriteString("- Fill relevant_findings with summarized facts you verified. NEVER paste raw tool output.\n")
+	b.WriteString("- Fill key_tradeoffs with clear dimensions of tension.\n")
+	b.WriteString("- Choose the most specific category.\n")
+	b.WriteString("- If unsure between categories, prefer the more cautious one.\n\n")
+
 	b.WriteString("## Output Contract\n")
 	b.WriteString("The final answer must be a TaskReport JSON object.\n")
 	b.WriteString("Required JSON fields include:\n")

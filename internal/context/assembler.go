@@ -3,9 +3,11 @@ package context
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/storage"
 )
 
@@ -21,24 +23,45 @@ When the user just wants to talk, vent, ask a trivial factual question, or wants
 
 Set permission_scope to "workspace-write" only when the task explicitly requires writing files or running shell commands; use "read-only" by default.
 
-The TaskReport you receive is for your eyes only. Never paste raw tool output into your reply; summarize findings in your own voice.`
+The TaskReport you receive is for your eyes only. Never paste raw tool output into your reply; summarize findings in your own voice.
+
+When delegate_to_work returns {"status":"needs_emotion_decision"}, a Work task paused and needs your judgment.
+
+Step 1: Determine whether you can decide from your persona, conversation history, relationship memory, and the decision packet's findings/tradeoffs/recommendation.
+If you can decide confidently, call resume_work immediately in this turn.
+
+Step 2: Only if you genuinely lack information that the user has never provided and cannot infer, ask a natural-language follow-up question and end your turn.
+Do not expose raw JSON to the user. Never mention "decision_packet".
+
+Category guidance:
+- preference_sensitive: ask as a gentle preference question if needed.
+- emotion_sensitive and tone_sensitive: do not ask the user how to express emotion/tone; decide from persona.
+- high_risk and irreversible: clearly explain consequences and request explicit confirmation.
+- ambiguous_goal: ask for clarification with concrete options.
+
+If resume_work returns {"status":"expired"}, apologize naturally and offer to re-run the task.`
 
 // BuildEmotionContext assembles the emotion context with no persisted session state.
 func BuildEmotionContext(persona *config.Persona, history []storage.MessageRecord, cfg config.ContextConfig) (AssembledContext, error) {
-	return buildEmotionContext(persona, history, nil, nil, cfg)
+	return buildEmotionContext(persona, history, nil, nil, nil, cfg)
 }
 
 // BuildEmotionContextWithState assembles the emotion context using persisted session state.
 func BuildEmotionContextWithState(persona *config.Persona, history []storage.MessageRecord, state *ContextState, cfg config.ContextConfig) (AssembledContext, error) {
-	return buildEmotionContext(persona, history, state, nil, cfg)
+	return buildEmotionContext(persona, history, state, nil, nil, cfg)
 }
 
 // BuildEmotionContextWithToolDigests assembles the emotion context with an explicit ToolDigest slot.
 func BuildEmotionContextWithToolDigests(persona *config.Persona, history []storage.MessageRecord, toolDigests []ToolDigest, cfg config.ContextConfig) (AssembledContext, error) {
-	return buildEmotionContext(persona, history, nil, toolDigests, cfg)
+	return buildEmotionContext(persona, history, nil, toolDigests, nil, cfg)
 }
 
-func buildEmotionContext(persona *config.Persona, history []storage.MessageRecord, state *ContextState, toolDigests []ToolDigest, cfg config.ContextConfig) (AssembledContext, error) {
+// BuildEmotionContextWithPending assembles context and injects paused decision notes.
+func BuildEmotionContextWithPending(persona *config.Persona, history []storage.MessageRecord, state *ContextState, pendingDecisions []protocol.DecisionPacket, cfg config.ContextConfig) (AssembledContext, error) {
+	return buildEmotionContext(persona, history, state, nil, pendingDecisions, cfg)
+}
+
+func buildEmotionContext(persona *config.Persona, history []storage.MessageRecord, state *ContextState, toolDigests []ToolDigest, pendingDecisions []protocol.DecisionPacket, cfg config.ContextConfig) (AssembledContext, error) {
 	if persona == nil {
 		return AssembledContext{}, fmt.Errorf("persona is required")
 	}
@@ -59,7 +82,7 @@ func buildEmotionContext(persona *config.Persona, history []storage.MessageRecor
 	if err != nil {
 		return AssembledContext{}, err
 	}
-	system := buildEmotionSystemPrompt(persona.SystemPrompt)
+	system := buildEmotionSystemPrompt(persona.SystemPrompt, pendingDecisions)
 	budget := NewBudget(cfg, system, messages)
 	return AssembledContext{
 		System:      system,
@@ -80,11 +103,17 @@ func buildEmotionContext(persona *config.Persona, history []storage.MessageRecor
 	}, nil
 }
 
-func buildEmotionSystemPrompt(base string) string {
+func buildEmotionSystemPrompt(base string, pendingDecisions []protocol.DecisionPacket) string {
+	var result string
 	if base == "" {
-		return delegationGuideline
+		result = delegationGuideline
+	} else {
+		result = base + "\n\n" + delegationGuideline
 	}
-	return base + "\n\n" + delegationGuideline
+	if len(pendingDecisions) == 0 {
+		return result
+	}
+	return result + "\n\n" + buildResumeNote(pendingDecisions)
 }
 
 func composeEmotionMessages(state *ContextState, toolDigests []ToolDigest, recentMessages []llm.Message) ([]llm.Message, error) {
@@ -155,4 +184,54 @@ func buildToolDigestSlotMessage(toolDigests []ToolDigest) (llm.Message, error) {
 		Role:    llm.RoleUser,
 		Content: string(payload),
 	}, nil
+}
+
+func buildResumeNote(packets []protocol.DecisionPacket) string {
+	var b strings.Builder
+	b.WriteString("## Pending Decision(s) Resume Note\n\n")
+	b.WriteString("The following Work task(s) are paused waiting for your decision.\n\n")
+
+	for i, p := range packets {
+		if i > 0 {
+			b.WriteString("---\n\n")
+		}
+		fmt.Fprintf(&b, "Task: %s\n", p.TaskID)
+		fmt.Fprintf(&b, "Category: %s | Risk: %s\n", p.Category, p.RiskLevel)
+		fmt.Fprintf(&b, "Goal: %s\n", p.GoalSummary)
+		fmt.Fprintf(&b, "Question: %s\n", p.Question)
+		fmt.Fprintf(&b, "Why blocked: %s\n\n", p.WhyBlocked)
+
+		b.WriteString("Options:\n")
+		for _, opt := range p.Options {
+			fmt.Fprintf(&b, "- %s: %s\n", opt.ID, opt.Summary)
+			for _, pro := range opt.Pros {
+				fmt.Fprintf(&b, "  Pro: %s\n", pro)
+			}
+			for _, con := range opt.Cons {
+				fmt.Fprintf(&b, "  Con: %s\n", con)
+			}
+		}
+		b.WriteString("\n")
+
+		if len(p.RelevantFindings) > 0 {
+			b.WriteString("Relevant findings:\n")
+			for _, f := range p.RelevantFindings {
+				fmt.Fprintf(&b, "- %s\n", f.Finding)
+			}
+			b.WriteString("\n")
+		}
+		if len(p.KeyTradeoffs) > 0 {
+			b.WriteString("Key tradeoffs:\n")
+			for _, t := range p.KeyTradeoffs {
+				fmt.Fprintf(&b, "- %s: %s\n", t.Dimension, t.Note)
+			}
+			b.WriteString("\n")
+		}
+		if p.RecommendedOption != "" {
+			fmt.Fprintf(&b, "Work recommends: %s — %s\n\n", p.RecommendedOption, p.RecommendationReason)
+		}
+	}
+
+	b.WriteString("Action: Determine the decision and call resume_work with task_id, decision, and reason.")
+	return b.String()
 }

@@ -17,7 +17,7 @@ func TestDelegateTool_SchemaStaysValidatorCompatible(t *testing.T) {
 		responses: []*llm.ChatResponse{textResp(`{"status":"completed","summary":"ok"}`)},
 	})
 
-	spec, _ := NewDelegateTool(runtime, t.TempDir(), testLogger())
+	spec, _ := NewDelegateTool(runtime, nil, t.TempDir(), testLogger())
 	if spec.Scope != tool.ScopeEmotion {
 		t.Fatalf("Scope = %q, want %q", spec.Scope, tool.ScopeEmotion)
 	}
@@ -62,7 +62,7 @@ func TestDelegateTool_SchemaAcceptsFullBriefInput(t *testing.T) {
 		responses: []*llm.ChatResponse{textResp(`{"status":"completed","summary":"ok"}`)},
 	})
 
-	spec, _ := NewDelegateTool(runtime, t.TempDir(), testLogger())
+	spec, _ := NewDelegateTool(runtime, nil, t.TempDir(), testLogger())
 	input := json.RawMessage(`{
 		"goal":"inspect config",
 		"background":"need a concise summary",
@@ -86,7 +86,7 @@ func TestDelegateTool_HandlerRejectsUnsupportedScope(t *testing.T) {
 		responses: []*llm.ChatResponse{textResp(`{"status":"completed","summary":"ok"}`)},
 	})
 
-	_, handler := NewDelegateTool(runtime, t.TempDir(), testLogger())
+	_, handler := NewDelegateTool(runtime, nil, t.TempDir(), testLogger())
 	input, err := json.Marshal(map[string]any{
 		"goal":             "edit config",
 		"permission_scope": "approved-destructive",
@@ -105,7 +105,7 @@ func TestDelegateTool_HappyPathWritesJournalAndReturnsReport(t *testing.T) {
 		responses: []*llm.ChatResponse{textResp(`{"status":"completed","summary":"done"}`)},
 	})
 	root := t.TempDir()
-	_, handler := NewDelegateTool(runtime, root, testLogger())
+	_, handler := NewDelegateTool(runtime, nil, root, testLogger())
 	input, err := json.Marshal(map[string]any{
 		"goal":             "inspect file",
 		"background":       "look at go.mod",

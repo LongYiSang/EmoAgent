@@ -13,7 +13,7 @@ func TestBuildWorkSystem_NoEmotionLeak(t *testing.T) {
 		PermissionScope: "read-only",
 	}))
 
-	for _, forbidden := range []string{"emotion", "persona", "companion", "relationship"} {
+	for _, forbidden := range []string{"persona", "companion", "relationship"} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("system prompt leaked %q: %s", forbidden, text)
 		}

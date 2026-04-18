@@ -32,7 +32,64 @@ type TaskReport struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
+// EscalationCategory classifies the nature of a decision escalation.
+type EscalationCategory string
+
+const (
+	CatExecutionOnly         EscalationCategory = "execution_only"
+	CatPreferenceSensitive   EscalationCategory = "preference_sensitive"
+	CatEmotionSensitive      EscalationCategory = "emotion_sensitive"
+	CatToneSensitive         EscalationCategory = "tone_sensitive"
+	CatRelationshipSensitive EscalationCategory = "relationship_sensitive"
+	CatAmbiguousGoal         EscalationCategory = "ambiguous_goal"
+	CatStrategyShift         EscalationCategory = "strategy_shift"
+	CatHighRisk              EscalationCategory = "high_risk"
+	CatIrreversible          EscalationCategory = "irreversible"
+)
+
+// DecisionOption describes one possible course of action.
+type DecisionOption struct {
+	ID          string   `json:"id"`
+	Summary     string   `json:"summary"`
+	Pros        []string `json:"pros,omitempty"`
+	Cons        []string `json:"cons,omitempty"`
+	SideEffects []string `json:"side_effects,omitempty"`
+}
+
+// DecisionEvidence is a single fact Work has verified.
+type DecisionEvidence struct {
+	Finding string `json:"finding"`
+	Source  string `json:"source,omitempty"`
+}
+
+// DecisionTradeoff describes one dimension of tension in the decision.
+type DecisionTradeoff struct {
+	Dimension string `json:"dimension"`
+	Note      string `json:"note"`
+}
+
+// DecisionPacket is the structured escalation payload from Work to Emotion.
+// It carries summarized context without leaking raw Work traces.
+type DecisionPacket struct {
+	TaskID               string             `json:"task_id"`
+	Category             EscalationCategory `json:"category"`
+	RiskLevel            string             `json:"risk_level"`
+	GoalSummary          string             `json:"goal_summary"`
+	Question             string             `json:"question"`
+	WhyBlocked           string             `json:"why_blocked"`
+	Options              []DecisionOption   `json:"options"`
+	RelevantFindings     []DecisionEvidence `json:"relevant_findings,omitempty"`
+	KeyTradeoffs         []DecisionTradeoff `json:"key_tradeoffs,omitempty"`
+	RecommendedOption    string             `json:"recommended_option,omitempty"`
+	RecommendationReason string             `json:"recommendation_reason,omitempty"`
+	SuggestsUserInput    bool               `json:"suggests_user_input"`
+	CreatedAt            time.Time          `json:"created_at"`
+}
+
 // DecisionRequest is an escalation from Work to Emotion.
+//
+// Deprecated: superseded by DecisionPacket. Retained for reference only;
+// do not use in new code.
 type DecisionRequest struct {
 	TaskID            string   `json:"task_id"`
 	Question          string   `json:"question"`

@@ -10,11 +10,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/storage"
 	"github.com/longyisang/emoagent/internal/tool"
+	"github.com/longyisang/emoagent/internal/work"
 )
 
 type fakeLLMClient struct {
@@ -111,6 +114,64 @@ func (c *reactiveToolLoopLLMClient) ChatStream(_ context.Context, req llm.ChatRe
 				{Type: "text", Text: "final"},
 			},
 		}, nil
+	}
+}
+
+type scriptedEngineClient struct {
+	responses []*llm.ChatResponse
+	requests  []llm.ChatRequest
+	index     int
+}
+
+func (c *scriptedEngineClient) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	// Summary call
+	c.requests = append(c.requests, req)
+	return &llm.ChatResponse{
+		ID:      "summary-1",
+		Model:   req.Model,
+		Content: `{"running_summary":{"session_goal":"summary"}}`,
+	}, nil
+}
+
+func (c *scriptedEngineClient) ChatStream(_ context.Context, req llm.ChatRequest, cb llm.StreamCallback) (*llm.ChatResponse, error) {
+	c.requests = append(c.requests, req)
+	if c.index >= len(c.responses) {
+		return nil, errors.New("scriptedEngineClient: no scripted response")
+	}
+	resp := c.responses[c.index]
+	c.index++
+	if cb != nil {
+		if resp.Content != "" {
+			cb(llm.StreamEvent{Content: resp.Content})
+		}
+		cb(llm.StreamEvent{Done: true})
+	}
+	return resp, nil
+}
+
+func toolUseResponse(callID, name, input string) *llm.ChatResponse {
+	return &llm.ChatResponse{
+		ID:         "resp-tool-" + callID,
+		StopReason: "tool_use",
+		ContentBlocks: []llm.ContentBlock{
+			{
+				Type:  "tool_use",
+				ID:    callID,
+				Name:  name,
+				Input: json.RawMessage(input),
+			},
+		},
+	}
+}
+
+func endTurnResponse(text string) *llm.ChatResponse {
+	return &llm.ChatResponse{
+		ID:         "resp-end",
+		Content:    text,
+		StopReason: "end_turn",
+		ContentBlocks: []llm.ContentBlock{
+			{Type: "text", Text: text},
+		},
 	}
 }
 
@@ -988,5 +1049,195 @@ func TestReactiveCompactRetryFailureLogsCompactContext(t *testing.T) {
 	}
 	if !strings.Contains(logOutput, "compact_reason=reactive_overflow") {
 		t.Fatalf("logs = %q, want compact_reason=reactive_overflow", logOutput)
+	}
+}
+
+func TestEnginePendingDecisionChainAcrossTurns(t *testing.T) {
+	llmClient := &scriptedEngineClient{
+		responses: []*llm.ChatResponse{
+			// Turn 1: delegate_to_work -> needs_emotion_decision, then ask user
+			toolUseResponse("call_delegate", "delegate_to_work", `{"goal":"delete finish files","permission_scope":"workspace-write"}`),
+			endTurnResponse("我需要你确认是否继续执行删除操作。"),
+			// Turn 2: resume_work -> task report, then final assistant text
+			toolUseResponse("call_resume", "resume_work", `{"task_id":"task-decision-1","decision":"confirm_delete","reason":"用户已确认"}`),
+			endTurnResponse("已完成处理，目标文件已删除。"),
+		},
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chat.db")
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+	db, err := storage.Open(path, logger)
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	registry := tool.NewRegistry()
+	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, logger)
+	pending := work.NewPendingRegistry(time.Hour)
+
+	var delegateSessionID string
+	var resumeSessionID string
+	const pausedTaskID = "task-decision-1"
+
+	registry.Register(tool.Spec{
+		Name:        "delegate_to_work",
+		Description: "test delegate",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"goal":{"type":"string"},"permission_scope":{"type":"string"}},"required":["goal","permission_scope"],"additionalProperties":false}`),
+		Scope:       tool.ScopeEmotion,
+		Permission:  tool.PermReadOnly,
+	}, func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		delegateSessionID = work.SessionIDFromContext(ctx)
+		packet := protocol.DecisionPacket{
+			TaskID:               pausedTaskID,
+			Category:             protocol.CatHighRisk,
+			RiskLevel:            "medium",
+			GoalSummary:          "删除 docs/todo 下 [finish] 文件",
+			Question:             "是否确认执行删除？",
+			WhyBlocked:           "这是高风险不可逆操作",
+			Options:              []protocol.DecisionOption{{ID: "confirm_delete", Summary: "确认删除"}, {ID: "cancel", Summary: "取消"}},
+			RelevantFindings:     []protocol.DecisionEvidence{{Finding: "已定位到 4 个待删除文件", Source: "list_dir"}},
+			KeyTradeoffs:         []protocol.DecisionTradeoff{{Dimension: "风险", Note: "删除后不可恢复"}},
+			RecommendedOption:    "confirm_delete",
+			RecommendationReason: "用户请求清理已完成文件",
+			SuggestsUserInput:    true,
+			CreatedAt:            time.Now().UTC(),
+		}
+		pending.Put(delegateSessionID, pausedTaskID, &work.PausedWork{
+			TaskID:    pausedTaskID,
+			Packet:    packet,
+			CreatedAt: time.Now().UTC(),
+		})
+		return json.Marshal(work.NeedsEmotionDecision{
+			Status:         "needs_emotion_decision",
+			TaskID:         pausedTaskID,
+			DecisionPacket: packet,
+		})
+	})
+
+	registry.Register(tool.Spec{
+		Name:        "resume_work",
+		Description: "test resume",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"task_id":{"type":"string"},"decision":{"type":"string"},"reason":{"type":"string"}},"required":["task_id","decision"],"additionalProperties":false}`),
+		Scope:       tool.ScopeEmotion,
+		Permission:  tool.PermReadOnly,
+	}, func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+		resumeSessionID = work.SessionIDFromContext(ctx)
+		var req struct {
+			TaskID   string `json:"task_id"`
+			Decision string `json:"decision"`
+		}
+		if err := json.Unmarshal(input, &req); err != nil {
+			return nil, err
+		}
+		if req.TaskID != pausedTaskID {
+			t.Fatalf("resume_work task_id = %q, want %q", req.TaskID, pausedTaskID)
+		}
+		if req.Decision != "confirm_delete" {
+			t.Fatalf("resume_work decision = %q, want confirm_delete", req.Decision)
+		}
+		_ = pending.Take(resumeSessionID, req.TaskID)
+		return json.Marshal(protocol.TaskReport{
+			TaskID:    req.TaskID,
+			Status:    "completed",
+			Goal:      "删除 docs/todo 下 [finish] 文件",
+			Summary:   "删除完成",
+			CreatedAt: time.Now().UTC(),
+		})
+	})
+
+	engine := NewEngine(EngineConfig{
+		LLM:          llmClient,
+		DB:           db,
+		Logger:       logger,
+		Model:        "test-model",
+		SummaryModel: "summary-model",
+		MaxTokens:    512,
+		Temperature:  0.2,
+		ContextConfig: config.ContextConfig{
+			InputBudgetTokens:    24000,
+			SoftCompactRatio:     0.75,
+			HardCompactRatio:     0.92,
+			ReserveOutputTokens:  4096,
+			KeepRecentUserTurns:  6,
+			ToolResultSoftTokens: 1000,
+			ToolResultHardTokens: 3000,
+		},
+		Provider:   "openai",
+		Registry:   registry,
+		Dispatcher: dispatcher,
+		Pending:    pending,
+	})
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	persona := &config.Persona{Name: "default", SystemPrompt: "You are warm."}
+
+	reply1, err := engine.SendMessage(context.Background(), sessionID, persona, "帮我清理 [finish] 文件", nil)
+	if err != nil {
+		t.Fatalf("SendMessage turn1: %v", err)
+	}
+	if !strings.Contains(reply1, "确认") {
+		t.Fatalf("turn1 reply = %q, want confirmation question", reply1)
+	}
+
+	reply2, err := engine.SendMessage(context.Background(), sessionID, persona, "确认删除", nil)
+	if err != nil {
+		t.Fatalf("SendMessage turn2: %v", err)
+	}
+	if !strings.Contains(reply2, "已完成") {
+		t.Fatalf("turn2 reply = %q, want completion text", reply2)
+	}
+
+	if delegateSessionID != sessionID {
+		t.Fatalf("delegate session id = %q, want %q", delegateSessionID, sessionID)
+	}
+	if resumeSessionID != sessionID {
+		t.Fatalf("resume session id = %q, want %q", resumeSessionID, sessionID)
+	}
+
+	// The first ChatStream request of turn2 should include Resume Note.
+	chatStreamReqCount := 0
+	var turn2First llm.ChatRequest
+	for _, req := range llmClient.requests {
+		if req.Stream {
+			chatStreamReqCount++
+			if chatStreamReqCount == 3 {
+				turn2First = req
+				break
+			}
+		}
+	}
+	if turn2First.System == "" {
+		t.Fatal("failed to capture turn2 first ChatStream request")
+	}
+	if !strings.Contains(turn2First.System, "Pending Decision(s) Resume Note") {
+		t.Fatalf("turn2 system missing Resume Note: %s", turn2First.System)
+	}
+	if !strings.Contains(turn2First.System, pausedTaskID) {
+		t.Fatalf("turn2 system missing pending task id %q: %s", pausedTaskID, turn2First.System)
+	}
+
+	history, err := db.GetAllMessages(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("GetAllMessages: %v", err)
+	}
+	if len(history) != 4 {
+		t.Fatalf("visible history len = %d, want 4 (user/assistant/user/assistant)", len(history))
+	}
+	for _, msg := range history {
+		if msg.Role != "user" && msg.Role != "assistant" {
+			t.Fatalf("unexpected persisted role %q", msg.Role)
+		}
+		if strings.Contains(msg.Content, "needs_emotion_decision") || strings.Contains(msg.Content, "decision_packet") || strings.Contains(msg.Content, `"task_report"`) {
+			t.Fatalf("persisted message leaks internal work traces: %#v", msg)
+		}
+	}
+
+	if got := pending.List(sessionID); len(got) != 0 {
+		t.Fatalf("pending decisions should be consumed after resume, got %d", len(got))
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/longyisang/emoagent/internal/config"
 	ctxpkg "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/storage"
 )
 
@@ -319,6 +320,51 @@ func TestBuildEmotionContextWithStatePlacesRunningSummaryBeforeRecentTurns(t *te
 	}
 	if assembled.Messages[2].Content != "recent answer" {
 		t.Fatalf("Messages[2] = %#v, want recent answer last", assembled.Messages[2])
+	}
+}
+
+func TestBuildEmotionContextWithPendingAddsResumeNote(t *testing.T) {
+	persona := &config.Persona{
+		Name:         "default",
+		SystemPrompt: "You are warm.",
+	}
+	history := []storage.MessageRecord{
+		{ID: "1", Role: "user", Content: "latest"},
+	}
+	pending := []protocol.DecisionPacket{
+		{
+			TaskID:      "task-1",
+			Category:    protocol.CatPreferenceSensitive,
+			RiskLevel:   "low",
+			GoalSummary: "goal",
+			Question:    "which option?",
+			WhyBlocked:  "blocked",
+			Options: []protocol.DecisionOption{
+				{ID: "a", Summary: "option a"},
+			},
+			RecommendedOption:    "a",
+			RecommendationReason: "best",
+		},
+	}
+
+	assembled, err := ctxpkg.BuildEmotionContextWithPending(persona, history, nil, pending, config.ContextConfig{
+		InputBudgetTokens:    24000,
+		SoftCompactRatio:     0.75,
+		HardCompactRatio:     0.92,
+		ReserveOutputTokens:  4096,
+		KeepRecentUserTurns:  1,
+		ToolResultSoftTokens: 1000,
+		ToolResultHardTokens: 3000,
+	})
+	if err != nil {
+		t.Fatalf("BuildEmotionContextWithPending: %v", err)
+	}
+
+	if !strings.Contains(assembled.System, "Pending Decision(s) Resume Note") {
+		t.Fatalf("system prompt missing resume note: %s", assembled.System)
+	}
+	if !strings.Contains(assembled.System, "task-1") {
+		t.Fatalf("system prompt missing pending task id: %s", assembled.System)
 	}
 }
 

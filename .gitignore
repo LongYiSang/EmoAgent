@@ -54,3 +54,5 @@ tmp/
 !/personas/default.yaml
 /.gocache/
 
+/task_report.json
+

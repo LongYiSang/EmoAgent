@@ -13,8 +13,10 @@ import (
 	"github.com/longyisang/emoagent/internal/config"
 	contextutil "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/storage"
 	"github.com/longyisang/emoagent/internal/tool"
+	"github.com/longyisang/emoagent/internal/work"
 )
 
 // EngineConfig defines the dependencies for Engine.
@@ -30,6 +32,7 @@ type EngineConfig struct {
 	Provider      string           // "openai" or "anthropic", needed by ResultsToMessages
 	Registry      *tool.Registry   // nil disables tool support
 	Dispatcher    *tool.Dispatcher // nil disables tool support
+	Pending       *work.PendingRegistry
 }
 
 // RuntimeConfig is the hot-swappable subset of EngineConfig used for new requests.
@@ -56,6 +59,7 @@ type Engine struct {
 	provider     string
 	registry     *tool.Registry
 	dispatcher   *tool.Dispatcher
+	pending      *work.PendingRegistry
 }
 
 // UpdateConfig hot-swaps the active LLM client and request parameters for new sends.
@@ -95,6 +99,7 @@ func NewEngine(cfg EngineConfig) *Engine {
 		provider:     cfg.Provider,
 		registry:     cfg.Registry,
 		dispatcher:   cfg.Dispatcher,
+		pending:      cfg.Pending,
 	}
 }
 
@@ -165,6 +170,7 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 	provider := e.provider
 	registry := e.registry
 	dispatcher := e.dispatcher
+	pending := e.pending
 	e.mu.RUnlock()
 
 	if client == nil {
@@ -221,7 +227,19 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 		state = nextState
 	}
 
-	assembled, err := contextutil.BuildEmotionContextWithState(persona, history, state, contextCfg)
+	var pendingDecisions []protocol.DecisionPacket
+	if pending != nil {
+		for _, paused := range pending.List(sessionID) {
+			pendingDecisions = append(pendingDecisions, work.CompactPacket(paused.Packet, 4000))
+		}
+	}
+
+	var assembled contextutil.AssembledContext
+	if len(pendingDecisions) > 0 {
+		assembled, err = contextutil.BuildEmotionContextWithPending(persona, history, state, pendingDecisions, contextCfg)
+	} else {
+		assembled, err = contextutil.BuildEmotionContextWithState(persona, history, state, contextCfg)
+	}
 	if err != nil {
 		e.logger.Error("failed to assemble llm context", "session", sessionID, "error", err)
 		return "", err
@@ -272,6 +290,7 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 	var resp *llm.ChatResponse
 	reactiveRetryUsed := false
 	var reactiveRetryReport *contextutil.CompactReport
+	ctx = work.WithSessionID(ctx, sessionID)
 
 	for round := 0; ; round++ {
 		var roundDeltas []string

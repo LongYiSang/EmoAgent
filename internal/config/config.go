@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -124,10 +125,14 @@ type ContextConfig struct {
 }
 
 type WorkConfig struct {
-	Profile        string `yaml:"profile"`
-	MaxToolRounds  int    `yaml:"max_tool_rounds"`
-	MaxInputTokens int    `yaml:"max_input_tokens"`
-	JournalDir     string `yaml:"journal_dir"`
+	Profile                  string        `yaml:"profile"`
+	MaxToolRounds            int           `yaml:"max_tool_rounds"`
+	MaxInputTokens           int           `yaml:"max_input_tokens"`
+	JournalDir               string        `yaml:"journal_dir"`
+	MaxEscalationsPerTask    int           `yaml:"max_escalations_per_task"`
+	PendingDecisionTTL       time.Duration `yaml:"pending_decision_ttl"`
+	DeciderCleanupInterval   time.Duration `yaml:"decider_cleanup_interval"`
+	PendingSnapshotMaxTokens int           `yaml:"pending_snapshot_max_tokens"`
 }
 
 func (w *WorkConfig) ApplyDefaults() {
@@ -142,6 +147,18 @@ func (w *WorkConfig) ApplyDefaults() {
 	}
 	if w.JournalDir == "" {
 		w.JournalDir = "./logs/work"
+	}
+	if w.MaxEscalationsPerTask == 0 {
+		w.MaxEscalationsPerTask = 3
+	}
+	if w.PendingDecisionTTL == 0 {
+		w.PendingDecisionTTL = 30 * time.Minute
+	}
+	if w.DeciderCleanupInterval == 0 {
+		w.DeciderCleanupInterval = 5 * time.Minute
+	}
+	if w.PendingSnapshotMaxTokens == 0 {
+		w.PendingSnapshotMaxTokens = 60000
 	}
 }
 
@@ -169,10 +186,14 @@ func DefaultConfig() *Config {
 			ToolResultHardTokens: 3000,
 		},
 		Work: WorkConfig{
-			Profile:        "default",
-			MaxToolRounds:  15,
-			MaxInputTokens: 100000,
-			JournalDir:     "./logs/work",
+			Profile:                  "default",
+			MaxToolRounds:            15,
+			MaxInputTokens:           100000,
+			JournalDir:               "./logs/work",
+			MaxEscalationsPerTask:    3,
+			PendingDecisionTTL:       30 * time.Minute,
+			DeciderCleanupInterval:   5 * time.Minute,
+			PendingSnapshotMaxTokens: 60000,
 		},
 		LLMProfiles: []LLMProfile{},
 		DB: DBConfig{

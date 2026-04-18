@@ -79,3 +79,6 @@ websearch:
   max_results: 5
   timeout_sec: 30
   include_answer: false
+
+bash:
+  enabled: true

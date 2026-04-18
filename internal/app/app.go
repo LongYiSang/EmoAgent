@@ -169,24 +169,56 @@ func (a *App) Run(ctx context.Context) error {
 	}
 
 	dispatcher := tool.NewDispatcher(a.toolRegistry, tool.MinimalSchemaValidator{}, a.Logger)
+	var pendingRegistry *work.PendingRegistry
 	if _, ok := a.toolRegistry.GetSpec("delegate_to_work"); !ok {
 		workLLM, workProfile, err := a.buildWorkClient()
 		if err != nil {
 			a.Logger.Warn("work runtime disabled", "error", err)
 		} else {
+			pendingRegistry = work.NewPendingRegistry(cfg.Work.PendingDecisionTTL)
+			cleanupInterval := cfg.Work.DeciderCleanupInterval
+			if cleanupInterval <= 0 {
+				cleanupInterval = 5 * time.Minute
+			}
+			go func() {
+				ticker := time.NewTicker(cleanupInterval)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						if n := pendingRegistry.ExpireOnce(); n > 0 {
+							a.Logger.Info("expired pending work decisions", "count", n)
+						}
+					}
+				}
+			}()
+
+			decider := work.NewLLMRuntimeDecider(workLLM, workProfile.Model)
 			workRuntime := work.NewRuntime(work.RuntimeConfig{
-				LLM:            workLLM,
-				Provider:       workProfile.Provider,
-				Model:          workProfile.Model,
-				MaxTokens:      workProfile.MaxTokens,
-				Temperature:    workProfile.Temperature,
-				MaxToolRounds:  cfg.Work.MaxToolRounds,
-				MaxInputTokens: cfg.Work.MaxInputTokens,
-				Registry:       a.toolRegistry,
-				Dispatcher:     dispatcher,
-				Logger:         a.Logger,
+				LLM:                      workLLM,
+				Provider:                 workProfile.Provider,
+				Model:                    workProfile.Model,
+				MaxTokens:                workProfile.MaxTokens,
+				Temperature:              workProfile.Temperature,
+				MaxToolRounds:            cfg.Work.MaxToolRounds,
+				MaxInputTokens:           cfg.Work.MaxInputTokens,
+				Registry:                 a.toolRegistry,
+				Dispatcher:               dispatcher,
+				Logger:                   a.Logger,
+				Decider:                  decider,
+				MaxEscalations:           cfg.Work.MaxEscalationsPerTask,
+				PendingSnapshotMaxTokens: cfg.Work.PendingSnapshotMaxTokens,
 			})
-			delegateSpec, delegateHandler := work.NewDelegateTool(workRuntime, cfg.Work.JournalDir, a.Logger)
+			if _, ok := a.toolRegistry.GetSpec("request_decision"); !ok {
+				a.toolRegistry.Register(work.NewRequestDecisionTool(), work.RequestDecisionPlaceholderHandler)
+			}
+			if _, ok := a.toolRegistry.GetSpec("resume_work"); !ok {
+				resumeSpec, resumeHandler := work.NewResumeTool(workRuntime, pendingRegistry, cfg.Work.JournalDir, a.Logger)
+				a.toolRegistry.Register(resumeSpec, resumeHandler)
+			}
+			delegateSpec, delegateHandler := work.NewDelegateTool(workRuntime, pendingRegistry, cfg.Work.JournalDir, a.Logger)
 			a.toolRegistry.Register(delegateSpec, delegateHandler)
 		}
 	}
@@ -203,6 +235,7 @@ func (a *App) Run(ctx context.Context) error {
 		Provider:      provider,
 		Registry:      a.toolRegistry,
 		Dispatcher:    dispatcher,
+		Pending:       pendingRegistry,
 	})
 	chatHandler := chat.NewHandler(a.engine, a, a.Logger)
 
