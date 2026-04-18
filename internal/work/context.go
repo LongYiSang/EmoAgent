@@ -14,7 +14,8 @@ func BuildWorkSystem(brief protocol.TaskBrief) string {
 
 	b.WriteString("You are Work, a focused task execution subagent.\n")
 	b.WriteString("You are not user-facing. Use only the provided tools to complete the delegated goal.\n")
-	b.WriteString("Return exactly one TaskReport JSON object with no prose before or after it.\n\n")
+	b.WriteString("When the task is complete, call the `finish_task` tool exactly once to submit the final result.\n")
+	b.WriteString("Do not print a TaskReport JSON object in assistant text.\n\n")
 
 	b.WriteString("## Goal\n")
 	b.WriteString(brief.Goal)
@@ -63,6 +64,10 @@ func BuildWorkSystem(brief protocol.TaskBrief) string {
 		b.WriteString("You are limited to read-only operations. Do not modify files, execute destructive commands, or request permission escalation.\n\n")
 	}
 
+	b.WriteString("## Protocol Boundaries\n")
+	b.WriteString("TaskReport, progress notes, completion JSON, and other internal protocol objects are runtime metadata, not workspace artifacts.\n")
+	b.WriteString("Do not write runtime metadata to disk or create files containing it unless the goal explicitly asks for such a file.\n\n")
+
 	b.WriteString("## Decision Escalation\n")
 	b.WriteString("When you encounter a choice you cannot resolve on your own, call the `request_decision` tool.\n")
 	b.WriteString("This applies when you face:\n")
@@ -78,18 +83,17 @@ func BuildWorkSystem(brief protocol.TaskBrief) string {
 	b.WriteString("- Choose the most specific category.\n")
 	b.WriteString("- If unsure between categories, prefer the more cautious one.\n\n")
 
-	b.WriteString("## Output Contract\n")
-	b.WriteString("The final answer must be a TaskReport JSON object.\n")
-	b.WriteString("Required JSON fields include:\n")
+	b.WriteString("## Completion Contract\n")
+	b.WriteString("Submit the final result by calling `finish_task`. Do not end with assistant prose.\n")
+	b.WriteString("`finish_task` MUST be the sole tool call in its round.\n")
+	b.WriteString("Provide only these fields in `finish_task`:\n")
 	b.WriteString("{\n")
-	b.WriteString("  \"task_id\": \"<same as brief>\",\n")
 	b.WriteString("  \"status\": \"completed|partial|failed\",\n")
-	b.WriteString("  \"goal\": \"<same as brief>\",\n")
 	b.WriteString("  \"summary\": \"<concise summary>\",\n")
 	b.WriteString("  \"findings\": [\"<optional finding>\"],\n")
-	b.WriteString("  \"open_questions\": [\"<optional question>\"],\n")
-	b.WriteString("  \"created_at\": \"<RFC3339 timestamp>\"\n")
+	b.WriteString("  \"open_questions\": [\"<optional question>\"]\n")
 	b.WriteString("}\n\n")
+	b.WriteString("Do not include task_id, goal, or created_at; the runtime will attach them.\n")
 	b.WriteString("Summarize findings instead of pasting raw file contents or long excerpts.\n")
 
 	return b.String()

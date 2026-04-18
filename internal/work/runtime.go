@@ -185,6 +185,50 @@ func (r *Runtime) runLoop(
 			}
 		}
 
+		finishCall, hasFinish, mixedFinishCalls := pickFinishTaskCall(calls)
+		if hasFinish {
+			if mixedFinishCalls {
+				if journal != nil {
+					journal.Write("finish_violation", round, map[string]any{
+						"reason": "finish_task must be sole call in the round",
+					})
+				}
+				results := make([]tool.Result, 0, len(calls))
+				for _, call := range calls {
+					switch call.Name {
+					case "finish_task":
+						results = append(results, errorToolResult(call.ID, "finish_task must be the sole tool call in this round"))
+					case "request_decision":
+						results = append(results, errorToolResult(call.ID, "request_decision must be the sole tool call in this round"))
+					default:
+						results = append(results, r.cfg.Dispatcher.Execute(ctx, call, permission))
+					}
+				}
+				logToolResults(journal, round, results)
+				messages = append(messages, tool.ResultsToMessages(r.cfg.Provider, results)...)
+				continue
+			}
+
+			payload, err := ParseFinishTaskPayload(finishCall.Input)
+			if err != nil {
+				results := []tool.Result{errorToolResult(finishCall.ID, "invalid finish_task payload: "+err.Error())}
+				logToolResults(journal, round, results)
+				messages = append(messages, tool.ResultsToMessages(r.cfg.Provider, results)...)
+				continue
+			}
+
+			report := protocol.TaskReport{
+				TaskID:        brief.TaskID,
+				Status:        payload.Status,
+				Goal:          brief.Goal,
+				Summary:       payload.Summary,
+				Findings:      append([]string(nil), payload.Findings...),
+				OpenQuestions: append([]string(nil), payload.OpenQuestions...),
+				CreatedAt:     time.Now().UTC(),
+			}
+			return RunOutcome{Report: &report}
+		}
+
 		decisionCall, hasDecision, mixedDecisionCalls := pickDecisionCall(calls)
 		if hasDecision {
 			if mixedDecisionCalls {
@@ -327,6 +371,24 @@ func pickDecisionCall(calls []tool.Call) (tool.Call, bool, bool) {
 	count := 0
 	for _, call := range calls {
 		if call.Name != "request_decision" {
+			continue
+		}
+		if count == 0 {
+			picked = call
+		}
+		count++
+	}
+	if count == 0 {
+		return tool.Call{}, false, false
+	}
+	return picked, true, len(calls) > 1
+}
+
+func pickFinishTaskCall(calls []tool.Call) (tool.Call, bool, bool) {
+	var picked tool.Call
+	count := 0
+	for _, call := range calls {
+		if call.Name != "finish_task" {
 			continue
 		}
 		if count == 0 {

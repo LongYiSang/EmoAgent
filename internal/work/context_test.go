@@ -76,19 +76,22 @@ func TestBuildWorkSystem_IncludesOptionalSections(t *testing.T) {
 	}
 }
 
-func TestBuildWorkSystem_DescribesTaskReportJSON(t *testing.T) {
+func TestBuildWorkSystem_UsesFinishTaskContract(t *testing.T) {
 	text := BuildWorkSystem(protocol.TaskBrief{
 		Goal:            "inspect file",
 		PermissionScope: "read-only",
 	})
 
-	if !strings.Contains(text, "TaskReport") {
-		t.Fatalf("system prompt missing TaskReport contract: %s", text)
+	if !strings.Contains(text, "finish_task") {
+		t.Fatalf("system prompt missing finish_task contract: %s", text)
 	}
-	if !strings.Contains(text, "\"status\"") {
-		t.Fatalf("system prompt missing JSON field examples: %s", text)
+	if strings.Contains(text, "Return exactly one TaskReport JSON object") {
+		t.Fatalf("system prompt should not ask for final TaskReport JSON text: %s", text)
 	}
-	if !strings.Contains(strings.ToLower(text), "summarize") {
-		t.Fatalf("system prompt should instruct summarization over raw file dumps: %s", text)
+	if !strings.Contains(strings.ToLower(text), "runtime metadata") {
+		t.Fatalf("system prompt should describe reports as runtime metadata: %s", text)
+	}
+	if !strings.Contains(strings.ToLower(text), "do not write") {
+		t.Fatalf("system prompt should forbid writing protocol objects to disk: %s", text)
 	}
 }

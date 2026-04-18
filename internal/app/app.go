@@ -211,6 +211,9 @@ func (a *App) Run(ctx context.Context) error {
 				MaxEscalations:           cfg.Work.MaxEscalationsPerTask,
 				PendingSnapshotMaxTokens: cfg.Work.PendingSnapshotMaxTokens,
 			})
+			if _, ok := a.toolRegistry.GetSpec("finish_task"); !ok {
+				a.toolRegistry.Register(work.NewFinishTaskTool(), work.FinishTaskPlaceholderHandler)
+			}
 			if _, ok := a.toolRegistry.GetSpec("request_decision"); !ok {
 				a.toolRegistry.Register(work.NewRequestDecisionTool(), work.RequestDecisionPlaceholderHandler)
 			}

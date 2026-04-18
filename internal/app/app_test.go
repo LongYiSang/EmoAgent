@@ -915,6 +915,12 @@ func TestRunRegistersDelegateToolWhenWorkProfileUsable(t *testing.T) {
 	if _, ok := a.toolRegistry.GetSpec("delegate_to_work"); !ok {
 		t.Fatal("delegate_to_work should be registered when work profile is usable")
 	}
+	if _, ok := a.toolRegistry.GetSpec("request_decision"); !ok {
+		t.Fatal("request_decision should be registered when work profile is usable")
+	}
+	if _, ok := a.toolRegistry.GetSpec("finish_task"); !ok {
+		t.Fatal("finish_task should be registered when work profile is usable")
+	}
 }
 
 func intPtr(v int) *int { return &v }

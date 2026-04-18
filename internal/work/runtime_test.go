@@ -48,6 +48,7 @@ func newTestRegistryAndDispatcher(t *testing.T) (*tool.Registry, *tool.Dispatche
 	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
 		return json.RawMessage(`{"ok":true}`), nil
 	})
+	registry.Register(NewFinishTaskTool(), FinishTaskPlaceholderHandler)
 	registry.Register(NewRequestDecisionTool(), RequestDecisionPlaceholderHandler)
 
 	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, testLogger())
@@ -123,11 +124,26 @@ func decisionPacketJSON(category, risk string, includeFinding bool) string {
 	return string(out)
 }
 
+func finishTaskPayloadJSON(status, summary string, findings, openQuestions []string) string {
+	payload := map[string]any{
+		"status":  status,
+		"summary": summary,
+	}
+	if findings != nil {
+		payload["findings"] = findings
+	}
+	if openQuestions != nil {
+		payload["open_questions"] = openQuestions
+	}
+	out, _ := json.Marshal(payload)
+	return string(out)
+}
+
 func TestRuntime_HappyPath(t *testing.T) {
 	client := &scriptedLLM{
 		responses: []*llm.ChatResponse{
 			toolUseResp("call-1", "echo_tool", `{"x":"y"}`),
-			textResp(`{"status":"completed","summary":"done","findings":["a"]}`),
+			toolUseResp("finish-1", "finish_task", finishTaskPayloadJSON("completed", "done", []string{"a"}, nil)),
 		},
 	}
 	runtime := newTestRuntime(t, client)
@@ -149,11 +165,38 @@ func TestRuntime_HappyPath(t *testing.T) {
 	if outcome.Report.TaskID != brief.TaskID {
 		t.Fatalf("TaskID = %q, want %q", outcome.Report.TaskID, brief.TaskID)
 	}
+	if outcome.Report.Goal != brief.Goal {
+		t.Fatalf("Goal = %q, want %q", outcome.Report.Goal, brief.Goal)
+	}
+	if outcome.Report.CreatedAt.IsZero() {
+		t.Fatal("CreatedAt should be set by runtime")
+	}
 	if len(client.calls) != 2 {
 		t.Fatalf("LLM calls = %d, want 2", len(client.calls))
 	}
 	if len(client.calls[0].Messages) != 0 {
 		t.Fatalf("first request should start with empty history, got %d messages", len(client.calls[0].Messages))
+	}
+}
+
+func TestRuntime_LegacyTaskReportJSONFallback(t *testing.T) {
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			textResp(`{"status":"completed","summary":"done","findings":["a"]}`),
+		},
+	}
+	runtime := newTestRuntime(t, client)
+	brief := newValidatedBrief(t)
+
+	outcome := runtime.Run(context.Background(), brief, nil)
+	if outcome.Report == nil {
+		t.Fatalf("Run should return report, got %#v", outcome)
+	}
+	if outcome.Report.Status != "completed" {
+		t.Fatalf("Status = %q, want completed", outcome.Report.Status)
+	}
+	if outcome.Report.TaskID != brief.TaskID {
+		t.Fatalf("TaskID = %q, want %q", outcome.Report.TaskID, brief.TaskID)
 	}
 }
 
@@ -237,7 +280,7 @@ func TestRuntime_WritesToolEventsToJournal(t *testing.T) {
 	client := &scriptedLLM{
 		responses: []*llm.ChatResponse{
 			toolUseResp("call-1", "echo_tool", `{"x":"y"}`),
-			textResp(`{"status":"completed","summary":"done"}`),
+			toolUseResp("finish-1", "finish_task", finishTaskPayloadJSON("completed", "done", nil, nil)),
 		},
 	}
 	runtime := newTestRuntime(t, client)
@@ -277,7 +320,7 @@ func TestRuntime_RequestDecisionRuntimeDeciderPath(t *testing.T) {
 	client := &scriptedLLM{
 		responses: []*llm.ChatResponse{
 			toolUseResp("decide-1", "request_decision", packet),
-			textResp(`{"status":"completed","summary":"done"}`),
+			toolUseResp("finish-1", "finish_task", finishTaskPayloadJSON("completed", "done", nil, nil)),
 		},
 	}
 	decider := &fakeRuntimeDecider{
@@ -351,7 +394,7 @@ func TestRuntime_SoleCallViolationReturnsErrorForRequestDecision(t *testing.T) {
 				llm.ContentBlock{Type: "tool_use", ID: "call-echo", Name: "echo_tool", Input: json.RawMessage(`{"x":"y"}`)},
 			),
 			toolUseResp("decide-2", "request_decision", packet),
-			textResp(`{"status":"completed","summary":"done"}`),
+			toolUseResp("finish-1", "finish_task", finishTaskPayloadJSON("completed", "done", nil, nil)),
 		},
 	}
 	decider := &fakeRuntimeDecider{decision: RuntimeDecision{Decision: "a"}}
@@ -365,6 +408,48 @@ func TestRuntime_SoleCallViolationReturnsErrorForRequestDecision(t *testing.T) {
 	}
 	if decider.calls != 1 {
 		t.Fatalf("decider calls = %d, want 1 (only on sole request_decision)", decider.calls)
+	}
+}
+
+func TestRuntime_SoleCallViolationReturnsErrorForFinishTask(t *testing.T) {
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			mixedToolUseResp(
+				llm.ContentBlock{Type: "tool_use", ID: "call-finish", Name: "finish_task", Input: json.RawMessage(finishTaskPayloadJSON("completed", "done", nil, nil))},
+				llm.ContentBlock{Type: "tool_use", ID: "call-echo", Name: "echo_tool", Input: json.RawMessage(`{"x":"y"}`)},
+			),
+			toolUseResp("finish-2", "finish_task", finishTaskPayloadJSON("completed", "done", nil, nil)),
+		},
+	}
+	runtime := newTestRuntime(t, client)
+
+	outcome := runtime.Run(context.Background(), newValidatedBrief(t), nil)
+	if outcome.Report == nil {
+		t.Fatalf("Run should return report, got %#v", outcome)
+	}
+	if outcome.Report.Status != "completed" {
+		t.Fatalf("Status = %q, want completed", outcome.Report.Status)
+	}
+}
+
+func TestRuntime_InvalidFinishTaskPayloadReturnsToolError(t *testing.T) {
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			toolUseResp("finish-1", "finish_task", `{"status":"done"}`),
+			toolUseResp("finish-2", "finish_task", finishTaskPayloadJSON("completed", "done", nil, []string{"none"})),
+		},
+	}
+	runtime := newTestRuntime(t, client)
+
+	outcome := runtime.Run(context.Background(), newValidatedBrief(t), nil)
+	if outcome.Report == nil {
+		t.Fatalf("Run should return report, got %#v", outcome)
+	}
+	if outcome.Report.Status != "completed" {
+		t.Fatalf("Status = %q, want completed", outcome.Report.Status)
+	}
+	if len(outcome.Report.OpenQuestions) != 1 || outcome.Report.OpenQuestions[0] != "none" {
+		t.Fatalf("OpenQuestions = %#v, want [none]", outcome.Report.OpenQuestions)
 	}
 }
 
