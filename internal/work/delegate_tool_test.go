@@ -30,10 +30,10 @@ func TestDelegateTool_SchemaStaysValidatorCompatible(t *testing.T) {
 		t.Fatalf("Unmarshal returned error: %v", err)
 	}
 	props := schema["properties"].(map[string]any)
-	if len(props) != 6 {
-		t.Fatalf("schema properties = %#v, want goal/background/constraints/acceptance_criteria/permission_scope/expression_brief", props)
+	if len(props) != 5 {
+		t.Fatalf("schema properties = %#v, want goal/background/constraints/acceptance_criteria/permission_scope", props)
 	}
-	for _, name := range []string{"goal", "background", "constraints", "acceptance_criteria", "permission_scope", "expression_brief"} {
+	for _, name := range []string{"goal", "background", "constraints", "acceptance_criteria", "permission_scope"} {
 		if _, ok := props[name]; !ok {
 			t.Fatalf("schema missing %q: %#v", name, props)
 		}
@@ -43,17 +43,6 @@ func TestDelegateTool_SchemaStaysValidatorCompatible(t *testing.T) {
 	enum := permissionScope["enum"].([]any)
 	if len(enum) != 2 || enum[0] != "read-only" || enum[1] != "workspace-write" {
 		t.Fatalf("permission_scope enum = %#v, want [read-only workspace-write]", enum)
-	}
-
-	expressionBrief := props["expression_brief"].(map[string]any)
-	if expressionBrief["type"] != "object" {
-		t.Fatalf("expression_brief type = %#v, want object", expressionBrief["type"])
-	}
-	nestedProps := expressionBrief["properties"].(map[string]any)
-	for _, name := range []string{"tone", "directness", "user_preference_hints"} {
-		if _, ok := nestedProps[name]; !ok {
-			t.Fatalf("expression_brief missing %q: %#v", name, nestedProps)
-		}
 	}
 }
 
@@ -68,16 +57,28 @@ func TestDelegateTool_SchemaAcceptsFullBriefInput(t *testing.T) {
 		"background":"need a concise summary",
 		"constraints":["do not change files","prefer primary config"],
 		"acceptance_criteria":["list active ports","mention profile source"],
-		"permission_scope":"read-only",
-		"expression_brief":{
-			"tone":"calm",
-			"directness":"direct",
-			"user_preference_hints":["be concise"]
-		}
+		"permission_scope":"read-only"
 	}`)
 
 	if err := (tool.MinimalSchemaValidator{}).Validate(spec.Parameters, input); err != nil {
 		t.Fatalf("Validate returned error: %v", err)
+	}
+}
+
+func TestDelegateTool_SchemaRejectsRemovedExpressionBrief(t *testing.T) {
+	runtime := newTestRuntime(t, &scriptedLLM{
+		responses: []*llm.ChatResponse{textResp(`{"status":"completed","summary":"ok"}`)},
+	})
+
+	spec, _ := NewDelegateTool(runtime, nil, t.TempDir(), testLogger())
+	input := json.RawMessage(`{
+		"goal":"inspect config",
+		"permission_scope":"read-only",
+		"expression_brief":{"tone":"calm"}
+	}`)
+
+	if err := (tool.MinimalSchemaValidator{}).Validate(spec.Parameters, input); err == nil {
+		t.Fatal("Validate should reject removed expression_brief field")
 	}
 }
 
@@ -97,6 +98,23 @@ func TestDelegateTool_HandlerRejectsUnsupportedScope(t *testing.T) {
 
 	if _, err := handler(context.Background(), input); err == nil {
 		t.Fatal("handler should reject approved-destructive permission")
+	}
+}
+
+func TestDelegateTool_HandlerRejectsRemovedExpressionBriefField(t *testing.T) {
+	runtime := newTestRuntime(t, &scriptedLLM{
+		responses: []*llm.ChatResponse{textResp(`{"status":"completed","summary":"ok"}`)},
+	})
+
+	_, handler := NewDelegateTool(runtime, nil, t.TempDir(), testLogger())
+	input := json.RawMessage(`{
+		"goal":"inspect config",
+		"permission_scope":"read-only",
+		"expression_brief":{"tone":"calm"}
+	}`)
+
+	if _, err := handler(context.Background(), input); err == nil {
+		t.Fatal("handler should reject removed expression_brief field")
 	}
 }
 

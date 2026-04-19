@@ -22,8 +22,7 @@ JSON schema:
   "escalate_reason": "string, required when escalate=true",
   "decision": "option_id, required when escalate=false",
   "reason": "short rationale",
-  "constraints_delta": ["optional additional constraints"],
-  "style_delta": "optional style hint"
+  "constraints_delta": ["optional additional constraints"]
 }`
 }
 

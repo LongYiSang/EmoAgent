@@ -8,6 +8,7 @@ import (
 
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/protocol"
+	"github.com/longyisang/emoagent/internal/tool"
 )
 
 func makePausedForResume(t *testing.T, taskID string) *PausedWork {
@@ -61,6 +62,18 @@ func TestResumeTool_HappyPathReturnsTaskReport(t *testing.T) {
 	}
 }
 
+func TestResumeTool_SchemaRejectsRemovedStyleDelta(t *testing.T) {
+	runtime := newTestRuntime(t, &scriptedLLM{})
+	pending := NewPendingRegistry(5 * time.Minute)
+
+	spec, _ := NewResumeTool(runtime, pending, t.TempDir(), testLogger())
+	input := json.RawMessage(`{"task_id":"task-1","decision":"keep","style_delta":"concise"}`)
+
+	if err := (tool.MinimalSchemaValidator{}).Validate(spec.Parameters, input); err == nil {
+		t.Fatal("Validate should reject removed style_delta field")
+	}
+}
+
 func TestResumeTool_TaskNotFoundReturnsExpired(t *testing.T) {
 	runtime := newTestRuntime(t, &scriptedLLM{})
 	pending := NewPendingRegistry(5 * time.Minute)
@@ -77,6 +90,19 @@ func TestResumeTool_TaskNotFoundReturnsExpired(t *testing.T) {
 	}
 	if envelope["status"] != "expired" {
 		t.Fatalf("status = %q, want expired", envelope["status"])
+	}
+}
+
+func TestResumeTool_HandlerRejectsRemovedStyleDeltaField(t *testing.T) {
+	runtime := newTestRuntime(t, &scriptedLLM{})
+	pending := NewPendingRegistry(5 * time.Minute)
+	paused := makePausedForResume(t, "task-1")
+	pending.Put("session-1", paused.TaskID, paused)
+
+	_, handler := NewResumeTool(runtime, pending, t.TempDir(), testLogger())
+	ctx := WithSessionID(context.Background(), "session-1")
+	if _, err := handler(ctx, json.RawMessage(`{"task_id":"task-1","decision":"keep","style_delta":"concise"}`)); err == nil {
+		t.Fatal("handler should reject removed style_delta field")
 	}
 }
 

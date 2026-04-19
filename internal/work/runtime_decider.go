@@ -21,7 +21,6 @@ type RuntimeDecision struct {
 	Decision         string
 	Reason           string
 	ConstraintsDelta []string
-	StyleDelta       string
 }
 
 // LLMRuntimeDecider is the default RuntimeDecider implementation backed by LLM.
@@ -85,7 +84,6 @@ func (d *LLMRuntimeDecider) Decide(ctx context.Context, brief protocol.TaskBrief
 		Decision         string   `json:"decision"`
 		Reason           string   `json:"reason"`
 		ConstraintsDelta []string `json:"constraints_delta"`
-		StyleDelta       string   `json:"style_delta"`
 	}
 	if err := json.Unmarshal([]byte(stripCodeFence(resp.Content)), &parsed); err != nil {
 		return RuntimeDecision{
@@ -127,6 +125,5 @@ func (d *LLMRuntimeDecider) Decide(ctx context.Context, brief protocol.TaskBrief
 		Decision:         parsed.Decision,
 		Reason:           parsed.Reason,
 		ConstraintsDelta: parsed.ConstraintsDelta,
-		StyleDelta:       parsed.StyleDelta,
 	}, nil
 }

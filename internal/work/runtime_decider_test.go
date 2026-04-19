@@ -27,7 +27,7 @@ func testExecutionOnlyPacket() protocol.DecisionPacket {
 func TestRuntimeDecider_ParsesValidDecision(t *testing.T) {
 	client := &scriptedLLM{
 		responses: []*llm.ChatResponse{
-			textResp(`{"escalate":false,"decision":"a","reason":"least risky","constraints_delta":["keep tests"],"style_delta":"concise"}`),
+			textResp(`{"escalate":false,"decision":"a","reason":"least risky","constraints_delta":["keep tests"]}`),
 		},
 	}
 	decider := NewLLMRuntimeDecider(client, "test-model")
@@ -45,6 +45,17 @@ func TestRuntimeDecider_ParsesValidDecision(t *testing.T) {
 	}
 	if decision.Decision != "a" {
 		t.Fatalf("Decision = %q, want a", decision.Decision)
+	}
+}
+
+func TestRuntimeDecider_SystemPromptOmitsStyleDelta(t *testing.T) {
+	text := buildRuntimeDeciderSystemPrompt()
+
+	if strings.Contains(text, "style_delta") {
+		t.Fatalf("system prompt should not mention removed style_delta field: %s", text)
+	}
+	if !strings.Contains(text, `"constraints_delta": ["optional additional constraints"]`) {
+		t.Fatalf("system prompt should still mention constraints_delta: %s", text)
 	}
 }
 

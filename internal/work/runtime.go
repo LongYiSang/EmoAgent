@@ -324,7 +324,6 @@ func (r *Runtime) routeDecision(
 				Decision:         decision.Decision,
 				Reason:           decision.Reason,
 				ConstraintsDelta: decision.ConstraintsDelta,
-				StyleDelta:       decision.StyleDelta,
 			}
 			payload, marshalErr := json.Marshal(response)
 			if marshalErr == nil {

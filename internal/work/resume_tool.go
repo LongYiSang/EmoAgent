@@ -22,8 +22,7 @@ var resumeToolSchema = json.RawMessage(`{
     "task_id":{"type":"string"},
     "decision":{"type":"string"},
     "reason":{"type":"string"},
-    "constraints_delta":{"type":"array","items":{"type":"string"}},
-    "style_delta":{"type":"string"}
+    "constraints_delta":{"type":"array","items":{"type":"string"}}
   },
   "required":["task_id","decision"],
   "additionalProperties":false
@@ -45,9 +44,8 @@ func NewResumeTool(runtime *Runtime, pending *PendingRegistry, journalDir string
 			Decision         string   `json:"decision"`
 			Reason           string   `json:"reason"`
 			ConstraintsDelta []string `json:"constraints_delta"`
-			StyleDelta       string   `json:"style_delta"`
 		}
-		if err := json.Unmarshal(input, &req); err != nil {
+		if err := decodeStrictJSON(input, &req); err != nil {
 			return nil, fmt.Errorf("resume_work: invalid input: %w", err)
 		}
 
@@ -82,7 +80,6 @@ func NewResumeTool(runtime *Runtime, pending *PendingRegistry, journalDir string
 			Decision:         req.Decision,
 			Reason:           req.Reason,
 			ConstraintsDelta: req.ConstraintsDelta,
-			StyleDelta:       req.StyleDelta,
 		}
 		if journal != nil {
 			journal.Write("decision_response_emotion", paused.Round, map[string]any{

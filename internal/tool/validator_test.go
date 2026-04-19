@@ -89,12 +89,11 @@ func TestMinimalSchemaValidator_ValidateNestedObject(t *testing.T) {
 	schema := json.RawMessage(`{
 		"type":"object",
 		"properties":{
-			"expression_brief":{
+			"metadata":{
 				"type":"object",
 				"properties":{
-					"tone":{"type":"string"},
-					"directness":{"type":"string"},
-					"user_preference_hints":{"type":"array","items":{"type":"string"}}
+					"summary":{"type":"string"},
+					"labels":{"type":"array","items":{"type":"string"}}
 				},
 				"additionalProperties":false
 			}
@@ -102,10 +101,10 @@ func TestMinimalSchemaValidator_ValidateNestedObject(t *testing.T) {
 		"additionalProperties":false
 	}`)
 
-	if err := v.Validate(schema, json.RawMessage(`{"expression_brief":{"tone":"calm","directness":"direct","user_preference_hints":["short"]}}`)); err != nil {
+	if err := v.Validate(schema, json.RawMessage(`{"metadata":{"summary":"ok","labels":["short"]}}`)); err != nil {
 		t.Fatalf("Validate returned error: %v", err)
 	}
-	if err := v.Validate(schema, json.RawMessage(`{"expression_brief":{"unknown":"x"}}`)); err == nil {
+	if err := v.Validate(schema, json.RawMessage(`{"metadata":{"unknown":"x"}}`)); err == nil {
 		t.Fatal("Validate should reject unexpected nested properties")
 	}
 }

@@ -14,7 +14,7 @@ func TestBuildWorkSystem_NoEmotionLeak(t *testing.T) {
 		PermissionScope: "read-only",
 	}, runtimeenv.Facts{OS: "linux"}))
 
-	for _, forbidden := range []string{"persona", "companion", "relationship"} {
+	for _, forbidden := range []string{"companion", "long-term memory", "recent conversation"} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("system prompt leaked %q: %s", forbidden, text)
 		}
@@ -62,7 +62,6 @@ func TestBuildWorkSystem_OmitsEmptyOptionalSections(t *testing.T) {
 		"## Background",
 		"## Constraints",
 		"## Acceptance Criteria",
-		"## Expression Hints",
 	} {
 		if strings.Contains(text, header) {
 			t.Fatalf("system prompt should omit empty section %q: %s", header, text)
@@ -77,22 +76,38 @@ func TestBuildWorkSystem_IncludesOptionalSections(t *testing.T) {
 		Background:         "Need to inspect go.mod",
 		Constraints:        []string{"Do not read tests"},
 		AcceptanceCriteria: []string{"List dependency names only"},
-		ExpressionBrief: &protocol.ExpressionBrief{
-			Tone:                "neutral",
-			Directness:          "high",
-			UserPreferenceHints: []string{"be concise"},
-		},
 	}, runtimeenv.Facts{OS: "linux"})
 
 	for _, snippet := range []string{
 		"Need to inspect go.mod",
 		"Do not read tests",
 		"List dependency names only",
-		"neutral",
-		"be concise",
 	} {
 		if !strings.Contains(text, snippet) {
 			t.Fatalf("system prompt missing %q: %s", snippet, text)
+		}
+	}
+}
+
+func TestBuildWorkSystem_ReinforcesExecutionOnlyBoundary(t *testing.T) {
+	text := BuildWorkSystem(protocol.TaskBrief{
+		Goal:               "draft an internal summary",
+		PermissionScope:    "read-only",
+		Background:         "If the task output itself needs a formal tone, it must be described in the task brief.",
+		AcceptanceCriteria: []string{"Return a concise internal summary"},
+	}, runtimeenv.Facts{OS: "linux"})
+
+	for _, snippet := range []string{
+		"You are not responsible for user-facing tone or persona-driven phrasing.",
+		"If the delegated task itself requires a specific tone or format, treat that as task semantics from the goal, background, or constraints.",
+	} {
+		if !strings.Contains(text, snippet) {
+			t.Fatalf("system prompt missing %q: %s", snippet, text)
+		}
+	}
+	for _, forbidden := range []string{"## Expression Hints", "Tone:", "Directness:", "Hint:"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("system prompt should not mention removed expression hints %q: %s", forbidden, text)
 		}
 	}
 }

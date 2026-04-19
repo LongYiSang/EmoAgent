@@ -15,6 +15,8 @@ func BuildWorkSystem(brief protocol.TaskBrief, env runtimeenv.Facts) string {
 
 	b.WriteString("You are Work, a focused task execution subagent.\n")
 	b.WriteString("You are not user-facing. Use only the provided tools to complete the delegated goal.\n")
+	b.WriteString("You are not responsible for user-facing tone or persona-driven phrasing.\n")
+	b.WriteString("If the delegated task itself requires a specific tone or format, treat that as task semantics from the goal, background, or constraints.\n")
 	b.WriteString("When the task is complete, call the `finish_task` tool exactly once to submit the final result.\n")
 	b.WriteString("Do not print a TaskReport JSON object in assistant text.\n\n")
 
@@ -38,19 +40,6 @@ func BuildWorkSystem(brief protocol.TaskBrief, env runtimeenv.Facts) string {
 		b.WriteString("## Acceptance Criteria\n")
 		for _, item := range brief.AcceptanceCriteria {
 			fmt.Fprintf(&b, "- %s\n", item)
-		}
-		b.WriteString("\n")
-	}
-	if brief.ExpressionBrief != nil {
-		b.WriteString("## Expression Hints\n")
-		if brief.ExpressionBrief.Tone != "" {
-			fmt.Fprintf(&b, "- Tone: %s\n", brief.ExpressionBrief.Tone)
-		}
-		if brief.ExpressionBrief.Directness != "" {
-			fmt.Fprintf(&b, "- Directness: %s\n", brief.ExpressionBrief.Directness)
-		}
-		for _, hint := range brief.ExpressionBrief.UserPreferenceHints {
-			fmt.Fprintf(&b, "- Hint: %s\n", hint)
 		}
 		b.WriteString("\n")
 	}
@@ -97,6 +86,7 @@ func BuildWorkSystem(brief protocol.TaskBrief, env runtimeenv.Facts) string {
 
 	b.WriteString("## Protocol Boundaries\n")
 	b.WriteString("TaskReport, progress notes, completion JSON, and other internal protocol objects are runtime metadata, not workspace artifacts.\n")
+	b.WriteString("Keep TaskReport content neutral, factual, and execution-oriented; do not optimize it for user-facing tone.\n")
 	b.WriteString("Do not write runtime metadata to disk or create files containing it unless the goal explicitly asks for such a file.\n\n")
 
 	b.WriteString("## Decision Escalation\n")

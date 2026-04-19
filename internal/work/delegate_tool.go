@@ -27,16 +27,7 @@ var delegateToolSchema = json.RawMessage(`{
 		"background":{"type":"string"},
 		"constraints":{"type":"array","items":{"type":"string"}},
 		"acceptance_criteria":{"type":"array","items":{"type":"string"}},
-		"permission_scope":{"type":"string","enum":["read-only","workspace-write"]},
-		"expression_brief":{
-			"type":"object",
-			"properties":{
-				"tone":{"type":"string"},
-				"directness":{"type":"string"},
-				"user_preference_hints":{"type":"array","items":{"type":"string"}}
-			},
-			"additionalProperties":false
-		}
+		"permission_scope":{"type":"string","enum":["read-only","workspace-write"]}
 	},
 	"required":["goal","permission_scope"],
 	"additionalProperties":false
@@ -55,7 +46,7 @@ func NewDelegateTool(runtime *Runtime, pending *PendingRegistry, journalDir stri
 
 	handler := func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 		var brief protocol.TaskBrief
-		if err := json.Unmarshal(input, &brief); err != nil {
+		if err := decodeStrictJSON(input, &brief); err != nil {
 			return nil, fmt.Errorf("delegate_to_work: invalid input: %w", err)
 		}
 		if err := ValidateAndComplete(&brief); err != nil {
