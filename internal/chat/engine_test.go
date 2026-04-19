@@ -14,6 +14,7 @@ import (
 
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/progress"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/storage"
 	"github.com/longyisang/emoagent/internal/tool"
@@ -1239,5 +1240,101 @@ func TestEnginePendingDecisionChainAcrossTurns(t *testing.T) {
 
 	if got := pending.List(sessionID); len(got) != 0 {
 		t.Fatalf("pending decisions should be consumed after resume, got %d", len(got))
+	}
+}
+
+func TestEngineRoutesProgressEventsToWSWriter(t *testing.T) {
+	llmClient := &scriptedEngineClient{
+		responses: []*llm.ChatResponse{
+			toolUseResponse("call_probe", "progress_probe", `{}`),
+			endTurnResponse("done"),
+		},
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chat.db")
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+	db, err := storage.Open(path, logger)
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	registry := tool.NewRegistry()
+	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, logger)
+
+	registry.Register(tool.Spec{
+		Name:        "progress_probe",
+		Description: "test progress callback",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+		Scope:       tool.ScopeEmotion,
+		Permission:  tool.PermReadOnly,
+	}, func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		cb := progress.CallbackFromContext(ctx)
+		if cb != nil {
+			cb(progress.Event{Kind: progress.KindTool, ToolName: "read_file", Round: 0, TaskID: "task-1"})
+			cb(progress.Event{Kind: progress.KindEnd, Round: 0, TaskID: "task-1"})
+		}
+		return json.Marshal(map[string]bool{"ok": true})
+	})
+
+	engine := NewEngine(EngineConfig{
+		LLM:          llmClient,
+		DB:           db,
+		Logger:       logger,
+		Model:        "test-model",
+		SummaryModel: "summary-model",
+		MaxTokens:    512,
+		Temperature:  0.2,
+		ContextConfig: config.ContextConfig{
+			InputBudgetTokens:    24000,
+			SoftCompactRatio:     0.75,
+			HardCompactRatio:     0.92,
+			ReserveOutputTokens:  4096,
+			KeepRecentUserTurns:  6,
+			ToolResultSoftTokens: 1000,
+			ToolResultHardTokens: 3000,
+		},
+		Provider:   "openai",
+		Registry:   registry,
+		Dispatcher: dispatcher,
+	})
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	persona := &config.Persona{
+		Name: "default",
+		WorkProgressPhrases: map[string][]string{
+			"read_file": {"override progress"},
+		},
+	}
+
+	var wsMessages []WSMessage
+	ctx := withWSWriter(context.Background(), func(message WSMessage) {
+		wsMessages = append(wsMessages, message)
+	})
+
+	if _, err := engine.SendMessage(ctx, sessionID, persona, "please run progress probe", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	var sawProgress bool
+	var sawEnd bool
+	for _, message := range wsMessages {
+		switch message.Type {
+		case "work_progress":
+			sawProgress = sawProgress || message.Content == "override progress"
+		case "work_progress_end":
+			sawEnd = true
+		}
+	}
+	if !sawProgress {
+		t.Fatalf("ws messages = %#v, want work_progress with override content", wsMessages)
+	}
+	if !sawEnd {
+		t.Fatalf("ws messages = %#v, want work_progress_end", wsMessages)
 	}
 }

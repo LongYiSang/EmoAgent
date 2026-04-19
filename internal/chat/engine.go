@@ -13,6 +13,7 @@ import (
 	"github.com/longyisang/emoagent/internal/config"
 	contextutil "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/progress"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/storage"
@@ -296,6 +297,24 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 	reactiveRetryUsed := false
 	var reactiveRetryReport *contextutil.CompactReport
 	ctx = work.WithSessionID(ctx, sessionID)
+	if rawWriter := wsWriterFromContext(ctx); rawWriter != nil {
+		throttler := progress.NewThrottler(3 * time.Second)
+		personaPhrases := persona.WorkProgressPhrases
+		ctx = progress.WithCallback(ctx, func(event progress.Event) {
+			if event.Kind == progress.KindEnd {
+				rawWriter(WSMessage{Type: "work_progress_end"})
+				return
+			}
+			if !throttler.ShouldEmit(event) {
+				return
+			}
+			phrase := progress.Resolve(event, personaPhrases)
+			if phrase == "" {
+				return
+			}
+			rawWriter(WSMessage{Type: "work_progress", Content: phrase})
+		})
+	}
 
 	for round := 0; ; round++ {
 		var roundDeltas []string

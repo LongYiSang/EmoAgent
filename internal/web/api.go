@@ -12,6 +12,7 @@ import (
 
 	"github.com/longyisang/emoagent/internal/apperrors"
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/progress"
 	"github.com/longyisang/emoagent/internal/storage"
 )
 
@@ -30,6 +31,8 @@ type AdminApp interface {
 	UpdatePersona(key string, p *config.Persona) error
 	DeletePersona(key string) error
 	ActivatePersona(key string) error
+	GetProgressPhrases(key string) (map[string][]string, error)
+	UpdateProgressPhrases(key string, phrases map[string][]string) error
 	GetDefaultPersonaName() string
 	ListSessions(ctx context.Context, persona string, limit int) ([]storage.SessionSummary, error)
 	GetLatestSession(ctx context.Context, persona string) (*storage.SessionSummary, error)
@@ -76,13 +79,14 @@ type personasResponse struct {
 }
 
 type personaDetailResponse struct {
-	Key          string   `json:"key"`
-	Name         string   `json:"name"`
-	Description  string   `json:"description"`
-	SystemPrompt string   `json:"system_prompt"`
-	Tone         string   `json:"tone"`
-	Quirks       []string `json:"quirks"`
-	Greeting     string   `json:"greeting"`
+	Key                 string              `json:"key"`
+	Name                string              `json:"name"`
+	Description         string              `json:"description"`
+	SystemPrompt        string              `json:"system_prompt"`
+	Tone                string              `json:"tone"`
+	Quirks              []string            `json:"quirks"`
+	Greeting            string              `json:"greeting"`
+	WorkProgressPhrases map[string][]string `json:"work_progress_phrases"`
 }
 
 type llmProfileRequest struct {
@@ -102,13 +106,22 @@ type llmProfileRequest struct {
 }
 
 type personaRequest struct {
-	Key          string   `json:"key"`
-	Name         string   `json:"name"`
-	Description  string   `json:"description"`
-	SystemPrompt string   `json:"system_prompt"`
-	Tone         string   `json:"tone"`
-	Quirks       []string `json:"quirks"`
-	Greeting     string   `json:"greeting"`
+	Key                 string              `json:"key"`
+	Name                string              `json:"name"`
+	Description         string              `json:"description"`
+	SystemPrompt        string              `json:"system_prompt"`
+	Tone                string              `json:"tone"`
+	Quirks              []string            `json:"quirks"`
+	Greeting            string              `json:"greeting"`
+	WorkProgressPhrases map[string][]string `json:"work_progress_phrases"`
+}
+
+type progressPhrasesResponse struct {
+	Phrases map[string][]string `json:"phrases"`
+}
+
+type progressPhrasesRequest struct {
+	Phrases map[string][]string `json:"phrases"`
 }
 
 func NewAPIHandler(app AdminApp, logger *slog.Logger) *APIHandler {
@@ -250,13 +263,14 @@ func (h *APIHandler) HandleGetPersona(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, personaDetailResponse{
-		Key:          key,
-		Name:         persona.Name,
-		Description:  persona.Description,
-		SystemPrompt: persona.SystemPrompt,
-		Tone:         persona.Tone,
-		Quirks:       append([]string(nil), persona.Quirks...),
-		Greeting:     persona.Greeting,
+		Key:                 key,
+		Name:                persona.Name,
+		Description:         persona.Description,
+		SystemPrompt:        persona.SystemPrompt,
+		Tone:                persona.Tone,
+		Quirks:              append([]string(nil), persona.Quirks...),
+		Greeting:            persona.Greeting,
+		WorkProgressPhrases: cloneProgressPhrases(persona.WorkProgressPhrases),
 	})
 }
 
@@ -274,12 +288,13 @@ func (h *APIHandler) HandleCreatePersona(w http.ResponseWriter, r *http.Request)
 	}
 
 	if err := h.app.CreatePersona(key, &config.Persona{
-		Name:         firstNonEmpty(strings.TrimSpace(req.Name), key),
-		Description:  strings.TrimSpace(req.Description),
-		SystemPrompt: req.SystemPrompt,
-		Tone:         strings.TrimSpace(req.Tone),
-		Quirks:       normalizeQuirks(req.Quirks),
-		Greeting:     req.Greeting,
+		Name:                firstNonEmpty(strings.TrimSpace(req.Name), key),
+		Description:         strings.TrimSpace(req.Description),
+		SystemPrompt:        req.SystemPrompt,
+		Tone:                strings.TrimSpace(req.Tone),
+		Quirks:              normalizeQuirks(req.Quirks),
+		Greeting:            req.Greeting,
+		WorkProgressPhrases: normalizeProgressPhrases(req.WorkProgressPhrases),
 	}); err != nil {
 		h.writePersonaError(w, err)
 		return
@@ -297,12 +312,13 @@ func (h *APIHandler) HandleUpdatePersona(w http.ResponseWriter, r *http.Request)
 
 	key := r.PathValue("name")
 	if err := h.app.UpdatePersona(key, &config.Persona{
-		Name:         strings.TrimSpace(req.Name),
-		Description:  strings.TrimSpace(req.Description),
-		SystemPrompt: req.SystemPrompt,
-		Tone:         strings.TrimSpace(req.Tone),
-		Quirks:       normalizeQuirks(req.Quirks),
-		Greeting:     req.Greeting,
+		Name:                strings.TrimSpace(req.Name),
+		Description:         strings.TrimSpace(req.Description),
+		SystemPrompt:        req.SystemPrompt,
+		Tone:                strings.TrimSpace(req.Tone),
+		Quirks:              normalizeQuirks(req.Quirks),
+		Greeting:            req.Greeting,
+		WorkProgressPhrases: normalizeProgressPhrases(req.WorkProgressPhrases),
 	}); err != nil {
 		h.writePersonaError(w, err)
 		return
@@ -325,6 +341,34 @@ func (h *APIHandler) HandleActivatePersona(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (h *APIHandler) HandleGetProgressPhrases(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("name")
+	phrases, err := h.app.GetProgressPhrases(key)
+	if err != nil {
+		h.writePersonaError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, progressPhrasesResponse{Phrases: cloneProgressPhrases(phrases)})
+}
+
+func (h *APIHandler) HandleUpdateProgressPhrases(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("name")
+	var req progressPhrasesRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if err := h.app.UpdateProgressPhrases(key, normalizeProgressPhrases(req.Phrases)); err != nil {
+		h.writePersonaError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (h *APIHandler) HandleGetProgressPhrasesDefaults(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, progressPhrasesResponse{Phrases: cloneProgressPhrases(progress.DefaultTemplates)})
 }
 
 func (h *APIHandler) HandleListSessions(w http.ResponseWriter, r *http.Request) {
@@ -489,6 +533,44 @@ func normalizeQuirks(quirks []string) []string {
 		}
 	}
 	return result
+}
+
+func normalizeProgressPhrases(phrases map[string][]string) map[string][]string {
+	if len(phrases) == 0 {
+		return map[string][]string{}
+	}
+	out := make(map[string][]string)
+	for rawKey, values := range phrases {
+		key := strings.TrimSpace(rawKey)
+		if key == "" {
+			continue
+		}
+		cleanValues := make([]string, 0, len(values))
+		for _, value := range values {
+			trimmed := strings.TrimSpace(value)
+			if trimmed != "" {
+				cleanValues = append(cleanValues, trimmed)
+			}
+		}
+		if len(cleanValues) > 0 {
+			out[key] = cleanValues
+		}
+	}
+	if len(out) == 0 {
+		return map[string][]string{}
+	}
+	return out
+}
+
+func cloneProgressPhrases(src map[string][]string) map[string][]string {
+	if src == nil {
+		return map[string][]string{}
+	}
+	dst := make(map[string][]string, len(src))
+	for key, values := range src {
+		dst[key] = append([]string(nil), values...)
+	}
+	return dst
 }
 
 func toLLMProfileResponse(profile config.LLMProfile) llmProfileResponse {

@@ -94,6 +94,10 @@ ALTER TABLE llm_profiles ADD COLUMN hard_compact_ratio REAL;
 ALTER TABLE llm_profiles ADD COLUMN reserve_output_tokens INTEGER;
 `,
 	},
+	{
+		Version: 6,
+		SQL:     `ALTER TABLE personas ADD COLUMN work_progress_phrases TEXT NOT NULL DEFAULT '{}';`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.

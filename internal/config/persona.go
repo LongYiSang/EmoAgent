@@ -13,12 +13,13 @@ import (
 )
 
 type Persona struct {
-	Name         string   `yaml:"name"`
-	Description  string   `yaml:"description"`
-	SystemPrompt string   `yaml:"system_prompt"`
-	Tone         string   `yaml:"tone"`
-	Quirks       []string `yaml:"quirks"`
-	Greeting     string   `yaml:"greeting"`
+	Name                string              `yaml:"name"`
+	Description         string              `yaml:"description"`
+	SystemPrompt        string              `yaml:"system_prompt"`
+	Tone                string              `yaml:"tone"`
+	Quirks              []string            `yaml:"quirks"`
+	Greeting            string              `yaml:"greeting"`
+	WorkProgressPhrases map[string][]string `yaml:"work_progress_phrases,omitempty"`
 }
 
 // ValidatePersonaKey ensures persona keys remain a single filename segment under the personas directory.

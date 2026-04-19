@@ -12,6 +12,7 @@ import (
 
 	contextutil "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/progress"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/tool"
@@ -555,4 +556,52 @@ func TestEstimateMessagesTokensCountsStructuredContent(t *testing.T) {
 	if tokens <= contextutil.EstimateTokens("hello") {
 		t.Fatalf("estimate should include structured content, got %d", tokens)
 	}
+}
+
+func TestRuntime_EmitsProgressStartToolAndFinishing(t *testing.T) {
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			toolUseResp("call-1", "echo_tool", `{"x":"y"}`),
+			toolUseResp("finish-1", "finish_task", finishTaskPayloadJSON("completed", "done", nil, nil)),
+		},
+	}
+	runtime := newTestRuntime(t, client)
+	brief := newValidatedBrief(t)
+
+	var events []progress.Event
+	ctx := progress.WithCallback(context.Background(), func(event progress.Event) {
+		events = append(events, event)
+	})
+
+	outcome := runtime.Run(ctx, brief, nil)
+	if outcome.Report == nil {
+		t.Fatalf("expected report outcome, got %#v", outcome)
+	}
+
+	var kinds []progress.EventKind
+	var toolNames []string
+	for _, event := range events {
+		kinds = append(kinds, event.Kind)
+		if event.Kind == progress.KindTool {
+			toolNames = append(toolNames, event.ToolName)
+		}
+	}
+	if !containsEventKind(kinds, progress.KindStart) {
+		t.Fatalf("events = %#v, want start", events)
+	}
+	if !containsEventKind(kinds, progress.KindFinishing) {
+		t.Fatalf("events = %#v, want finishing", events)
+	}
+	if len(toolNames) != 1 || toolNames[0] != "echo_tool" {
+		t.Fatalf("toolNames = %#v, want [echo_tool]", toolNames)
+	}
+}
+
+func containsEventKind(kinds []progress.EventKind, target progress.EventKind) bool {
+	for _, kind := range kinds {
+		if kind == target {
+			return true
+		}
+	}
+	return false
 }

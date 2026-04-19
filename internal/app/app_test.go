@@ -68,6 +68,12 @@ func (a *routeTestAdminApp) CreatePersona(key string, p *config.Persona) error {
 }
 func (a *routeTestAdminApp) UpdatePersona(key string, p *config.Persona) error { return nil }
 func (a *routeTestAdminApp) DeletePersona(key string) error                    { return nil }
+func (a *routeTestAdminApp) GetProgressPhrases(key string) (map[string][]string, error) {
+	return map[string][]string{}, nil
+}
+func (a *routeTestAdminApp) UpdateProgressPhrases(key string, phrases map[string][]string) error {
+	return nil
+}
 func (a *routeTestAdminApp) ActivatePersona(key string) error {
 	a.lastPersonaActivate = key
 	a.defaultKey = key
@@ -417,7 +423,7 @@ func TestUpdatePersonaKeepsStableDBKeyWhenDisplayNameChanges(t *testing.T) {
 	if err := config.SavePersona(personaDir, "neko", a.Personas["neko"]); err != nil {
 		t.Fatalf("SavePersona: %v", err)
 	}
-	if err := db.UpsertPersona("neko", "Tami", "cat roommate", "prompt", "snarky", nil, "meow"); err != nil {
+	if err := db.UpsertPersona("neko", "Tami", "cat roommate", "prompt", "snarky", nil, "meow", nil); err != nil {
 		t.Fatalf("UpsertPersona: %v", err)
 	}
 
@@ -444,6 +450,102 @@ func TestUpdatePersonaKeepsStableDBKeyWhenDisplayNameChanges(t *testing.T) {
 	}
 	if record.Name != "Mimi" {
 		t.Fatalf("record.Name = %q, want Mimi", record.Name)
+	}
+}
+
+func TestGetPersonaReturnsDeepCopyOfWorkProgressPhrases(t *testing.T) {
+	a := &App{
+		Personas: map[string]*config.Persona{
+			"default": {
+				Name: "default",
+				WorkProgressPhrases: map[string][]string{
+					"read_file": {"看看文件"},
+				},
+			},
+		},
+	}
+
+	persona, ok := a.GetPersona("default")
+	if !ok || persona == nil {
+		t.Fatal("GetPersona returned nil")
+	}
+	persona.WorkProgressPhrases["read_file"][0] = "mutated"
+	persona.WorkProgressPhrases["new_key"] = []string{"new"}
+
+	original := a.Personas["default"].WorkProgressPhrases
+	if original["read_file"][0] != "看看文件" {
+		t.Fatalf("original read_file phrase = %q, want untouched", original["read_file"][0])
+	}
+	if _, exists := original["new_key"]; exists {
+		t.Fatalf("original map unexpectedly mutated: %#v", original)
+	}
+}
+
+func TestUpdateProgressPhrasesPersistsToFileDBAndMemory(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	personaDir := t.TempDir()
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	initial := &config.Persona{
+		Name:        "default",
+		Description: "desc",
+	}
+
+	a := &App{
+		Config: &config.Config{
+			Personas: config.PersonasConfig{Dir: personaDir, Default: "default"},
+		},
+		DB:     db,
+		Logger: logger,
+		Personas: map[string]*config.Persona{
+			"default": initial,
+		},
+	}
+
+	if err := config.SavePersona(personaDir, "default", initial); err != nil {
+		t.Fatalf("SavePersona: %v", err)
+	}
+	if err := db.UpsertPersona("default", initial.Name, initial.Description, initial.SystemPrompt, initial.Tone, initial.Quirks, initial.Greeting, initial.WorkProgressPhrases); err != nil {
+		t.Fatalf("UpsertPersona: %v", err)
+	}
+
+	phrases := map[string][]string{
+		"read_file": {"看看文件"},
+		"_default":  {"处理中"},
+	}
+	if err := a.UpdateProgressPhrases("default", phrases); err != nil {
+		t.Fatalf("UpdateProgressPhrases: %v", err)
+	}
+
+	if got := a.Personas["default"].WorkProgressPhrases["read_file"]; len(got) != 1 || got[0] != "看看文件" {
+		t.Fatalf("memory phrases = %#v, want read_file phrase", a.Personas["default"].WorkProgressPhrases)
+	}
+
+	loaded, err := config.LoadPersona(filepath.Join(personaDir, "default.yaml"))
+	if err != nil {
+		t.Fatalf("LoadPersona: %v", err)
+	}
+	if got := loaded.WorkProgressPhrases["read_file"]; len(got) != 1 || got[0] != "看看文件" {
+		t.Fatalf("file phrases = %#v, want read_file phrase", loaded.WorkProgressPhrases)
+	}
+
+	record, err := db.GetPersona(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("GetPersona: %v", err)
+	}
+	if record == nil {
+		t.Fatal("GetPersona returned nil")
+	}
+	var decoded map[string][]string
+	if err := json.Unmarshal([]byte(record.WorkProgressPhrases), &decoded); err != nil {
+		t.Fatalf("Unmarshal WorkProgressPhrases: %v", err)
+	}
+	if got := decoded["read_file"]; len(got) != 1 || got[0] != "看看文件" {
+		t.Fatalf("db phrases = %#v, want read_file phrase", decoded)
 	}
 }
 

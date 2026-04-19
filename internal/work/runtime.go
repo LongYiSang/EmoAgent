@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	contextutil "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/progress"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/tool"
@@ -17,6 +19,7 @@ import (
 const (
 	defaultMaxEscalations        = 3
 	defaultPendingSnapshotTokens = 60000
+	progressHeartbeatInterval    = 8 * time.Second
 )
 
 // RuntimeConfig describes the dependencies for one Work runtime instance.
@@ -133,6 +136,7 @@ func (r *Runtime) runLoop(
 	tools := r.cfg.Registry.ForScope(tool.ScopeWork)
 	permission := tool.Permission(brief.PermissionScope)
 	messages := append([]llm.Message(nil), seedMessages...)
+	progressCB := progress.CallbackFromContext(ctx)
 
 	for round := startRound; round < r.cfg.MaxToolRounds; round++ {
 		if err := ctx.Err(); err != nil {
@@ -148,159 +152,235 @@ func (r *Runtime) runLoop(
 			return RunOutcome{Report: &report}
 		}
 
-		resp, err := r.cfg.LLM.ChatStream(ctx, llm.ChatRequest{
-			Model:       r.cfg.Model,
-			Messages:    messages,
-			System:      system,
-			MaxTokens:   r.cfg.MaxTokens,
-			Temperature: r.cfg.Temperature,
-			Stream:      false,
-			Tools:       tools,
-		}, func(llm.StreamEvent) {})
-		if err != nil {
-			if journal != nil {
-				journal.Write("task_error", round, map[string]any{"error": err.Error(), "last_round": round})
+		if progressCB != nil && round == startRound {
+			progressCB(progress.Event{
+				Kind:   progress.KindStart,
+				Round:  round,
+				TaskID: brief.TaskID,
+			})
+		}
+
+		outcome, shouldReturn := func() (RunOutcome, bool) {
+			hbCtx, hbCancel := context.WithCancel(ctx)
+			defer hbCancel()
+			if progressCB != nil {
+				go heartbeatTicker(hbCtx, progressCB, round, brief.TaskID, progressHeartbeatInterval)
 			}
-			report := failedReport(brief, "llm request failed: "+err.Error())
-			return RunOutcome{Report: &report}
-		}
-		if resp.StopReason != "tool_use" {
-			report := ParseOrFallback(resp.Content, brief)
-			return RunOutcome{Report: &report}
-		}
 
-		messages = append(messages, llm.Message{
-			Role:             llm.RoleAssistant,
-			Content:          resp.Content,
-			ContentBlocks:    resp.ContentBlocks,
-			ReasoningContent: resp.ReasoningContent,
-		})
-
-		calls := tool.ExtractToolCalls(resp)
-		for _, call := range calls {
-			if journal != nil {
-				journal.Write("tool_call", round, map[string]any{
-					"call_id": call.ID,
-					"name":    call.Name,
-					"input":   string(call.Input),
-				})
-			}
-		}
-
-		finishCall, hasFinish, mixedFinishCalls := pickFinishTaskCall(calls)
-		if hasFinish {
-			if mixedFinishCalls {
+			resp, err := r.cfg.LLM.ChatStream(ctx, llm.ChatRequest{
+				Model:       r.cfg.Model,
+				Messages:    messages,
+				System:      system,
+				MaxTokens:   r.cfg.MaxTokens,
+				Temperature: r.cfg.Temperature,
+				Stream:      false,
+				Tools:       tools,
+			}, func(llm.StreamEvent) {})
+			if err != nil {
 				if journal != nil {
-					journal.Write("finish_violation", round, map[string]any{
-						"reason": "finish_task must be sole call in the round",
+					journal.Write("task_error", round, map[string]any{"error": err.Error(), "last_round": round})
+				}
+				report := failedReport(brief, "llm request failed: "+err.Error())
+				return RunOutcome{Report: &report}, true
+			}
+			if resp.StopReason != "tool_use" {
+				report := ParseOrFallback(resp.Content, brief)
+				return RunOutcome{Report: &report}, true
+			}
+
+			messages = append(messages, llm.Message{
+				Role:             llm.RoleAssistant,
+				Content:          resp.Content,
+				ContentBlocks:    resp.ContentBlocks,
+				ReasoningContent: resp.ReasoningContent,
+			})
+
+			calls := tool.ExtractToolCalls(resp)
+			for _, call := range calls {
+				if journal != nil {
+					journal.Write("tool_call", round, map[string]any{
+						"call_id": call.ID,
+						"name":    call.Name,
+						"input":   string(call.Input),
 					})
 				}
-				results := make([]tool.Result, 0, len(calls))
-				for _, call := range calls {
-					switch call.Name {
-					case "finish_task":
-						results = append(results, errorToolResult(call.ID, "finish_task must be the sole tool call in this round"))
-					case "request_decision":
-						results = append(results, errorToolResult(call.ID, "request_decision must be the sole tool call in this round"))
-					default:
+			}
+
+			finishCall, hasFinish, mixedFinishCalls := pickFinishTaskCall(calls)
+			if hasFinish {
+				if mixedFinishCalls {
+					if journal != nil {
+						journal.Write("finish_violation", round, map[string]any{
+							"reason": "finish_task must be sole call in the round",
+						})
+					}
+					if progressCB != nil {
+						emitToolProgress(progressCB, calls, round, brief.TaskID)
+					}
+					results := make([]tool.Result, 0, len(calls))
+					for _, call := range calls {
+						switch call.Name {
+						case "finish_task":
+							results = append(results, errorToolResult(call.ID, "finish_task must be the sole tool call in this round"))
+						case "request_decision":
+							results = append(results, errorToolResult(call.ID, "request_decision must be the sole tool call in this round"))
+						default:
+							results = append(results, r.cfg.Dispatcher.Execute(ctx, call, permission))
+						}
+					}
+					logToolResults(journal, round, results)
+					messages = append(messages, tool.ResultsToMessages(r.cfg.Provider, results)...)
+					return RunOutcome{}, false
+				}
+
+				payload, err := ParseFinishTaskPayload(finishCall.Input)
+				if err != nil {
+					results := []tool.Result{errorToolResult(finishCall.ID, "invalid finish_task payload: "+err.Error())}
+					logToolResults(journal, round, results)
+					messages = append(messages, tool.ResultsToMessages(r.cfg.Provider, results)...)
+					return RunOutcome{}, false
+				}
+				if progressCB != nil {
+					progressCB(progress.Event{
+						Kind:   progress.KindFinishing,
+						Round:  round,
+						TaskID: brief.TaskID,
+					})
+				}
+
+				report := protocol.TaskReport{
+					TaskID:        brief.TaskID,
+					Status:        payload.Status,
+					Goal:          brief.Goal,
+					Summary:       payload.Summary,
+					Findings:      append([]string(nil), payload.Findings...),
+					OpenQuestions: append([]string(nil), payload.OpenQuestions...),
+					CreatedAt:     time.Now().UTC(),
+				}
+				return RunOutcome{Report: &report}, true
+			}
+
+			decisionCall, hasDecision, mixedDecisionCalls := pickDecisionCall(calls)
+			if hasDecision {
+				if mixedDecisionCalls {
+					if journal != nil {
+						journal.Write("decision_violation", round, map[string]any{
+							"reason": "request_decision must be sole call in the round",
+						})
+					}
+					if progressCB != nil {
+						emitToolProgress(progressCB, calls, round, brief.TaskID)
+					}
+					results := make([]tool.Result, 0, len(calls))
+					for _, call := range calls {
+						if call.Name == "request_decision" {
+							results = append(results, errorToolResult(call.ID, "request_decision must be the sole tool call in this round"))
+							continue
+						}
 						results = append(results, r.cfg.Dispatcher.Execute(ctx, call, permission))
 					}
+					logToolResults(journal, round, results)
+					messages = append(messages, tool.ResultsToMessages(r.cfg.Provider, results)...)
+					return RunOutcome{}, false
 				}
-				logToolResults(journal, round, results)
-				messages = append(messages, tool.ResultsToMessages(r.cfg.Provider, results)...)
-				continue
-			}
 
-			payload, err := ParseFinishTaskPayload(finishCall.Input)
-			if err != nil {
-				results := []tool.Result{errorToolResult(finishCall.ID, "invalid finish_task payload: "+err.Error())}
-				logToolResults(journal, round, results)
-				messages = append(messages, tool.ResultsToMessages(r.cfg.Provider, results)...)
-				continue
-			}
+				var packet protocol.DecisionPacket
+				if err := json.Unmarshal(decisionCall.Input, &packet); err != nil {
+					results := []tool.Result{errorToolResult(decisionCall.ID, "invalid decision packet JSON: "+err.Error())}
+					logToolResults(journal, round, results)
+					messages = append(messages, tool.ResultsToMessages(r.cfg.Provider, results)...)
+					return RunOutcome{}, false
+				}
+				if packet.TaskID == "" {
+					packet.TaskID = brief.TaskID
+				}
+				if packet.CreatedAt.IsZero() {
+					packet.CreatedAt = time.Now().UTC()
+				}
+				if err := ValidateDecisionPacket(&packet, brief); err != nil {
+					results := []tool.Result{errorToolResult(decisionCall.ID, "invalid decision packet: "+err.Error())}
+					logToolResults(journal, round, results)
+					messages = append(messages, tool.ResultsToMessages(r.cfg.Provider, results)...)
+					return RunOutcome{}, false
+				}
 
-			report := protocol.TaskReport{
-				TaskID:        brief.TaskID,
-				Status:        payload.Status,
-				Goal:          brief.Goal,
-				Summary:       payload.Summary,
-				Findings:      append([]string(nil), payload.Findings...),
-				OpenQuestions: append([]string(nil), payload.OpenQuestions...),
-				CreatedAt:     time.Now().UTC(),
-			}
-			return RunOutcome{Report: &report}
-		}
-
-		decisionCall, hasDecision, mixedDecisionCalls := pickDecisionCall(calls)
-		if hasDecision {
-			if mixedDecisionCalls {
 				if journal != nil {
-					journal.Write("decision_violation", round, map[string]any{
-						"reason": "request_decision must be sole call in the round",
+					journal.Write("decision_request", round, map[string]any{
+						"task_id":  packet.TaskID,
+						"category": packet.Category,
+						"risk":     packet.RiskLevel,
 					})
 				}
-				results := make([]tool.Result, 0, len(calls))
-				for _, call := range calls {
-					if call.Name == "request_decision" {
-						results = append(results, errorToolResult(call.ID, "request_decision must be the sole tool call in this round"))
-						continue
-					}
-					results = append(results, r.cfg.Dispatcher.Execute(ctx, call, permission))
+				if escalationCount >= r.cfg.MaxEscalations {
+					report := failedReport(brief, fmt.Sprintf("max escalations exceeded (%d)", r.cfg.MaxEscalations))
+					return RunOutcome{Report: &report}, true
+				}
+
+				outcome, results := r.routeDecision(ctx, brief, decisionCall.ID, packet, messages, round, escalationCount, journal)
+				if outcome.Report != nil || outcome.Paused != nil {
+					return outcome, true
 				}
 				logToolResults(journal, round, results)
 				messages = append(messages, tool.ResultsToMessages(r.cfg.Provider, results)...)
-				continue
+				escalationCount++
+				return RunOutcome{}, false
 			}
 
-			var packet protocol.DecisionPacket
-			if err := json.Unmarshal(decisionCall.Input, &packet); err != nil {
-				results := []tool.Result{errorToolResult(decisionCall.ID, "invalid decision packet JSON: "+err.Error())}
-				logToolResults(journal, round, results)
-				messages = append(messages, tool.ResultsToMessages(r.cfg.Provider, results)...)
-				continue
+			if progressCB != nil {
+				emitToolProgress(progressCB, calls, round, brief.TaskID)
 			}
-			if packet.TaskID == "" {
-				packet.TaskID = brief.TaskID
-			}
-			if packet.CreatedAt.IsZero() {
-				packet.CreatedAt = time.Now().UTC()
-			}
-			if err := ValidateDecisionPacket(&packet, brief); err != nil {
-				results := []tool.Result{errorToolResult(decisionCall.ID, "invalid decision packet: "+err.Error())}
-				logToolResults(journal, round, results)
-				messages = append(messages, tool.ResultsToMessages(r.cfg.Provider, results)...)
-				continue
-			}
-
-			if journal != nil {
-				journal.Write("decision_request", round, map[string]any{
-					"task_id":  packet.TaskID,
-					"category": packet.Category,
-					"risk":     packet.RiskLevel,
-				})
-			}
-			if escalationCount >= r.cfg.MaxEscalations {
-				report := failedReport(brief, fmt.Sprintf("max escalations exceeded (%d)", r.cfg.MaxEscalations))
-				return RunOutcome{Report: &report}
-			}
-
-			outcome, results := r.routeDecision(ctx, brief, decisionCall.ID, packet, messages, round, escalationCount, journal)
-			if outcome.Report != nil || outcome.Paused != nil {
-				return outcome
-			}
+			results := r.cfg.Dispatcher.ExecuteAll(ctx, calls, permission)
 			logToolResults(journal, round, results)
 			messages = append(messages, tool.ResultsToMessages(r.cfg.Provider, results)...)
-			escalationCount++
-			continue
+			return RunOutcome{}, false
+		}()
+		if shouldReturn {
+			return outcome
 		}
-
-		results := r.cfg.Dispatcher.ExecuteAll(ctx, calls, permission)
-		logToolResults(journal, round, results)
-		messages = append(messages, tool.ResultsToMessages(r.cfg.Provider, results)...)
 	}
 
 	report := partialReport(brief, fmt.Sprintf("max tool rounds exhausted (%d)", r.cfg.MaxToolRounds))
 	return RunOutcome{Report: &report}
+}
+
+func emitToolProgress(cb progress.Callback, calls []tool.Call, round int, taskID string) {
+	if cb == nil {
+		return
+	}
+	for _, call := range calls {
+		name := strings.TrimSpace(strings.ToLower(call.Name))
+		if name == "" || name == "finish_task" || name == "request_decision" {
+			continue
+		}
+		cb(progress.Event{
+			Kind:     progress.KindTool,
+			ToolName: name,
+			Round:    round,
+			TaskID:   taskID,
+		})
+		return
+	}
+}
+
+func heartbeatTicker(ctx context.Context, cb progress.Callback, round int, taskID string, interval time.Duration) {
+	if cb == nil || interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cb(progress.Event{
+				Kind:   progress.KindHeartbeat,
+				Round:  round,
+				TaskID: taskID,
+			})
+		}
+	}
 }
 
 func (r *Runtime) routeDecision(

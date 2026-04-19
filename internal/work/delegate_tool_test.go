@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/progress"
 	"github.com/longyisang/emoagent/internal/tool"
 )
 
@@ -173,4 +174,62 @@ func TestDelegateTool_HappyPathWritesJournalAndReturnsReport(t *testing.T) {
 			t.Fatalf("journal missing %s: %s", snippet, text)
 		}
 	}
+}
+
+func TestDelegateTool_EmitsProgressEndOnReport(t *testing.T) {
+	runtime := newTestRuntime(t, &scriptedLLM{
+		responses: []*llm.ChatResponse{textResp(`{"status":"completed","summary":"ok"}`)},
+	})
+	_, handler := NewDelegateTool(runtime, nil, t.TempDir(), testLogger())
+
+	var events []progress.Event
+	ctx := progress.WithCallback(context.Background(), func(event progress.Event) {
+		events = append(events, event)
+	})
+
+	input := json.RawMessage(`{"goal":"inspect config","permission_scope":"read-only"}`)
+	if _, err := handler(ctx, input); err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if !hasProgressKind(events, progress.KindEnd) {
+		t.Fatalf("events = %#v, want end event", events)
+	}
+}
+
+func TestDelegateTool_EmitsProgressPausedOnPause(t *testing.T) {
+	packetJSON := `{
+		"category":"execution_only",
+		"risk_level":"low",
+		"goal_summary":"need a technical decision",
+		"question":"pick one",
+		"why_blocked":"blocked",
+		"options":[{"id":"a","summary":"A"},{"id":"b","summary":"B"}],
+		"suggests_user_input":false
+	}`
+	runtime := newTestRuntime(t, &scriptedLLM{
+		responses: []*llm.ChatResponse{toolUseResp("call-1", "request_decision", packetJSON)},
+	})
+	_, handler := NewDelegateTool(runtime, nil, t.TempDir(), testLogger())
+
+	var events []progress.Event
+	ctx := progress.WithCallback(context.Background(), func(event progress.Event) {
+		events = append(events, event)
+	})
+
+	input := json.RawMessage(`{"goal":"inspect config","permission_scope":"read-only"}`)
+	if _, err := handler(ctx, input); err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if !hasProgressKind(events, progress.KindPaused) {
+		t.Fatalf("events = %#v, want paused event", events)
+	}
+}
+
+func hasProgressKind(events []progress.Event, target progress.EventKind) bool {
+	for _, event := range events {
+		if event.Kind == target {
+			return true
+		}
+	}
+	return false
 }

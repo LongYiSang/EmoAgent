@@ -28,6 +28,7 @@ type fakeConversationEngine struct {
 	sendContent   string
 	deltas        []string
 	history       []storage.MessageRecord
+	sendHook      func(context.Context)
 }
 
 func (f *fakeConversationEngine) StartSession(_ context.Context, personaName string) (string, error) {
@@ -50,7 +51,10 @@ func (f *fakeConversationEngine) ResumeSession(_ context.Context, sessionID stri
 	return "", false, nil
 }
 
-func (f *fakeConversationEngine) SendMessage(_ context.Context, sessionID string, persona *config.Persona, userContent string, cb func(delta string)) (string, error) {
+func (f *fakeConversationEngine) SendMessage(ctx context.Context, sessionID string, persona *config.Persona, userContent string, cb func(delta string)) (string, error) {
+	if f.sendHook != nil {
+		f.sendHook(ctx)
+	}
 	f.sendSession = sessionID
 	f.sendPersona = persona
 	f.sendContent = userContent
@@ -326,6 +330,56 @@ func TestHandlerSkipsGreetingWhenRequested(t *testing.T) {
 	}
 	if msg.Type != "pong" {
 		t.Fatalf("Type = %q, want pong (no greeting expected)", msg.Type)
+	}
+}
+
+func TestHandlerForwardsWorkProgressMessages(t *testing.T) {
+	handler, engine := newTestHandler()
+	engine.sendReply = "done"
+	engine.sendHook = func(ctx context.Context) {
+		writer := wsWriterFromContext(ctx)
+		if writer == nil {
+			t.Fatal("ws writer missing from context")
+		}
+		writer(WSMessage{Type: "work_progress", Content: "processing..."})
+		writer(WSMessage{Type: "work_progress_end"})
+	}
+
+	conn := dialTestWS(t, handler)
+	defer conn.Close(websocket.StatusNormalClosure, "bye")
+
+	var msg WSMessage
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(session_ready): %v", err)
+	}
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(greeting): %v", err)
+	}
+
+	if err := wsjson.Write(context.Background(), conn, WSMessage{Type: "message", Content: "progress please"}); err != nil {
+		t.Fatalf("Write(message): %v", err)
+	}
+
+	var types []string
+	var progressText string
+	for len(types) < 4 {
+		if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+			t.Fatalf("Read(stream): %v", err)
+		}
+		types = append(types, msg.Type)
+		if msg.Type == "work_progress" {
+			progressText = msg.Content
+		}
+	}
+
+	want := []string{"stream_start", "work_progress", "work_progress_end", "stream_end"}
+	for i := range want {
+		if types[i] != want[i] {
+			t.Fatalf("types[%d]=%q, want %q (all=%#v)", i, types[i], want[i], types)
+		}
+	}
+	if progressText != "processing..." {
+		t.Fatalf("progress text = %q, want processing...", progressText)
 	}
 }
 

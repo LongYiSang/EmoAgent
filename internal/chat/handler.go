@@ -45,6 +45,10 @@ type Handler struct {
 	logger *slog.Logger
 }
 
+type wsWriterKeyType struct{}
+
+var wsWriterCtxKey = wsWriterKeyType{}
+
 // NewHandler creates a WebSocket chat handler.
 func NewHandler(engine conversationEngine, app AppInterface, logger *slog.Logger) *Handler {
 	return &Handler{engine: engine, app: app, logger: logger}
@@ -128,7 +132,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			_, err := h.engine.SendMessage(ctx, sessionID, persona, msg.Content, func(delta string) {
+			msgCtx := withWSWriter(ctx, func(progressMsg WSMessage) {
+				if writeErr := writeWSMessage(ctx, conn, progressMsg, &writeMu); writeErr != nil {
+					if !errors.Is(ctx.Err(), context.Canceled) {
+						h.logger.Warn("ws progress write failed", "session", sessionID, "error", writeErr)
+					}
+					cancel()
+				}
+			})
+
+			_, err := h.engine.SendMessage(msgCtx, sessionID, persona, msg.Content, func(delta string) {
 				if delta == "" {
 					return
 				}
@@ -173,4 +186,19 @@ func writeWSMessage(ctx context.Context, conn *websocket.Conn, msg WSMessage, mu
 		defer mu.Unlock()
 	}
 	return wsjson.Write(ctx, conn, msg)
+}
+
+func withWSWriter(ctx context.Context, fn func(WSMessage)) context.Context {
+	if ctx == nil || fn == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, wsWriterCtxKey, fn)
+}
+
+func wsWriterFromContext(ctx context.Context) func(WSMessage) {
+	if ctx == nil {
+		return nil
+	}
+	writer, _ := ctx.Value(wsWriterCtxKey).(func(WSMessage))
+	return writer
 }

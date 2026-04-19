@@ -235,17 +235,23 @@ func (d *DB) DeleteLLMProfile(name string) error {
 
 // PersonaRecord is the DB representation of a persona.
 type PersonaRecord struct {
-	Key          string
-	Name         string
-	Description  string
-	SystemPrompt string
-	Tone         string
-	Quirks       string // JSON array
-	Greeting     string
+	Key                 string
+	Name                string
+	Description         string
+	SystemPrompt        string
+	Tone                string
+	Quirks              string // JSON array
+	Greeting            string
+	WorkProgressPhrases string // JSON object
 }
 
 // UpsertPersona inserts or updates a persona in the database.
-func (d *DB) UpsertPersona(key, name, description, systemPrompt, tone string, quirks []string, greeting string) error {
+func (d *DB) UpsertPersona(
+	key, name, description, systemPrompt, tone string,
+	quirks []string,
+	greeting string,
+	workProgressPhrases map[string][]string,
+) error {
 	if key == "" {
 		return errors.New("persona key is required")
 	}
@@ -254,9 +260,14 @@ func (d *DB) UpsertPersona(key, name, description, systemPrompt, tone string, qu
 	}
 
 	quirksJSON, _ := json.Marshal(quirks)
+	progressJSON, _ := json.Marshal(workProgressPhrases)
+	progressValue := string(progressJSON)
+	if progressValue == "" || progressValue == "null" {
+		progressValue = "{}"
+	}
 	_, err := d.db.Exec(`
-		INSERT INTO personas (key, name, description, system_prompt, tone, quirks, greeting, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+		INSERT INTO personas (key, name, description, system_prompt, tone, quirks, greeting, work_progress_phrases, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
 		ON CONFLICT(key) DO UPDATE SET
 			name = excluded.name,
 			description = excluded.description,
@@ -264,8 +275,9 @@ func (d *DB) UpsertPersona(key, name, description, systemPrompt, tone string, qu
 			tone = excluded.tone,
 			quirks = excluded.quirks,
 			greeting = excluded.greeting,
+			work_progress_phrases = excluded.work_progress_phrases,
 			updated_at = datetime('now')
-	`, key, name, description, systemPrompt, tone, string(quirksJSON), greeting)
+	`, key, name, description, systemPrompt, tone, string(quirksJSON), greeting, progressValue)
 	return err
 }
 
@@ -291,13 +303,13 @@ func (d *DB) ListPersonas() ([]string, error) {
 // GetPersona returns a persona by key, or nil when it does not exist.
 func (d *DB) GetPersona(ctx context.Context, key string) (*PersonaRecord, error) {
 	row := d.db.QueryRowContext(ctx, `
-		SELECT key, COALESCE(name, ''), COALESCE(description, ''), COALESCE(system_prompt, ''), COALESCE(tone, ''), COALESCE(quirks, ''), COALESCE(greeting, '')
+		SELECT key, COALESCE(name, ''), COALESCE(description, ''), COALESCE(system_prompt, ''), COALESCE(tone, ''), COALESCE(quirks, ''), COALESCE(greeting, ''), COALESCE(work_progress_phrases, '{}')
 		FROM personas
 		WHERE key = ?
 	`, key)
 
 	var record PersonaRecord
-	if err := row.Scan(&record.Key, &record.Name, &record.Description, &record.SystemPrompt, &record.Tone, &record.Quirks, &record.Greeting); err != nil {
+	if err := row.Scan(&record.Key, &record.Name, &record.Description, &record.SystemPrompt, &record.Tone, &record.Quirks, &record.Greeting, &record.WorkProgressPhrases); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/longyisang/emoagent/internal/progress"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/tool"
 )
@@ -68,7 +69,14 @@ func NewDelegateTool(runtime *Runtime, pending *PendingRegistry, journalDir stri
 
 		journal.Write("task_start", 0, brief)
 		outcome := runtime.Run(ctx, brief, journal)
+		progressCB := progress.CallbackFromContext(ctx)
 		if outcome.Report != nil {
+			if progressCB != nil {
+				progressCB(progress.Event{
+					Kind:   progress.KindEnd,
+					TaskID: brief.TaskID,
+				})
+			}
 			journal.Write("task_end", 0, outcome.Report)
 			output, err := json.Marshal(outcome.Report)
 			if err != nil {
@@ -89,6 +97,13 @@ func NewDelegateTool(runtime *Runtime, pending *PendingRegistry, journalDir stri
 				"task_id":  outcome.Paused.TaskID,
 				"category": outcome.Paused.Packet.Category,
 				"risk":     outcome.Paused.Packet.RiskLevel,
+			})
+		}
+		if progressCB != nil {
+			progressCB(progress.Event{
+				Kind:   progress.KindPaused,
+				Round:  outcome.Paused.Round,
+				TaskID: outcome.Paused.TaskID,
 			})
 		}
 

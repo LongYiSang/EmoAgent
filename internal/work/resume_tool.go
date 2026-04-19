@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/longyisang/emoagent/internal/progress"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/tool"
 )
@@ -90,7 +91,14 @@ func NewResumeTool(runtime *Runtime, pending *PendingRegistry, journalDir string
 		}
 
 		outcome := runtime.Resume(ctx, paused, resp, journal)
+		progressCB := progress.CallbackFromContext(ctx)
 		if outcome.Report != nil {
+			if progressCB != nil {
+				progressCB(progress.Event{
+					Kind:   progress.KindEnd,
+					TaskID: req.TaskID,
+				})
+			}
 			if journal != nil {
 				journal.Write("task_end", 0, outcome.Report)
 			}
@@ -108,6 +116,13 @@ func NewResumeTool(runtime *Runtime, pending *PendingRegistry, journalDir string
 				"task_id":  outcome.Paused.TaskID,
 				"category": outcome.Paused.Packet.Category,
 				"risk":     outcome.Paused.Packet.RiskLevel,
+			})
+		}
+		if progressCB != nil {
+			progressCB(progress.Event{
+				Kind:   progress.KindPaused,
+				Round:  outcome.Paused.Round,
+				TaskID: outcome.Paused.TaskID,
 			})
 		}
 		return json.Marshal(NeedsEmotionDecision{

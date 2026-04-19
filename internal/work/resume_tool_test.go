@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/progress"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/tool"
 )
@@ -143,5 +144,67 @@ func TestResumeTool_RequeuesWhenRuntimePausesAgain(t *testing.T) {
 	}
 	if got := pending.Take("session-1", "task-1"); got == nil {
 		t.Fatal("paused task should be requeued")
+	}
+}
+
+func TestResumeTool_EmitsProgressEndOnReport(t *testing.T) {
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			textResp(`{"status":"completed","summary":"done"}`),
+		},
+	}
+	runtime := newTestRuntime(t, client)
+	pending := NewPendingRegistry(5 * time.Minute)
+	paused := makePausedForResume(t, "task-1")
+	pending.Put("session-1", paused.TaskID, paused)
+
+	_, handler := NewResumeTool(runtime, pending, t.TempDir(), testLogger())
+	var events []progress.Event
+	ctx := progress.WithCallback(WithSessionID(context.Background(), "session-1"), func(event progress.Event) {
+		events = append(events, event)
+	})
+
+	_, err := handler(ctx, json.RawMessage(`{"task_id":"task-1","decision":"keep","reason":"best"}`))
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if !hasProgressKind(events, progress.KindEnd) {
+		t.Fatalf("events = %#v, want end event", events)
+	}
+}
+
+func TestResumeTool_EmitsProgressPausedWhenPausesAgain(t *testing.T) {
+	packetJSON := `{
+		"task_id":"task-1",
+		"category":"execution_only",
+		"risk_level":"low",
+		"goal_summary":"need a technical decision",
+		"question":"pick one",
+		"why_blocked":"blocked",
+		"options":[{"id":"a","summary":"A"},{"id":"b","summary":"B"}],
+		"suggests_user_input":false
+	}`
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			toolUseResp("call-2", "request_decision", packetJSON),
+		},
+	}
+	runtime := newTestRuntime(t, client)
+	pending := NewPendingRegistry(5 * time.Minute)
+	paused := makePausedForResume(t, "task-1")
+	pending.Put("session-1", paused.TaskID, paused)
+
+	_, handler := NewResumeTool(runtime, pending, t.TempDir(), testLogger())
+	var events []progress.Event
+	ctx := progress.WithCallback(WithSessionID(context.Background(), "session-1"), func(event progress.Event) {
+		events = append(events, event)
+	})
+
+	_, err := handler(ctx, json.RawMessage(`{"task_id":"task-1","decision":"keep","reason":"best"}`))
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if !hasProgressKind(events, progress.KindPaused) {
+		t.Fatalf("events = %#v, want paused event", events)
 	}
 }

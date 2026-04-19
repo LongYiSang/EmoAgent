@@ -100,6 +100,10 @@ func TestSavePersonaAndDeletePersonaFile(t *testing.T) {
 		Tone:         "warm",
 		Quirks:       []string{"gentle"},
 		Greeting:     "Hello",
+		WorkProgressPhrases: map[string][]string{
+			"read_file": {"看看文件"},
+			"_default":  {"处理中"},
+		},
 	}
 
 	if err := SavePersona(dir, "default", persona); err != nil {
@@ -112,6 +116,9 @@ func TestSavePersonaAndDeletePersonaFile(t *testing.T) {
 	}
 	if loaded.Name != "Emo" {
 		t.Fatalf("loaded.Name = %q, want Emo", loaded.Name)
+	}
+	if got := loaded.WorkProgressPhrases["read_file"]; len(got) != 1 || got[0] != "看看文件" {
+		t.Fatalf("loaded.WorkProgressPhrases = %#v, want read_file phrase", loaded.WorkProgressPhrases)
 	}
 
 	if err := DeletePersonaFile(dir, "default"); err != nil {

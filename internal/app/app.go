@@ -102,7 +102,7 @@ func (a *App) Init(ctx context.Context, configPath string) error {
 	a.Logger.Info("personas loaded", "count", len(personas))
 
 	for key, p := range personas {
-		if err := a.DB.UpsertPersona(key, p.Name, p.Description, p.SystemPrompt, p.Tone, p.Quirks, p.Greeting); err != nil {
+		if err := a.DB.UpsertPersona(key, p.Name, p.Description, p.SystemPrompt, p.Tone, p.Quirks, p.Greeting, p.WorkProgressPhrases); err != nil {
 			a.Logger.Warn("sync persona to db failed", "key", key, "name", p.Name, "error", err)
 		}
 	}
@@ -115,7 +115,7 @@ func (a *App) Init(ctx context.Context, configPath string) error {
 		a.mu.Unlock()
 
 		for key, p := range updated {
-			if err := a.DB.UpsertPersona(key, p.Name, p.Description, p.SystemPrompt, p.Tone, p.Quirks, p.Greeting); err != nil {
+			if err := a.DB.UpsertPersona(key, p.Name, p.Description, p.SystemPrompt, p.Tone, p.Quirks, p.Greeting, p.WorkProgressPhrases); err != nil {
 				a.Logger.Warn("sync updated persona failed", "key", key, "name", p.Name, "error", err)
 			}
 		}
@@ -304,6 +304,9 @@ func registerRoutes(mux *http.ServeMux, api *web.APIHandler, chatHandler http.Ha
 	mux.HandleFunc("POST /api/personas", api.HandleCreatePersona)
 	mux.HandleFunc("GET /api/personas/{name}", api.HandleGetPersona)
 	mux.HandleFunc("PUT /api/personas/{name}", api.HandleUpdatePersona)
+	mux.HandleFunc("GET /api/personas/{name}/progress-phrases", api.HandleGetProgressPhrases)
+	mux.HandleFunc("PUT /api/personas/{name}/progress-phrases", api.HandleUpdateProgressPhrases)
+	mux.HandleFunc("GET /api/progress-phrases/defaults", api.HandleGetProgressPhrasesDefaults)
 	mux.HandleFunc("POST /api/personas/{name}/activate", api.HandleActivatePersona)
 	mux.HandleFunc("DELETE /api/personas/{name}", api.HandleDeletePersona)
 	mux.HandleFunc("GET /api/sessions", api.HandleListSessions)
@@ -562,7 +565,7 @@ func (a *App) CreatePersona(key string, p *config.Persona) error {
 	if err := config.SavePersona(a.Config.Personas.Dir, key, next); err != nil {
 		return fmt.Errorf("save persona file: %w", err)
 	}
-	if err := a.DB.UpsertPersona(key, next.Name, next.Description, next.SystemPrompt, next.Tone, next.Quirks, next.Greeting); err != nil {
+	if err := a.DB.UpsertPersona(key, next.Name, next.Description, next.SystemPrompt, next.Tone, next.Quirks, next.Greeting, next.WorkProgressPhrases); err != nil {
 		return fmt.Errorf("upsert persona: %w", err)
 	}
 	a.Personas[key] = next
@@ -592,7 +595,44 @@ func (a *App) UpdatePersona(key string, p *config.Persona) error {
 	if err := config.SavePersona(a.Config.Personas.Dir, key, next); err != nil {
 		return fmt.Errorf("save persona file: %w", err)
 	}
-	if err := a.DB.UpsertPersona(key, next.Name, next.Description, next.SystemPrompt, next.Tone, next.Quirks, next.Greeting); err != nil {
+	if err := a.DB.UpsertPersona(key, next.Name, next.Description, next.SystemPrompt, next.Tone, next.Quirks, next.Greeting, next.WorkProgressPhrases); err != nil {
+		return fmt.Errorf("upsert persona: %w", err)
+	}
+	a.Personas[key] = next
+	return nil
+}
+
+// GetProgressPhrases returns a copy of work progress phrases for one persona.
+func (a *App) GetProgressPhrases(key string) (map[string][]string, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	persona, exists := a.Personas[key]
+	if !exists || persona == nil {
+		return nil, ErrPersonaNotFound
+	}
+	return cloneProgressPhrases(persona.WorkProgressPhrases), nil
+}
+
+// UpdateProgressPhrases updates one persona's work progress phrase map.
+func (a *App) UpdateProgressPhrases(key string, phrases map[string][]string) error {
+	if key == "" {
+		return fmt.Errorf("persona key is required")
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	current, exists := a.Personas[key]
+	if !exists || current == nil {
+		return ErrPersonaNotFound
+	}
+
+	next := clonePersona(current)
+	next.WorkProgressPhrases = cloneProgressPhrases(phrases)
+	if err := config.SavePersona(a.Config.Personas.Dir, key, next); err != nil {
+		return fmt.Errorf("save persona file: %w", err)
+	}
+	if err := a.DB.UpsertPersona(key, next.Name, next.Description, next.SystemPrompt, next.Tone, next.Quirks, next.Greeting, next.WorkProgressPhrases); err != nil {
 		return fmt.Errorf("upsert persona: %w", err)
 	}
 	a.Personas[key] = next
@@ -958,6 +998,9 @@ func clonePersona(p *config.Persona) *config.Persona {
 	if p.Quirks != nil {
 		cp.Quirks = append([]string(nil), p.Quirks...)
 	}
+	if p.WorkProgressPhrases != nil {
+		cp.WorkProgressPhrases = cloneProgressPhrases(p.WorkProgressPhrases)
+	}
 	return &cp
 }
 
@@ -965,6 +1008,17 @@ func clonePersonaMap(src map[string]*config.Persona) map[string]*config.Persona 
 	dst := make(map[string]*config.Persona, len(src))
 	for key, persona := range src {
 		dst[key] = clonePersona(persona)
+	}
+	return dst
+}
+
+func cloneProgressPhrases(src map[string][]string) map[string][]string {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string][]string, len(src))
+	for key, phrases := range src {
+		dst[key] = append([]string(nil), phrases...)
 	}
 	return dst
 }

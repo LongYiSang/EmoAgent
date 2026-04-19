@@ -21,6 +21,7 @@ type fakeAdminApp struct {
 	profiles            []config.LLMProfile
 	active              *config.LLMProfile
 	personas            map[string]*config.Persona
+	progressPhrases     map[string]map[string][]string
 	sessions            []storage.SessionSummary
 	sessionDetail       *storage.SessionRecord
 	sessionMessages     []storage.MessageRecord
@@ -39,6 +40,8 @@ type fakeAdminApp struct {
 	lastSessionPersona  string
 	lastSessionLimit    int
 	lastDeleteSessionID string
+	lastPhrasesKey      string
+	lastPhrasesValue    map[string][]string
 }
 
 func (f *fakeAdminApp) ListLLMProfiles() ([]config.LLMProfile, error) {
@@ -88,6 +91,32 @@ func (f *fakeAdminApp) DeletePersona(key string) error                    { retu
 func (f *fakeAdminApp) ActivatePersona(key string) error {
 	f.lastPersonaActivate = key
 	return f.activatePersonaErr
+}
+func (f *fakeAdminApp) GetProgressPhrases(key string) (map[string][]string, error) {
+	if f.progressPhrases == nil {
+		return map[string][]string{}, nil
+	}
+	phrases, ok := f.progressPhrases[key]
+	if !ok {
+		return nil, apperrors.ErrPersonaNotFound
+	}
+	out := make(map[string][]string, len(phrases))
+	for k, v := range phrases {
+		out[k] = append([]string(nil), v...)
+	}
+	return out, nil
+}
+func (f *fakeAdminApp) UpdateProgressPhrases(key string, phrases map[string][]string) error {
+	f.lastPhrasesKey = key
+	f.lastPhrasesValue = make(map[string][]string, len(phrases))
+	for k, v := range phrases {
+		f.lastPhrasesValue[k] = append([]string(nil), v...)
+	}
+	if f.progressPhrases == nil {
+		f.progressPhrases = map[string]map[string][]string{}
+	}
+	f.progressPhrases[key] = f.lastPhrasesValue
+	return nil
 }
 func (f *fakeAdminApp) GetDefaultPersonaName() string { return f.defaultKey }
 func (f *fakeAdminApp) ListSessions(_ context.Context, persona string, limit int) ([]storage.SessionSummary, error) {
@@ -330,5 +359,112 @@ func TestHandleDeleteSessionMapsNotFound(t *testing.T) {
 	}
 	if app.lastDeleteSessionID != "missing" {
 		t.Fatalf("lastDeleteSessionID = %q, want missing", app.lastDeleteSessionID)
+	}
+}
+
+func TestHandleGetPersonaIncludesWorkProgressPhrases(t *testing.T) {
+	app := &fakeAdminApp{
+		personas: map[string]*config.Persona{
+			"default": {
+				Name: "default",
+				WorkProgressPhrases: map[string][]string{
+					"read_file": {"看看文件"},
+				},
+			},
+		},
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/personas/default", nil)
+	req.SetPathValue("name", "default")
+	rec := httptest.NewRecorder()
+	handler.HandleGetPersona(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	raw, ok := resp["work_progress_phrases"].(map[string]any)
+	if !ok {
+		t.Fatalf("work_progress_phrases missing: %#v", resp)
+	}
+	readFile, ok := raw["read_file"].([]any)
+	if !ok || len(readFile) != 1 || readFile[0] != "看看文件" {
+		t.Fatalf("work_progress_phrases.read_file = %#v, want [看看文件]", raw["read_file"])
+	}
+}
+
+func TestHandleGetProgressPhrases(t *testing.T) {
+	app := &fakeAdminApp{
+		progressPhrases: map[string]map[string][]string{
+			"default": {
+				"read_file": {"看看文件"},
+				"_default":  {"处理中"},
+			},
+		},
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/personas/default/progress-phrases", nil)
+	req.SetPathValue("name", "default")
+	rec := httptest.NewRecorder()
+	handler.HandleGetProgressPhrases(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var resp map[string]map[string][]string
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if got := resp["phrases"]["read_file"]; len(got) != 1 || got[0] != "看看文件" {
+		t.Fatalf("phrases.read_file = %#v, want [看看文件]", got)
+	}
+}
+
+func TestHandleUpdateProgressPhrases(t *testing.T) {
+	app := &fakeAdminApp{}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	body := bytes.NewBufferString(`{"phrases":{"read_file":["看看文件"],"_default":["处理中"]}}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/personas/default/progress-phrases", body)
+	req.SetPathValue("name", "default")
+	rec := httptest.NewRecorder()
+	handler.HandleUpdateProgressPhrases(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if app.lastPhrasesKey != "default" {
+		t.Fatalf("lastPhrasesKey = %q, want default", app.lastPhrasesKey)
+	}
+	if got := app.lastPhrasesValue["read_file"]; len(got) != 1 || got[0] != "看看文件" {
+		t.Fatalf("lastPhrasesValue.read_file = %#v, want [看看文件]", got)
+	}
+}
+
+func TestHandleGetDefaultProgressPhrases(t *testing.T) {
+	app := &fakeAdminApp{}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/progress-phrases/defaults", nil)
+	rec := httptest.NewRecorder()
+	handler.HandleGetProgressPhrasesDefaults(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var resp map[string]map[string][]string
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(resp["phrases"]) == 0 {
+		t.Fatalf("phrases should not be empty: %#v", resp)
 	}
 }

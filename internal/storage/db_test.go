@@ -45,9 +45,10 @@ func TestOpenAndMigrate(t *testing.T) {
 	defer rows.Close()
 
 	var (
-		hasKeyColumn  bool
-		hasNameColumn bool
-		keyIsPK       bool
+		hasKeyColumn          bool
+		hasNameColumn         bool
+		hasWorkProgressColumn bool
+		keyIsPK               bool
 	)
 	for rows.Next() {
 		var (
@@ -67,6 +68,8 @@ func TestOpenAndMigrate(t *testing.T) {
 			keyIsPK = pk == 1
 		case "name":
 			hasNameColumn = true
+		case "work_progress_phrases":
+			hasWorkProgressColumn = true
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -77,6 +80,9 @@ func TestOpenAndMigrate(t *testing.T) {
 	}
 	if !hasNameColumn {
 		t.Fatal("personas table missing name column")
+	}
+	if !hasWorkProgressColumn {
+		t.Fatal("personas table missing work_progress_phrases column")
 	}
 	if !keyIsPK {
 		t.Fatal("personas.key should be the primary key")
@@ -138,7 +144,7 @@ func TestRuntimeConfig(t *testing.T) {
 func TestUpsertPersona(t *testing.T) {
 	db := testDB(t)
 
-	err := db.UpsertPersona("test", "Display Name", "desc", "prompt", "warm", []string{"quirk1"}, "hello")
+	err := db.UpsertPersona("test", "Display Name", "desc", "prompt", "warm", []string{"quirk1"}, "hello", nil)
 	if err != nil {
 		t.Fatalf("UpsertPersona: %v", err)
 	}
@@ -155,7 +161,7 @@ func TestUpsertPersona(t *testing.T) {
 func TestGetAndDeletePersona(t *testing.T) {
 	db := testDB(t)
 
-	if err := db.UpsertPersona("test", "Display Name", "desc", "prompt", "warm", []string{"quirk1"}, "hello"); err != nil {
+	if err := db.UpsertPersona("test", "Display Name", "desc", "prompt", "warm", []string{"quirk1"}, "hello", nil); err != nil {
 		t.Fatalf("UpsertPersona: %v", err)
 	}
 
@@ -172,6 +178,9 @@ func TestGetAndDeletePersona(t *testing.T) {
 	if record.Name != "Display Name" {
 		t.Fatalf("record.Name = %q, want Display Name", record.Name)
 	}
+	if record.WorkProgressPhrases != "{}" {
+		t.Fatalf("record.WorkProgressPhrases = %q, want {}", record.WorkProgressPhrases)
+	}
 
 	if err := db.DeletePersona(context.Background(), "test"); err != nil {
 		t.Fatalf("DeletePersona: %v", err)
@@ -183,6 +192,34 @@ func TestGetAndDeletePersona(t *testing.T) {
 	}
 	if record != nil {
 		t.Fatalf("GetPersona(after delete) = %#v, want nil", record)
+	}
+}
+
+func TestUpsertPersonaWorkProgressPhrasesRoundTrip(t *testing.T) {
+	db := testDB(t)
+
+	phrases := map[string][]string{
+		"read_file": {"看看文件"},
+		"_default":  {"处理中"},
+	}
+	if err := db.UpsertPersona("test", "Display Name", "desc", "prompt", "warm", []string{"quirk1"}, "hello", phrases); err != nil {
+		t.Fatalf("UpsertPersona: %v", err)
+	}
+
+	record, err := db.GetPersona(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("GetPersona: %v", err)
+	}
+	if record == nil {
+		t.Fatal("GetPersona returned nil")
+	}
+
+	var decoded map[string][]string
+	if err := json.Unmarshal([]byte(record.WorkProgressPhrases), &decoded); err != nil {
+		t.Fatalf("Unmarshal(WorkProgressPhrases): %v", err)
+	}
+	if len(decoded["read_file"]) != 1 || decoded["read_file"][0] != "看看文件" {
+		t.Fatalf("decoded = %#v, want read_file phrase", decoded)
 	}
 }
 
