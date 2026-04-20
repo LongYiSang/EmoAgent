@@ -78,6 +78,22 @@ type DecisionPacket struct {
 	CreatedAt            time.Time          `json:"created_at"`
 }
 
+// DecisionSummary is the Emotion-facing persisted view of one paused decision.
+type DecisionSummary struct {
+	TaskID          string           `json:"task_id"`
+	Status          string           `json:"status"`
+	FailClosed      bool             `json:"fail_closed"`
+	Category        string           `json:"category"`
+	RiskLevel       string           `json:"risk_level"`
+	GoalSummary     string           `json:"goal_summary"`
+	Question        string           `json:"question"`
+	Options         []DecisionOption `json:"options,omitempty"`
+	Report          *TaskReport      `json:"report,omitempty"`
+	CreatedAt       string           `json:"created_at"`
+	StatusEnteredAt string           `json:"status_entered_at"`
+	Claimable       bool             `json:"claimable"`
+}
+
 // DecisionRequest is an escalation from Work to Emotion.
 //
 // Deprecated: superseded by DecisionPacket. Retained for reference only;

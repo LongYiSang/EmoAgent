@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -37,6 +38,18 @@ func TestDefaultConfig(t *testing.T) {
 	}
 	if cfg.Work.JournalDir != "./logs/work" {
 		t.Errorf("default work.journal_dir = %q, want ./logs/work", cfg.Work.JournalDir)
+	}
+	if cfg.Work.SoftTTL != 30*time.Minute {
+		t.Errorf("default work.soft_ttl = %v, want 30m", cfg.Work.SoftTTL)
+	}
+	if cfg.Work.HardTTL != time.Hour {
+		t.Errorf("default work.hard_ttl = %v, want 1h", cfg.Work.HardTTL)
+	}
+	if cfg.Work.ArchiveTTL != 24*time.Hour {
+		t.Errorf("default work.archive_ttl = %v, want 24h", cfg.Work.ArchiveTTL)
+	}
+	if cfg.Work.ResumeClaimTTL != 10*time.Minute {
+		t.Errorf("default work.resume_claim_ttl = %v, want 10m", cfg.Work.ResumeClaimTTL)
 	}
 }
 
@@ -141,6 +154,43 @@ llm_profiles:
 	}
 	if cfg.Work.JournalDir != "./logs/work" {
 		t.Errorf("work.journal_dir = %q, want ./logs/work", cfg.Work.JournalDir)
+	}
+}
+
+func TestWorkConfigApplyDefaults_PausedPersistence(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Work.SoftTTL != 30*time.Minute {
+		t.Fatalf("SoftTTL = %v, want 30m", cfg.Work.SoftTTL)
+	}
+	if cfg.Work.HardTTL != time.Hour {
+		t.Fatalf("HardTTL = %v, want 1h", cfg.Work.HardTTL)
+	}
+	if cfg.Work.ArchiveTTL != 24*time.Hour {
+		t.Fatalf("ArchiveTTL = %v, want 24h", cfg.Work.ArchiveTTL)
+	}
+	if cfg.Work.ResumeClaimTTL != 10*time.Minute {
+		t.Fatalf("ResumeClaimTTL = %v, want 10m", cfg.Work.ResumeClaimTTL)
+	}
+
+	cfg = DefaultConfig()
+	cfg.Work.PendingDecisionTTL = 45 * time.Minute
+	cfg.Work.SoftTTL = 0
+	cfg.Work.HardTTL = 0
+	cfg.Work.ArchiveTTL = 0
+	cfg.Work.ResumeClaimTTL = 0
+	cfg.Work.ApplyDefaults()
+
+	if cfg.Work.SoftTTL != 45*time.Minute {
+		t.Fatalf("SoftTTL fallback = %v, want 45m from pending_decision_ttl", cfg.Work.SoftTTL)
+	}
+	if cfg.Work.HardTTL != time.Hour {
+		t.Fatalf("HardTTL after ApplyDefaults = %v, want 1h", cfg.Work.HardTTL)
+	}
+	if cfg.Work.ArchiveTTL != 24*time.Hour {
+		t.Fatalf("ArchiveTTL after ApplyDefaults = %v, want 24h", cfg.Work.ArchiveTTL)
+	}
+	if cfg.Work.ResumeClaimTTL != 10*time.Minute {
+		t.Fatalf("ResumeClaimTTL after ApplyDefaults = %v, want 10m", cfg.Work.ResumeClaimTTL)
 	}
 }
 

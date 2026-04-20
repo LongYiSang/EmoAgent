@@ -233,16 +233,14 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 		state = nextState
 	}
 
-	var pendingDecisions []protocol.DecisionPacket
+	var pendingDecisions []protocol.DecisionSummary
 	if pending != nil {
-		for _, paused := range pending.List(sessionID) {
-			pendingDecisions = append(pendingDecisions, work.CompactPacket(paused.Packet, 4000))
-		}
+		pendingDecisions = append(pendingDecisions, pending.ListInjectable(sessionID)...)
 	}
 
 	var assembled contextutil.AssembledContext
 	if len(pendingDecisions) > 0 {
-		assembled, err = contextutil.BuildEmotionContextWithPending(persona, history, state, pendingDecisions, contextCfg, env)
+		assembled, err = contextutil.BuildEmotionContextWithPendingSummaries(persona, history, state, pendingDecisions, contextCfg, env)
 	} else {
 		assembled, err = contextutil.BuildEmotionContextWithState(persona, history, state, contextCfg, env)
 	}

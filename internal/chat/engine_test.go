@@ -1076,7 +1076,12 @@ func TestEnginePendingDecisionChainAcrossTurns(t *testing.T) {
 
 	registry := tool.NewRegistry()
 	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, logger)
-	pending := work.NewPendingRegistry(time.Hour)
+	pending := work.NewPendingRegistry(db.SqlDB(), logger, work.PendingRegistryConfig{
+		SoftTTL:        time.Hour,
+		HardTTL:        2 * time.Hour,
+		ArchiveTTL:     24 * time.Hour,
+		ResumeClaimTTL: 10 * time.Minute,
+	})
 
 	var delegateSessionID string
 	var resumeSessionID string
@@ -1138,14 +1143,21 @@ func TestEnginePendingDecisionChainAcrossTurns(t *testing.T) {
 		if req.Decision != "confirm_delete" {
 			t.Fatalf("resume_work decision = %q, want confirm_delete", req.Decision)
 		}
-		_ = pending.Take(resumeSessionID, req.TaskID)
-		return json.Marshal(protocol.TaskReport{
+		claim := pending.ClaimForResume(resumeSessionID, req.TaskID)
+		report := protocol.TaskReport{
 			TaskID:    req.TaskID,
 			Status:    "completed",
 			Goal:      "删除 docs/todo 下 [finish] 文件",
 			Summary:   "删除完成",
 			CreatedAt: time.Now().UTC(),
-		})
+		}
+		if err := pending.FinalizeResolved(resumeSessionID, req.TaskID, claim.ClaimID, protocol.DecisionResponse{
+			TaskID:   req.TaskID,
+			Decision: req.Decision,
+		}, &report); err != nil {
+			return nil, err
+		}
+		return json.Marshal(report)
 	})
 
 	engine := NewEngine(EngineConfig{
@@ -1238,7 +1250,7 @@ func TestEnginePendingDecisionChainAcrossTurns(t *testing.T) {
 		}
 	}
 
-	if got := pending.List(sessionID); len(got) != 0 {
+	if got := pending.ListInjectable(sessionID); len(got) != 0 {
 		t.Fatalf("pending decisions should be consumed after resume, got %d", len(got))
 	}
 }

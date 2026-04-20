@@ -62,7 +62,12 @@ func BuildEmotionContextWithPending(persona *config.Persona, history []storage.M
 	return buildEmotionContext(persona, history, state, nil, pendingDecisions, cfg, env)
 }
 
-func buildEmotionContext(persona *config.Persona, history []storage.MessageRecord, state *ContextState, toolDigests []ToolDigest, pendingDecisions []protocol.DecisionPacket, cfg config.ContextConfig, env runtimeenv.Facts) (AssembledContext, error) {
+// BuildEmotionContextWithPendingSummaries assembles context and injects persisted decision summaries.
+func BuildEmotionContextWithPendingSummaries(persona *config.Persona, history []storage.MessageRecord, state *ContextState, pendingSummaries []protocol.DecisionSummary, cfg config.ContextConfig, env runtimeenv.Facts) (AssembledContext, error) {
+	return buildEmotionContext(persona, history, state, nil, pendingSummaries, cfg, env)
+}
+
+func buildEmotionContext(persona *config.Persona, history []storage.MessageRecord, state *ContextState, toolDigests []ToolDigest, pendingDecisions any, cfg config.ContextConfig, env runtimeenv.Facts) (AssembledContext, error) {
 	if persona == nil {
 		return AssembledContext{}, fmt.Errorf("persona is required")
 	}
@@ -104,7 +109,7 @@ func buildEmotionContext(persona *config.Persona, history []storage.MessageRecor
 	}, nil
 }
 
-func buildEmotionSystemPrompt(base string, pendingDecisions []protocol.DecisionPacket, env runtimeenv.Facts) string {
+func buildEmotionSystemPrompt(base string, pendingDecisions any, env runtimeenv.Facts) string {
 	var result string
 	if base == "" {
 		result = delegationGuideline
@@ -114,10 +119,22 @@ func buildEmotionSystemPrompt(base string, pendingDecisions []protocol.DecisionP
 	if env.OS != "" {
 		result += "\n\nExecution environment: " + env.DisplayOS() + "."
 	}
-	if len(pendingDecisions) == 0 {
+	switch items := pendingDecisions.(type) {
+	case nil:
+		return result
+	case []protocol.DecisionPacket:
+		if len(items) == 0 {
+			return result
+		}
+		return result + "\n\n" + buildResumeNote(items)
+	case []protocol.DecisionSummary:
+		if len(items) == 0 {
+			return result
+		}
+		return result + "\n\n" + buildResumeSummaryNote(items)
+	default:
 		return result
 	}
-	return result + "\n\n" + buildResumeNote(pendingDecisions)
 }
 
 func composeEmotionMessages(state *ContextState, toolDigests []ToolDigest, recentMessages []llm.Message) ([]llm.Message, error) {
@@ -234,6 +251,37 @@ func buildResumeNote(packets []protocol.DecisionPacket) string {
 		if p.RecommendedOption != "" {
 			fmt.Fprintf(&b, "Work recommends: %s — %s\n\n", p.RecommendedOption, p.RecommendationReason)
 		}
+	}
+
+	b.WriteString("Action: Determine the decision and call resume_work with task_id, decision, and reason.")
+	return b.String()
+}
+
+func buildResumeSummaryNote(summaries []protocol.DecisionSummary) string {
+	var b strings.Builder
+	b.WriteString("## Pending Decision(s) Resume Note\n\n")
+	b.WriteString("The following Work task(s) are paused waiting for your decision.\n\n")
+
+	for i, s := range summaries {
+		if i > 0 {
+			b.WriteString("---\n\n")
+		}
+		fmt.Fprintf(&b, "Task: %s\n", s.TaskID)
+		fmt.Fprintf(&b, "Status: %s\n", s.Status)
+		fmt.Fprintf(&b, "Category: %s | Risk: %s\n", s.Category, s.RiskLevel)
+		fmt.Fprintf(&b, "Goal: %s\n", s.GoalSummary)
+		fmt.Fprintf(&b, "Question: %s\n", s.Question)
+		fmt.Fprintf(&b, "Claimable: %t\n", s.Claimable)
+		if len(s.Options) > 0 {
+			b.WriteString("Options:\n")
+			for _, opt := range s.Options {
+				fmt.Fprintf(&b, "- %s: %s\n", opt.ID, opt.Summary)
+			}
+		}
+		if s.Report != nil && s.Report.Summary != "" {
+			fmt.Fprintf(&b, "\nReport: %s\n", s.Report.Summary)
+		}
+		b.WriteString("\n")
 	}
 
 	b.WriteString("Action: Determine the decision and call resume_work with task_id, decision, and reason.")

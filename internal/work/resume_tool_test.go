@@ -40,7 +40,7 @@ func TestResumeTool_HappyPathReturnsTaskReport(t *testing.T) {
 		},
 	}
 	runtime := newTestRuntime(t, client)
-	pending := NewPendingRegistry(5 * time.Minute)
+	pending := newSQLitePendingRegistry(t)
 	paused := makePausedForResume(t, "task-1")
 	pending.Put("session-1", paused.TaskID, paused)
 
@@ -58,14 +58,15 @@ func TestResumeTool_HappyPathReturnsTaskReport(t *testing.T) {
 	if report.Status != "completed" {
 		t.Fatalf("status = %q, want completed", report.Status)
 	}
-	if got := pending.Take("session-1", "task-1"); got != nil {
-		t.Fatalf("pending should be empty after completion, got %#v", got)
+	got := pending.ClaimForResume("session-1", "task-1")
+	if got.PausedWork != nil || got.FinalState != "resolved" {
+		t.Fatalf("claim after completion = %#v, want final_state=resolved", got)
 	}
 }
 
 func TestResumeTool_SchemaRejectsRemovedStyleDelta(t *testing.T) {
 	runtime := newTestRuntime(t, &scriptedLLM{})
-	pending := NewPendingRegistry(5 * time.Minute)
+	pending := newSQLitePendingRegistry(t)
 
 	spec, _ := NewResumeTool(runtime, pending, t.TempDir(), testLogger())
 	input := json.RawMessage(`{"task_id":"task-1","decision":"keep","style_delta":"concise"}`)
@@ -77,7 +78,7 @@ func TestResumeTool_SchemaRejectsRemovedStyleDelta(t *testing.T) {
 
 func TestResumeTool_TaskNotFoundReturnsExpired(t *testing.T) {
 	runtime := newTestRuntime(t, &scriptedLLM{})
-	pending := NewPendingRegistry(5 * time.Minute)
+	pending := newSQLitePendingRegistry(t)
 	_, handler := NewResumeTool(runtime, pending, t.TempDir(), testLogger())
 
 	raw, err := handler(WithSessionID(context.Background(), "session-1"), json.RawMessage(`{"task_id":"missing","decision":"x"}`))
@@ -92,11 +93,14 @@ func TestResumeTool_TaskNotFoundReturnsExpired(t *testing.T) {
 	if envelope["status"] != "expired" {
 		t.Fatalf("status = %q, want expired", envelope["status"])
 	}
+	if envelope["final_state"] != "missing" {
+		t.Fatalf("final_state = %q, want missing", envelope["final_state"])
+	}
 }
 
 func TestResumeTool_HandlerRejectsRemovedStyleDeltaField(t *testing.T) {
 	runtime := newTestRuntime(t, &scriptedLLM{})
-	pending := NewPendingRegistry(5 * time.Minute)
+	pending := newSQLitePendingRegistry(t)
 	paused := makePausedForResume(t, "task-1")
 	pending.Put("session-1", paused.TaskID, paused)
 
@@ -124,7 +128,7 @@ func TestResumeTool_RequeuesWhenRuntimePausesAgain(t *testing.T) {
 		},
 	}
 	runtime := newTestRuntime(t, client)
-	pending := NewPendingRegistry(5 * time.Minute)
+	pending := newSQLitePendingRegistry(t)
 	paused := makePausedForResume(t, "task-1")
 	pending.Put("session-1", paused.TaskID, paused)
 
@@ -142,8 +146,8 @@ func TestResumeTool_RequeuesWhenRuntimePausesAgain(t *testing.T) {
 	if envelope.Status != "needs_emotion_decision" {
 		t.Fatalf("status = %q, want needs_emotion_decision", envelope.Status)
 	}
-	if got := pending.Take("session-1", "task-1"); got == nil {
-		t.Fatal("paused task should be requeued")
+	if got := pending.ListInjectable("session-1"); len(got) != 1 || got[0].TaskID != "task-1" {
+		t.Fatalf("ListInjectable = %#v, want requeued task", got)
 	}
 }
 
@@ -154,7 +158,7 @@ func TestResumeTool_EmitsProgressEndOnReport(t *testing.T) {
 		},
 	}
 	runtime := newTestRuntime(t, client)
-	pending := NewPendingRegistry(5 * time.Minute)
+	pending := newSQLitePendingRegistry(t)
 	paused := makePausedForResume(t, "task-1")
 	pending.Put("session-1", paused.TaskID, paused)
 
@@ -190,7 +194,7 @@ func TestResumeTool_EmitsProgressPausedWhenPausesAgain(t *testing.T) {
 		},
 	}
 	runtime := newTestRuntime(t, client)
-	pending := NewPendingRegistry(5 * time.Minute)
+	pending := newSQLitePendingRegistry(t)
 	paused := makePausedForResume(t, "task-1")
 	pending.Put("session-1", paused.TaskID, paused)
 
@@ -206,5 +210,28 @@ func TestResumeTool_EmitsProgressPausedWhenPausesAgain(t *testing.T) {
 	}
 	if !hasProgressKind(events, progress.KindPaused) {
 		t.Fatalf("events = %#v, want paused event", events)
+	}
+}
+
+func TestResumeTool_ExpiredRowReturnsFinalState(t *testing.T) {
+	runtime := newTestRuntime(t, &scriptedLLM{})
+	pending := newSQLitePendingRegistryWithTTLs(t, 5*time.Millisecond, 10*time.Millisecond, time.Hour, 10*time.Millisecond)
+	paused := makePausedForResume(t, "task-1")
+	pending.Put("session-1", paused.TaskID, paused)
+	time.Sleep(15 * time.Millisecond)
+	_ = pending.ExpireOnce()
+
+	_, handler := NewResumeTool(runtime, pending, t.TempDir(), testLogger())
+	raw, err := handler(WithSessionID(context.Background(), "session-1"), json.RawMessage(`{"task_id":"task-1","decision":"keep","reason":"best"}`))
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+
+	var envelope map[string]string
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if envelope["status"] != "expired" || envelope["final_state"] != "expired_open" {
+		t.Fatalf("envelope = %#v, want expired/expired_open", envelope)
 	}
 }

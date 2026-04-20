@@ -131,6 +131,10 @@ type WorkConfig struct {
 	JournalDir               string        `yaml:"journal_dir"`
 	MaxEscalationsPerTask    int           `yaml:"max_escalations_per_task"`
 	PendingDecisionTTL       time.Duration `yaml:"pending_decision_ttl"`
+	SoftTTL                  time.Duration `yaml:"soft_ttl"`
+	HardTTL                  time.Duration `yaml:"hard_ttl"`
+	ArchiveTTL               time.Duration `yaml:"archive_ttl"`
+	ResumeClaimTTL           time.Duration `yaml:"resume_claim_ttl"`
 	DeciderCleanupInterval   time.Duration `yaml:"decider_cleanup_interval"`
 	PendingSnapshotMaxTokens int           `yaml:"pending_snapshot_max_tokens"`
 }
@@ -153,6 +157,22 @@ func (w *WorkConfig) ApplyDefaults() {
 	}
 	if w.PendingDecisionTTL == 0 {
 		w.PendingDecisionTTL = 30 * time.Minute
+	}
+	if w.SoftTTL == 0 {
+		if w.PendingDecisionTTL > 0 {
+			w.SoftTTL = w.PendingDecisionTTL
+		} else {
+			w.SoftTTL = 30 * time.Minute
+		}
+	}
+	if w.HardTTL == 0 {
+		w.HardTTL = time.Hour
+	}
+	if w.ArchiveTTL == 0 {
+		w.ArchiveTTL = 24 * time.Hour
+	}
+	if w.ResumeClaimTTL == 0 {
+		w.ResumeClaimTTL = 10 * time.Minute
 	}
 	if w.DeciderCleanupInterval == 0 {
 		w.DeciderCleanupInterval = 5 * time.Minute
@@ -192,6 +212,10 @@ func DefaultConfig() *Config {
 			JournalDir:               "./logs/work",
 			MaxEscalationsPerTask:    3,
 			PendingDecisionTTL:       30 * time.Minute,
+			SoftTTL:                  30 * time.Minute,
+			HardTTL:                  time.Hour,
+			ArchiveTTL:               24 * time.Hour,
+			ResumeClaimTTL:           10 * time.Minute,
 			DeciderCleanupInterval:   5 * time.Minute,
 			PendingSnapshotMaxTokens: 60000,
 		},
@@ -282,6 +306,18 @@ func (c *Config) Validate() error {
 		if c.WebSearch.APIKeyEnv == "" {
 			return fmt.Errorf("websearch.api_key_env is required when websearch is enabled")
 		}
+	}
+	if c.Work.SoftTTL <= 0 {
+		return fmt.Errorf("work.soft_ttl must be > 0")
+	}
+	if c.Work.HardTTL <= c.Work.SoftTTL {
+		return fmt.Errorf("work.hard_ttl must be > work.soft_ttl")
+	}
+	if c.Work.ArchiveTTL <= 0 {
+		return fmt.Errorf("work.archive_ttl must be > 0")
+	}
+	if c.Work.ResumeClaimTTL <= 0 {
+		return fmt.Errorf("work.resume_claim_ttl must be > 0")
 	}
 	return nil
 }

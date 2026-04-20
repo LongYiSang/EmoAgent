@@ -29,7 +29,7 @@ func TestOpenAndMigrate(t *testing.T) {
 	db := testDB(t)
 
 	// Verify tables exist by querying them.
-	tables := []string{"sessions", "messages", "personas", "config_runtime", "llm_profiles", "schema_version"}
+	tables := []string{"sessions", "messages", "personas", "config_runtime", "llm_profiles", "schema_version", "pending_decisions", "archived_decisions"}
 	for _, table := range tables {
 		var name string
 		err := db.SqlDB().QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&name)
@@ -86,6 +86,18 @@ func TestOpenAndMigrate(t *testing.T) {
 	}
 	if !keyIsPK {
 		t.Fatal("personas.key should be the primary key")
+	}
+}
+
+func TestOpenAndMigrate_CreatesPendingDecisionTables(t *testing.T) {
+	db := testDB(t)
+
+	for _, table := range []string{"pending_decisions", "archived_decisions"} {
+		var name string
+		err := db.SqlDB().QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&name)
+		if err != nil {
+			t.Fatalf("table %q not found: %v", table, err)
+		}
 	}
 }
 

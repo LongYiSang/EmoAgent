@@ -186,7 +186,12 @@ func (a *App) Run(ctx context.Context) error {
 		if err != nil {
 			a.Logger.Warn("work runtime disabled", "error", err)
 		} else {
-			pendingRegistry = work.NewPendingRegistry(cfg.Work.PendingDecisionTTL)
+			pendingRegistry = work.NewPendingRegistry(a.DB.SqlDB(), a.Logger, work.PendingRegistryConfig{
+				SoftTTL:        cfg.Work.SoftTTL,
+				HardTTL:        cfg.Work.HardTTL,
+				ArchiveTTL:     cfg.Work.ArchiveTTL,
+				ResumeClaimTTL: cfg.Work.ResumeClaimTTL,
+			})
 			cleanupInterval := cfg.Work.DeciderCleanupInterval
 			if cleanupInterval <= 0 {
 				cleanupInterval = 5 * time.Minute
@@ -201,6 +206,9 @@ func (a *App) Run(ctx context.Context) error {
 					case <-ticker.C:
 						if n := pendingRegistry.ExpireOnce(); n > 0 {
 							a.Logger.Info("expired pending work decisions", "count", n)
+						}
+						if n := pendingRegistry.ArchiveOnce(); n > 0 {
+							a.Logger.Info("archived pending work decisions", "count", n)
 						}
 					}
 				}
@@ -232,6 +240,10 @@ func (a *App) Run(ctx context.Context) error {
 			if _, ok := a.toolRegistry.GetSpec("resume_work"); !ok {
 				resumeSpec, resumeHandler := work.NewResumeTool(workRuntime, pendingRegistry, cfg.Work.JournalDir, a.Logger)
 				a.toolRegistry.Register(resumeSpec, resumeHandler)
+			}
+			if _, ok := a.toolRegistry.GetSpec("list_pending_decisions"); !ok {
+				spec, handler := work.NewListDecisionsTool(pendingRegistry)
+				a.toolRegistry.Register(spec, handler)
 			}
 			delegateSpec, delegateHandler := work.NewDelegateTool(workRuntime, pendingRegistry, cfg.Work.JournalDir, a.Logger)
 			a.toolRegistry.Register(delegateSpec, delegateHandler)

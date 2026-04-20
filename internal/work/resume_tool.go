@@ -51,14 +51,20 @@ func NewResumeTool(runtime *Runtime, pending *PendingRegistry, journalDir string
 		}
 
 		sessionID := SessionIDFromContext(ctx)
-		var paused *PausedWork
+		var claim ClaimResult
 		if pending != nil {
-			paused = pending.Take(sessionID, req.TaskID)
+			claim = pending.ClaimForResume(sessionID, req.TaskID)
 		}
+		paused := claim.PausedWork
 		if paused == nil {
+			status := "expired"
+			if claim.FinalState == finalStateClaimed {
+				status = "busy"
+			}
 			output, _ := json.Marshal(map[string]string{
-				"status":  "expired",
-				"task_id": req.TaskID,
+				"status":      status,
+				"task_id":     req.TaskID,
+				"final_state": claim.FinalState,
 			})
 			return output, nil
 		}
@@ -82,6 +88,10 @@ func NewResumeTool(runtime *Runtime, pending *PendingRegistry, journalDir string
 			Reason:           req.Reason,
 			ConstraintsDelta: req.ConstraintsDelta,
 		}
+		if claim.WasStale {
+			staleDuration := time.Since(claim.CreatedAt).Round(time.Minute)
+			resp.Reason = fmt.Sprintf("[STALE CONTEXT: paused %s, re-verify assumptions] %s", staleDuration, resp.Reason)
+		}
 		if journal != nil {
 			journal.Write("decision_response_emotion", paused.Round, map[string]any{
 				"task_id":  req.TaskID,
@@ -102,6 +112,11 @@ func NewResumeTool(runtime *Runtime, pending *PendingRegistry, journalDir string
 			if journal != nil {
 				journal.Write("task_end", 0, outcome.Report)
 			}
+			if pending != nil {
+				if err := pending.FinalizeResolved(sessionID, req.TaskID, claim.ClaimID, resp, outcome.Report); err != nil {
+					return nil, fmt.Errorf("resume_work: finalize resolved: %w", err)
+				}
+			}
 			return json.Marshal(outcome.Report)
 		}
 
@@ -109,7 +124,9 @@ func NewResumeTool(runtime *Runtime, pending *PendingRegistry, journalDir string
 			return nil, fmt.Errorf("resume_work: runtime returned empty outcome")
 		}
 		if pending != nil {
-			pending.Put(sessionID, outcome.Paused.TaskID, outcome.Paused)
+			if err := pending.RequeuePaused(sessionID, outcome.Paused.TaskID, claim.ClaimID, outcome.Paused); err != nil {
+				return nil, fmt.Errorf("resume_work: requeue paused: %w", err)
+			}
 		}
 		if journal != nil {
 			journal.Write("task_paused", outcome.Paused.Round, map[string]any{

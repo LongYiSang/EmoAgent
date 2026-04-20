@@ -1023,6 +1023,9 @@ func TestRunRegistersDelegateToolWhenWorkProfileUsable(t *testing.T) {
 	if _, ok := a.toolRegistry.GetSpec("finish_task"); !ok {
 		t.Fatal("finish_task should be registered when work profile is usable")
 	}
+	if _, ok := a.toolRegistry.GetSpec("list_pending_decisions"); !ok {
+		t.Fatal("list_pending_decisions should be registered when work profile is usable")
+	}
 }
 
 func intPtr(v int) *int { return &v }

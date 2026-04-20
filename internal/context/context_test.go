@@ -15,6 +15,7 @@ import (
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/storage"
+	"github.com/longyisang/emoagent/internal/work"
 )
 
 type summaryUpdateClient struct {
@@ -332,7 +333,7 @@ func TestBuildEmotionContextWithStatePlacesRunningSummaryBeforeRecentTurns(t *te
 	}
 }
 
-func TestBuildEmotionContextWithPendingAddsResumeNote(t *testing.T) {
+func TestBuildEmotionContextWithPendingSummariesAddsResumeNote(t *testing.T) {
 	persona := &config.Persona{
 		Name:         "default",
 		SystemPrompt: "You are warm.",
@@ -340,23 +341,24 @@ func TestBuildEmotionContextWithPendingAddsResumeNote(t *testing.T) {
 	history := []storage.MessageRecord{
 		{ID: "1", Role: "user", Content: "latest"},
 	}
-	pending := []protocol.DecisionPacket{
+	pending := []work.DecisionSummary{
 		{
 			TaskID:      "task-1",
-			Category:    protocol.CatPreferenceSensitive,
+			Status:      "stale",
+			Category:    string(protocol.CatPreferenceSensitive),
 			RiskLevel:   "low",
 			GoalSummary: "goal",
 			Question:    "which option?",
-			WhyBlocked:  "blocked",
 			Options: []protocol.DecisionOption{
 				{ID: "a", Summary: "option a"},
 			},
-			RecommendedOption:    "a",
-			RecommendationReason: "best",
+			CreatedAt:       "2026-04-20T00:00:00Z",
+			StatusEnteredAt: "2026-04-20T00:30:00Z",
+			Claimable:       true,
 		},
 	}
 
-	assembled, err := ctxpkg.BuildEmotionContextWithPending(persona, history, nil, pending, config.ContextConfig{
+	assembled, err := ctxpkg.BuildEmotionContextWithPendingSummaries(persona, history, nil, pending, config.ContextConfig{
 		InputBudgetTokens:    24000,
 		SoftCompactRatio:     0.75,
 		HardCompactRatio:     0.92,
@@ -366,7 +368,7 @@ func TestBuildEmotionContextWithPendingAddsResumeNote(t *testing.T) {
 		ToolResultHardTokens: 3000,
 	}, runtimeenv.Facts{OS: "windows"})
 	if err != nil {
-		t.Fatalf("BuildEmotionContextWithPending: %v", err)
+		t.Fatalf("BuildEmotionContextWithPendingSummaries: %v", err)
 	}
 
 	if !strings.Contains(assembled.System, "Pending Decision(s) Resume Note") {
@@ -374,6 +376,9 @@ func TestBuildEmotionContextWithPendingAddsResumeNote(t *testing.T) {
 	}
 	if !strings.Contains(assembled.System, "task-1") {
 		t.Fatalf("system prompt missing pending task id: %s", assembled.System)
+	}
+	if !strings.Contains(assembled.System, "Status: stale") {
+		t.Fatalf("system prompt missing summary status: %s", assembled.System)
 	}
 }
 

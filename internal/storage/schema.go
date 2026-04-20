@@ -98,6 +98,72 @@ ALTER TABLE llm_profiles ADD COLUMN reserve_output_tokens INTEGER;
 		Version: 6,
 		SQL:     `ALTER TABLE personas ADD COLUMN work_progress_phrases TEXT NOT NULL DEFAULT '{}';`,
 	},
+	{
+		Version: 7,
+		SQL: `
+CREATE TABLE IF NOT EXISTS pending_decisions (
+    session_id        TEXT NOT NULL,
+    task_id           TEXT NOT NULL,
+    status            TEXT NOT NULL,
+    fail_closed       INTEGER NOT NULL DEFAULT 0,
+    category          TEXT NOT NULL,
+    risk_level        TEXT NOT NULL,
+    summary_json      TEXT NOT NULL,
+    resume_blob_json  TEXT,
+    report_json       TEXT,
+    resolved_decision TEXT,
+    resolved_reason   TEXT,
+    created_at        TEXT NOT NULL,
+    status_entered_at TEXT NOT NULL,
+    soft_expires_at   TEXT,
+    hard_expires_at   TEXT,
+    archive_after     TEXT,
+    claim_id          TEXT,
+    claim_expires_at  TEXT,
+    updated_at        TEXT NOT NULL,
+    PRIMARY KEY (session_id, task_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_decisions_session_status
+    ON pending_decisions(session_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_pending_decisions_claim
+    ON pending_decisions(claim_expires_at)
+    WHERE claim_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_pending_decisions_soft_expire
+    ON pending_decisions(soft_expires_at)
+    WHERE status = 'pending';
+
+CREATE INDEX IF NOT EXISTS idx_pending_decisions_hard_expire
+    ON pending_decisions(hard_expires_at)
+    WHERE status IN ('pending', 'stale');
+
+CREATE INDEX IF NOT EXISTS idx_pending_decisions_archive_after
+    ON pending_decisions(archive_after)
+    WHERE status IN ('expired_open', 'auto_rejected', 'resolved');
+
+CREATE TABLE IF NOT EXISTS archived_decisions (
+    session_id        TEXT NOT NULL,
+    task_id           TEXT NOT NULL,
+    final_status      TEXT NOT NULL,
+    fail_closed       INTEGER NOT NULL DEFAULT 0,
+    category          TEXT NOT NULL,
+    risk_level        TEXT NOT NULL,
+    summary_json      TEXT NOT NULL,
+    report_json       TEXT,
+    resolved_decision TEXT,
+    resolved_reason   TEXT,
+    created_at        TEXT NOT NULL,
+    status_entered_at TEXT NOT NULL,
+    archived_at       TEXT NOT NULL,
+    PRIMARY KEY (session_id, task_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_archived_decisions_status
+    ON archived_decisions(final_status, archived_at);
+`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.
