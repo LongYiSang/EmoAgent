@@ -23,51 +23,54 @@ import (
 
 // EngineConfig defines the dependencies for Engine.
 type EngineConfig struct {
-	LLM           llm.Client
-	DB            *storage.DB
-	Logger        *slog.Logger
-	Model         string
-	SummaryModel  string
-	MaxTokens     int
-	Temperature   float64
-	ContextConfig config.ContextConfig
-	Provider      string           // "openai" or "anthropic", needed by ResultsToMessages
-	Registry      *tool.Registry   // nil disables tool support
-	Dispatcher    *tool.Dispatcher // nil disables tool support
-	Pending       *work.PendingRegistry
-	Environment   runtimeenv.Facts
+	LLM                llm.Client
+	DB                 *storage.DB
+	Logger             *slog.Logger
+	Model              string
+	SummaryModel       string
+	SummaryTemperature *float64
+	MaxTokens          int
+	Temperature        float64
+	ContextConfig      config.ContextConfig
+	Provider           string           // "openai" or "anthropic", needed by ResultsToMessages
+	Registry           *tool.Registry   // nil disables tool support
+	Dispatcher         *tool.Dispatcher // nil disables tool support
+	Pending            *work.PendingRegistry
+	Environment        runtimeenv.Facts
 }
 
 // RuntimeConfig is the hot-swappable subset of EngineConfig used for new requests.
 type RuntimeConfig struct {
-	Provider      string
-	Model         string
-	SummaryModel  string
-	MaxTokens     int
-	Temperature   float64
-	ContextConfig config.ContextConfig
+	Provider           string
+	Model              string
+	SummaryModel       string
+	SummaryTemperature *float64
+	MaxTokens          int
+	Temperature        float64
+	ContextConfig      config.ContextConfig
 }
 
 // Engine assembles conversation context and forwards requests to the LLM.
 type Engine struct {
-	mu           sync.RWMutex
-	llm          llm.Client
-	db           *storage.DB
-	logger       *slog.Logger
-	model        string
-	summaryModel string
-	maxTokens    int
-	temperature  float64
-	contextCfg   config.ContextConfig
-	provider     string
-	registry     *tool.Registry
-	dispatcher   *tool.Dispatcher
-	pending      *work.PendingRegistry
-	environment  runtimeenv.Facts
+	mu                 sync.RWMutex
+	llm                llm.Client
+	db                 *storage.DB
+	logger             *slog.Logger
+	model              string
+	summaryModel       string
+	summaryTemperature *float64
+	maxTokens          int
+	temperature        float64
+	contextCfg         config.ContextConfig
+	provider           string
+	registry           *tool.Registry
+	dispatcher         *tool.Dispatcher
+	pending            *work.PendingRegistry
+	environment        runtimeenv.Facts
 }
 
 // UpdateConfig hot-swaps the active LLM client and request parameters for new sends.
-func (e *Engine) UpdateConfig(client llm.Client, provider, model, summaryModel string, maxTokens int, temperature float64, contextCfg config.ContextConfig) {
+func (e *Engine) UpdateConfig(client llm.Client, provider, model, summaryModel string, summaryTemperature *float64, maxTokens int, temperature float64, contextCfg config.ContextConfig) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -77,6 +80,7 @@ func (e *Engine) UpdateConfig(client llm.Client, provider, model, summaryModel s
 	e.provider = provider
 	e.model = model
 	e.summaryModel = summaryModel
+	e.summaryTemperature = cloneFloat64Ptr(summaryTemperature)
 	e.maxTokens = maxTokens
 	e.temperature = temperature
 	if err := contextCfg.Validate(); err == nil {
@@ -92,19 +96,20 @@ func NewEngine(cfg EngineConfig) *Engine {
 	}
 
 	return &Engine{
-		llm:          cfg.LLM,
-		db:           cfg.DB,
-		logger:       cfg.Logger,
-		model:        cfg.Model,
-		summaryModel: cfg.SummaryModel,
-		maxTokens:    cfg.MaxTokens,
-		temperature:  cfg.Temperature,
-		contextCfg:   contextCfg,
-		provider:     cfg.Provider,
-		registry:     cfg.Registry,
-		dispatcher:   cfg.Dispatcher,
-		pending:      cfg.Pending,
-		environment:  cfg.Environment,
+		llm:                cfg.LLM,
+		db:                 cfg.DB,
+		logger:             cfg.Logger,
+		model:              cfg.Model,
+		summaryModel:       cfg.SummaryModel,
+		summaryTemperature: cloneFloat64Ptr(cfg.SummaryTemperature),
+		maxTokens:          cfg.MaxTokens,
+		temperature:        cfg.Temperature,
+		contextCfg:         contextCfg,
+		provider:           cfg.Provider,
+		registry:           cfg.Registry,
+		dispatcher:         cfg.Dispatcher,
+		pending:            cfg.Pending,
+		environment:        cfg.Environment,
 	}
 }
 
@@ -114,12 +119,13 @@ func (e *Engine) RuntimeConfig() RuntimeConfig {
 	defer e.mu.RUnlock()
 
 	return RuntimeConfig{
-		Provider:      e.provider,
-		Model:         e.model,
-		SummaryModel:  e.summaryModel,
-		MaxTokens:     e.maxTokens,
-		Temperature:   e.temperature,
-		ContextConfig: e.contextCfg,
+		Provider:           e.provider,
+		Model:              e.model,
+		SummaryModel:       e.summaryModel,
+		SummaryTemperature: cloneFloat64Ptr(e.summaryTemperature),
+		MaxTokens:          e.maxTokens,
+		Temperature:        e.temperature,
+		ContextConfig:      e.contextCfg,
 	}
 }
 
@@ -169,6 +175,7 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 	client := e.llm
 	model := e.model
 	summaryModel := e.summaryModel
+	summaryTemperature := cloneFloat64Ptr(e.summaryTemperature)
 	maxTokens := e.maxTokens
 	temperature := e.temperature
 	contextCfg := e.contextCfg
@@ -227,7 +234,7 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 		state = &defaultState
 	}
 
-	if nextState, updateErr := contextutil.UpdateRunningSummary(ctx, client, effectiveSummaryModel(model, summaryModel), persona, history, state, contextCfg); updateErr != nil {
+	if nextState, updateErr := contextutil.UpdateRunningSummary(ctx, client, effectiveSummaryModel(model, summaryModel), summaryTemperature, persona, history, state, contextCfg); updateErr != nil {
 		e.logger.Warn("failed to update running summary", "session", sessionID, "error", updateErr)
 	} else {
 		state = nextState
@@ -451,6 +458,14 @@ func effectiveSummaryModel(model, summaryModel string) string {
 		return summaryModel
 	}
 	return model
+}
+
+func cloneFloat64Ptr(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	v := *value
+	return &v
 }
 
 func visibleMessageMetadata(role, content string) map[string]any {

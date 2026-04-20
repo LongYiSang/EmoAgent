@@ -21,9 +21,11 @@ import (
 type summaryUpdateClient struct {
 	response *llm.ChatResponse
 	err      error
+	lastReq  llm.ChatRequest
 }
 
-func (c *summaryUpdateClient) Chat(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+func (c *summaryUpdateClient) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	c.lastReq = req
 	return c.response, c.err
 }
 
@@ -482,7 +484,7 @@ func TestRunningSummaryIterativeUpdatePreservesProtectedFields(t *testing.T) {
 		{ID: "m3", Role: "user", Content: "latest user"},
 	}
 
-	next, err := ctxpkg.UpdateRunningSummary(context.Background(), client, "summary-model", &config.Persona{Name: "default", SystemPrompt: "system"}, history, state, config.ContextConfig{
+	next, err := ctxpkg.UpdateRunningSummary(context.Background(), client, "summary-model", nil, &config.Persona{Name: "default", SystemPrompt: "system"}, history, state, config.ContextConfig{
 		InputBudgetTokens:    24000,
 		SoftCompactRatio:     0.75,
 		HardCompactRatio:     0.92,
@@ -502,6 +504,41 @@ func TestRunningSummaryIterativeUpdatePreservesProtectedFields(t *testing.T) {
 	}
 	if next.RunningSummary.SessionGoal != "updated goal" {
 		t.Fatalf("SessionGoal = %q, want updated goal", next.RunningSummary.SessionGoal)
+	}
+	if client.lastReq.Temperature != 0.1 {
+		t.Fatalf("summary request temperature = %v, want default 0.1", client.lastReq.Temperature)
+	}
+}
+
+func TestRunningSummaryIterativeUpdateUsesConfiguredSummaryTemperature(t *testing.T) {
+	summaryTemperature := 0.35
+	client := &summaryUpdateClient{
+		response: &llm.ChatResponse{
+			ID:      "summary-1",
+			Model:   "summary-model",
+			Content: `{"running_summary":{"session_goal":"updated goal"}}`,
+		},
+	}
+	history := []storage.MessageRecord{
+		{ID: "m1", Role: "user", Content: "older user"},
+		{ID: "m2", Role: "assistant", Content: "older assistant"},
+		{ID: "m3", Role: "user", Content: "latest user"},
+	}
+
+	_, err := ctxpkg.UpdateRunningSummary(context.Background(), client, "summary-model", &summaryTemperature, &config.Persona{Name: "default", SystemPrompt: "system"}, history, nil, config.ContextConfig{
+		InputBudgetTokens:    24000,
+		SoftCompactRatio:     0.75,
+		HardCompactRatio:     0.92,
+		ReserveOutputTokens:  4096,
+		KeepRecentUserTurns:  1,
+		ToolResultSoftTokens: 1000,
+		ToolResultHardTokens: 3000,
+	})
+	if err != nil {
+		t.Fatalf("UpdateRunningSummary: %v", err)
+	}
+	if client.lastReq.Temperature != summaryTemperature {
+		t.Fatalf("summary request temperature = %v, want %v", client.lastReq.Temperature, summaryTemperature)
 	}
 }
 

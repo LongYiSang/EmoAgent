@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	summaryMaxTokens   = 1024
-	summaryTemperature = 0.1
+	summaryMaxTokens          = 1024
+	defaultSummaryTemperature = 0.1
 )
 
 var summarySystemPrompt = strings.TrimSpace(`
@@ -81,6 +81,7 @@ func UpdateRunningSummary(
 	ctx context.Context,
 	client llm.Client,
 	model string,
+	summaryTemperature *float64,
 	persona *config.Persona,
 	history []storage.MessageRecord,
 	state *ContextState,
@@ -106,7 +107,7 @@ func UpdateRunningSummary(
 		return &current, nil
 	}
 
-	req, err := buildSummaryRequest(model, persona, current.RunningSummary, delta)
+	req, err := buildSummaryRequest(model, summaryTemperature, persona, current.RunningSummary, delta)
 	if err != nil {
 		return nil, err
 	}
@@ -196,7 +197,7 @@ func mergeProtectedItems(existing []string, incoming []string) []string {
 	return merged
 }
 
-func buildSummaryRequest(model string, persona *config.Persona, current RunningSummary, delta []storage.MessageRecord) (llm.ChatRequest, error) {
+func buildSummaryRequest(model string, summaryTemperature *float64, persona *config.Persona, current RunningSummary, delta []storage.MessageRecord) (llm.ChatRequest, error) {
 	currentPayload, err := json.Marshal(struct {
 		RunningSummary RunningSummary `json:"running_summary"`
 	}{
@@ -234,13 +235,24 @@ func buildSummaryRequest(model string, persona *config.Persona, current RunningS
 		Model:       model,
 		System:      summarySystemPrompt,
 		MaxTokens:   summaryMaxTokens,
-		Temperature: summaryTemperature,
+		Temperature: resolveSummaryTemperature(summaryTemperature),
 		Stream:      false,
 		Messages: []llm.Message{
 			{Role: llm.RoleUser, Content: string(currentPayload)},
 			{Role: llm.RoleUser, Content: string(historyPayload)},
 		},
 	}, nil
+}
+
+func DefaultSummaryTemperature() float64 {
+	return defaultSummaryTemperature
+}
+
+func resolveSummaryTemperature(summaryTemperature *float64) float64 {
+	if summaryTemperature != nil {
+		return *summaryTemperature
+	}
+	return defaultSummaryTemperature
 }
 
 func parseRunningSummaryResponse(resp *llm.ChatResponse) (RunningSummary, error) {

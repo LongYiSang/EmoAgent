@@ -433,6 +433,10 @@
                   <input class="input" id="llm-temperature" name="temperature" type="number" min="0" max="2" step="0.1" placeholder="1.0">
                 </div>
               </div>
+              <div class="form-row">
+                <label for="llm-summary-temperature">Summary Temperature</label>
+                <input class="input" id="llm-summary-temperature" name="summary_temperature" type="number" min="0" max="2" step="0.1" placeholder="inherit (default 0.1)">
+              </div>
             </div>
 
             <div class="form-card">
@@ -570,6 +574,7 @@
       api_key_env: document.getElementById('llm-api-key-env'),
       model: document.getElementById('llm-model'),
       summary_model: document.getElementById('llm-summary-model'),
+      summary_temperature: document.getElementById('llm-summary-temperature'),
       max_tokens: document.getElementById('llm-max-tokens'),
       temperature: document.getElementById('llm-temperature'),
       input_budget_tokens: document.getElementById('llm-input-budget-tokens'),
@@ -669,6 +674,7 @@
         api_key_env: txt(profile?.api_key_env || profile?.apiKeyEnv),
         model: txt(profile?.model),
         summary_model: txt(profile?.summary_model || profile?.summaryModel),
+        summary_temperature: profile?.summary_temperature ?? profile?.summaryTemperature ?? null,
         max_tokens: Number(profile?.max_tokens ?? profile?.maxTokens ?? 0) || 0,
         temperature: Number(profile?.temperature ?? 0),
         input_budget_tokens: profile?.input_budget_tokens ?? profile?.inputBudgetTokens ?? null,
@@ -725,6 +731,7 @@
       llmFields.api_key_env.value = '';
       llmFields.model.value = '';
       llmFields.summary_model.value = '';
+      llmFields.summary_temperature.value = '';
       llmFields.max_tokens.value = '';
       llmFields.temperature.value = '';
       llmFields.input_budget_tokens.value = '';
@@ -748,6 +755,7 @@
       llmFields.api_key_env.value = data.api_key_env;
       llmFields.model.value = data.model;
       llmFields.summary_model.value = data.summary_model;
+      llmFields.summary_temperature.value = numText(data.summary_temperature);
       llmFields.max_tokens.value = data.max_tokens || '';
       llmFields.temperature.value = Number.isFinite(data.temperature) ? String(data.temperature) : '';
       llmFields.input_budget_tokens.value = numText(data.input_budget_tokens);
@@ -854,6 +862,7 @@
       const softRatio = llmFields.soft_compact_ratio.value.trim();
       const hardRatio = llmFields.hard_compact_ratio.value.trim();
       const reserveOutput = llmFields.reserve_output_tokens.value.trim();
+      const summaryTemperature = llmFields.summary_temperature.value.trim();
       return {
         id: llmFields.id.value.trim(),
         name: llmFields.name.value.trim(),
@@ -862,6 +871,7 @@
         api_key_env: llmFields.api_key_env.value.trim(),
         model: llmFields.model.value.trim(),
         summary_model: llmFields.summary_model.value.trim(),
+        summary_temperature: summaryTemperature === '' ? null : Number(summaryTemperature),
         max_tokens: Number(llmFields.max_tokens.value || 0),
         temperature: Number(llmFields.temperature.value || 0),
         input_budget_tokens: inputBudget === '' ? null : Number(inputBudget),
@@ -894,6 +904,9 @@
       }
       if (!Number.isFinite(payload.temperature) || payload.temperature < 0 || payload.temperature > 2) {
         throw new Error('Temperature must be between 0 and 2');
+      }
+      if (payload.summary_temperature !== null && (!Number.isFinite(payload.summary_temperature) || payload.summary_temperature < 0 || payload.summary_temperature > 2)) {
+        throw new Error('Summary Temperature must be between 0 and 2');
       }
       if (payload.input_budget_tokens !== null && (!Number.isFinite(payload.input_budget_tokens) || payload.input_budget_tokens <= 0)) {
         throw new Error('Input Budget Tokens must be greater than 0');

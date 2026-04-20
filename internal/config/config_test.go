@@ -72,6 +72,7 @@ server:
 llm:
   provider: anthropic
   model: claude-sonnet-4-20250514
+  summary_temperature: 0.2
   api_key_env: ANTHROPIC_API_KEY
 context:
   input_budget_tokens: 12345
@@ -87,6 +88,7 @@ llm_profiles:
     base_url: https://api.openai.com
     model: gpt-4o
     summary_model: gpt-4o-mini
+    summary_temperature: 0.1
     max_tokens: 2048
     temperature: 0.3
     api_key_env: OPENAI_API_KEY
@@ -107,6 +109,9 @@ llm_profiles:
 	if cfg.LLM.APIKeyEnv != "ANTHROPIC_API_KEY" {
 		t.Errorf("llm.api_key_env = %q, want ANTHROPIC_API_KEY", cfg.LLM.APIKeyEnv)
 	}
+	if cfg.LLM.SummaryTemperature == nil || *cfg.LLM.SummaryTemperature != 0.2 {
+		t.Fatalf("llm.summary_temperature = %#v, want 0.2", cfg.LLM.SummaryTemperature)
+	}
 	if cfg.Context.InputBudgetTokens != 12345 {
 		t.Errorf("context.input_budget_tokens = %d, want 12345", cfg.Context.InputBudgetTokens)
 	}
@@ -119,6 +124,9 @@ llm_profiles:
 	profile := cfg.LLMProfiles[0]
 	if profile.Name != "default" || profile.APIKeyEnv != "OPENAI_API_KEY" || profile.MaxTokens != 2048 {
 		t.Fatalf("llm_profiles[0] = %#v", profile)
+	}
+	if profile.SummaryTemperature == nil || *profile.SummaryTemperature != 0.1 {
+		t.Fatalf("llm_profiles[0].summary_temperature = %#v, want 0.1", profile.SummaryTemperature)
 	}
 	if profile.InputBudgetTokens == nil || *profile.InputBudgetTokens != 12000 {
 		t.Fatalf("llm_profiles[0].input_budget_tokens = %#v, want 12000", profile.InputBudgetTokens)
@@ -235,6 +243,30 @@ func TestValidateRejectsInvalidProfileBudgetOverrides(t *testing.T) {
 		t.Fatal("expected validation error for invalid profile input_budget_tokens override")
 	}
 }
+
+func TestValidateRejectsInvalidSummaryTemperature(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.LLM.SummaryTemperature = floatPtr(2.5)
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for invalid llm.summary_temperature")
+	}
+
+	cfg = DefaultConfig()
+	cfg.LLMProfiles = []LLMProfile{{
+		Name:               "default",
+		Provider:           "openai",
+		BaseURL:            "https://api.openai.com",
+		Model:              "gpt-4o-mini",
+		MaxTokens:          1024,
+		Temperature:        0.7,
+		SummaryTemperature: floatPtr(-0.1),
+	}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for invalid profile summary_temperature")
+	}
+}
+
+func floatPtr(v float64) *float64 { return &v }
 
 func TestDefaultWebSearchConfig(t *testing.T) {
 	cfg := DefaultConfig()

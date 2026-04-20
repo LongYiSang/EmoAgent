@@ -67,13 +67,14 @@ type ServerConfig struct {
 }
 
 type LLMConfig struct {
-	Provider     string  `yaml:"provider"`
-	BaseURL      string  `yaml:"base_url"`
-	Model        string  `yaml:"model"`
-	SummaryModel string  `yaml:"summary_model"`
-	MaxTokens    int     `yaml:"max_tokens"`
-	Temperature  float64 `yaml:"temperature"`
-	APIKeyEnv    string  `yaml:"api_key_env"`
+	Provider           string   `yaml:"provider"`
+	BaseURL            string   `yaml:"base_url"`
+	Model              string   `yaml:"model"`
+	SummaryModel       string   `yaml:"summary_model"`
+	SummaryTemperature *float64 `yaml:"summary_temperature"`
+	MaxTokens          int      `yaml:"max_tokens"`
+	Temperature        float64  `yaml:"temperature"`
+	APIKeyEnv          string   `yaml:"api_key_env"`
 }
 
 type LLMProfile struct {
@@ -82,6 +83,7 @@ type LLMProfile struct {
 	BaseURL             string   `yaml:"base_url" json:"base_url"`
 	Model               string   `yaml:"model" json:"model"`
 	SummaryModel        string   `yaml:"summary_model" json:"summary_model"`
+	SummaryTemperature  *float64 `yaml:"summary_temperature,omitempty" json:"summary_temperature,omitempty"`
 	MaxTokens           int      `yaml:"max_tokens" json:"max_tokens"`
 	Temperature         float64  `yaml:"temperature" json:"temperature"`
 	APIKeyEnv           string   `yaml:"api_key_env" json:"api_key_env"`
@@ -291,6 +293,9 @@ func (c *Config) Validate() error {
 	if c.LLM.Model == "" {
 		return fmt.Errorf("llm.model is required")
 	}
+	if err := validateOptionalTemperature("llm.summary_temperature", c.LLM.SummaryTemperature); err != nil {
+		return err
+	}
 	if err := c.Context.Validate(); err != nil {
 		return fmt.Errorf("context: %w", err)
 	}
@@ -344,6 +349,9 @@ func (p LLMProfile) Validate() error {
 	if p.Temperature < 0 || p.Temperature > 2 {
 		return fmt.Errorf("temperature must be between 0 and 2")
 	}
+	if err := validateOptionalTemperature("summary_temperature", p.SummaryTemperature); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -377,6 +385,16 @@ func (p LLMProfile) ResolveContextConfig(base ContextConfig) (ContextConfig, err
 		return ContextConfig{}, err
 	}
 	return effective, nil
+}
+
+func validateOptionalTemperature(name string, value *float64) error {
+	if value == nil {
+		return nil
+	}
+	if *value < 0 || *value > 2 {
+		return fmt.Errorf("%s must be between 0 and 2", name)
+	}
+	return nil
 }
 
 func (c ContextConfig) Validate() error {

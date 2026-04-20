@@ -164,6 +164,10 @@ CREATE INDEX IF NOT EXISTS idx_archived_decisions_status
     ON archived_decisions(final_status, archived_at);
 `,
 	},
+	{
+		Version: 8,
+		SQL:     `ALTER TABLE llm_profiles ADD COLUMN summary_temperature REAL;`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.

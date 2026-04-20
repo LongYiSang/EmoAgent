@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/longyisang/emoagent/internal/apperrors"
 	"github.com/longyisang/emoagent/internal/chat"
 	"github.com/longyisang/emoagent/internal/config"
+	contextutil "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/logger"
 	"github.com/longyisang/emoagent/internal/runtimeenv"
@@ -150,6 +152,7 @@ func (a *App) Run(ctx context.Context) error {
 
 	model := cfg.LLM.Model
 	summaryModel := cfg.LLM.SummaryModel
+	summaryTemperature := effectiveSummaryTemperature(cfg.LLM.SummaryTemperature, activeProfile)
 	maxTokens := cfg.LLM.MaxTokens
 	temperature := cfg.LLM.Temperature
 	provider := cfg.LLM.Provider
@@ -251,19 +254,20 @@ func (a *App) Run(ctx context.Context) error {
 	}
 
 	a.engine = chat.NewEngine(chat.EngineConfig{
-		LLM:           currentClient,
-		DB:            a.DB,
-		Logger:        a.Logger,
-		Model:         model,
-		SummaryModel:  summaryModel,
-		MaxTokens:     maxTokens,
-		Temperature:   temperature,
-		ContextConfig: contextCfg,
-		Provider:      provider,
-		Registry:      a.toolRegistry,
-		Dispatcher:    dispatcher,
-		Pending:       pendingRegistry,
-		Environment:   a.environment,
+		LLM:                currentClient,
+		DB:                 a.DB,
+		Logger:             a.Logger,
+		Model:              model,
+		SummaryModel:       summaryModel,
+		SummaryTemperature: summaryTemperature,
+		MaxTokens:          maxTokens,
+		Temperature:        temperature,
+		ContextConfig:      contextCfg,
+		Provider:           provider,
+		Registry:           a.toolRegistry,
+		Dispatcher:         dispatcher,
+		Pending:            pendingRegistry,
+		Environment:        a.environment,
 	})
 	chatHandler := chat.NewHandler(a.engine, a, a.Logger)
 
@@ -363,6 +367,14 @@ func (a *App) applyRuntimeOverrides() error {
 			a.Config.LLM.Model = v
 		case "llm.summary_model":
 			a.Config.LLM.SummaryModel = v
+		case "llm.summary_temperature":
+			if strings.TrimSpace(v) == "" {
+				a.Config.LLM.SummaryTemperature = nil
+			} else if f, parseErr := strconv.ParseFloat(v, 64); parseErr == nil {
+				a.Config.LLM.SummaryTemperature = &f
+			} else {
+				a.Logger.Warn("invalid runtime override", "key", "llm.summary_temperature", "value", v, "error", parseErr)
+			}
 		case "llm.temperature":
 			if f, parseErr := strconv.ParseFloat(v, 64); parseErr == nil {
 				a.Config.LLM.Temperature = f
@@ -402,14 +414,15 @@ func (a *App) bootstrapLLMProfiles() error {
 	}
 
 	seed := config.LLMProfile{
-		Name:         "default",
-		Provider:     a.Config.LLM.Provider,
-		BaseURL:      a.Config.LLM.BaseURL,
-		APIKeyEnv:    a.Config.LLM.APIKeyEnv,
-		Model:        a.Config.LLM.Model,
-		SummaryModel: a.Config.LLM.SummaryModel,
-		MaxTokens:    a.Config.LLM.MaxTokens,
-		Temperature:  a.Config.LLM.Temperature,
+		Name:               "default",
+		Provider:           a.Config.LLM.Provider,
+		BaseURL:            a.Config.LLM.BaseURL,
+		APIKeyEnv:          a.Config.LLM.APIKeyEnv,
+		Model:              a.Config.LLM.Model,
+		SummaryModel:       a.Config.LLM.SummaryModel,
+		SummaryTemperature: cloneFloat64Ptr(a.Config.LLM.SummaryTemperature),
+		MaxTokens:          a.Config.LLM.MaxTokens,
+		Temperature:        a.Config.LLM.Temperature,
 	}
 	if err := validateLLMProfile(seed); err != nil {
 		return err
@@ -833,7 +846,7 @@ func (a *App) UpdateLLMProfile(id string, profile config.LLMProfile) error {
 		a.mu.Unlock()
 
 		if engine != nil {
-			engine.UpdateConfig(newClient, profile.Provider, profile.Model, profile.SummaryModel, profile.MaxTokens, profile.Temperature, a.effectiveContextForProfile(profile))
+			engine.UpdateConfig(newClient, profile.Provider, profile.Model, profile.SummaryModel, effectiveSummaryTemperature(a.Config.LLM.SummaryTemperature, &profile), profile.MaxTokens, profile.Temperature, a.effectiveContextForProfile(profile))
 		}
 	}
 
@@ -863,7 +876,7 @@ func (a *App) ActivateLLMProfile(id string) error {
 	a.mu.Unlock()
 
 	if engine != nil {
-		engine.UpdateConfig(client, profile.Provider, profile.Model, profile.SummaryModel, profile.MaxTokens, profile.Temperature, a.effectiveContextForProfile(*profile))
+		engine.UpdateConfig(client, profile.Provider, profile.Model, profile.SummaryModel, effectiveSummaryTemperature(a.Config.LLM.SummaryTemperature, profile), profile.MaxTokens, profile.Temperature, a.effectiveContextForProfile(*profile))
 	}
 	return nil
 }
@@ -896,13 +909,14 @@ func (a *App) DeleteLLMProfile(id string) error {
 
 func (a *App) buildClientForProfile(profile config.LLMProfile) (llm.Client, error) {
 	cfg := config.LLMConfig{
-		Provider:     profile.Provider,
-		BaseURL:      profile.BaseURL,
-		APIKeyEnv:    profile.APIKeyEnv,
-		Model:        profile.Model,
-		SummaryModel: profile.SummaryModel,
-		MaxTokens:    profile.MaxTokens,
-		Temperature:  profile.Temperature,
+		Provider:           profile.Provider,
+		BaseURL:            profile.BaseURL,
+		APIKeyEnv:          profile.APIKeyEnv,
+		Model:              profile.Model,
+		SummaryModel:       profile.SummaryModel,
+		SummaryTemperature: cloneFloat64Ptr(profile.SummaryTemperature),
+		MaxTokens:          profile.MaxTokens,
+		Temperature:        profile.Temperature,
 	}
 	return llm.NewClient(cfg, a.Logger)
 }
@@ -953,6 +967,7 @@ func llmProfileFromRecord(record storage.LLMProfileRecord) config.LLMProfile {
 		APIKeyEnv:           record.APIKeyEnv,
 		Model:               record.Model,
 		SummaryModel:        record.SummaryModel,
+		SummaryTemperature:  nullableFloatPtr(record.SummaryTemperature),
 		MaxTokens:           record.MaxTokens,
 		Temperature:         record.Temperature,
 		InputBudgetTokens:   nullableIntPtr(record.InputBudgetTokens),
@@ -967,6 +982,10 @@ func cloneLLMProfile(profile *config.LLMProfile) *config.LLMProfile {
 		return nil
 	}
 	cp := *profile
+	if profile.SummaryTemperature != nil {
+		value := *profile.SummaryTemperature
+		cp.SummaryTemperature = &value
+	}
 	if profile.InputBudgetTokens != nil {
 		value := *profile.InputBudgetTokens
 		cp.InputBudgetTokens = &value
@@ -999,6 +1018,25 @@ func nullableFloatPtr(value sql.NullFloat64) *float64 {
 		return nil
 	}
 	v := value.Float64
+	return &v
+}
+
+func effectiveSummaryTemperature(global *float64, profile *config.LLMProfile) *float64 {
+	if profile != nil && profile.SummaryTemperature != nil {
+		return cloneFloat64Ptr(profile.SummaryTemperature)
+	}
+	if global != nil {
+		return cloneFloat64Ptr(global)
+	}
+	value := contextutil.DefaultSummaryTemperature()
+	return &value
+}
+
+func cloneFloat64Ptr(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	v := *value
 	return &v
 }
 

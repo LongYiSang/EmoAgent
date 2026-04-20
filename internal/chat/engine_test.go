@@ -293,7 +293,7 @@ func TestEngineUpdateConfigAffectsSubsequentMessages(t *testing.T) {
 		t.Fatalf("SendMessage(before): %v", err)
 	}
 
-	engine.UpdateConfig(secondClient, "openai", "model-b", "summary-b", 1024, 0.9, config.ContextConfig{
+	engine.UpdateConfig(secondClient, "openai", "model-b", "summary-b", nil, 1024, 0.9, config.ContextConfig{
 		InputBudgetTokens:    12000,
 		SoftCompactRatio:     0.70,
 		HardCompactRatio:     0.90,

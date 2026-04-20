@@ -149,10 +149,12 @@ func (f *fakeAdminApp) DeleteSession(_ context.Context, id string) error {
 	return f.deleteSessionErr
 }
 
+func floatPtr(v float64) *float64 { return &v }
+
 func TestHandleListLLMProfiles(t *testing.T) {
 	app := &fakeAdminApp{
-		profiles: []config.LLMProfile{{Name: "default", Provider: "openai"}},
-		active:   &config.LLMProfile{Name: "default", Provider: "openai"},
+		profiles: []config.LLMProfile{{Name: "default", Provider: "openai", SummaryTemperature: floatPtr(0.11)}},
+		active:   &config.LLMProfile{Name: "default", Provider: "openai", SummaryTemperature: floatPtr(0.11)},
 	}
 	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
@@ -173,6 +175,9 @@ func TestHandleListLLMProfiles(t *testing.T) {
 	}
 	if len(resp.Profiles) != 1 || resp.Profiles[0].ID != "default" {
 		t.Fatalf("Profiles = %#v, want one default profile", resp.Profiles)
+	}
+	if resp.Profiles[0].SummaryTemperature == nil || *resp.Profiles[0].SummaryTemperature != 0.11 {
+		t.Fatalf("SummaryTemperature = %#v, want 0.11", resp.Profiles[0].SummaryTemperature)
 	}
 }
 
@@ -214,6 +219,42 @@ func TestHandleCreateLLMProfileParsesBudgetOverrides(t *testing.T) {
 	if app.lastCreate.ReserveOutputTokens == nil || *app.lastCreate.ReserveOutputTokens != 1024 {
 		t.Fatalf("ReserveOutputTokens = %#v, want 1024", app.lastCreate.ReserveOutputTokens)
 	}
+}
+
+func TestHandleCreateLLMProfileParsesSummaryTemperature(t *testing.T) {
+	t.Run("numeric summary temperature", func(t *testing.T) {
+		app := &fakeAdminApp{}
+		handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+		body := bytes.NewBufferString(`{"id":"default","name":"Default","provider":"openai","base_url":"https://api.openai.com","model":"gpt-4o","max_tokens":128,"temperature":0.7,"summary_temperature":0.15}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/llm-profiles", body)
+		rec := httptest.NewRecorder()
+		handler.HandleCreateLLMProfile(rec, req)
+
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want 201", rec.Code)
+		}
+		if app.lastCreate.SummaryTemperature == nil || *app.lastCreate.SummaryTemperature != 0.15 {
+			t.Fatalf("SummaryTemperature = %#v, want 0.15", app.lastCreate.SummaryTemperature)
+		}
+	})
+
+	t.Run("null summary temperature", func(t *testing.T) {
+		app := &fakeAdminApp{}
+		handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+		body := bytes.NewBufferString(`{"id":"default","name":"Default","provider":"openai","base_url":"https://api.openai.com","model":"gpt-4o","max_tokens":128,"temperature":0.7,"summary_temperature":null}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/llm-profiles", body)
+		rec := httptest.NewRecorder()
+		handler.HandleCreateLLMProfile(rec, req)
+
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want 201", rec.Code)
+		}
+		if app.lastCreate.SummaryTemperature != nil {
+			t.Fatalf("SummaryTemperature = %#v, want nil", app.lastCreate.SummaryTemperature)
+		}
+	})
 }
 
 func TestHandleGetLLMProfileMapsWrappedNotFound(t *testing.T) {
