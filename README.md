@@ -45,13 +45,16 @@ flowchart TB
       E_emo["情感状态机<br/>Valence · Arousal"]
     end
 
-    subgraph W["️ Work 执行代理 · 用户无感"]
+    subgraph W["Work 执行代理 · 用户无感"]
       direction TB
-      W_core["Runtime 主循环<br/>三层决策 · append-only 续跑"]
+      W_core["Runtime 主循环<br/>TaskReport · DecisionPacket"]
       W_tool["工具集<br/>read · write · bash<br/>edit · list · fetch"]
-      W_ds["deep_search"]
+      W_perm["权限域<br/>read-only · workspace-write<br/>approved-destructive"]
+      W_approval["runtime-generated tool_approval<br/>destructive calls"]
+      W_resume["resume_work<br/>ordinary decision / approval_request_id"]
+      W_stream["进度流式回传"]
       W_cmp["内部上下文压缩"]
-    end
+  end
   end
 
   subgraph L0["共享基础设施"]
@@ -67,7 +70,11 @@ flowchart TB
 
   WebUI ==> E_core
   E_core ==>|TaskBrief| W_core
-  W_core ==>|TaskReport · DecisionRequest| E_core
+  W_core ==>|TaskReport · DecisionPacket| E_core
+  W_core -.-> W_perm
+  W_core -.-> W_approval
+  W_core -.-> W_resume
+  W_core -.-> W_stream
 
   E_core -.-> L0
   W_core -.-> L0
@@ -75,7 +82,7 @@ flowchart TB
   VS -.-> PY
 
   classDef planned stroke-dasharray: 6 4,opacity:0.55,color:#666
-  class TG,E_mem,E_emo,W_ds,W_cmp,VS,PY planned
+  class TG,E_mem,E_emo,VS,PY planned
 ```
 
 ### 决策升级流（Work 阻塞时）
@@ -88,15 +95,15 @@ config:
   theme: neutral
 ---
 flowchart LR
-  W["Work 阻塞<br/>request_decision"] --> RD{{"RuntimeDecider<br/>低风险执行决策"}}
+  W["Work 阻塞<br/>DecisionPacket"] --> RD{{"RuntimeDecider<br/>低风险执行决策"}}
   RD -->|自主可决| RS["Work 续跑<br/>resume_work"]
   RD -->|需人格 / 关系判断| Emo["Emotion Root"]
   Emo -->|可决策| RS
   Emo -.->|高风险 / 不可逆| U["用户确认"]
-  U -.-> RS
+  U -->|approval_request_id| RS
 ```
 
-三层递进：先由 Work 运行时的 **RuntimeDecider** 自主决断执行细节；需要人格或关系上下文时升级到 **Emotion**；涉及高风险或不可逆操作时再升级到 **用户**。每一层的决策都以 `append-only` 的 Resume Note 注入 Work 原上下文，不泄漏工具痕迹。
+三层递进：先由 Work 运行时的 **RuntimeDecider** 自主决断执行细节；需要人格或关系上下文时升级到 **Emotion**；涉及高风险或不可逆操作时再升级到 **用户**。Work 通过 `TaskReport` / `DecisionPacket` 维护暂停点，`resume_work` 同时支持普通决策续跑和 `approval_request_id` 续跑，危险调用则由运行时生成的 `tool_approval` 处理。每一层的决策都以 `append-only` 的 Resume Note 注入 Work 原上下文，不泄漏工具痕迹。
 
 详细架构设计见 [docs/architecture/架构.md](docs/architecture/架构.md)
 
@@ -130,21 +137,21 @@ flowchart LR
   - [x] Worker工具 -- read_file、write_file、bash、edit_file、list_dir、web_fetch、
   - [ ] Worker -- deep_search
 - [x] Phase 5 · 上下文管理 — Token 估算、摘要压缩、KeepRecent 策略
-- [ ] Phase 6 · Work 运行时 — TaskBrief、自循环执行、决策升级、TaskReport
-  - [x] TaskBrief
-  - [x] 自循环执行
+- [x] Phase 6 · Work 运行时 — TaskReport、DecisionPacket、权限域、审批续跑
   - [x] TaskReport
+  - [x] DecisionPacket
+  - [x] 自循环执行
   - [x] 完整工具
   - [x] 决策升级
     - [x] 三层决策流：RuntimeDecider（低风险执行决策）→ Emotion Root（人格/关系上下文决策）→ User（必要时确认）
-    - [x] `request_decision` / `resume_work` 闭环：Work 可暂停并在原上下文 append-only 续跑
+    - [x] `resume_work` 普通决策续跑 / `approval_request_id` 续跑
     - [x] `PendingRegistry`（内存态 TTL）与 Resume Note 注入：支持跨轮恢复，不泄漏 Work 原始工具痕迹
-    - [x] 风险与不可逆操作可升级到 Emotion/User 确认
-      - [ ] 高风险操作程序级人工确认
-      - [x] 适当扩展max tool rounds
-        - [x] 增强 Work 对系统环境的判断，针对环境确定使用的bash，减少试错
-        - [ ] 补充tools，优先用专用文件工具而不是写临时脚本再删脚本
-      - [x] 操作副产物-task_report日志位置调整 <-- 增加task完成工具，架构层解决
+    - [x] 风险与不可逆操作升级到 Emotion/User 确认
+    - [x] runtime-generated `tool_approval` 用于 destructive calls
+    - [x] 适当扩展 max tool rounds
+    - [x] 增强 Work 对系统环境的判断，针对环境确定使用的 bash，减少试错
+    - [x] 优先用专用文件工具，避免写临时脚本再删脚本
+    - [x] 操作副产物 task_report 日志位置调整
     - [x] Paused 持久化
   - [x] Work 进度流式回传
   - [x] 内部上下文压缩
