@@ -253,7 +253,7 @@ func buildResumeNote(packets []protocol.DecisionPacket) string {
 		}
 	}
 
-	b.WriteString("Action: Determine the decision and call resume_work with task_id, decision, and reason.")
+	b.WriteString("Action: Determine the decision and call resume_work. Use task_id plus decision/reason for ordinary pauses. For fail-closed high-risk pauses, wait for approval and then resume with task_id and approval_request_id.")
 	return b.String()
 }
 
@@ -278,12 +278,24 @@ func buildResumeSummaryNote(summaries []protocol.DecisionSummary) string {
 				fmt.Fprintf(&b, "- %s: %s\n", opt.ID, opt.Summary)
 			}
 		}
+		if s.Approval != nil && s.Approval.Required {
+			fmt.Fprintf(&b, "Approval request: %s\n", s.Approval.RequestID)
+			if s.Approval.Status != "" {
+				fmt.Fprintf(&b, "Approval status: %s\n", s.Approval.Status)
+			}
+			if s.Approval.SelectedOptionID != "" {
+				fmt.Fprintf(&b, "Approved option: %s\n", s.Approval.SelectedOptionID)
+			}
+			if s.Approval.ExpiresAt != "" {
+				fmt.Fprintf(&b, "Approval expires at: %s\n", s.Approval.ExpiresAt)
+			}
+		}
 		if s.Report != nil && s.Report.Summary != "" {
 			fmt.Fprintf(&b, "\nReport: %s\n", s.Report.Summary)
 		}
 		b.WriteString("\n")
 	}
 
-	b.WriteString("Action: Determine the decision and call resume_work with task_id, decision, and reason.")
+	b.WriteString("Action: Determine the decision and call resume_work. Use task_id plus decision/reason for ordinary pauses. For fail-closed high-risk pauses, wait for approval and then resume with task_id and approval_request_id.")
 	return b.String()
 }

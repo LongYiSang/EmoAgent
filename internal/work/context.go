@@ -44,7 +44,7 @@ func BuildWorkSystem(brief protocol.TaskBrief, env runtimeenv.Facts) string {
 		b.WriteString("\n")
 	}
 
-	shellAvailableToTask := env.BashEnabled && brief.PermissionScope == "workspace-write"
+	shellAvailableToTask := env.BashEnabled && (brief.PermissionScope == "workspace-write" || brief.PermissionScope == "approved-destructive")
 
 	b.WriteString("## Execution Environment\n")
 	if env.OS != "" {
@@ -79,6 +79,15 @@ func BuildWorkSystem(brief protocol.TaskBrief, env runtimeenv.Facts) string {
 			b.WriteString("You may read files, list directories, and write/edit files. Shell commands are unavailable in this runtime.\n")
 		}
 		b.WriteString("Do NOT touch .git, .env, or any credential/secret files. Do NOT delete or move files unless explicitly instructed.\n")
+		b.WriteString("You may not request further permission escalation.\n\n")
+	case "approved-destructive":
+		if shellAvailableToTask {
+			b.WriteString("You may read files, list directories, write/edit files, and run shell commands (bash tool).\n")
+		} else {
+			b.WriteString("You may read files, list directories, and write/edit files. Shell commands are unavailable in this runtime.\n")
+		}
+		b.WriteString("Destructive or irreversible actions are allowed only for the currently approved decision path. If approval is absent, rejected, or no longer matches the task, stop and request a new decision instead of forcing the action.\n")
+		b.WriteString("Do NOT touch .git, .env, or any credential/secret files unless the approved decision explicitly requires it.\n")
 		b.WriteString("You may not request further permission escalation.\n\n")
 	default:
 		b.WriteString("You are limited to read-only operations. Do not modify files, execute destructive commands, or request permission escalation.\n\n")

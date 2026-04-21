@@ -12,17 +12,22 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/storage"
 )
 
 // WSMessage is the JSON envelope used for WebSocket chat events.
 type WSMessage struct {
-	Type      string                  `json:"type"`
-	Content   string                  `json:"content,omitempty"`
-	SessionID string                  `json:"session_id,omitempty"`
-	Persona   string                  `json:"persona,omitempty"`
-	IsNew     bool                    `json:"is_new,omitempty"`
-	Messages  []storage.MessageRecord `json:"messages,omitempty"`
+	Type      string                    `json:"type"`
+	Content   string                    `json:"content,omitempty"`
+	SessionID string                    `json:"session_id,omitempty"`
+	Persona   string                    `json:"persona,omitempty"`
+	IsNew     bool                      `json:"is_new,omitempty"`
+	Messages  []storage.MessageRecord   `json:"messages,omitempty"`
+	RequestID string                    `json:"request_id,omitempty"`
+	Action    string                    `json:"action,omitempty"`
+	OptionID  string                    `json:"option_id,omitempty"`
+	Approval  *protocol.ApprovalRequest `json:"approval,omitempty"`
 }
 
 // AppInterface exposes the persona methods the handler needs from App.
@@ -36,6 +41,9 @@ type conversationEngine interface {
 	ResumeSession(ctx context.Context, sessionID string, personaName string) (string, bool, error)
 	SendMessage(ctx context.Context, sessionID string, persona *config.Persona, userContent string, cb func(delta string)) (string, error)
 	GetHistory(ctx context.Context, sessionID string, limit int) ([]storage.MessageRecord, error)
+	ListSessionApprovals(ctx context.Context, sessionID string) ([]protocol.ApprovalRequest, error)
+	ApplyApprovalAction(ctx context.Context, sessionID, requestID, action, optionID string) (*protocol.ApprovalRequest, error)
+	ContinueAfterApproval(ctx context.Context, sessionID string, persona *config.Persona, approval *protocol.ApprovalRequest, cb func(delta string)) (string, error)
 }
 
 // Handler serves the WebSocket chat protocol.
@@ -162,6 +170,72 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				cancel()
 				return
 			}
+			if err := h.emitApprovalEvents(ctx, conn, &writeMu, sessionID); err != nil {
+				cancel()
+				return
+			}
+
+		case "approval_action":
+			if strings.TrimSpace(msg.RequestID) == "" {
+				if err := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: "request_id is required"}, &writeMu); err != nil {
+					return
+				}
+				continue
+			}
+			action := strings.TrimSpace(msg.Action)
+			if action == "" {
+				if err := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: "action is required"}, &writeMu); err != nil {
+					return
+				}
+				continue
+			}
+			approval, err := h.engine.ApplyApprovalAction(ctx, sessionID, msg.RequestID, action, msg.OptionID)
+			if err != nil {
+				if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: err.Error()}, &writeMu); writeErr != nil {
+					return
+				}
+				continue
+			}
+			if err := writeWSMessage(ctx, conn, WSMessage{Type: "approval_updated", Approval: approval}, &writeMu); err != nil {
+				cancel()
+				return
+			}
+			if err := writeWSMessage(ctx, conn, WSMessage{Type: "stream_start"}, &writeMu); err != nil {
+				cancel()
+				return
+			}
+			msgCtx := withWSWriter(ctx, func(progressMsg WSMessage) {
+				if writeErr := writeWSMessage(ctx, conn, progressMsg, &writeMu); writeErr != nil {
+					if !errors.Is(ctx.Err(), context.Canceled) {
+						h.logger.Warn("ws progress write failed", "session", sessionID, "error", writeErr)
+					}
+					cancel()
+				}
+			})
+			if _, err := h.engine.ContinueAfterApproval(msgCtx, sessionID, persona, approval, func(delta string) {
+				if delta == "" {
+					return
+				}
+				if writeErr := writeWSMessage(ctx, conn, WSMessage{Type: "stream_delta", Content: delta}, &writeMu); writeErr != nil {
+					if !errors.Is(ctx.Err(), context.Canceled) {
+						h.logger.Warn("ws stream write failed", "session", sessionID, "error", writeErr)
+					}
+					cancel()
+				}
+			}); err != nil {
+				if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: err.Error()}, &writeMu); writeErr != nil {
+					return
+				}
+				continue
+			}
+			if err := writeWSMessage(ctx, conn, WSMessage{Type: "stream_end"}, &writeMu); err != nil {
+				cancel()
+				return
+			}
+			if err := h.emitApprovalEvents(ctx, conn, &writeMu, sessionID); err != nil {
+				cancel()
+				return
+			}
 
 		case "ping":
 			if err := writeWSMessage(ctx, conn, WSMessage{Type: "pong"}, &writeMu); err != nil {
@@ -170,6 +244,27 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+func (h *Handler) emitApprovalEvents(ctx context.Context, conn *websocket.Conn, mu *sync.Mutex, sessionID string) error {
+	if h.engine == nil {
+		return nil
+	}
+	approvals, err := h.engine.ListSessionApprovals(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	for i := range approvals {
+		eventType := "approval_updated"
+		if approvals[i].Status == string(protocol.ApprovalStatusPending) {
+			eventType = "approval_required"
+		}
+		approval := approvals[i]
+		if err := writeWSMessage(ctx, conn, WSMessage{Type: eventType, Approval: &approval}, mu); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (h *Handler) resolvePersonaName(r *http.Request) string {

@@ -15,7 +15,7 @@ import (
 const resumeToolDescription = `Resume a paused Work task after making an Emotion-level decision.
 
 Use this when delegate_to_work returned {"status":"needs_emotion_decision", ...}.
-Provide task_id and your decision fields.`
+Provide task_id and either decision fields or an approval_request_id for fail-closed decisions.`
 
 var resumeToolSchema = json.RawMessage(`{
   "type":"object",
@@ -23,9 +23,10 @@ var resumeToolSchema = json.RawMessage(`{
     "task_id":{"type":"string"},
     "decision":{"type":"string"},
     "reason":{"type":"string"},
-    "constraints_delta":{"type":"array","items":{"type":"string"}}
+    "constraints_delta":{"type":"array","items":{"type":"string"}},
+    "approval_request_id":{"type":"string"}
   },
-  "required":["task_id","decision"],
+  "required":["task_id"],
   "additionalProperties":false
 }`)
 
@@ -41,10 +42,11 @@ func NewResumeTool(runtime *Runtime, pending *PendingRegistry, journalDir string
 
 	handler := func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 		var req struct {
-			TaskID           string   `json:"task_id"`
-			Decision         string   `json:"decision"`
-			Reason           string   `json:"reason"`
-			ConstraintsDelta []string `json:"constraints_delta"`
+			TaskID            string   `json:"task_id"`
+			Decision          string   `json:"decision"`
+			Reason            string   `json:"reason"`
+			ConstraintsDelta  []string `json:"constraints_delta"`
+			ApprovalRequestID string   `json:"approval_request_id"`
 		}
 		if err := decodeStrictJSON(input, &req); err != nil {
 			return nil, fmt.Errorf("resume_work: invalid input: %w", err)
@@ -69,6 +71,53 @@ func NewResumeTool(runtime *Runtime, pending *PendingRegistry, journalDir string
 			return output, nil
 		}
 
+		resp := protocol.DecisionResponse{
+			TaskID:           req.TaskID,
+			Decision:         req.Decision,
+			Reason:           req.Reason,
+			ConstraintsDelta: req.ConstraintsDelta,
+		}
+		resumeCtx := ctx
+		releaseClaim := true
+		defer func() {
+			if releaseClaim && pending != nil {
+				_ = pending.ReleaseClaim(sessionID, req.TaskID, claim.ClaimID)
+			}
+		}()
+
+		if claim.FailClosed {
+			if pending == nil || pending.approvals == nil || claim.ApprovalRequestID == "" || req.ApprovalRequestID == "" || req.ApprovalRequestID != claim.ApprovalRequestID {
+				output, _ := json.Marshal(map[string]string{
+					"status":              "awaiting_approval",
+					"task_id":             req.TaskID,
+					"approval_request_id": claim.ApprovalRequestID,
+				})
+				return output, nil
+			}
+			approval, err := pending.approvals.consumeRequestForResume(sessionID, req.TaskID, req.ApprovalRequestID)
+			if err != nil {
+				output, _ := json.Marshal(map[string]string{
+					"status":              "awaiting_approval",
+					"task_id":             req.TaskID,
+					"approval_request_id": claim.ApprovalRequestID,
+				})
+				return output, nil
+			}
+			resp.Decision = approval.Request.SelectedOptionID
+			if resp.Reason == "" {
+				resp.Reason = fmt.Sprintf("approval_request %s resolved via %s", approval.Request.ID, approval.PreviousStatus)
+			}
+			if approval.PreviousStatus == protocol.ApprovalStatusApproved {
+				paused.Brief.PermissionScope = "approved-destructive"
+				resumeCtx = tool.WithApproval(resumeCtx, tool.ApprovalContext{
+					RequestID:        approval.Request.ID,
+					AllowDestructive: true,
+				})
+			}
+		} else if req.Decision == "" {
+			return nil, fmt.Errorf("resume_work: decision is required when approval_request_id is absent")
+		}
+
 		journal, err := Open(journalDir, req.TaskID, time.Now().UTC(), logger)
 		if err != nil {
 			if logger != nil {
@@ -82,12 +131,6 @@ func NewResumeTool(runtime *Runtime, pending *PendingRegistry, journalDir string
 			}
 		}()
 
-		resp := protocol.DecisionResponse{
-			TaskID:           req.TaskID,
-			Decision:         req.Decision,
-			Reason:           req.Reason,
-			ConstraintsDelta: req.ConstraintsDelta,
-		}
 		if claim.WasStale {
 			staleDuration := time.Since(claim.CreatedAt).Round(time.Minute)
 			resp.Reason = fmt.Sprintf("[STALE CONTEXT: paused %s, re-verify assumptions] %s", staleDuration, resp.Reason)
@@ -95,12 +138,13 @@ func NewResumeTool(runtime *Runtime, pending *PendingRegistry, journalDir string
 		if journal != nil {
 			journal.Write("decision_response_emotion", paused.Round, map[string]any{
 				"task_id":  req.TaskID,
-				"decision": req.Decision,
-				"reason":   req.Reason,
+				"decision": resp.Decision,
+				"reason":   resp.Reason,
 			})
 		}
 
-		outcome := runtime.Resume(ctx, paused, resp, journal)
+		releaseClaim = false
+		outcome := runtime.Resume(resumeCtx, paused, resp, journal)
 		progressCB := progress.CallbackFromContext(ctx)
 		if outcome.Report != nil {
 			if progressCB != nil {

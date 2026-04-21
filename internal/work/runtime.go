@@ -326,7 +326,17 @@ func (r *Runtime) runLoop(
 					messages = r.appendResultsAndSnip(messages, results, journal, round)
 					return RunOutcome{}, false
 				}
-				if packet.TaskID == "" {
+				packetTaskID := strings.TrimSpace(packet.TaskID)
+				switch {
+				case packetTaskID == "", strings.EqualFold(packetTaskID, "unknown"):
+					packet.TaskID = brief.TaskID
+				case brief.TaskID != "" && packetTaskID != brief.TaskID:
+					if r.cfg.Logger != nil {
+						r.cfg.Logger.Warn("request_decision task_id mismatch; overriding to brief task_id",
+							"packet_task_id", packet.TaskID,
+							"brief_task_id", brief.TaskID,
+						)
+					}
 					packet.TaskID = brief.TaskID
 				}
 				if packet.CreatedAt.IsZero() {

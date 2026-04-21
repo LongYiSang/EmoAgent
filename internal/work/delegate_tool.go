@@ -28,7 +28,7 @@ var delegateToolSchema = json.RawMessage(`{
 		"background":{"type":"string"},
 		"constraints":{"type":"array","items":{"type":"string"}},
 		"acceptance_criteria":{"type":"array","items":{"type":"string"}},
-		"permission_scope":{"type":"string","enum":["read-only","workspace-write"]}
+		"permission_scope":{"type":"string","enum":["read-only","workspace-write","approved-destructive"]}
 	},
 	"required":["goal","permission_scope"],
 	"additionalProperties":false
@@ -90,7 +90,9 @@ func NewDelegateTool(runtime *Runtime, pending *PendingRegistry, journalDir stri
 
 		sessionID := SessionIDFromContext(ctx)
 		if pending != nil {
-			pending.Put(sessionID, outcome.Paused.TaskID, outcome.Paused)
+			if err := pending.Put(sessionID, outcome.Paused.TaskID, outcome.Paused); err != nil {
+				return nil, fmt.Errorf("delegate_to_work: persist paused task: %w", err)
+			}
 		}
 		if journal != nil {
 			journal.Write("task_paused", outcome.Paused.Round, map[string]any{

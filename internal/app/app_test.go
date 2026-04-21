@@ -14,6 +14,7 @@ import (
 	"github.com/longyisang/emoagent/internal/apperrors"
 	"github.com/longyisang/emoagent/internal/chat"
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/storage"
 	"github.com/longyisang/emoagent/internal/tool"
 	"github.com/longyisang/emoagent/internal/tool/builtin"
@@ -90,6 +91,9 @@ func (a *routeTestAdminApp) GetSessionDetail(ctx context.Context, id string) (*s
 }
 func (a *routeTestAdminApp) DeleteSession(ctx context.Context, id string) error {
 	return nil
+}
+func (a *routeTestAdminApp) ListSessionApprovals(ctx context.Context, sessionID string) ([]protocol.ApprovalRequest, error) {
+	return nil, nil
 }
 func (a *routeTestAdminApp) GetDefaultPersonaName() string {
 	if a.defaultKey == "" {

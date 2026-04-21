@@ -158,7 +158,7 @@
     .session-main {
       min-width: 0;
       display: grid;
-      grid-template-rows: auto minmax(0, 1fr) auto;
+      grid-template-rows: auto minmax(0, 1fr) auto auto;
       min-height: 0;
       height: 100%;
       overflow: hidden;
@@ -234,6 +234,99 @@
     }
     .admin-link:hover {
       border-color: rgba(219,111,77,.28);
+    }
+    .approval-stack {
+      display: none;
+      gap: 12px;
+      padding: 16px 24px 0;
+      overflow-y: auto;
+      max-height: 220px;
+    }
+    .approval-card {
+      border: 1px solid rgba(219,111,77,.18);
+      background: linear-gradient(180deg, rgba(255,248,243,.96), rgba(255,255,255,.94));
+      border-radius: 20px;
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+      box-shadow: 0 10px 20px rgba(88,55,38,.06);
+    }
+    .approval-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-start;
+    }
+    .approval-title {
+      font-size: 15px;
+      font-weight: 700;
+    }
+    .approval-meta {
+      font-size: 12px;
+      color: var(--muted);
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 6px;
+    }
+    .approval-status {
+      display: inline-flex;
+      align-items: center;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(219,111,77,.12);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .approval-body {
+      display: grid;
+      gap: 10px;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .approval-options {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    .approval-option {
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 10px 12px;
+      background: rgba(255,255,255,.82);
+    }
+    .approval-option strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 13px;
+    }
+    .approval-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .approval-action {
+      min-height: 40px;
+      padding: 0 14px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,.95);
+      color: var(--text);
+      cursor: pointer;
+      font-weight: 700;
+    }
+    .approval-action.primary {
+      background: linear-gradient(135deg, #db6f4d, #c95735);
+      color: white;
+      border-color: transparent;
+    }
+    .approval-action:disabled {
+      opacity: .5;
+      cursor: default;
     }
     .messages {
       padding: 24px;
@@ -430,6 +523,7 @@
         </div>
       </header>
       <section class="messages" id="messages"></section>
+      <section class="approval-stack" id="approvals"></section>
       <form id="composer">
         <textarea id="input" placeholder="Enter 输入 Shift+Enter 换行"></textarea>
         <button class="send-button" id="send" type="submit">Send</button>
@@ -441,6 +535,7 @@
     const statusEl = document.getElementById('status');
     const subtitleEl = document.getElementById('subtitle');
     const sidebarPersonaEl = document.getElementById('sidebar-persona');
+    const approvalsEl = document.getElementById('approvals');
     const messagesEl = document.getElementById('messages');
     const sessionListEl = document.getElementById('session-list');
     const sidebarEl = document.getElementById('sidebar');
@@ -462,6 +557,8 @@
     let currentSessionId = new URLSearchParams(location.search).get('session_id') || '';
     let currentPersonaKey = '';
     let sessionList = [];
+    let approvals = [];
+    const pendingApprovalActions = new Set();
     let workProgressNode = null;
 
     function messageField(item, field) {
@@ -479,6 +576,7 @@
       sending = next;
       input.disabled = next;
       send.disabled = next;
+      renderApprovals();
       if (!next) {
         input.focus();
       }
@@ -567,6 +665,163 @@
         if (content) {
           appendMessage(role, content);
         }
+      }
+    }
+
+    function approvalField(item, field) {
+      if (!item || typeof item !== 'object') {
+        return '';
+      }
+      return item[field] ?? item[field[0].toUpperCase() + field.slice(1)] ?? '';
+    }
+
+    function approvalOptionsOf(item) {
+      return item?.options || item?.Options || [];
+    }
+
+    function approvalIdOf(item) {
+      return approvalField(item, 'id');
+    }
+
+    function upsertApproval(item) {
+      const id = approvalIdOf(item);
+      if (!id) {
+        return;
+      }
+      const next = [...approvals];
+      const index = next.findIndex((candidate) => approvalIdOf(candidate) === id);
+      if (index >= 0) {
+        next[index] = item;
+      } else {
+        next.push(item);
+      }
+      approvals = next;
+      if ((approvalField(item, 'status') || 'pending') !== 'pending') {
+        pendingApprovalActions.delete(id);
+      }
+      renderApprovals();
+    }
+
+    function syncPendingApprovalActions() {
+      const pendingIDs = new Set();
+      for (const item of approvals) {
+        const id = approvalIdOf(item);
+        if (!id) {
+          continue;
+        }
+        if ((approvalField(item, 'status') || 'pending') === 'pending') {
+          pendingIDs.add(id);
+        }
+      }
+      for (const id of pendingApprovalActions) {
+        if (!pendingIDs.has(id)) {
+          pendingApprovalActions.delete(id);
+        }
+      }
+    }
+
+    async function loadApprovals(sessionID = currentSessionId) {
+      if (!sessionID) {
+        approvals = [];
+        renderApprovals();
+        return;
+      }
+      try {
+        const payload = await requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/approvals`);
+        approvals = payload.approvals || [];
+      } catch (_) {
+        approvals = [];
+      }
+      syncPendingApprovalActions();
+      renderApprovals();
+    }
+
+    function renderApprovals() {
+      approvalsEl.innerHTML = '';
+      if (!currentSessionId || !approvals.length) {
+        approvalsEl.style.display = 'none';
+        return;
+      }
+      approvalsEl.style.display = 'grid';
+
+      for (const item of approvals) {
+        const approvalID = approvalIdOf(item);
+        const status = approvalField(item, 'status') || 'pending';
+        const actionPending = approvalID ? pendingApprovalActions.has(approvalID) : false;
+        const rejectOptionID = approvalField(item, 'reject_option_id') || approvalField(item, 'rejectOptionID');
+        const options = approvalOptionsOf(item);
+        const card = document.createElement('article');
+        card.className = 'approval-card';
+
+        const header = document.createElement('div');
+        header.className = 'approval-head';
+        header.innerHTML = `
+          <div>
+            <div class="approval-title">${approvalField(item, 'goal_summary') || approvalField(item, 'goalSummary') || '需要人工审批'}</div>
+            <div class="approval-meta">
+              <span>Task: ${approvalField(item, 'task_id') || approvalField(item, 'taskID') || '-'}</span>
+              <span>Expires: ${formatSessionTime(approvalField(item, 'expires_at') || approvalField(item, 'expiresAt'))}</span>
+            </div>
+          </div>
+          <span class="approval-status">${status}</span>
+        `;
+        card.appendChild(header);
+
+        const body = document.createElement('div');
+        body.className = 'approval-body';
+        body.innerHTML = `<div>${approvalField(item, 'question') || ''}</div>`;
+        card.appendChild(body);
+
+        if (options.length) {
+          const list = document.createElement('ul');
+          list.className = 'approval-options';
+          for (const option of options) {
+            const selected = (approvalField(item, 'selected_option_id') || approvalField(item, 'selectedOptionID')) === approvalField(option, 'id');
+            const row = document.createElement('li');
+            row.className = 'approval-option';
+            row.innerHTML = `
+              <strong>${approvalField(option, 'id')}${selected ? ' · selected' : ''}</strong>
+              <span>${approvalField(option, 'summary')}</span>
+            `;
+            list.appendChild(row);
+          }
+          card.appendChild(list);
+        }
+
+        if (status === 'pending') {
+          const actions = document.createElement('div');
+          actions.className = 'approval-actions';
+          for (const option of options) {
+            const optionID = approvalField(option, 'id');
+            if (!optionID || optionID === rejectOptionID) {
+              continue;
+            }
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'approval-action primary';
+            button.disabled = actionPending;
+            button.textContent = `批准 ${approvalField(option, 'summary') || optionID}`;
+            button.addEventListener('click', async () => {
+              await sendApprovalAction(approvalID, 'approve', optionID);
+            });
+            actions.appendChild(button);
+          }
+          if (rejectOptionID) {
+            const rejectSummary = options.find((option) => approvalField(option, 'id') === rejectOptionID)?.summary || rejectOptionID;
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'approval-action';
+            button.disabled = actionPending;
+            button.textContent = `拒绝并选择 ${rejectSummary}`;
+            button.addEventListener('click', async () => {
+              await sendApprovalAction(approvalID, 'reject', '');
+            });
+            actions.appendChild(button);
+          }
+          card.appendChild(actions);
+        }
+
+        approvalsEl.appendChild(card);
       }
     }
 
@@ -793,6 +1048,7 @@
               resolveConnectAttempt();
             }
             await loadSessionList();
+            await loadApprovals(currentSessionId);
             break;
           case 'greeting':
             appendMessage('assistant', payload.content || '');
@@ -810,15 +1066,23 @@
           case 'stream_end':
             pendingAssistant = null;
             clearWorkProgress();
+            pendingApprovalActions.clear();
             setSending(false);
             await loadSessionList();
+            await loadApprovals(currentSessionId);
             break;
           case 'error':
             appendMessage('error', payload.content || 'Unknown error');
             pendingAssistant = null;
             clearWorkProgress();
+            pendingApprovalActions.clear();
             setSending(false);
             await loadSessionList();
+            await loadApprovals(currentSessionId);
+            break;
+          case 'approval_required':
+          case 'approval_updated':
+            upsertApproval(payload.approval || payload.Approval);
             break;
           case 'work_progress':
             showWorkProgress(payload.content || '');
@@ -856,6 +1120,7 @@
             try {
               const detail = await loadSessionDetail(currentSessionId);
               renderHistory(detail.messages || []);
+              await loadApprovals(currentSessionId);
             } catch (_) { /* ignore */ }
           }
           connect();
@@ -935,6 +1200,7 @@
           const detail = await loadSessionDetail(currentSessionId);
           currentPersonaKey = detail.persona || detail.Persona || currentPersonaKey;
           renderHistory(detail.messages || []);
+          await loadApprovals(currentSessionId);
         } catch (error) {
           currentSessionId = '';
         }
@@ -943,6 +1209,8 @@
       if (!currentSessionId) {
         currentPersonaKey = currentPersonaKey || await loadDefaultPersona();
         clearMessages();
+        approvals = [];
+        renderApprovals();
       }
 
       updateSubtitle();
@@ -959,6 +1227,7 @@
         currentSessionId = sessionID;
         currentPersonaKey = detail.persona || detail.Persona || personaKey || currentPersonaKey;
         renderHistory(detail.messages || []);
+        await loadApprovals(currentSessionId);
         updateSubtitle();
         syncURL();
         renderSessionList();
@@ -974,6 +1243,8 @@
       await closeSocket();
       currentSessionId = '';
       clearMessages();
+      approvals = [];
+      renderApprovals();
       updateSubtitle();
       syncURL();
       renderSessionList();
@@ -1014,6 +1285,27 @@
         });
         setSending(false);
         setStatus(error.message || 'Failed to connect');
+      }
+    }
+
+    async function sendApprovalAction(requestID, action, optionID) {
+      if (!requestID || pendingApprovalActions.has(requestID)) {
+        return;
+      }
+      pendingApprovalActions.add(requestID);
+      renderApprovals();
+      try {
+        await ensureConnected();
+        socket.send(JSON.stringify({
+          type: 'approval_action',
+          request_id: requestID,
+          action,
+          option_id: optionID || '',
+        }));
+      } catch (error) {
+        pendingApprovalActions.delete(requestID);
+        renderApprovals();
+        setStatus(error.message || 'Failed to send approval action');
       }
     }
 

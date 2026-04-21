@@ -105,6 +105,11 @@ func ValidateDecisionPacket(packet *protocol.DecisionPacket, brief protocol.Task
 			return fmt.Errorf("recommended_option %q does not match any option id", packet.RecommendedOption)
 		}
 	}
+	if packet.RejectOptionID != "" {
+		if _, ok := optionIDs[packet.RejectOptionID]; !ok {
+			return fmt.Errorf("reject_option_id %q does not match any option id", packet.RejectOptionID)
+		}
+	}
 	if err := validateBoundedOptional("recommendation_reason", packet.RecommendationReason, maxPacketRecommendationReasonRunes); err != nil {
 		return err
 	}
@@ -143,6 +148,11 @@ func ValidateDecisionPacket(packet *protocol.DecisionPacket, brief protocol.Task
 	case protocol.CatHighRisk, protocol.CatIrreversible, protocol.CatStrategyShift:
 		if strings.TrimSpace(packet.RecommendationReason) == "" {
 			return fmt.Errorf("category %q requires recommendation_reason", packet.Category)
+		}
+	}
+	if packet.Category == protocol.CatHighRisk || packet.Category == protocol.CatIrreversible {
+		if strings.TrimSpace(packet.RejectOptionID) == "" {
+			return fmt.Errorf("category %q requires reject_option_id", packet.Category)
 		}
 	}
 

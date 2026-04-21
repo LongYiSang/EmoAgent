@@ -56,8 +56,18 @@ func TestValidateAndComplete_WorkspaceWriteAccepted(t *testing.T) {
 	}
 }
 
+func TestValidateAndComplete_ApprovedDestructiveAccepted(t *testing.T) {
+	b := &protocol.TaskBrief{
+		Goal:            "delete generated cache files after approval",
+		PermissionScope: "approved-destructive",
+	}
+	if err := ValidateAndComplete(b); err != nil {
+		t.Fatalf("ValidateAndComplete should accept approved-destructive, got: %v", err)
+	}
+}
+
 func TestValidateAndComplete_UnsupportedScopeRejected(t *testing.T) {
-	for _, scope := range []string{"approved-destructive", "superuser", ""} {
+	for _, scope := range []string{"superuser", ""} {
 		t.Run(scope, func(t *testing.T) {
 			b := &protocol.TaskBrief{
 				Goal:            "edit config",

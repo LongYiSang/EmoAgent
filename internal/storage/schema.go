@@ -168,6 +168,45 @@ CREATE INDEX IF NOT EXISTS idx_archived_decisions_status
 		Version: 8,
 		SQL:     `ALTER TABLE llm_profiles ADD COLUMN summary_temperature REAL;`,
 	},
+	{
+		Version: 9,
+		SQL: `
+ALTER TABLE pending_decisions ADD COLUMN approval_request_id TEXT;
+ALTER TABLE archived_decisions ADD COLUMN approval_request_id TEXT;
+
+CREATE TABLE IF NOT EXISTS approval_requests (
+    id                    TEXT PRIMARY KEY,
+    session_id            TEXT NOT NULL,
+    task_id               TEXT NOT NULL,
+    category              TEXT NOT NULL,
+    risk_level            TEXT NOT NULL,
+    goal_summary          TEXT NOT NULL,
+    question              TEXT NOT NULL,
+    options_json          TEXT NOT NULL,
+    recommended_option    TEXT NOT NULL DEFAULT '',
+    recommendation_reason TEXT NOT NULL DEFAULT '',
+    reject_option_id      TEXT NOT NULL,
+    status                TEXT NOT NULL,
+    selected_option_id    TEXT NOT NULL DEFAULT '',
+    actor_channel         TEXT NOT NULL DEFAULT '',
+    actor_ref             TEXT NOT NULL DEFAULT '',
+    expires_at            TEXT NOT NULL,
+    decided_at            TEXT,
+    consumed_at           TEXT,
+    created_at            TEXT NOT NULL,
+    updated_at            TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_approval_requests_session_status
+    ON approval_requests(session_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_approval_requests_task_created
+    ON approval_requests(task_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_approval_requests_expires_at
+    ON approval_requests(expires_at);
+`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.

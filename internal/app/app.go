@@ -22,6 +22,7 @@ import (
 	contextutil "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/logger"
+	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/storage"
 	"github.com/longyisang/emoagent/internal/tool"
@@ -53,6 +54,7 @@ type App struct {
 	ActiveLLMProfile *config.LLMProfile
 	engine           *chat.Engine
 	toolRegistry     *tool.Registry
+	approvalService  *work.ApprovalService
 	environment      runtimeenv.Facts
 	mu               sync.RWMutex
 	cancel           context.CancelFunc
@@ -184,12 +186,14 @@ func (a *App) Run(ctx context.Context) error {
 
 	dispatcher := tool.NewDispatcher(a.toolRegistry, tool.MinimalSchemaValidator{}, a.Logger)
 	var pendingRegistry *work.PendingRegistry
+	var approvalService *work.ApprovalService
 	if _, ok := a.toolRegistry.GetSpec("delegate_to_work"); !ok {
 		workLLM, workProfile, err := a.buildWorkClient()
 		if err != nil {
 			a.Logger.Warn("work runtime disabled", "error", err)
 		} else {
-			pendingRegistry = work.NewPendingRegistry(a.DB.SqlDB(), a.Logger, work.PendingRegistryConfig{
+			approvalService = work.NewApprovalService(a.DB.SqlDB(), a.Logger)
+			pendingRegistry = work.NewPendingRegistry(a.DB.SqlDB(), approvalService, a.Logger, work.PendingRegistryConfig{
 				SoftTTL:        cfg.Work.SoftTTL,
 				HardTTL:        cfg.Work.HardTTL,
 				ArchiveTTL:     cfg.Work.ArchiveTTL,
@@ -274,8 +278,10 @@ func (a *App) Run(ctx context.Context) error {
 		Registry:           a.toolRegistry,
 		Dispatcher:         dispatcher,
 		Pending:            pendingRegistry,
+		Approvals:          approvalService,
 		Environment:        a.environment,
 	})
+	a.approvalService = approvalService
 	chatHandler := chat.NewHandler(a.engine, a, a.Logger)
 
 	staticSub, err := fs.Sub(web.StaticFS, "static")
@@ -335,6 +341,7 @@ func registerRoutes(mux *http.ServeMux, api *web.APIHandler, chatHandler http.Ha
 	mux.HandleFunc("GET /api/sessions", api.HandleListSessions)
 	mux.HandleFunc("GET /api/sessions/latest", api.HandleGetLatestSession)
 	mux.HandleFunc("GET /api/sessions/{id}", api.HandleGetSession)
+	mux.HandleFunc("GET /api/sessions/{id}/approvals", api.HandleListSessionApprovals)
 	mux.HandleFunc("DELETE /api/sessions/{id}", api.HandleDeleteSession)
 	mux.Handle("/ws", chatHandler)
 	mux.Handle("/", staticHandler)
@@ -751,6 +758,13 @@ func (a *App) DeleteSession(ctx context.Context, id string) error {
 		return ErrSessionNotFound
 	}
 	return a.DB.DeleteSession(ctx, id)
+}
+
+func (a *App) ListSessionApprovals(ctx context.Context, sessionID string) ([]protocol.ApprovalRequest, error) {
+	if a.approvalService == nil {
+		return []protocol.ApprovalRequest{}, nil
+	}
+	return a.approvalService.ListSessionApprovals(sessionID, nil), nil
 }
 
 // ListLLMProfiles returns all stored LLM profiles sorted by name.

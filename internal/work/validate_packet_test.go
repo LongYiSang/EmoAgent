@@ -20,6 +20,7 @@ func validDecisionPacket(taskID string) protocol.DecisionPacket {
 			{ID: "flat", Summary: "Flatten headings into one level."},
 		},
 		RecommendedOption: "keep",
+		RejectOptionID:    "flat",
 	}
 }
 
@@ -142,6 +143,34 @@ func TestValidateDecisionPacket_HighRiskRequiresRecommendationReason(t *testing.
 
 	if err := ValidateDecisionPacket(&packet, brief); err == nil {
 		t.Fatal("expected high_risk without recommendation_reason to fail validation")
+	}
+}
+
+func TestValidateDecisionPacket_HighRiskRequiresRejectOptionID(t *testing.T) {
+	brief := protocol.TaskBrief{TaskID: "task-1"}
+	packet := validDecisionPacket(brief.TaskID)
+	packet.Category = protocol.CatHighRisk
+	packet.RiskLevel = "high"
+	packet.RelevantFindings = []protocol.DecisionEvidence{{Finding: "This may delete generated files."}}
+	packet.RecommendationReason = "Deleting the generated files is the safest fix."
+	packet.RejectOptionID = ""
+
+	if err := ValidateDecisionPacket(&packet, brief); err == nil {
+		t.Fatal("expected high_risk without reject_option_id to fail validation")
+	}
+}
+
+func TestValidateDecisionPacket_RejectOptionMustExist(t *testing.T) {
+	brief := protocol.TaskBrief{TaskID: "task-1"}
+	packet := validDecisionPacket(brief.TaskID)
+	packet.Category = protocol.CatHighRisk
+	packet.RiskLevel = "high"
+	packet.RelevantFindings = []protocol.DecisionEvidence{{Finding: "This may delete generated files."}}
+	packet.RecommendationReason = "Deleting the generated files is the safest fix."
+	packet.RejectOptionID = "nope"
+
+	if err := ValidateDecisionPacket(&packet, brief); err == nil {
+		t.Fatal("expected unknown reject_option_id to fail validation")
 	}
 }
 

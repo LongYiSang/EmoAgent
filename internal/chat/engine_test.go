@@ -1076,7 +1076,8 @@ func TestEnginePendingDecisionChainAcrossTurns(t *testing.T) {
 
 	registry := tool.NewRegistry()
 	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, logger)
-	pending := work.NewPendingRegistry(db.SqlDB(), logger, work.PendingRegistryConfig{
+	approvals := work.NewApprovalService(db.SqlDB(), logger)
+	pending := work.NewPendingRegistry(db.SqlDB(), approvals, logger, work.PendingRegistryConfig{
 		SoftTTL:        time.Hour,
 		HardTTL:        2 * time.Hour,
 		ArchiveTTL:     24 * time.Hour,
@@ -1107,14 +1108,17 @@ func TestEnginePendingDecisionChainAcrossTurns(t *testing.T) {
 			KeyTradeoffs:         []protocol.DecisionTradeoff{{Dimension: "风险", Note: "删除后不可恢复"}},
 			RecommendedOption:    "confirm_delete",
 			RecommendationReason: "用户请求清理已完成文件",
+			RejectOptionID:       "cancel",
 			SuggestsUserInput:    true,
 			CreatedAt:            time.Now().UTC(),
 		}
-		pending.Put(delegateSessionID, pausedTaskID, &work.PausedWork{
+		if err := pending.Put(delegateSessionID, pausedTaskID, &work.PausedWork{
 			TaskID:    pausedTaskID,
 			Packet:    packet,
 			CreatedAt: time.Now().UTC(),
-		})
+		}); err != nil {
+			return nil, err
+		}
 		return json.Marshal(work.NeedsEmotionDecision{
 			Status:         "needs_emotion_decision",
 			TaskID:         pausedTaskID,
@@ -1252,6 +1256,135 @@ func TestEnginePendingDecisionChainAcrossTurns(t *testing.T) {
 
 	if got := pending.ListInjectable(sessionID); len(got) != 0 {
 		t.Fatalf("pending decisions should be consumed after resume, got %d", len(got))
+	}
+}
+
+func TestEngineSendMessage_EmitsApprovalRequiredBeforeFinalAssistantReply(t *testing.T) {
+	llmClient := &scriptedEngineClient{
+		responses: []*llm.ChatResponse{
+			toolUseResponse("call_delegate", "delegate_to_work", `{"goal":"delete finish files","permission_scope":"workspace-write"}`),
+			endTurnResponse("我需要你确认是否继续执行删除操作。"),
+		},
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chat.db")
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+	db, err := storage.Open(path, logger)
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	registry := tool.NewRegistry()
+	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, logger)
+	approvals := work.NewApprovalService(db.SqlDB(), logger)
+	pending := work.NewPendingRegistry(db.SqlDB(), approvals, logger, work.PendingRegistryConfig{
+		SoftTTL:        time.Hour,
+		HardTTL:        2 * time.Hour,
+		ArchiveTTL:     24 * time.Hour,
+		ResumeClaimTTL: 10 * time.Minute,
+	})
+
+	const pausedTaskID = "task-approval-1"
+	registry.Register(tool.Spec{
+		Name:        "delegate_to_work",
+		Description: "test delegate",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"goal":{"type":"string"},"permission_scope":{"type":"string"}},"required":["goal","permission_scope"],"additionalProperties":false}`),
+		Scope:       tool.ScopeEmotion,
+		Permission:  tool.PermReadOnly,
+	}, func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		packet := protocol.DecisionPacket{
+			TaskID:               pausedTaskID,
+			Category:             protocol.CatHighRisk,
+			RiskLevel:            "medium",
+			GoalSummary:          "删除 docs/todo 下 [finish] 文件",
+			Question:             "是否确认执行删除？",
+			WhyBlocked:           "这是高风险不可逆操作",
+			Options:              []protocol.DecisionOption{{ID: "confirm_delete", Summary: "确认删除"}, {ID: "cancel", Summary: "取消"}},
+			RecommendedOption:    "confirm_delete",
+			RecommendationReason: "用户请求清理已完成文件",
+			RejectOptionID:       "cancel",
+			SuggestsUserInput:    true,
+			CreatedAt:            time.Now().UTC(),
+		}
+		if err := pending.Put(work.SessionIDFromContext(ctx), pausedTaskID, &work.PausedWork{
+			TaskID:    pausedTaskID,
+			Packet:    packet,
+			CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			return nil, err
+		}
+		return json.Marshal(work.NeedsEmotionDecision{
+			Status:         "needs_emotion_decision",
+			TaskID:         pausedTaskID,
+			DecisionPacket: packet,
+		})
+	})
+
+	engine := NewEngine(EngineConfig{
+		LLM:          llmClient,
+		DB:           db,
+		Logger:       logger,
+		Model:        "test-model",
+		SummaryModel: "summary-model",
+		MaxTokens:    512,
+		Temperature:  0.2,
+		ContextConfig: config.ContextConfig{
+			InputBudgetTokens:    24000,
+			SoftCompactRatio:     0.75,
+			HardCompactRatio:     0.92,
+			ReserveOutputTokens:  4096,
+			KeepRecentUserTurns:  6,
+			ToolResultSoftTokens: 1000,
+			ToolResultHardTokens: 3000,
+		},
+		Provider:   "openai",
+		Registry:   registry,
+		Dispatcher: dispatcher,
+		Pending:    pending,
+		Approvals:  approvals,
+	})
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	persona := &config.Persona{Name: "default", SystemPrompt: "You are warm."}
+
+	var timeline []string
+	ctx := withWSWriter(context.Background(), func(msg WSMessage) {
+		timeline = append(timeline, msg.Type)
+	})
+	reply, err := engine.SendMessage(ctx, sessionID, persona, "帮我清理 [finish] 文件", func(delta string) {
+		if delta != "" {
+			timeline = append(timeline, "delta:"+delta)
+		}
+	})
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if !strings.Contains(reply, "确认") {
+		t.Fatalf("reply = %q, want confirmation prompt", reply)
+	}
+
+	var approvalIndex, deltaIndex int = -1, -1
+	for i, item := range timeline {
+		if item == "approval_required" && approvalIndex == -1 {
+			approvalIndex = i
+		}
+		if strings.HasPrefix(item, "delta:") && deltaIndex == -1 {
+			deltaIndex = i
+		}
+	}
+	if approvalIndex == -1 {
+		t.Fatalf("timeline = %#v, want approval_required event", timeline)
+	}
+	if deltaIndex == -1 {
+		t.Fatalf("timeline = %#v, want assistant delta", timeline)
+	}
+	if approvalIndex > deltaIndex {
+		t.Fatalf("timeline = %#v, want approval_required before assistant delta", timeline)
 	}
 }
 

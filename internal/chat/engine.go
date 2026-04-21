@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,6 +37,7 @@ type EngineConfig struct {
 	Registry           *tool.Registry   // nil disables tool support
 	Dispatcher         *tool.Dispatcher // nil disables tool support
 	Pending            *work.PendingRegistry
+	Approvals          *work.ApprovalService
 	Environment        runtimeenv.Facts
 }
 
@@ -66,6 +68,7 @@ type Engine struct {
 	registry           *tool.Registry
 	dispatcher         *tool.Dispatcher
 	pending            *work.PendingRegistry
+	approvals          *work.ApprovalService
 	environment        runtimeenv.Facts
 }
 
@@ -109,6 +112,7 @@ func NewEngine(cfg EngineConfig) *Engine {
 		registry:           cfg.Registry,
 		dispatcher:         cfg.Dispatcher,
 		pending:            cfg.Pending,
+		approvals:          cfg.Approvals,
 		environment:        cfg.Environment,
 	}
 }
@@ -171,6 +175,19 @@ func (e *Engine) GetHistory(ctx context.Context, sessionID string, limit int) ([
 
 // SendMessage stores the user message, streams the model response, and persists the reply.
 func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *config.Persona, userContent string, cb func(delta string)) (string, error) {
+	return e.sendTurn(ctx, sessionID, persona, cb, turnOptions{
+		persistUser: true,
+		userContent: userContent,
+	})
+}
+
+type turnOptions struct {
+	persistUser bool
+	userContent string
+	extraSystem string
+}
+
+func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config.Persona, cb func(delta string), opts turnOptions) (string, error) {
 	e.mu.RLock()
 	client := e.llm
 	model := e.model
@@ -183,6 +200,7 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 	registry := e.registry
 	dispatcher := e.dispatcher
 	pending := e.pending
+	approvals := e.approvals
 	env := e.environment
 	e.mu.RUnlock()
 
@@ -196,24 +214,26 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 		return "", errors.New("persona is required")
 	}
 
-	if err := e.db.AddMessageWithMetadata(ctx, uuid.NewString(), sessionID, "user", userContent, visibleMessageMetadata("user", userContent)); err != nil {
-		e.logger.Error("failed to store user message", "session", sessionID, "error", err)
-		return "", err
-	}
-	if err := e.db.UpdateSessionTimestamp(ctx, sessionID); err != nil {
-		e.logger.Error("failed to update session timestamp", "session", sessionID, "error", err)
-		return "", err
-	}
-
-	// Auto-generate session title from the first user message.
-	session, err := e.db.GetSession(ctx, sessionID)
-	if err == nil && session != nil && session.Title == "" {
-		title := userContent
-		if runeCount := len([]rune(title)); runeCount > 30 {
-			title = string([]rune(title)[:30]) + "…"
+	if opts.persistUser {
+		if err := e.db.AddMessageWithMetadata(ctx, uuid.NewString(), sessionID, "user", opts.userContent, visibleMessageMetadata("user", opts.userContent)); err != nil {
+			e.logger.Error("failed to store user message", "session", sessionID, "error", err)
+			return "", err
 		}
-		if err := e.db.UpdateSessionTitle(ctx, sessionID, title); err != nil {
-			e.logger.Warn("failed to set session title", "session", sessionID, "error", err)
+		if err := e.db.UpdateSessionTimestamp(ctx, sessionID); err != nil {
+			e.logger.Error("failed to update session timestamp", "session", sessionID, "error", err)
+			return "", err
+		}
+
+		// Auto-generate session title from the first user message.
+		session, err := e.db.GetSession(ctx, sessionID)
+		if err == nil && session != nil && session.Title == "" {
+			title := opts.userContent
+			if runeCount := len([]rune(title)); runeCount > 30 {
+				title = string([]rune(title)[:30]) + "…"
+			}
+			if err := e.db.UpdateSessionTitle(ctx, sessionID, title); err != nil {
+				e.logger.Warn("failed to set session title", "session", sessionID, "error", err)
+			}
 		}
 	}
 
@@ -254,6 +274,9 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 	if err != nil {
 		e.logger.Error("failed to assemble llm context", "session", sessionID, "error", err)
 		return "", err
+	}
+	if opts.extraSystem != "" {
+		assembled.System += "\n\n" + opts.extraSystem
 	}
 	if state != nil {
 		state.ContextVersion = contextutil.CurrentContextVersion
@@ -302,7 +325,12 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 	reactiveRetryUsed := false
 	var reactiveRetryReport *contextutil.CompactReport
 	ctx = work.WithSessionID(ctx, sessionID)
-	if rawWriter := wsWriterFromContext(ctx); rawWriter != nil {
+	var approvalSnapshot map[string]string
+	rawWriter := wsWriterFromContext(ctx)
+	if rawWriter != nil && approvals != nil {
+		approvalSnapshot = snapshotApprovalStatuses(approvals.ListSessionApprovals(sessionID, nil))
+	}
+	if rawWriter != nil {
 		throttler := progress.NewThrottler(3 * time.Second)
 		personaPhrases := persona.WorkProgressPhrases
 		ctx = progress.WithCallback(ctx, func(event progress.Event) {
@@ -428,6 +456,9 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 		// 3. Convert results to provider-specific messages and append.
 		toolMsgs := tool.ResultsToMessages(provider, snippedResults)
 		messages = append(messages, toolMsgs...)
+		if rawWriter != nil && approvals != nil {
+			approvalSnapshot = emitApprovalDiff(rawWriter, approvalSnapshot, approvals.ListSessionApprovals(sessionID, nil))
+		}
 
 		// Rebuild request for next round.
 		req.Messages = messages
@@ -453,6 +484,47 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 	return resp.Content, nil
 }
 
+func (e *Engine) ListSessionApprovals(ctx context.Context, sessionID string) ([]protocol.ApprovalRequest, error) {
+	e.mu.RLock()
+	approvals := e.approvals
+	e.mu.RUnlock()
+	if approvals == nil {
+		return []protocol.ApprovalRequest{}, nil
+	}
+	return approvals.ListSessionApprovals(sessionID, nil), nil
+}
+
+func (e *Engine) ApplyApprovalAction(ctx context.Context, sessionID, requestID, action, optionID string) (*protocol.ApprovalRequest, error) {
+	e.mu.RLock()
+	approvals := e.approvals
+	e.mu.RUnlock()
+	if approvals == nil {
+		return nil, errors.New("approval service is not configured")
+	}
+	switch action {
+	case "approve":
+		if strings.TrimSpace(optionID) == "" {
+			return nil, errors.New("option_id is required for approve")
+		}
+		return approvals.ApproveRequest(sessionID, requestID, optionID, "web", "")
+	case "reject":
+		return approvals.RejectRequest(sessionID, requestID, "web", "")
+	default:
+		return nil, fmt.Errorf("unsupported approval action %q", action)
+	}
+}
+
+func (e *Engine) ContinueAfterApproval(ctx context.Context, sessionID string, persona *config.Persona, approval *protocol.ApprovalRequest, cb func(delta string)) (string, error) {
+	if approval == nil {
+		return "", errors.New("approval is required")
+	}
+	note := buildApprovalContinuationNote(approval)
+	return e.sendTurn(ctx, sessionID, persona, cb, turnOptions{
+		persistUser: false,
+		extraSystem: note,
+	})
+}
+
 func effectiveSummaryModel(model, summaryModel string) string {
 	if summaryModel != "" {
 		return summaryModel
@@ -474,6 +546,51 @@ func visibleMessageMetadata(role, content string) map[string]any {
 		"source":         role,
 		"token_estimate": contextutil.EstimateTokens(content),
 	}
+}
+
+func buildApprovalContinuationNote(approval *protocol.ApprovalRequest) string {
+	if approval == nil {
+		return ""
+	}
+	return fmt.Sprintf(
+		"## Internal Approval Event\nApproval request %s for task %s is now %s. Selected option: %s. Continue the paused task immediately if appropriate. Use resume_work with task_id and approval_request_id. Do not mention internal approval IDs to the user unless necessary.",
+		approval.ID,
+		approval.TaskID,
+		approval.Status,
+		approval.SelectedOptionID,
+	)
+}
+
+func snapshotApprovalStatuses(approvals []protocol.ApprovalRequest) map[string]string {
+	if len(approvals) == 0 {
+		return map[string]string{}
+	}
+	snapshot := make(map[string]string, len(approvals))
+	for _, approval := range approvals {
+		snapshot[approval.ID] = approval.Status
+	}
+	return snapshot
+}
+
+func emitApprovalDiff(emit func(WSMessage), previous map[string]string, current []protocol.ApprovalRequest) map[string]string {
+	next := snapshotApprovalStatuses(current)
+	if emit == nil {
+		return next
+	}
+	for i := range current {
+		approval := current[i]
+		prevStatus, existed := previous[approval.ID]
+		if existed && prevStatus == approval.Status {
+			continue
+		}
+		eventType := "approval_updated"
+		if approval.Status == string(protocol.ApprovalStatusPending) {
+			eventType = "approval_required"
+		}
+		approvalCopy := approval
+		emit(WSMessage{Type: eventType, Approval: &approvalCopy})
+	}
+	return next
 }
 
 func logCompactReport(logger *slog.Logger, level slog.Level, report contextutil.CompactReport, retryAttempt int, errorKind llm.ErrorKind, message string) {

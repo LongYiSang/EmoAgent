@@ -42,8 +42,8 @@ func TestDelegateTool_SchemaStaysValidatorCompatible(t *testing.T) {
 
 	permissionScope := props["permission_scope"].(map[string]any)
 	enum := permissionScope["enum"].([]any)
-	if len(enum) != 2 || enum[0] != "read-only" || enum[1] != "workspace-write" {
-		t.Fatalf("permission_scope enum = %#v, want [read-only workspace-write]", enum)
+	if len(enum) != 3 || enum[0] != "read-only" || enum[1] != "workspace-write" || enum[2] != "approved-destructive" {
+		t.Fatalf("permission_scope enum = %#v, want [read-only workspace-write approved-destructive]", enum)
 	}
 }
 
@@ -83,7 +83,7 @@ func TestDelegateTool_SchemaRejectsRemovedExpressionBrief(t *testing.T) {
 	}
 }
 
-func TestDelegateTool_HandlerRejectsUnsupportedScope(t *testing.T) {
+func TestDelegateTool_HandlerAcceptsApprovedDestructiveScope(t *testing.T) {
 	runtime := newTestRuntime(t, &scriptedLLM{
 		responses: []*llm.ChatResponse{textResp(`{"status":"completed","summary":"ok"}`)},
 	})
@@ -97,8 +97,17 @@ func TestDelegateTool_HandlerRejectsUnsupportedScope(t *testing.T) {
 		t.Fatalf("Marshal returned error: %v", err)
 	}
 
-	if _, err := handler(context.Background(), input); err == nil {
-		t.Fatal("handler should reject approved-destructive permission")
+	raw, err := handler(context.Background(), input)
+	if err != nil {
+		t.Fatalf("handler should accept approved-destructive permission, got: %v", err)
+	}
+
+	var report map[string]any
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if report["status"] != "completed" {
+		t.Fatalf("status = %#v, want completed", report["status"])
 	}
 }
 

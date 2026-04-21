@@ -14,6 +14,7 @@ import (
 
 	"github.com/longyisang/emoagent/internal/apperrors"
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/storage"
 )
 
@@ -32,6 +33,7 @@ type fakeAdminApp struct {
 	getErr              error
 	sessionErr          error
 	deleteSessionErr    error
+	approvals           []protocol.ApprovalRequest
 	lastCreate          config.LLMProfile
 	lastActivate        string
 	lastPersonaActivate string
@@ -42,6 +44,7 @@ type fakeAdminApp struct {
 	lastDeleteSessionID string
 	lastPhrasesKey      string
 	lastPhrasesValue    map[string][]string
+	lastApprovalSession string
 }
 
 func (f *fakeAdminApp) ListLLMProfiles() ([]config.LLMProfile, error) {
@@ -147,6 +150,10 @@ func (f *fakeAdminApp) GetSessionDetail(_ context.Context, id string) (*storage.
 func (f *fakeAdminApp) DeleteSession(_ context.Context, id string) error {
 	f.lastDeleteSessionID = id
 	return f.deleteSessionErr
+}
+func (f *fakeAdminApp) ListSessionApprovals(_ context.Context, sessionID string) ([]protocol.ApprovalRequest, error) {
+	f.lastApprovalSession = sessionID
+	return append([]protocol.ApprovalRequest(nil), f.approvals...), nil
 }
 
 func floatPtr(v float64) *float64 { return &v }
@@ -507,5 +514,48 @@ func TestHandleGetDefaultProgressPhrases(t *testing.T) {
 	}
 	if len(resp["phrases"]) == 0 {
 		t.Fatalf("phrases should not be empty: %#v", resp)
+	}
+}
+
+func TestHandleListSessionApprovals(t *testing.T) {
+	app := &fakeAdminApp{
+		approvals: []protocol.ApprovalRequest{
+			{
+				ID:             "approval-1",
+				SessionID:      "session-1",
+				TaskID:         "task-1",
+				Status:         string(protocol.ApprovalStatusPending),
+				RejectOptionID: "cancel",
+				Options:        []protocol.DecisionOption{{ID: "delete", Summary: "Delete it"}, {ID: "cancel", Summary: "Cancel"}},
+				GoalSummary:    "Delete generated files",
+				Question:       "Proceed?",
+				ExpiresAt:      "2026-04-21T10:00:00Z",
+				CreatedAt:      "2026-04-21T09:00:00Z",
+				UpdatedAt:      "2026-04-21T09:00:00Z",
+			},
+		},
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/session-1/approvals", nil)
+	req.SetPathValue("id", "session-1")
+	rec := httptest.NewRecorder()
+	handler.HandleListSessionApprovals(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if app.lastApprovalSession != "session-1" {
+		t.Fatalf("lastApprovalSession = %q, want session-1", app.lastApprovalSession)
+	}
+
+	var payload struct {
+		Approvals []protocol.ApprovalRequest `json:"approvals"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(payload.Approvals) != 1 || payload.Approvals[0].ID != "approval-1" {
+		t.Fatalf("payload.Approvals = %#v, want approval-1", payload.Approvals)
 	}
 }

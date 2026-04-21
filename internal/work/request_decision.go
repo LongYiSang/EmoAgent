@@ -65,6 +65,7 @@ var requestDecisionSchema = json.RawMessage(`{
     },
     "recommended_option":{"type":"string"},
     "recommendation_reason":{"type":"string"},
+    "reject_option_id":{"type":"string"},
     "suggests_user_input":{"type":"boolean"},
     "created_at":{"type":"string","format":"date-time"}
   },

@@ -166,6 +166,62 @@ func TestDispatcherExecute_PermissionDenied(t *testing.T) {
 	}
 }
 
+func TestDispatcherExecute_BashDestructiveCommandRequiresApprovalContext(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(Spec{
+		Name:        "bash",
+		Description: "Run shell command",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":false}`),
+		Scope:       ScopeWork,
+		Permission:  PermWorkspaceWrite,
+	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{"status":"ok"}`), nil
+	})
+	d := NewDispatcher(registry, &mockValidator{}, slog.Default())
+
+	call := Call{
+		ID:    "call_bash_rm",
+		Name:  "bash",
+		Input: json.RawMessage(`{"command":"rm -rf tmp"}`),
+	}
+
+	result := d.Execute(context.Background(), call, PermWorkspaceWrite)
+	if !result.IsError {
+		t.Fatal("expected destructive bash command to be denied without approval")
+	}
+
+	result = d.Execute(WithApproval(context.Background(), ApprovalContext{
+		RequestID:        "req-1",
+		AllowDestructive: true,
+	}), call, PermApprovedDestructive)
+	if result.IsError {
+		t.Fatalf("expected destructive bash command with approval to succeed, got: %s", result.Content)
+	}
+}
+
+func TestDispatcherExecute_BashNonDestructiveCommandDoesNotRequireApproval(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(Spec{
+		Name:        "bash",
+		Description: "Run shell command",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":false}`),
+		Scope:       ScopeWork,
+		Permission:  PermWorkspaceWrite,
+	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{"status":"ok"}`), nil
+	})
+	d := NewDispatcher(registry, &mockValidator{}, slog.Default())
+
+	result := d.Execute(context.Background(), Call{
+		ID:    "call_bash_dir",
+		Name:  "bash",
+		Input: json.RawMessage(`{"command":"dir"}`),
+	}, PermWorkspaceWrite)
+	if result.IsError {
+		t.Fatalf("expected non-destructive bash command to succeed, got: %s", result.Content)
+	}
+}
+
 func TestDispatcherExecute_HandlerError(t *testing.T) {
 	d := NewDispatcher(setupTestRegistry(), &mockValidator{}, slog.Default())
 
@@ -177,6 +233,27 @@ func TestDispatcherExecute_HandlerError(t *testing.T) {
 
 	if !result.IsError {
 		t.Fatal("expected error from failing handler")
+	}
+}
+
+func TestBashCommandRequiresApproval(t *testing.T) {
+	tests := []struct {
+		name  string
+		input json.RawMessage
+		want  bool
+	}{
+		{name: "rm", input: json.RawMessage(`{"command":"rm -rf tmp"}`), want: true},
+		{name: "powershell remove-item", input: json.RawMessage(`{"command":"Remove-Item -Recurse tmp"}`), want: true},
+		{name: "git reset hard", input: json.RawMessage(`{"command":"git reset --hard HEAD~1"}`), want: true},
+		{name: "echo", input: json.RawMessage(`{"command":"echo hello"}`), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := bashCommandRequiresApproval(tt.input); got != tt.want {
+				t.Fatalf("bashCommandRequiresApproval(%s) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
 	}
 }
 

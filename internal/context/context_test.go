@@ -354,6 +354,12 @@ func TestBuildEmotionContextWithPendingSummariesAddsResumeNote(t *testing.T) {
 			Options: []protocol.DecisionOption{
 				{ID: "a", Summary: "option a"},
 			},
+			Approval: &protocol.ApprovalSummary{
+				Required:  true,
+				RequestID: "approval-1",
+				Status:    string(protocol.ApprovalStatusPending),
+				ExpiresAt: "2026-04-20T01:00:00Z",
+			},
 			CreatedAt:       "2026-04-20T00:00:00Z",
 			StatusEnteredAt: "2026-04-20T00:30:00Z",
 			Claimable:       true,
@@ -381,6 +387,12 @@ func TestBuildEmotionContextWithPendingSummariesAddsResumeNote(t *testing.T) {
 	}
 	if !strings.Contains(assembled.System, "Status: stale") {
 		t.Fatalf("system prompt missing summary status: %s", assembled.System)
+	}
+	if !strings.Contains(assembled.System, "Approval request: approval-1") {
+		t.Fatalf("system prompt missing approval request id: %s", assembled.System)
+	}
+	if !strings.Contains(assembled.System, "approval_request_id") {
+		t.Fatalf("system prompt should explain resume_work approval_request_id usage: %s", assembled.System)
 	}
 }
 

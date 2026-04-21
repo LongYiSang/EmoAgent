@@ -3,6 +3,7 @@ package work
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,7 +43,9 @@ func TestResumeTool_HappyPathReturnsTaskReport(t *testing.T) {
 	runtime := newTestRuntime(t, client)
 	pending := newSQLitePendingRegistry(t)
 	paused := makePausedForResume(t, "task-1")
-	pending.Put("session-1", paused.TaskID, paused)
+	if err := pending.Put("session-1", paused.TaskID, paused); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
 
 	_, handler := NewResumeTool(runtime, pending, t.TempDir(), testLogger())
 	ctx := WithSessionID(context.Background(), "session-1")
@@ -102,7 +105,9 @@ func TestResumeTool_HandlerRejectsRemovedStyleDeltaField(t *testing.T) {
 	runtime := newTestRuntime(t, &scriptedLLM{})
 	pending := newSQLitePendingRegistry(t)
 	paused := makePausedForResume(t, "task-1")
-	pending.Put("session-1", paused.TaskID, paused)
+	if err := pending.Put("session-1", paused.TaskID, paused); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
 
 	_, handler := NewResumeTool(runtime, pending, t.TempDir(), testLogger())
 	ctx := WithSessionID(context.Background(), "session-1")
@@ -130,7 +135,9 @@ func TestResumeTool_RequeuesWhenRuntimePausesAgain(t *testing.T) {
 	runtime := newTestRuntime(t, client)
 	pending := newSQLitePendingRegistry(t)
 	paused := makePausedForResume(t, "task-1")
-	pending.Put("session-1", paused.TaskID, paused)
+	if err := pending.Put("session-1", paused.TaskID, paused); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
 
 	_, handler := NewResumeTool(runtime, pending, t.TempDir(), testLogger())
 	ctx := WithSessionID(context.Background(), "session-1")
@@ -160,7 +167,9 @@ func TestResumeTool_EmitsProgressEndOnReport(t *testing.T) {
 	runtime := newTestRuntime(t, client)
 	pending := newSQLitePendingRegistry(t)
 	paused := makePausedForResume(t, "task-1")
-	pending.Put("session-1", paused.TaskID, paused)
+	if err := pending.Put("session-1", paused.TaskID, paused); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
 
 	_, handler := NewResumeTool(runtime, pending, t.TempDir(), testLogger())
 	var events []progress.Event
@@ -196,7 +205,9 @@ func TestResumeTool_EmitsProgressPausedWhenPausesAgain(t *testing.T) {
 	runtime := newTestRuntime(t, client)
 	pending := newSQLitePendingRegistry(t)
 	paused := makePausedForResume(t, "task-1")
-	pending.Put("session-1", paused.TaskID, paused)
+	if err := pending.Put("session-1", paused.TaskID, paused); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
 
 	_, handler := NewResumeTool(runtime, pending, t.TempDir(), testLogger())
 	var events []progress.Event
@@ -217,7 +228,9 @@ func TestResumeTool_ExpiredRowReturnsFinalState(t *testing.T) {
 	runtime := newTestRuntime(t, &scriptedLLM{})
 	pending := newSQLitePendingRegistryWithTTLs(t, 5*time.Millisecond, 10*time.Millisecond, time.Hour, 10*time.Millisecond)
 	paused := makePausedForResume(t, "task-1")
-	pending.Put("session-1", paused.TaskID, paused)
+	if err := pending.Put("session-1", paused.TaskID, paused); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
 	time.Sleep(15 * time.Millisecond)
 	_ = pending.ExpireOnce()
 
@@ -233,5 +246,90 @@ func TestResumeTool_ExpiredRowReturnsFinalState(t *testing.T) {
 	}
 	if envelope["status"] != "expired" || envelope["final_state"] != "expired_open" {
 		t.Fatalf("envelope = %#v, want expired/expired_open", envelope)
+	}
+}
+
+func TestResumeTool_FailClosedRequiresApprovalRequestID(t *testing.T) {
+	runtime := newTestRuntime(t, &scriptedLLM{})
+	pending := newSQLitePendingRegistry(t)
+	paused := makePausedForResume(t, "task-risk")
+	paused.Packet.Category = protocol.CatHighRisk
+	paused.Packet.RiskLevel = "high"
+	paused.Packet.RecommendationReason = "destructive action needs explicit approval"
+	if err := pending.Put("session-1", paused.TaskID, paused); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	_, handler := NewResumeTool(runtime, pending, t.TempDir(), testLogger())
+	ctx := WithSessionID(context.Background(), "session-1")
+	raw, err := handler(ctx, json.RawMessage(`{"task_id":"task-risk","decision":"ship","reason":"do it"}`))
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+
+	var envelope map[string]string
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if envelope["status"] != "awaiting_approval" {
+		t.Fatalf("status = %q, want awaiting_approval", envelope["status"])
+	}
+}
+
+func TestResumeTool_ConsumesApprovedRequestAndUsesSelectedOption(t *testing.T) {
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			textResp(`{"status":"completed","summary":"done"}`),
+		},
+	}
+	runtime := newTestRuntime(t, client)
+	pending := newSQLitePendingRegistry(t)
+	paused := makePausedForResume(t, "task-risk")
+	paused.Brief.PermissionScope = "workspace-write"
+	paused.Packet.Category = protocol.CatHighRisk
+	paused.Packet.RiskLevel = "high"
+	paused.Packet.RecommendedOption = "flat"
+	paused.Packet.RecommendationReason = "destructive action needs explicit approval"
+	if err := pending.Put("session-1", paused.TaskID, paused); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	list := pending.ListInjectable("session-1")
+	if len(list) != 1 || list[0].Approval == nil || list[0].Approval.RequestID == "" {
+		t.Fatalf("ListInjectable = %#v, want approval request id", list)
+	}
+	requestID := list[0].Approval.RequestID
+	if _, err := pending.approvals.ApproveRequest("session-1", requestID, "flat", "web", ""); err != nil {
+		t.Fatalf("ApproveRequest: %v", err)
+	}
+
+	_, handler := NewResumeTool(runtime, pending, t.TempDir(), testLogger())
+	ctx := WithSessionID(context.Background(), "session-1")
+	raw, err := handler(ctx, json.RawMessage(`{"task_id":"task-risk","decision":"wrong","reason":"ignored","approval_request_id":"`+requestID+`"}`))
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+
+	var report protocol.TaskReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatalf("unmarshal report: %v", err)
+	}
+	if report.Status != "completed" {
+		t.Fatalf("status = %q, want completed", report.Status)
+	}
+	if len(client.calls) != 1 {
+		t.Fatalf("runtime llm calls = %d, want 1", len(client.calls))
+	}
+	last := client.calls[0].Messages[len(client.calls[0].Messages)-1]
+	if !strings.Contains(last.Content, `"decision":"flat"`) {
+		t.Fatalf("resume payload = %q, want selected approval option", last.Content)
+	}
+
+	req, err := pending.approvals.GetRequest("session-1", requestID)
+	if err != nil {
+		t.Fatalf("GetRequest: %v", err)
+	}
+	if req == nil || req.Status != string(protocol.ApprovalStatusConsumed) {
+		t.Fatalf("approval request = %#v, want consumed", req)
 	}
 }

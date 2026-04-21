@@ -47,7 +47,8 @@ func newSQLitePendingRegistryWithTTLs(t *testing.T, softTTL, hardTTL, archiveTTL
 		t.Fatalf("storage.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return NewPendingRegistry(db.SqlDB(), testLogger(), PendingRegistryConfig{
+	approvals := NewApprovalService(db.SqlDB(), testLogger())
+	return NewPendingRegistry(db.SqlDB(), approvals, testLogger(), PendingRegistryConfig{
 		SoftTTL:        softTTL,
 		HardTTL:        hardTTL,
 		ArchiveTTL:     archiveTTL,
@@ -57,7 +58,9 @@ func newSQLitePendingRegistryWithTTLs(t *testing.T, softTTL, hardTTL, archiveTTL
 
 func TestPendingRegistry_PutClaimAndFinalize(t *testing.T) {
 	reg := newSQLitePendingRegistry(t)
-	reg.Put("s1", "t1", samplePaused("t1"))
+	if err := reg.Put("s1", "t1", samplePaused("t1")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
 
 	claim := reg.ClaimForResume("s1", "t1")
 	if claim.PausedWork == nil || claim.ClaimID == "" {
@@ -84,7 +87,9 @@ func TestPendingRegistry_PutClaimAndFinalize(t *testing.T) {
 
 func TestPendingRegistry_ClaimForResume_IsExclusive(t *testing.T) {
 	reg := newSQLitePendingRegistry(t)
-	reg.Put("s1", "t1", samplePaused("t1"))
+	if err := reg.Put("s1", "t1", samplePaused("t1")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
 
 	first := reg.ClaimForResume("s1", "t1")
 	if first.PausedWork == nil || first.ClaimID == "" {
@@ -99,8 +104,12 @@ func TestPendingRegistry_ClaimForResume_IsExclusive(t *testing.T) {
 
 func TestPendingRegistry_ListInjectable_OnlyReturnsPendingAndStale(t *testing.T) {
 	reg := newSQLitePendingRegistry(t)
-	reg.Put("s1", "pending", samplePaused("pending"))
-	reg.Put("s1", "other", samplePaused("other"))
+	if err := reg.Put("s1", "pending", samplePaused("pending")); err != nil {
+		t.Fatalf("Put pending: %v", err)
+	}
+	if err := reg.Put("s1", "other", samplePaused("other")); err != nil {
+		t.Fatalf("Put other: %v", err)
+	}
 
 	claim := reg.ClaimForResume("s1", "other")
 	if err := reg.FinalizeResolved("s1", "other", claim.ClaimID, protocol.DecisionResponse{
@@ -124,8 +133,12 @@ func TestPendingRegistry_ListInjectable_OnlyReturnsPendingAndStale(t *testing.T)
 
 func TestPendingRegistry_ExpireOnce_TransitionsToExpiredOpenAndAutoRejected(t *testing.T) {
 	reg := newSQLitePendingRegistryWithTTLs(t, 10*time.Millisecond, 20*time.Millisecond, time.Hour, 10*time.Millisecond)
-	reg.Put("s1", "open", samplePaused("open"))
-	reg.Put("s1", "closed", sampleHighRiskPaused("closed"))
+	if err := reg.Put("s1", "open", samplePaused("open")); err != nil {
+		t.Fatalf("Put open: %v", err)
+	}
+	if err := reg.Put("s1", "closed", sampleHighRiskPaused("closed")); err != nil {
+		t.Fatalf("Put closed: %v", err)
+	}
 	time.Sleep(30 * time.Millisecond)
 
 	moved := reg.ExpireOnce()
@@ -141,7 +154,9 @@ func TestPendingRegistry_ExpireOnce_TransitionsToExpiredOpenAndAutoRejected(t *t
 
 func TestPendingRegistry_ArchiveOnce_MovesTerminalRows(t *testing.T) {
 	reg := newSQLitePendingRegistryWithTTLs(t, 5*time.Millisecond, 10*time.Millisecond, 5*time.Millisecond, 5*time.Millisecond)
-	reg.Put("s1", "closed", sampleHighRiskPaused("closed"))
+	if err := reg.Put("s1", "closed", sampleHighRiskPaused("closed")); err != nil {
+		t.Fatalf("Put closed: %v", err)
+	}
 	time.Sleep(15 * time.Millisecond)
 	_ = reg.ExpireOnce()
 	time.Sleep(10 * time.Millisecond)
@@ -159,7 +174,9 @@ func TestPendingRegistry_ArchiveOnce_MovesTerminalRows(t *testing.T) {
 
 func TestPendingRegistry_ConcurrentClaimsOnlyOneWins(t *testing.T) {
 	reg := newSQLitePendingRegistry(t)
-	reg.Put("s1", "t1", samplePaused("t1"))
+	if err := reg.Put("s1", "t1", samplePaused("t1")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
 
 	const goroutines = 8
 	var wg sync.WaitGroup
@@ -198,7 +215,9 @@ func TestPendingRegistry_ConcurrentSessionIsolation(t *testing.T) {
 			session := fmt.Sprintf("s-%d", g)
 			for i := 0; i < perG; i++ {
 				task := fmt.Sprintf("t-%d-%d", g, i)
-				reg.Put(session, task, samplePaused(task))
+				if err := reg.Put(session, task, samplePaused(task)); err != nil {
+					t.Errorf("Put(%s,%s): %v", session, task, err)
+				}
 				_ = reg.ListInjectable(session)
 			}
 		}(g)
@@ -210,5 +229,53 @@ func TestPendingRegistry_ConcurrentSessionIsolation(t *testing.T) {
 		if got := reg.ListInjectable(session); len(got) != perG {
 			t.Fatalf("ListInjectable(%s) returned %d rows, want %d", session, len(got), perG)
 		}
+	}
+}
+
+func TestPendingRegistry_PutCreatesApprovalForHighRiskPausedTask(t *testing.T) {
+	reg := newSQLitePendingRegistry(t)
+	paused := sampleHighRiskPaused("danger")
+
+	if err := reg.Put("s1", paused.TaskID, paused); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	list := reg.ListInjectable("s1")
+	if len(list) != 1 {
+		t.Fatalf("ListInjectable = %#v, want one decision", list)
+	}
+	if list[0].Approval == nil {
+		t.Fatalf("Approval = %#v, want approval summary", list[0].Approval)
+	}
+	if !list[0].Approval.Required {
+		t.Fatal("approval should be required for high-risk paused task")
+	}
+	if list[0].Approval.RequestID == "" {
+		t.Fatal("approval request id should be populated")
+	}
+	if list[0].Approval.Status != string(protocol.ApprovalStatusPending) {
+		t.Fatalf("Approval.Status = %q, want pending", list[0].Approval.Status)
+	}
+}
+
+func TestPendingRegistry_ExpireOnceAlsoExpiresApprovalRequest(t *testing.T) {
+	reg := newSQLitePendingRegistryWithTTLs(t, 5*time.Millisecond, 10*time.Millisecond, time.Hour, 10*time.Millisecond)
+	paused := sampleHighRiskPaused("danger")
+	if err := reg.Put("s1", paused.TaskID, paused); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	time.Sleep(15 * time.Millisecond)
+
+	_ = reg.ExpireOnce()
+
+	list := reg.ListDecisions("s1", []string{statusAutoRejected})
+	if len(list) != 1 {
+		t.Fatalf("ListDecisions = %#v, want one auto_rejected row", list)
+	}
+	if list[0].Approval == nil {
+		t.Fatalf("Approval = %#v, want approval summary", list[0].Approval)
+	}
+	if list[0].Approval.Status != string(protocol.ApprovalStatusExpired) {
+		t.Fatalf("Approval.Status = %q, want expired", list[0].Approval.Status)
 	}
 }

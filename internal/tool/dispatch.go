@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	contextutil "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/llm"
@@ -71,18 +72,30 @@ func (d *Dispatcher) Execute(ctx context.Context, call Call, maxPermission Permi
 		}
 	}
 
+	requiredPermission := effectivePermission(spec, call.Input)
+
 	// 3. Permission check.
-	if !PermissionSatisfied(maxPermission, spec.Permission) {
+	if !PermissionSatisfied(maxPermission, requiredPermission) {
 		d.logger.Warn("permission denied",
 			"tool", call.Name,
 			"call_id", call.ID,
-			"required", spec.Permission,
+			"required", requiredPermission,
 			"granted", maxPermission,
 		)
 		return errorResult(call.ID, fmt.Sprintf(
 			"permission denied: tool %q requires %q, granted %q",
-			call.Name, spec.Permission, maxPermission,
+			call.Name, requiredPermission, maxPermission,
 		))
+	}
+	if requiredPermission == PermApprovedDestructive {
+		approval, ok := ApprovalFromContext(ctx)
+		if !ok || !approval.AllowDestructive {
+			d.logger.Warn("approval guard denied",
+				"tool", call.Name,
+				"call_id", call.ID,
+			)
+			return errorResult(call.ID, fmt.Sprintf("approval required: tool %q needs an active approved request", call.Name))
+		}
 	}
 
 	// 4. Execute handler.
@@ -110,6 +123,49 @@ func (d *Dispatcher) Execute(ctx context.Context, call Call, maxPermission Permi
 		Content: result,
 		IsError: false,
 	}
+}
+
+func effectivePermission(spec Spec, input json.RawMessage) Permission {
+	if spec.Name == "bash" && bashCommandRequiresApproval(input) {
+		return PermApprovedDestructive
+	}
+	return spec.Permission
+}
+
+func bashCommandRequiresApproval(input json.RawMessage) bool {
+	var payload struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(input, &payload); err != nil {
+		return false
+	}
+	command := strings.ToLower(" " + payload.Command + " ")
+	if command == "  " {
+		return false
+	}
+	for _, needle := range []string{
+		" git reset --hard",
+		" git clean -",
+		" git checkout --",
+		" git restore --source",
+		" remove-item ",
+		" del ",
+		" erase ",
+		" rmdir ",
+		" rd ",
+		" rm ",
+		" rm -",
+		" cp -f ",
+		" mv -f ",
+		" copy /y ",
+		" move /y ",
+		" truncate ",
+	} {
+		if strings.Contains(command, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // ExecuteAll runs multiple tool calls sequentially.

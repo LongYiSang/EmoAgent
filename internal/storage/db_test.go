@@ -101,6 +101,90 @@ func TestOpenAndMigrate_CreatesPendingDecisionTables(t *testing.T) {
 	}
 }
 
+func TestOpenAndMigrate_CreatesApprovalRequestsTableAndColumns(t *testing.T) {
+	db := testDB(t)
+
+	var name string
+	if err := db.SqlDB().QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='approval_requests'").Scan(&name); err != nil {
+		t.Fatalf("table %q not found: %v", "approval_requests", err)
+	}
+
+	rows, err := db.SqlDB().Query("PRAGMA table_info(approval_requests)")
+	if err != nil {
+		t.Fatalf("PRAGMA table_info(approval_requests): %v", err)
+	}
+	defer rows.Close()
+
+	columns := map[string]bool{}
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal interface{}
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			t.Fatalf("Scan(table_info approval_requests): %v", err)
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err(): %v", err)
+	}
+
+	for _, required := range []string{
+		"id", "session_id", "task_id", "category", "risk_level", "goal_summary", "question",
+		"options_json", "recommended_option", "recommendation_reason", "reject_option_id",
+		"status", "selected_option_id", "actor_channel", "actor_ref", "expires_at",
+		"decided_at", "consumed_at", "created_at", "updated_at",
+	} {
+		if !columns[required] {
+			t.Fatalf("approval_requests missing column %q", required)
+		}
+	}
+}
+
+func TestOpenAndMigrate_AddsApprovalRequestIDColumnsToDecisionTables(t *testing.T) {
+	db := testDB(t)
+
+	for _, table := range []string{"pending_decisions", "archived_decisions"} {
+		rows, err := db.SqlDB().Query("PRAGMA table_info(" + table + ")")
+		if err != nil {
+			t.Fatalf("PRAGMA table_info(%s): %v", table, err)
+		}
+
+		found := false
+		for rows.Next() {
+			var (
+				cid        int
+				name       string
+				columnType string
+				notNull    int
+				defaultVal interface{}
+				pk         int
+			)
+			if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+				rows.Close()
+				t.Fatalf("Scan(table_info %s): %v", table, err)
+			}
+			if name == "approval_request_id" {
+				found = true
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			t.Fatalf("rows.Err(%s): %v", table, err)
+		}
+		rows.Close()
+
+		if !found {
+			t.Fatalf("%s missing column approval_request_id", table)
+		}
+	}
+}
+
 func TestMigrationsDoNotDropPersonasTable(t *testing.T) {
 	for _, m := range migrations {
 		if strings.Contains(strings.ToUpper(m.SQL), "DROP TABLE IF EXISTS PERSONAS") {

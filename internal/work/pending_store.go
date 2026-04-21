@@ -43,33 +43,36 @@ type ResumeBlob struct {
 type DecisionSummary = protocol.DecisionSummary
 
 type ClaimResult struct {
-	PausedWork *PausedWork
-	ClaimID    string
-	WasStale   bool
-	CreatedAt  time.Time
-	FinalState string
+	PausedWork        *PausedWork
+	ClaimID           string
+	WasStale          bool
+	CreatedAt         time.Time
+	FailClosed        bool
+	ApprovalRequestID string
+	FinalState        string
 }
 
 type pendingDecisionRow struct {
-	SessionID        string
-	TaskID           string
-	Status           string
-	FailClosed       bool
-	Category         string
-	RiskLevel        string
-	SummaryJSON      string
-	ResumeBlobJSON   sql.NullString
-	ReportJSON       sql.NullString
-	ResolvedDecision sql.NullString
-	ResolvedReason   sql.NullString
-	CreatedAt        string
-	StatusEnteredAt  string
-	SoftExpiresAt    sql.NullString
-	HardExpiresAt    sql.NullString
-	ArchiveAfter     sql.NullString
-	ClaimID          sql.NullString
-	ClaimExpiresAt   sql.NullString
-	UpdatedAt        string
+	SessionID         string
+	TaskID            string
+	Status            string
+	FailClosed        bool
+	ApprovalRequestID sql.NullString
+	Category          string
+	RiskLevel         string
+	SummaryJSON       string
+	ResumeBlobJSON    sql.NullString
+	ReportJSON        sql.NullString
+	ResolvedDecision  sql.NullString
+	ResolvedReason    sql.NullString
+	CreatedAt         string
+	StatusEnteredAt   string
+	SoftExpiresAt     sql.NullString
+	HardExpiresAt     sql.NullString
+	ArchiveAfter      sql.NullString
+	ClaimID           sql.NullString
+	ClaimExpiresAt    sql.NullString
+	UpdatedAt         string
 }
 
 func defaultPendingRegistryConfig(cfg PendingRegistryConfig) PendingRegistryConfig {
@@ -224,5 +227,12 @@ func hydrateSummary(row pendingDecisionRow) (DecisionSummary, error) {
 		return DecisionSummary{}, err
 	}
 	summary.Report = report
+	if row.ApprovalRequestID.Valid && row.ApprovalRequestID.String != "" {
+		if summary.Approval == nil {
+			summary.Approval = &protocol.ApprovalSummary{}
+		}
+		summary.Approval.Required = true
+		summary.Approval.RequestID = row.ApprovalRequestID.String
+	}
 	return summary, nil
 }

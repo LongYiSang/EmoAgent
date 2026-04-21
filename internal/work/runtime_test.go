@@ -19,13 +19,17 @@ import (
 )
 
 type fakeRuntimeDecider struct {
-	decision RuntimeDecision
-	err      error
-	calls    int
+	decision   RuntimeDecision
+	err        error
+	calls      int
+	lastBrief  protocol.TaskBrief
+	lastPacket protocol.DecisionPacket
 }
 
-func (d *fakeRuntimeDecider) Decide(context.Context, protocol.TaskBrief, protocol.DecisionPacket) (RuntimeDecision, error) {
+func (d *fakeRuntimeDecider) Decide(_ context.Context, brief protocol.TaskBrief, packet protocol.DecisionPacket) (RuntimeDecision, error) {
 	d.calls++
+	d.lastBrief = brief
+	d.lastPacket = packet
 	return d.decision, d.err
 }
 
@@ -394,6 +398,44 @@ func TestRuntime_RequestDecisionRuntimeDeciderPath(t *testing.T) {
 	}
 	if decider.calls != 1 {
 		t.Fatalf("decider calls = %d, want 1", decider.calls)
+	}
+}
+
+func TestRuntime_RequestDecisionUnknownTaskIDIsNormalized(t *testing.T) {
+	packet := map[string]any{
+		"task_id":             "unknown",
+		"category":            string(protocol.CatExecutionOnly),
+		"risk_level":          "low",
+		"goal_summary":        "choose next step",
+		"question":            "which option should we use?",
+		"why_blocked":         "need decision to continue",
+		"options":             []map[string]any{{"id": "a", "summary": "option a"}, {"id": "b", "summary": "option b"}},
+		"suggests_user_input": false,
+	}
+	packetJSON, _ := json.Marshal(packet)
+
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			toolUseResp("decide-1", "request_decision", string(packetJSON)),
+			toolUseResp("finish-1", "finish_task", finishTaskPayloadJSON("completed", "done", nil, nil)),
+		},
+	}
+	decider := &fakeRuntimeDecider{
+		decision: RuntimeDecision{Decision: "a", Reason: "safe"},
+	}
+	runtime := newTestRuntimeWithDecider(t, client, decider)
+	brief := newValidatedBrief(t)
+	brief.TaskID = "task-1"
+
+	outcome := runtime.Run(context.Background(), brief, nil)
+	if outcome.Report == nil || outcome.Report.Status != "completed" {
+		t.Fatalf("expected completed report, got %#v", outcome)
+	}
+	if decider.calls != 1 {
+		t.Fatalf("decider calls = %d, want 1", decider.calls)
+	}
+	if decider.lastPacket.TaskID != brief.TaskID {
+		t.Fatalf("decider packet task_id = %q, want %q", decider.lastPacket.TaskID, brief.TaskID)
 	}
 }
 

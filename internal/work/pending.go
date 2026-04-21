@@ -16,28 +16,30 @@ const defaultPendingTTL = 30 * time.Minute
 
 // PendingRegistry stores paused work tasks awaiting an Emotion decision.
 type PendingRegistry struct {
-	mu     sync.Mutex
-	db     *sql.DB
-	logger *slog.Logger
-	cfg    PendingRegistryConfig
+	mu        sync.Mutex
+	db        *sql.DB
+	approvals *ApprovalService
+	logger    *slog.Logger
+	cfg       PendingRegistryConfig
 }
 
 // NewPendingRegistry constructs a SQLite-backed paused-task registry.
-func NewPendingRegistry(db *sql.DB, logger *slog.Logger, cfg PendingRegistryConfig) *PendingRegistry {
+func NewPendingRegistry(db *sql.DB, approvals *ApprovalService, logger *slog.Logger, cfg PendingRegistryConfig) *PendingRegistry {
 	if db == nil {
 		return nil
 	}
 	return &PendingRegistry{
-		db:     db,
-		logger: logger,
-		cfg:    defaultPendingRegistryConfig(cfg),
+		db:        db,
+		approvals: approvals,
+		logger:    logger,
+		cfg:       defaultPendingRegistryConfig(cfg),
 	}
 }
 
 // Put adds or replaces a paused task for the given session/task pair.
-func (r *PendingRegistry) Put(sessionID, taskID string, paused *PausedWork) {
+func (r *PendingRegistry) Put(sessionID, taskID string, paused *PausedWork) error {
 	if r == nil || sessionID == "" || taskID == "" || paused == nil {
-		return
+		return nil
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -48,19 +50,39 @@ func (r *PendingRegistry) Put(sessionID, taskID string, paused *PausedWork) {
 	}
 	blob := resumeBlobFromPaused(paused)
 	failClosed := shouldFailClosed(paused.Packet)
+	var approvalRequestID string
+	if failClosed {
+		if r.approvals == nil {
+			return fmt.Errorf("approval service is required for fail-closed decisions")
+		}
+		req, err := r.approvals.CreateRequestFromDecision(sessionID, paused.Packet, now.Add(r.cfg.HardTTL))
+		if err != nil {
+			return fmt.Errorf("create approval request: %w", err)
+		}
+		approvalRequestID = req.ID
+	}
 	summary := buildDecisionSummary(statusPending, failClosed, blob, nil, now, true)
+	if approvalRequestID != "" {
+		summary.Approval = &protocol.ApprovalSummary{
+			Required:  true,
+			RequestID: approvalRequestID,
+			Status:    string(protocol.ApprovalStatusPending),
+			ExpiresAt: formatTime(now.Add(r.cfg.HardTTL)),
+		}
+	}
 
 	_, err := r.db.Exec(`
 		INSERT INTO pending_decisions (
-			session_id, task_id, status, fail_closed, category, risk_level,
+			session_id, task_id, status, fail_closed, approval_request_id, category, risk_level,
 			summary_json, resume_blob_json, report_json,
 			resolved_decision, resolved_reason,
 			created_at, status_entered_at, soft_expires_at, hard_expires_at, archive_after,
 			claim_id, claim_expires_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, NULL, NULL, NULL, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, NULL, NULL, NULL, ?)
 		ON CONFLICT(session_id, task_id) DO UPDATE SET
 			status = excluded.status,
 			fail_closed = excluded.fail_closed,
+			approval_request_id = excluded.approval_request_id,
 			category = excluded.category,
 			risk_level = excluded.risk_level,
 			summary_json = excluded.summary_json,
@@ -81,6 +103,7 @@ func (r *PendingRegistry) Put(sessionID, taskID string, paused *PausedWork) {
 		taskID,
 		statusPending,
 		boolToInt(failClosed),
+		nullStringValue(sql.NullString{String: approvalRequestID, Valid: approvalRequestID != ""}),
 		string(paused.Packet.Category),
 		paused.Packet.RiskLevel,
 		marshalJSON(summary),
@@ -91,9 +114,13 @@ func (r *PendingRegistry) Put(sessionID, taskID string, paused *PausedWork) {
 		formatTime(now.Add(r.cfg.HardTTL)),
 		formatTime(now),
 	)
-	if err != nil && r.logger != nil {
-		r.logger.Error("pending put failed", "session_id", sessionID, "task_id", taskID, "error", err)
+	if err != nil {
+		if r.logger != nil {
+			r.logger.Error("pending put failed", "session_id", sessionID, "task_id", taskID, "error", err)
+		}
+		return err
 	}
+	return nil
 }
 
 // Take is a compatibility wrapper over claim-based resume.
@@ -111,7 +138,7 @@ func (r *PendingRegistry) fetchMainRow(sessionID, taskID string) (pendingDecisio
 	}
 	row := r.db.QueryRow(`
 		SELECT
-			session_id, task_id, status, fail_closed, category, risk_level,
+			session_id, task_id, status, fail_closed, approval_request_id, category, risk_level,
 			summary_json, resume_blob_json, report_json,
 			resolved_decision, resolved_reason,
 			created_at, status_entered_at, soft_expires_at, hard_expires_at, archive_after,
@@ -127,6 +154,7 @@ func (r *PendingRegistry) fetchMainRow(sessionID, taskID string) (pendingDecisio
 		&record.TaskID,
 		&record.Status,
 		&failClosed,
+		&record.ApprovalRequestID,
 		&record.Category,
 		&record.RiskLevel,
 		&record.SummaryJSON,
@@ -238,11 +266,33 @@ func (r *PendingRegistry) ClaimForResume(sessionID, taskID string) ClaimResult {
 		createdAt = parseTime(record.CreatedAt)
 	}
 	return ClaimResult{
-		PausedWork: blob.PausedWork(),
-		ClaimID:    claimID,
-		WasStale:   record.Status == statusStale,
-		CreatedAt:  createdAt,
+		PausedWork:        blob.PausedWork(),
+		ClaimID:           claimID,
+		WasStale:          record.Status == statusStale,
+		CreatedAt:         createdAt,
+		FailClosed:        record.FailClosed,
+		ApprovalRequestID: record.ApprovalRequestID.String,
 	}
+}
+
+// ReleaseClaim clears a claim without changing the row status.
+func (r *PendingRegistry) ReleaseClaim(sessionID, taskID, claimID string) error {
+	if r == nil || sessionID == "" || taskID == "" || claimID == "" {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, err := r.db.Exec(`
+		UPDATE pending_decisions
+		SET claim_id = NULL, claim_expires_at = NULL, updated_at = ?
+		WHERE session_id = ? AND task_id = ? AND claim_id = ?
+	`,
+		formatTime(time.Now().UTC()),
+		sessionID,
+		taskID,
+		claimID,
+	)
+	return err
 }
 
 // FinalizeResolved stores the terminal report for a claimed row.
@@ -260,6 +310,10 @@ func (r *PendingRegistry) FinalizeResolved(sessionID, taskID, claimID string, re
 		return nil
 	}
 	summary, err := hydrateSummary(record)
+	if err != nil {
+		return err
+	}
+	summary, err = r.attachApproval(summary, record)
 	if err != nil {
 		return err
 	}
@@ -303,11 +357,30 @@ func (r *PendingRegistry) RequeuePaused(sessionID, taskID, claimID string, pause
 	}
 	blob := resumeBlobFromPaused(paused)
 	failClosed := shouldFailClosed(paused.Packet)
+	var approvalRequestID string
+	if failClosed {
+		if r.approvals == nil {
+			return fmt.Errorf("approval service is required for fail-closed decisions")
+		}
+		req, err := r.approvals.CreateRequestFromDecision(sessionID, paused.Packet, now.Add(r.cfg.HardTTL))
+		if err != nil {
+			return fmt.Errorf("create approval request: %w", err)
+		}
+		approvalRequestID = req.ID
+	}
 	summary := buildDecisionSummary(statusPending, failClosed, blob, nil, now, true)
+	if approvalRequestID != "" {
+		summary.Approval = &protocol.ApprovalSummary{
+			Required:  true,
+			RequestID: approvalRequestID,
+			Status:    string(protocol.ApprovalStatusPending),
+			ExpiresAt: formatTime(now.Add(r.cfg.HardTTL)),
+		}
+	}
 
 	_, err := r.db.Exec(`
 		UPDATE pending_decisions
-		SET status = ?, fail_closed = ?, category = ?, risk_level = ?,
+		SET status = ?, fail_closed = ?, approval_request_id = ?, category = ?, risk_level = ?,
 		    summary_json = ?, resume_blob_json = ?, report_json = NULL,
 		    resolved_decision = NULL, resolved_reason = NULL,
 		    created_at = ?, status_entered_at = ?, soft_expires_at = ?, hard_expires_at = ?,
@@ -316,6 +389,7 @@ func (r *PendingRegistry) RequeuePaused(sessionID, taskID, claimID string, pause
 	`,
 		statusPending,
 		boolToInt(failClosed),
+		nullStringValue(sql.NullString{String: approvalRequestID, Valid: approvalRequestID != ""}),
 		string(paused.Packet.Category),
 		paused.Packet.RiskLevel,
 		marshalJSON(summary),
@@ -379,6 +453,10 @@ func (r *PendingRegistry) ListDecisions(sessionID string, statuses []string) []D
 		if err != nil {
 			continue
 		}
+		summary, err = r.attachApproval(summary, row)
+		if err != nil {
+			continue
+		}
 		out = append(out, summary)
 	}
 	return out
@@ -396,7 +474,7 @@ func (r *PendingRegistry) listRows(sessionID string, statuses []string) ([]pendi
 	}
 	query := fmt.Sprintf(`
 		SELECT
-			session_id, task_id, status, fail_closed, category, risk_level,
+			session_id, task_id, status, fail_closed, approval_request_id, category, risk_level,
 			summary_json, resume_blob_json, report_json,
 			resolved_decision, resolved_reason,
 			created_at, status_entered_at, soft_expires_at, hard_expires_at, archive_after,
@@ -420,6 +498,7 @@ func (r *PendingRegistry) listRows(sessionID string, statuses []string) ([]pendi
 			&row.TaskID,
 			&row.Status,
 			&failClosed,
+			&row.ApprovalRequestID,
 			&row.Category,
 			&row.RiskLevel,
 			&row.SummaryJSON,
@@ -467,6 +546,10 @@ func (r *PendingRegistry) ExpireOnce() int {
 		if err != nil {
 			continue
 		}
+		summary, err = r.attachApproval(summary, row)
+		if err != nil {
+			continue
+		}
 		summary.Status = statusStale
 		summary.StatusEnteredAt = formatTime(now)
 		res, err := r.db.Exec(`
@@ -495,6 +578,11 @@ func (r *PendingRegistry) ExpireOnce() int {
 		}
 		switch {
 		case row.FailClosed:
+			if row.ApprovalRequestID.Valid && row.ApprovalRequestID.String != "" && r.approvals != nil {
+				if err := r.approvals.ExpirePendingRequest(row.SessionID, row.TaskID, row.ApprovalRequestID.String); err != nil && r.logger != nil {
+					r.logger.Warn("expire approval request failed", "session_id", row.SessionID, "task_id", row.TaskID, "approval_request_id", row.ApprovalRequestID.String, "error", err)
+				}
+			}
 			blob, err := decodeResumeBlob(row.ResumeBlobJSON)
 			if err != nil || blob == nil {
 				continue
@@ -507,6 +595,10 @@ func (r *PendingRegistry) ExpireOnce() int {
 				CreatedAt: now,
 			}
 			summary, err := hydrateSummary(row)
+			if err != nil {
+				continue
+			}
+			summary, err = r.attachApproval(summary, row)
 			if err != nil {
 				continue
 			}
@@ -537,6 +629,10 @@ func (r *PendingRegistry) ExpireOnce() int {
 			}
 		default:
 			summary, err := hydrateSummary(row)
+			if err != nil {
+				continue
+			}
+			summary, err = r.attachApproval(summary, row)
 			if err != nil {
 				continue
 			}
@@ -574,7 +670,7 @@ func (r *PendingRegistry) transitionCandidates(status string, predicate string, 
 	}
 	query := `
 		SELECT
-			session_id, task_id, status, fail_closed, category, risk_level,
+			session_id, task_id, status, fail_closed, approval_request_id, category, risk_level,
 			summary_json, resume_blob_json, report_json,
 			resolved_decision, resolved_reason,
 			created_at, status_entered_at, soft_expires_at, hard_expires_at, archive_after,
@@ -601,6 +697,7 @@ func (r *PendingRegistry) transitionCandidates(status string, predicate string, 
 			&row.TaskID,
 			&row.Status,
 			&failClosed,
+			&row.ApprovalRequestID,
 			&row.Category,
 			&row.RiskLevel,
 			&row.SummaryJSON,
@@ -650,13 +747,14 @@ func (r *PendingRegistry) ArchiveOnce() int {
 		_, err := tx.Exec(`
 			INSERT INTO archived_decisions (
 				session_id, task_id, final_status, fail_closed,
-				category, risk_level, summary_json, report_json,
+				approval_request_id, category, risk_level, summary_json, report_json,
 				resolved_decision, resolved_reason,
 				created_at, status_entered_at, archived_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(session_id, task_id) DO UPDATE SET
 				final_status = excluded.final_status,
 				fail_closed = excluded.fail_closed,
+				approval_request_id = excluded.approval_request_id,
 				category = excluded.category,
 				risk_level = excluded.risk_level,
 				summary_json = excluded.summary_json,
@@ -671,6 +769,7 @@ func (r *PendingRegistry) ArchiveOnce() int {
 			row.TaskID,
 			row.Status,
 			boolToInt(row.FailClosed),
+			nullStringValue(row.ApprovalRequestID),
 			row.Category,
 			row.RiskLevel,
 			row.SummaryJSON,
@@ -694,6 +793,34 @@ func (r *PendingRegistry) ArchiveOnce() int {
 		return 0
 	}
 	return archived
+}
+
+func (r *PendingRegistry) attachApproval(summary DecisionSummary, row pendingDecisionRow) (DecisionSummary, error) {
+	if !row.ApprovalRequestID.Valid || row.ApprovalRequestID.String == "" {
+		return summary, nil
+	}
+	if summary.Approval == nil {
+		summary.Approval = &protocol.ApprovalSummary{
+			Required:  true,
+			RequestID: row.ApprovalRequestID.String,
+		}
+	}
+	if r == nil || r.approvals == nil {
+		return summary, nil
+	}
+	req, err := r.approvals.GetRequest(row.SessionID, row.ApprovalRequestID.String)
+	if err != nil {
+		return summary, err
+	}
+	if req == nil {
+		return summary, nil
+	}
+	summary.Approval.Required = true
+	summary.Approval.RequestID = req.ID
+	summary.Approval.Status = req.Status
+	summary.Approval.SelectedOptionID = req.SelectedOptionID
+	summary.Approval.ExpiresAt = req.ExpiresAt
+	return summary, nil
 }
 
 func boolToInt(v bool) int {

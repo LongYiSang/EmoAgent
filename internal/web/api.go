@@ -13,6 +13,7 @@ import (
 	"github.com/longyisang/emoagent/internal/apperrors"
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/progress"
+	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/storage"
 )
 
@@ -38,6 +39,7 @@ type AdminApp interface {
 	GetLatestSession(ctx context.Context, persona string) (*storage.SessionSummary, error)
 	GetSessionDetail(ctx context.Context, id string) (*storage.SessionRecord, []storage.MessageRecord, error)
 	DeleteSession(ctx context.Context, id string) error
+	ListSessionApprovals(ctx context.Context, sessionID string) ([]protocol.ApprovalRequest, error)
 }
 
 type APIHandler struct {
@@ -431,6 +433,15 @@ func (h *APIHandler) HandleDeleteSession(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (h *APIHandler) HandleListSessionApprovals(w http.ResponseWriter, r *http.Request) {
+	approvals, err := h.app.ListSessionApprovals(r.Context(), r.PathValue("id"))
+	if err != nil {
+		h.writeSessionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"approvals": approvals})
 }
 
 func (h *APIHandler) writeLLMProfileError(w http.ResponseWriter, err error) {

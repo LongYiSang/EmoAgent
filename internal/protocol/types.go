@@ -74,8 +74,50 @@ type DecisionPacket struct {
 	KeyTradeoffs         []DecisionTradeoff `json:"key_tradeoffs,omitempty"`
 	RecommendedOption    string             `json:"recommended_option,omitempty"`
 	RecommendationReason string             `json:"recommendation_reason,omitempty"`
+	RejectOptionID       string             `json:"reject_option_id,omitempty"`
 	SuggestsUserInput    bool               `json:"suggests_user_input"`
 	CreatedAt            time.Time          `json:"created_at"`
+}
+
+type ApprovalStatus string
+
+const (
+	ApprovalStatusPending  ApprovalStatus = "pending"
+	ApprovalStatusApproved ApprovalStatus = "approved"
+	ApprovalStatusRejected ApprovalStatus = "rejected"
+	ApprovalStatusExpired  ApprovalStatus = "expired"
+	ApprovalStatusConsumed ApprovalStatus = "consumed"
+)
+
+type ApprovalSummary struct {
+	Required         bool   `json:"required"`
+	RequestID        string `json:"request_id,omitempty"`
+	Status           string `json:"status,omitempty"`
+	SelectedOptionID string `json:"selected_option_id,omitempty"`
+	ExpiresAt        string `json:"expires_at,omitempty"`
+}
+
+type ApprovalRequest struct {
+	ID                   string           `json:"id"`
+	SessionID            string           `json:"session_id"`
+	TaskID               string           `json:"task_id"`
+	Category             string           `json:"category"`
+	RiskLevel            string           `json:"risk_level"`
+	GoalSummary          string           `json:"goal_summary"`
+	Question             string           `json:"question"`
+	Options              []DecisionOption `json:"options"`
+	RecommendedOption    string           `json:"recommended_option,omitempty"`
+	RecommendationReason string           `json:"recommendation_reason,omitempty"`
+	RejectOptionID       string           `json:"reject_option_id"`
+	Status               string           `json:"status"`
+	SelectedOptionID     string           `json:"selected_option_id,omitempty"`
+	ActorChannel         string           `json:"actor_channel,omitempty"`
+	ActorRef             string           `json:"actor_ref,omitempty"`
+	ExpiresAt            string           `json:"expires_at"`
+	DecidedAt            string           `json:"decided_at,omitempty"`
+	ConsumedAt           string           `json:"consumed_at,omitempty"`
+	CreatedAt            string           `json:"created_at"`
+	UpdatedAt            string           `json:"updated_at"`
 }
 
 // DecisionSummary is the Emotion-facing persisted view of one paused decision.
@@ -88,6 +130,7 @@ type DecisionSummary struct {
 	GoalSummary     string           `json:"goal_summary"`
 	Question        string           `json:"question"`
 	Options         []DecisionOption `json:"options,omitempty"`
+	Approval        *ApprovalSummary `json:"approval,omitempty"`
 	Report          *TaskReport      `json:"report,omitempty"`
 	CreatedAt       string           `json:"created_at"`
 	StatusEnteredAt string           `json:"status_entered_at"`
