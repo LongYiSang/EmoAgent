@@ -60,6 +60,7 @@ type PausedWork struct {
 	Messages        []llm.Message
 	Progress        WorkProgress
 	PendingCallID   string
+	PendingToolCall *tool.Call
 	Packet          protocol.DecisionPacket
 	Round           int
 	EscalationCount int
@@ -108,19 +109,29 @@ func (r *Runtime) Resume(ctx context.Context, paused *PausedWork, resp protocol.
 		decision.TaskID = paused.TaskID
 	}
 
-	payload, err := json.Marshal(decision)
-	if err != nil {
-		report := failedReport(paused.Brief, "resume failed: marshal decision response: "+err.Error())
-		return RunOutcome{Report: &report}
-	}
-
 	messages := append([]llm.Message(nil), paused.Messages...)
-	result := tool.Result{
-		CallID:  paused.PendingCallID,
-		Content: payload,
-		IsError: false,
+	if paused.PendingToolCall != nil {
+		var result tool.Result
+		if paused.Packet.RejectOptionID != "" && decision.Decision == paused.Packet.RejectOptionID {
+			result = errorToolResult(paused.PendingToolCall.ID, "approval denied: tool not executed")
+		} else {
+			permission := tool.Permission(paused.Brief.PermissionScope)
+			result = r.cfg.Dispatcher.Execute(ctx, *paused.PendingToolCall, permission)
+		}
+		messages = append(messages, tool.ResultsToMessages(r.cfg.Provider, []tool.Result{result})...)
+	} else {
+		payload, err := json.Marshal(decision)
+		if err != nil {
+			report := failedReport(paused.Brief, "resume failed: marshal decision response: "+err.Error())
+			return RunOutcome{Report: &report}
+		}
+		result := tool.Result{
+			CallID:  paused.PendingCallID,
+			Content: payload,
+			IsError: false,
+		}
+		messages = append(messages, tool.ResultsToMessages(r.cfg.Provider, []tool.Result{result})...)
 	}
-	messages = append(messages, tool.ResultsToMessages(r.cfg.Provider, []tool.Result{result})...)
 	if journal != nil {
 		journal.Write("task_resumed", paused.Round, map[string]any{
 			"task_id":  paused.TaskID,
@@ -240,6 +251,31 @@ func (r *Runtime) runLoop(
 					})
 				}
 			}
+			if progressCB != nil {
+				emitToolProgress(progressCB, calls, round, brief.TaskID)
+			}
+			if blockedCall, ok := findApprovalBlockedCall(r.cfg.Dispatcher, ctx, calls, permission); ok {
+				messages[len(messages)-1] = filterAssistantMessageForApprovalPause(messages[len(messages)-1], blockedCall.ID)
+				if journal != nil {
+					journal.Write("tool_approval_intercepted", round, map[string]any{
+						"task_id": brief.TaskID,
+						"call_id": blockedCall.ID,
+						"name":    blockedCall.Name,
+						"input":   string(blockedCall.Input),
+					})
+				}
+				if escalationCount >= r.cfg.MaxEscalations {
+					report := failedReport(brief, fmt.Sprintf("max escalations exceeded (%d)", r.cfg.MaxEscalations))
+					return RunOutcome{Report: &report}, true
+				}
+				packet := buildToolApprovalPacket(brief, blockedCall)
+				outcome, _ := r.routeDecision(ctx, brief, blockedCall.ID, packet, messages, workProgress, round, escalationCount, journal)
+				if outcome.Paused != nil {
+					callCopy := blockedCall
+					outcome.Paused.PendingToolCall = &callCopy
+				}
+				return outcome, true
+			}
 
 			finishCall, hasFinish, mixedFinishCalls := pickFinishTaskCall(calls)
 			if hasFinish {
@@ -248,9 +284,6 @@ func (r *Runtime) runLoop(
 						journal.Write("finish_violation", round, map[string]any{
 							"reason": "finish_task must be sole call in the round",
 						})
-					}
-					if progressCB != nil {
-						emitToolProgress(progressCB, calls, round, brief.TaskID)
 					}
 					results := make([]tool.Result, 0, len(calls))
 					for _, call := range calls {
@@ -303,9 +336,6 @@ func (r *Runtime) runLoop(
 							"reason": "request_decision must be sole call in the round",
 						})
 					}
-					if progressCB != nil {
-						emitToolProgress(progressCB, calls, round, brief.TaskID)
-					}
 					results := make([]tool.Result, 0, len(calls))
 					for _, call := range calls {
 						if call.Name == "request_decision" {
@@ -353,7 +383,7 @@ func (r *Runtime) runLoop(
 					journal.Write("decision_request", round, map[string]any{
 						"task_id":  packet.TaskID,
 						"category": packet.Category,
-						"risk":     packet.RiskLevel,
+						"risk":     derivedRiskLevel(packet.Category),
 					})
 				}
 				if escalationCount >= r.cfg.MaxEscalations {
@@ -371,9 +401,6 @@ func (r *Runtime) runLoop(
 				return RunOutcome{}, false
 			}
 
-			if progressCB != nil {
-				emitToolProgress(progressCB, calls, round, brief.TaskID)
-			}
 			results := r.cfg.Dispatcher.ExecuteAll(ctx, calls, permission)
 			logToolResults(journal, round, results)
 			messages = r.appendResultsAndSnip(messages, results, journal, round)
@@ -465,8 +492,7 @@ func (r *Runtime) routeDecision(
 	escalationCount int,
 	journal *Journal,
 ) (RunOutcome, []tool.Result) {
-	if packet.Category == protocol.CatExecutionOnly &&
-		packet.RiskLevel == "low" &&
+	if packet.Category == protocol.CatAuto &&
 		!packet.SuggestsUserInput &&
 		r.cfg.Decider != nil {
 		decision, err := r.cfg.Decider.Decide(ctx, brief, packet)
@@ -512,12 +538,74 @@ func (r *Runtime) routeDecision(
 		Messages:        compactedMessages,
 		Progress:        workProgress,
 		PendingCallID:   callID,
+		PendingToolCall: nil,
 		Packet:          packet,
 		Round:           round,
 		EscalationCount: escalationCount + 1,
 		CreatedAt:       time.Now().UTC(),
 	}
 	return RunOutcome{Paused: paused}, nil
+}
+
+func findApprovalBlockedCall(dispatcher *tool.Dispatcher, ctx context.Context, calls []tool.Call, maxPermission tool.Permission) (tool.Call, bool) {
+	if dispatcher == nil {
+		return tool.Call{}, false
+	}
+	for _, call := range calls {
+		if dispatcher.WouldNeedApproval(ctx, call, maxPermission) {
+			return call, true
+		}
+	}
+	return tool.Call{}, false
+}
+
+func buildToolApprovalPacket(brief protocol.TaskBrief, call tool.Call) protocol.DecisionPacket {
+	return protocol.DecisionPacket{
+		TaskID:               brief.TaskID,
+		Category:             protocol.CatToolApproval,
+		GoalSummary:          brief.Goal,
+		Question:             toolApprovalQuestion(call),
+		WhyBlocked:           fmt.Sprintf(`Tool %q requires explicit human approval before execution.`, call.Name),
+		Options:              []protocol.DecisionOption{{ID: "allow", Summary: "Allow execution"}, {ID: "deny", Summary: "Deny execution"}},
+		RejectOptionID:       "deny",
+		RecommendedOption:    "allow",
+		RecommendationReason: "Task goal requires this operation: " + brief.Goal,
+		SuggestsUserInput:    false,
+		CreatedAt:            time.Now().UTC(),
+	}
+}
+
+func toolApprovalQuestion(call tool.Call) string {
+	if call.Name == "bash" {
+		var payload struct {
+			Command string `json:"command"`
+		}
+		if err := json.Unmarshal(call.Input, &payload); err == nil {
+			command := strings.TrimSpace(payload.Command)
+			if command != "" {
+				return "Allow: " + command
+			}
+		}
+	}
+	return fmt.Sprintf(`Allow executing tool %q?`, call.Name)
+}
+
+func filterAssistantMessageForApprovalPause(message llm.Message, blockedCallID string) llm.Message {
+	if blockedCallID == "" || len(message.ContentBlocks) == 0 {
+		return message
+	}
+	filtered := make([]llm.ContentBlock, 0, len(message.ContentBlocks))
+	for _, block := range message.ContentBlocks {
+		if block.Type != "tool_use" {
+			filtered = append(filtered, block)
+			continue
+		}
+		if block.ID == blockedCallID {
+			filtered = append(filtered, block)
+		}
+	}
+	message.ContentBlocks = filtered
+	return message
 }
 
 func pickDecisionCall(calls []tool.Call) (tool.Call, bool, bool) {

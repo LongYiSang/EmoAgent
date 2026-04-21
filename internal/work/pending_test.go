@@ -30,9 +30,60 @@ func samplePaused(taskID string) *PausedWork {
 
 func sampleHighRiskPaused(taskID string) *PausedWork {
 	paused := samplePaused(taskID)
-	paused.Packet.Category = protocol.CatHighRisk
-	paused.Packet.RiskLevel = "high"
+	paused.Packet.Category = protocol.CatHumanConfirmation
+	paused.Packet.RelevantFindings = []protocol.DecisionEvidence{{Finding: "This may change workspace files."}}
+	paused.Packet.RecommendationReason = "This path needs explicit user confirmation."
+	paused.Packet.RejectOptionID = paused.Packet.Options[1].ID
 	return paused
+}
+
+func sampleApprovalPaused(taskID string) *PausedWork {
+	paused := samplePaused(taskID)
+	paused.Packet.Category = protocol.CatToolApproval
+	paused.Packet.Question = "Allow: rm -rf tmp"
+	paused.Packet.RecommendationReason = "Task goal requires this operation: sample"
+	paused.Packet.RecommendedOption = "allow"
+	paused.Packet.Options = []protocol.DecisionOption{
+		{ID: "allow", Summary: "Allow execution"},
+		{ID: "deny", Summary: "Deny execution"},
+	}
+	paused.Packet.RejectOptionID = "deny"
+	return paused
+}
+
+func TestDerivedRiskLevel(t *testing.T) {
+	tests := []struct {
+		category protocol.EscalationCategory
+		want     string
+	}{
+		{category: protocol.CatAuto, want: "low"},
+		{category: protocol.CatEmotionJudgment, want: "low"},
+		{category: protocol.CatHumanConfirmation, want: "high"},
+		{category: protocol.CatToolApproval, want: "high"},
+	}
+
+	for _, tt := range tests {
+		if got := derivedRiskLevel(tt.category); got != tt.want {
+			t.Fatalf("derivedRiskLevel(%q) = %q, want %q", tt.category, got, tt.want)
+		}
+	}
+}
+
+func TestShouldFailClosed(t *testing.T) {
+	auto := validDecisionPacket("task-auto")
+	auto.Category = protocol.CatAuto
+	if shouldFailClosed(auto) {
+		t.Fatal("auto should stay open on timeout")
+	}
+
+	human := validDecisionPacket("task-human")
+	human.Category = protocol.CatHumanConfirmation
+	human.RelevantFindings = []protocol.DecisionEvidence{{Finding: "Deletes generated files."}}
+	human.RecommendationReason = "Needs explicit confirmation."
+	human.RejectOptionID = human.Options[1].ID
+	if !shouldFailClosed(human) {
+		t.Fatal("human_confirmation should fail closed")
+	}
 }
 
 func newSQLitePendingRegistry(t *testing.T) *PendingRegistry {
@@ -234,7 +285,7 @@ func TestPendingRegistry_ConcurrentSessionIsolation(t *testing.T) {
 
 func TestPendingRegistry_PutCreatesApprovalForHighRiskPausedTask(t *testing.T) {
 	reg := newSQLitePendingRegistry(t)
-	paused := sampleHighRiskPaused("danger")
+	paused := sampleApprovalPaused("danger")
 
 	if err := reg.Put("s1", paused.TaskID, paused); err != nil {
 		t.Fatalf("Put: %v", err)
@@ -260,7 +311,7 @@ func TestPendingRegistry_PutCreatesApprovalForHighRiskPausedTask(t *testing.T) {
 
 func TestPendingRegistry_ExpireOnceAlsoExpiresApprovalRequest(t *testing.T) {
 	reg := newSQLitePendingRegistryWithTTLs(t, 5*time.Millisecond, 10*time.Millisecond, time.Hour, 10*time.Millisecond)
-	paused := sampleHighRiskPaused("danger")
+	paused := sampleApprovalPaused("danger")
 	if err := reg.Put("s1", paused.TaskID, paused); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -277,5 +328,28 @@ func TestPendingRegistry_ExpireOnceAlsoExpiresApprovalRequest(t *testing.T) {
 	}
 	if list[0].Approval.Status != string(protocol.ApprovalStatusExpired) {
 		t.Fatalf("Approval.Status = %q, want expired", list[0].Approval.Status)
+	}
+}
+
+func TestPendingRegistry_LegacyHumanConfirmationDoesNotExposeApprovalSummary(t *testing.T) {
+	reg := newSQLitePendingRegistry(t)
+	paused := sampleHighRiskPaused("legacy-human")
+	if err := reg.Put("s1", paused.TaskID, paused); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if _, err := reg.db.Exec(`
+		UPDATE pending_decisions
+		SET approval_request_id = ?
+		WHERE session_id = ? AND task_id = ?
+	`, "legacy-approval-id", "s1", paused.TaskID); err != nil {
+		t.Fatalf("inject legacy approval_request_id: %v", err)
+	}
+
+	list := reg.ListDecisions("s1", []string{statusPending})
+	if len(list) != 1 {
+		t.Fatalf("ListDecisions length = %d, want 1", len(list))
+	}
+	if list[0].Approval != nil {
+		t.Fatalf("Approval = %#v, want nil for legacy human_confirmation summary", list[0].Approval)
 	}
 }

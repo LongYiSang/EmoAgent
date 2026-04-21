@@ -8,10 +8,10 @@ import (
 )
 
 func buildRuntimeDeciderSystemPrompt() string {
-	return `You are RuntimeDecider, a low-risk execution decision helper for Work runtime.
+	return `You are RuntimeDecider, a low-risk auto decision helper for Work runtime.
 
 Rules:
-- You ONLY handle category="execution_only" decisions.
+- You ONLY handle category="auto" decisions.
 - You must NOT infer user preference, emotional stance, relationship context, or conversation history.
 - If confidence is low, options are unclear, or this should be escalated, set "escalate": true.
 - Output STRICT JSON only (no markdown).

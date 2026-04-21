@@ -185,9 +185,12 @@ func TestDispatcherExecute_BashDestructiveCommandRequiresApprovalContext(t *test
 		Input: json.RawMessage(`{"command":"rm -rf tmp"}`),
 	}
 
-	result := d.Execute(context.Background(), call, PermWorkspaceWrite)
+	result := d.Execute(context.Background(), call, PermApprovedDestructive)
 	if !result.IsError {
 		t.Fatal("expected destructive bash command to be denied without approval")
+	}
+	if !result.NeedsApproval {
+		t.Fatal("expected destructive bash command denial to mark needs approval")
 	}
 
 	result = d.Execute(WithApproval(context.Background(), ApprovalContext{
@@ -196,6 +199,76 @@ func TestDispatcherExecute_BashDestructiveCommandRequiresApprovalContext(t *test
 	}), call, PermApprovedDestructive)
 	if result.IsError {
 		t.Fatalf("expected destructive bash command with approval to succeed, got: %s", result.Content)
+	}
+	if result.NeedsApproval {
+		t.Fatal("successful execution should not mark needs approval")
+	}
+}
+
+func TestDispatcher_WouldNeedApproval(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(Spec{
+		Name:        "bash",
+		Description: "Run shell command",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":false}`),
+		Scope:       ScopeWork,
+		Permission:  PermWorkspaceWrite,
+	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{"status":"ok"}`), nil
+	})
+	d := NewDispatcher(registry, MinimalSchemaValidator{}, slog.Default())
+	dWithoutValidator := NewDispatcher(registry, nil, slog.Default())
+
+	destructive := Call{
+		ID:    "call_bash_rm",
+		Name:  "bash",
+		Input: json.RawMessage(`{"command":"rm -rf tmp"}`),
+	}
+	nondestructive := Call{
+		ID:    "call_bash_echo",
+		Name:  "bash",
+		Input: json.RawMessage(`{"command":"echo hi"}`),
+	}
+
+	if d.WouldNeedApproval(context.Background(), destructive, PermWorkspaceWrite) {
+		t.Fatal("workspace-write scope should remain a normal permission denial, not approval interception")
+	}
+	if d.WouldNeedApproval(context.Background(), destructive, PermReadOnly) {
+		t.Fatal("read-only scope should remain a normal permission denial, not approval interception")
+	}
+	if !d.WouldNeedApproval(context.Background(), destructive, PermApprovedDestructive) {
+		t.Fatal("expected missing approval context to require approval even with approved-destructive scope")
+	}
+	if dWithoutValidator.WouldNeedApproval(context.Background(), destructive, PermApprovedDestructive) {
+		t.Fatal("missing validator should keep schemaed destructive calls out of approval interception")
+	}
+	if d.WouldNeedApproval(WithApproval(context.Background(), ApprovalContext{
+		RequestID:        "req-2",
+		AllowDestructive: false,
+	}), destructive, PermApprovedDestructive) {
+		t.Fatal("presence of any approval context should suppress approval interception")
+	}
+	if d.WouldNeedApproval(WithApproval(context.Background(), ApprovalContext{
+		RequestID:        "req-1",
+		AllowDestructive: true,
+	}), destructive, PermApprovedDestructive) {
+		t.Fatal("active approval context should suppress approval interception")
+	}
+	if d.WouldNeedApproval(context.Background(), nondestructive, PermWorkspaceWrite) {
+		t.Fatal("non-destructive bash command should not require approval")
+	}
+	if d.WouldNeedApproval(context.Background(), Call{
+		ID:    "call_invalid",
+		Name:  "bash",
+		Input: json.RawMessage(`{"command":"rm -rf tmp","extra":"boom"}`),
+	}, PermApprovedDestructive) {
+		t.Fatal("schema-invalid destructive input should stay a validation error, not an approval interception")
+	}
+	if d.WouldNeedApproval(context.Background(), Call{
+		ID:   "call_missing",
+		Name: "missing",
+	}, PermWorkspaceWrite) {
+		t.Fatal("unknown tool should not be classified as needing approval")
 	}
 }
 

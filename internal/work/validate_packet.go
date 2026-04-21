@@ -24,21 +24,9 @@ const (
 )
 
 var validEscalationCategories = map[protocol.EscalationCategory]struct{}{
-	protocol.CatExecutionOnly:         {},
-	protocol.CatPreferenceSensitive:   {},
-	protocol.CatEmotionSensitive:      {},
-	protocol.CatToneSensitive:         {},
-	protocol.CatRelationshipSensitive: {},
-	protocol.CatAmbiguousGoal:         {},
-	protocol.CatStrategyShift:         {},
-	protocol.CatHighRisk:              {},
-	protocol.CatIrreversible:          {},
-}
-
-var validRiskLevels = map[string]struct{}{
-	"low":    {},
-	"medium": {},
-	"high":   {},
+	protocol.CatAuto:              {},
+	protocol.CatEmotionJudgment:   {},
+	protocol.CatHumanConfirmation: {},
 }
 
 // ValidateDecisionPacket validates a Work escalation packet before routing.
@@ -53,11 +41,11 @@ func ValidateDecisionPacket(packet *protocol.DecisionPacket, brief protocol.Task
 	if brief.TaskID != "" && packet.TaskID != brief.TaskID {
 		return fmt.Errorf("decision packet task_id %q does not match brief %q", packet.TaskID, brief.TaskID)
 	}
+	if packet.Category == protocol.CatToolApproval {
+		return fmt.Errorf("category %q is runtime-only and must not appear in LLM decision packets", packet.Category)
+	}
 	if _, ok := validEscalationCategories[packet.Category]; !ok {
 		return fmt.Errorf("invalid decision category %q", packet.Category)
-	}
-	if _, ok := validRiskLevels[packet.RiskLevel]; !ok {
-		return fmt.Errorf("invalid risk_level %q", packet.RiskLevel)
 	}
 
 	if err := validateBoundedRequired("goal_summary", packet.GoalSummary, maxPacketGoalSummaryRunes); err != nil {
@@ -138,19 +126,16 @@ func ValidateDecisionPacket(packet *protocol.DecisionPacket, brief protocol.Task
 		}
 	}
 
-	if packet.Category != protocol.CatExecutionOnly &&
+	if packet.Category != protocol.CatAuto &&
 		len(packet.RelevantFindings) == 0 &&
 		len(packet.KeyTradeoffs) == 0 {
 		return fmt.Errorf("category %q requires relevant_findings or key_tradeoffs", packet.Category)
 	}
 
-	switch packet.Category {
-	case protocol.CatHighRisk, protocol.CatIrreversible, protocol.CatStrategyShift:
+	if packet.Category == protocol.CatHumanConfirmation {
 		if strings.TrimSpace(packet.RecommendationReason) == "" {
 			return fmt.Errorf("category %q requires recommendation_reason", packet.Category)
 		}
-	}
-	if packet.Category == protocol.CatHighRisk || packet.Category == protocol.CatIrreversible {
 		if strings.TrimSpace(packet.RejectOptionID) == "" {
 			return fmt.Errorf("category %q requires reject_option_id", packet.Category)
 		}

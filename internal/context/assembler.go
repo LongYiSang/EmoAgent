@@ -35,10 +35,10 @@ Step 2: Only if you genuinely lack information that the user has never provided 
 Do not expose raw JSON to the user. Never mention "decision_packet".
 
 Category guidance:
-- preference_sensitive: ask as a gentle preference question if needed.
-- emotion_sensitive and tone_sensitive: do not ask the user how to express emotion/tone; decide from persona.
-- high_risk and irreversible: clearly explain consequences and request explicit confirmation.
-- ambiguous_goal: ask for clarification with concrete options.
+- auto: resume immediately when the packet is operational and you can decide confidently without asking the user.
+- emotion_judgment: use persona, conversation history, and relationship memory; ask only if genuinely missing necessary user information.
+- human_confirmation: clearly explain the consequence and request explicit confirmation before resuming.
+- tool_approval is runtime-only: a destructive tool call needs approval, so explain the operation, ask for confirmation, and then call resume_work with approval_request_id once approval is granted. Do not ask Work to emit tool_approval.
 
 If resume_work returns {"status":"expired"}, apologize naturally and offer to re-run the task.`
 
@@ -217,7 +217,7 @@ func buildResumeNote(packets []protocol.DecisionPacket) string {
 			b.WriteString("---\n\n")
 		}
 		fmt.Fprintf(&b, "Task: %s\n", p.TaskID)
-		fmt.Fprintf(&b, "Category: %s | Risk: %s\n", p.Category, p.RiskLevel)
+		fmt.Fprintf(&b, "Category: %s | Risk: %s\n", p.Category, displayRiskLevel(p.Category, p.RiskLevel))
 		fmt.Fprintf(&b, "Goal: %s\n", p.GoalSummary)
 		fmt.Fprintf(&b, "Question: %s\n", p.Question)
 		fmt.Fprintf(&b, "Why blocked: %s\n\n", p.WhyBlocked)
@@ -253,7 +253,7 @@ func buildResumeNote(packets []protocol.DecisionPacket) string {
 		}
 	}
 
-	b.WriteString("Action: Determine the decision and call resume_work. Use task_id plus decision/reason for ordinary pauses. For fail-closed high-risk pauses, wait for approval and then resume with task_id and approval_request_id.")
+	b.WriteString("Action: Determine the decision and call resume_work. Use task_id plus decision/reason for ordinary pauses. For fail-closed approval-gated pauses, wait for approval and then resume with task_id and approval_request_id.")
 	return b.String()
 }
 
@@ -268,7 +268,7 @@ func buildResumeSummaryNote(summaries []protocol.DecisionSummary) string {
 		}
 		fmt.Fprintf(&b, "Task: %s\n", s.TaskID)
 		fmt.Fprintf(&b, "Status: %s\n", s.Status)
-		fmt.Fprintf(&b, "Category: %s | Risk: %s\n", s.Category, s.RiskLevel)
+		fmt.Fprintf(&b, "Category: %s | Risk: %s\n", s.Category, displayRiskLevel(protocol.EscalationCategory(s.Category), s.RiskLevel))
 		fmt.Fprintf(&b, "Goal: %s\n", s.GoalSummary)
 		fmt.Fprintf(&b, "Question: %s\n", s.Question)
 		fmt.Fprintf(&b, "Claimable: %t\n", s.Claimable)
@@ -296,6 +296,18 @@ func buildResumeSummaryNote(summaries []protocol.DecisionSummary) string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString("Action: Determine the decision and call resume_work. Use task_id plus decision/reason for ordinary pauses. For fail-closed high-risk pauses, wait for approval and then resume with task_id and approval_request_id.")
+	b.WriteString("Action: Determine the decision and call resume_work. Use task_id plus decision/reason for ordinary pauses. For fail-closed approval-gated pauses, wait for approval and then resume with task_id and approval_request_id.")
 	return b.String()
+}
+
+func displayRiskLevel(category protocol.EscalationCategory, explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	switch category {
+	case protocol.CatHumanConfirmation, protocol.CatToolApproval:
+		return "high"
+	default:
+		return "low"
+	}
 }

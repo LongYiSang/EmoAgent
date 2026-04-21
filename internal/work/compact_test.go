@@ -97,7 +97,7 @@ func TestCompactForPause_DoesNotTruncateNonToolMessages(t *testing.T) {
 func TestCompactPacket_UnderBudgetUnchanged(t *testing.T) {
 	packet := protocol.DecisionPacket{
 		TaskID:      "task-1",
-		Category:    protocol.CatPreferenceSensitive,
+		Category:    protocol.CatEmotionJudgment,
 		RiskLevel:   "low",
 		GoalSummary: "goal",
 		Question:    "question",
@@ -124,7 +124,7 @@ func TestCompactPacket_UnderBudgetUnchanged(t *testing.T) {
 func TestCompactPacket_DropsSourceThenFindingsThenTradeoffs(t *testing.T) {
 	packet := protocol.DecisionPacket{
 		TaskID:      "task-1",
-		Category:    protocol.CatPreferenceSensitive,
+		Category:    protocol.CatEmotionJudgment,
 		RiskLevel:   "low",
 		GoalSummary: "goal",
 		Question:    "question",

@@ -77,7 +77,8 @@ type Call struct {
 
 // Result wraps the output of a tool execution.
 type Result struct {
-	CallID  string          // matches Call.ID
-	Content json.RawMessage // JSON result
-	IsError bool
+	CallID        string          // matches Call.ID
+	Content       json.RawMessage // JSON result
+	IsError       bool
+	NeedsApproval bool
 }

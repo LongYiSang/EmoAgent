@@ -10,8 +10,8 @@ import (
 func validDecisionPacket(taskID string) protocol.DecisionPacket {
 	return protocol.DecisionPacket{
 		TaskID:      taskID,
-		Category:    protocol.CatExecutionOnly,
-		RiskLevel:   "low",
+		Category:    protocol.CatAuto,
+		RiskLevel:   "unexpected-but-ignored",
 		GoalSummary: "Summarize the README and identify missing sections.",
 		Question:    "Should I keep the current heading structure or flatten it?",
 		WhyBlocked:  "Both options are valid and I need a decision to continue.",
@@ -52,13 +52,13 @@ func TestValidateDecisionPacket_InvalidCategory(t *testing.T) {
 	}
 }
 
-func TestValidateDecisionPacket_InvalidRiskLevel(t *testing.T) {
+func TestValidateDecisionPacket_RiskLevelIsIgnoredForLLMPackets(t *testing.T) {
 	brief := protocol.TaskBrief{TaskID: "task-1"}
 	packet := validDecisionPacket(brief.TaskID)
 	packet.RiskLevel = "critical"
 
-	if err := ValidateDecisionPacket(&packet, brief); err == nil {
-		t.Fatal("expected invalid risk level to fail validation")
+	if err := ValidateDecisionPacket(&packet, brief); err != nil {
+		t.Fatalf("risk_level should be ignored for LLM packets, got: %v", err)
 	}
 }
 
@@ -125,46 +125,44 @@ func TestValidateDecisionPacket_TaskIDMustMatchBrief(t *testing.T) {
 func TestValidateDecisionPacket_CategoryAwareMinimumContext(t *testing.T) {
 	brief := protocol.TaskBrief{TaskID: "task-1"}
 	packet := validDecisionPacket(brief.TaskID)
-	packet.Category = protocol.CatPreferenceSensitive
+	packet.Category = protocol.CatEmotionJudgment
 	packet.RelevantFindings = nil
 	packet.KeyTradeoffs = nil
 
 	if err := ValidateDecisionPacket(&packet, brief); err == nil {
-		t.Fatal("expected preference_sensitive without context to fail validation")
+		t.Fatal("expected emotion_judgment without context to fail validation")
 	}
 }
 
-func TestValidateDecisionPacket_HighRiskRequiresRecommendationReason(t *testing.T) {
+func TestValidateDecisionPacket_HumanConfirmationRequiresRecommendationReason(t *testing.T) {
 	brief := protocol.TaskBrief{TaskID: "task-1"}
 	packet := validDecisionPacket(brief.TaskID)
-	packet.Category = protocol.CatHighRisk
+	packet.Category = protocol.CatHumanConfirmation
 	packet.RelevantFindings = []protocol.DecisionEvidence{{Finding: "This may overwrite many files."}}
 	packet.RecommendationReason = ""
 
 	if err := ValidateDecisionPacket(&packet, brief); err == nil {
-		t.Fatal("expected high_risk without recommendation_reason to fail validation")
+		t.Fatal("expected human_confirmation without recommendation_reason to fail validation")
 	}
 }
 
-func TestValidateDecisionPacket_HighRiskRequiresRejectOptionID(t *testing.T) {
+func TestValidateDecisionPacket_HumanConfirmationRequiresRejectOptionID(t *testing.T) {
 	brief := protocol.TaskBrief{TaskID: "task-1"}
 	packet := validDecisionPacket(brief.TaskID)
-	packet.Category = protocol.CatHighRisk
-	packet.RiskLevel = "high"
+	packet.Category = protocol.CatHumanConfirmation
 	packet.RelevantFindings = []protocol.DecisionEvidence{{Finding: "This may delete generated files."}}
 	packet.RecommendationReason = "Deleting the generated files is the safest fix."
 	packet.RejectOptionID = ""
 
 	if err := ValidateDecisionPacket(&packet, brief); err == nil {
-		t.Fatal("expected high_risk without reject_option_id to fail validation")
+		t.Fatal("expected human_confirmation without reject_option_id to fail validation")
 	}
 }
 
 func TestValidateDecisionPacket_RejectOptionMustExist(t *testing.T) {
 	brief := protocol.TaskBrief{TaskID: "task-1"}
 	packet := validDecisionPacket(brief.TaskID)
-	packet.Category = protocol.CatHighRisk
-	packet.RiskLevel = "high"
+	packet.Category = protocol.CatHumanConfirmation
 	packet.RelevantFindings = []protocol.DecisionEvidence{{Finding: "This may delete generated files."}}
 	packet.RecommendationReason = "Deleting the generated files is the safest fix."
 	packet.RejectOptionID = "nope"
@@ -174,14 +172,28 @@ func TestValidateDecisionPacket_RejectOptionMustExist(t *testing.T) {
 	}
 }
 
-func TestValidateDecisionPacket_ExecutionOnlyAllowsEmptyContext(t *testing.T) {
+func TestValidateDecisionPacket_AutoAllowsEmptyContext(t *testing.T) {
 	brief := protocol.TaskBrief{TaskID: "task-1"}
 	packet := validDecisionPacket(brief.TaskID)
-	packet.Category = protocol.CatExecutionOnly
+	packet.Category = protocol.CatAuto
 	packet.RelevantFindings = nil
 	packet.KeyTradeoffs = nil
 
 	if err := ValidateDecisionPacket(&packet, brief); err != nil {
-		t.Fatalf("execution_only should allow empty context, got: %v", err)
+		t.Fatalf("auto should allow empty context, got: %v", err)
+	}
+}
+
+func TestValidateDecisionPacket_ToolApprovalIsRuntimeOnly(t *testing.T) {
+	brief := protocol.TaskBrief{TaskID: "task-1"}
+	packet := validDecisionPacket(brief.TaskID)
+	packet.Category = protocol.CatToolApproval
+
+	err := ValidateDecisionPacket(&packet, brief)
+	if err == nil {
+		t.Fatal("expected tool_approval to be rejected from LLM packets")
+	}
+	if !strings.Contains(err.Error(), "runtime-only") {
+		t.Fatalf("error = %q, want runtime-only guidance", err)
 	}
 }

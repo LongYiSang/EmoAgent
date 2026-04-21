@@ -51,9 +51,9 @@ func (r *PendingRegistry) Put(sessionID, taskID string, paused *PausedWork) erro
 	blob := resumeBlobFromPaused(paused)
 	failClosed := shouldFailClosed(paused.Packet)
 	var approvalRequestID string
-	if failClosed {
+	if requiresApprovalRequest(paused.Packet) {
 		if r.approvals == nil {
-			return fmt.Errorf("approval service is required for fail-closed decisions")
+			return fmt.Errorf("approval service is required for approval-gated decisions")
 		}
 		req, err := r.approvals.CreateRequestFromDecision(sessionID, paused.Packet, now.Add(r.cfg.HardTTL))
 		if err != nil {
@@ -105,7 +105,7 @@ func (r *PendingRegistry) Put(sessionID, taskID string, paused *PausedWork) erro
 		boolToInt(failClosed),
 		nullStringValue(sql.NullString{String: approvalRequestID, Valid: approvalRequestID != ""}),
 		string(paused.Packet.Category),
-		paused.Packet.RiskLevel,
+		derivedRiskLevel(paused.Packet.Category),
 		marshalJSON(summary),
 		marshalJSON(blob),
 		formatTime(blob.CreatedAt),
@@ -358,9 +358,9 @@ func (r *PendingRegistry) RequeuePaused(sessionID, taskID, claimID string, pause
 	blob := resumeBlobFromPaused(paused)
 	failClosed := shouldFailClosed(paused.Packet)
 	var approvalRequestID string
-	if failClosed {
+	if requiresApprovalRequest(paused.Packet) {
 		if r.approvals == nil {
-			return fmt.Errorf("approval service is required for fail-closed decisions")
+			return fmt.Errorf("approval service is required for approval-gated decisions")
 		}
 		req, err := r.approvals.CreateRequestFromDecision(sessionID, paused.Packet, now.Add(r.cfg.HardTTL))
 		if err != nil {
@@ -391,7 +391,7 @@ func (r *PendingRegistry) RequeuePaused(sessionID, taskID, claimID string, pause
 		boolToInt(failClosed),
 		nullStringValue(sql.NullString{String: approvalRequestID, Valid: approvalRequestID != ""}),
 		string(paused.Packet.Category),
-		paused.Packet.RiskLevel,
+		derivedRiskLevel(paused.Packet.Category),
 		marshalJSON(summary),
 		marshalJSON(blob),
 		formatTime(blob.CreatedAt),
@@ -796,6 +796,10 @@ func (r *PendingRegistry) ArchiveOnce() int {
 }
 
 func (r *PendingRegistry) attachApproval(summary DecisionSummary, row pendingDecisionRow) (DecisionSummary, error) {
+	if row.Category != string(protocol.CatToolApproval) {
+		summary.Approval = nil
+		return summary, nil
+	}
 	if !row.ApprovalRequestID.Valid || row.ApprovalRequestID.String == "" {
 		return summary, nil
 	}

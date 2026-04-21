@@ -3,6 +3,8 @@ package work
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -28,9 +30,40 @@ func makePausedForResume(t *testing.T, taskID string) *PausedWork {
 		Brief:           brief,
 		Messages:        []llm.Message{},
 		PendingCallID:   "call-pending",
+		PendingToolCall: nil,
 		Packet:          validDecisionPacket(taskID),
 		Round:           1,
 		EscalationCount: 1,
+	}
+}
+
+func TestResumeBlobRoundTripKeepsPendingToolCall(t *testing.T) {
+	paused := makePausedForResume(t, "task-blob")
+	paused.PendingToolCall = &tool.Call{
+		ID:    "bash-1",
+		Name:  "bash",
+		Input: json.RawMessage(`{"command":"rm -rf tmp"}`),
+	}
+
+	payload, err := json.Marshal(resumeBlobFromPaused(paused))
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+
+	var blob ResumeBlob
+	if err := json.Unmarshal(payload, &blob); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	restored := blob.PausedWork()
+	if restored.PendingToolCall == nil {
+		t.Fatal("PendingToolCall should survive resume blob round-trip")
+	}
+	if restored.PendingToolCall.Name != "bash" {
+		t.Fatalf("PendingToolCall.Name = %q, want bash", restored.PendingToolCall.Name)
+	}
+	if string(restored.PendingToolCall.Input) != `{"command":"rm -rf tmp"}` {
+		t.Fatalf("PendingToolCall.Input = %s", restored.PendingToolCall.Input)
 	}
 }
 
@@ -119,8 +152,7 @@ func TestResumeTool_HandlerRejectsRemovedStyleDeltaField(t *testing.T) {
 func TestResumeTool_RequeuesWhenRuntimePausesAgain(t *testing.T) {
 	packetJSON := `{
 		"task_id":"task-1",
-		"category":"execution_only",
-		"risk_level":"low",
+		"category":"auto",
 		"goal_summary":"need a technical decision",
 		"question":"pick one",
 		"why_blocked":"blocked",
@@ -158,6 +190,71 @@ func TestResumeTool_RequeuesWhenRuntimePausesAgain(t *testing.T) {
 	}
 }
 
+func TestResumeTool_PausedJournalUsesDerivedRiskLevel(t *testing.T) {
+	packetJSON := `{
+		"task_id":"task-1",
+		"category":"auto",
+		"goal_summary":"need a technical decision",
+		"question":"pick one",
+		"why_blocked":"blocked",
+		"options":[{"id":"a","summary":"A"},{"id":"b","summary":"B"}],
+		"suggests_user_input":false
+	}`
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			toolUseResp("call-2", "request_decision", packetJSON),
+		},
+	}
+	runtime := newTestRuntime(t, client)
+	pending := newSQLitePendingRegistry(t)
+	paused := makePausedForResume(t, "task-1")
+	if err := pending.Put("session-1", paused.TaskID, paused); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	root := t.TempDir()
+	_, handler := NewResumeTool(runtime, pending, root, testLogger())
+	ctx := WithSessionID(context.Background(), "session-1")
+	if _, err := handler(ctx, json.RawMessage(`{"task_id":"task-1","decision":"keep","reason":"best"}`)); err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+
+	var found string
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() && strings.HasSuffix(path, ".jsonl") {
+			found = path
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir returned error: %v", err)
+	}
+	if found == "" {
+		t.Fatal("expected a journal file to be written")
+	}
+
+	data, err := os.ReadFile(found)
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	var pausedLine string
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.Contains(line, `"kind":"task_paused"`) {
+			pausedLine = line
+			break
+		}
+	}
+	if pausedLine == "" {
+		t.Fatalf("journal = %s, want task_paused line", data)
+	}
+	if !strings.Contains(pausedLine, `"risk":"low"`) {
+		t.Fatalf("task_paused line = %s, want derived low risk", pausedLine)
+	}
+}
+
 func TestResumeTool_EmitsProgressEndOnReport(t *testing.T) {
 	client := &scriptedLLM{
 		responses: []*llm.ChatResponse{
@@ -189,8 +286,7 @@ func TestResumeTool_EmitsProgressEndOnReport(t *testing.T) {
 func TestResumeTool_EmitsProgressPausedWhenPausesAgain(t *testing.T) {
 	packetJSON := `{
 		"task_id":"task-1",
-		"category":"execution_only",
-		"risk_level":"low",
+		"category":"auto",
 		"goal_summary":"need a technical decision",
 		"question":"pick one",
 		"why_blocked":"blocked",
@@ -253,9 +349,16 @@ func TestResumeTool_FailClosedRequiresApprovalRequestID(t *testing.T) {
 	runtime := newTestRuntime(t, &scriptedLLM{})
 	pending := newSQLitePendingRegistry(t)
 	paused := makePausedForResume(t, "task-risk")
-	paused.Packet.Category = protocol.CatHighRisk
-	paused.Packet.RiskLevel = "high"
+	paused.Packet.Category = protocol.CatToolApproval
+	paused.Packet.Question = "Allow: rm -rf tmp"
+	paused.Packet.Options = []protocol.DecisionOption{
+		{ID: "allow", Summary: "Allow execution"},
+		{ID: "deny", Summary: "Deny execution"},
+	}
+	paused.Packet.RecommendedOption = "allow"
+	paused.Packet.RejectOptionID = "deny"
 	paused.Packet.RecommendationReason = "destructive action needs explicit approval"
+	paused.Packet.RelevantFindings = []protocol.DecisionEvidence{{Finding: "This action changes workspace files."}}
 	if err := pending.Put("session-1", paused.TaskID, paused); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -276,6 +379,87 @@ func TestResumeTool_FailClosedRequiresApprovalRequestID(t *testing.T) {
 	}
 }
 
+func TestResumeTool_HumanConfirmationCanResumeWithoutApprovalRequestID(t *testing.T) {
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			textResp(`{"status":"completed","summary":"done"}`),
+		},
+	}
+	runtime := newTestRuntime(t, client)
+	pending := newSQLitePendingRegistry(t)
+	paused := makePausedForResume(t, "task-human")
+	paused.Packet.Category = protocol.CatHumanConfirmation
+	paused.Packet.RecommendationReason = "This path needs explicit user confirmation."
+	paused.Packet.RejectOptionID = "deny"
+	paused.Packet.Options = []protocol.DecisionOption{
+		{ID: "ship", Summary: "Proceed"},
+		{ID: "deny", Summary: "Do not proceed"},
+	}
+	paused.Packet.RelevantFindings = []protocol.DecisionEvidence{{Finding: "This action changes workspace files."}}
+	if err := pending.Put("session-1", paused.TaskID, paused); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	_, handler := NewResumeTool(runtime, pending, t.TempDir(), testLogger())
+	ctx := WithSessionID(context.Background(), "session-1")
+	raw, err := handler(ctx, json.RawMessage(`{"task_id":"task-human","decision":"ship","reason":"user confirmed in chat"}`))
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+
+	var report protocol.TaskReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatalf("unmarshal report: %v", err)
+	}
+	if report.Status != "completed" {
+		t.Fatalf("status = %q, want completed", report.Status)
+	}
+}
+
+func TestResumeTool_LegacyHumanConfirmationApprovalRequestIDDoesNotBlockResume(t *testing.T) {
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			textResp(`{"status":"completed","summary":"done"}`),
+		},
+	}
+	runtime := newTestRuntime(t, client)
+	pending := newSQLitePendingRegistry(t)
+	paused := makePausedForResume(t, "task-human-legacy")
+	paused.Packet.Category = protocol.CatHumanConfirmation
+	paused.Packet.RecommendationReason = "This path needs explicit user confirmation."
+	paused.Packet.RejectOptionID = "deny"
+	paused.Packet.Options = []protocol.DecisionOption{
+		{ID: "ship", Summary: "Proceed"},
+		{ID: "deny", Summary: "Do not proceed"},
+	}
+	paused.Packet.RelevantFindings = []protocol.DecisionEvidence{{Finding: "This action changes workspace files."}}
+	if err := pending.Put("session-1", paused.TaskID, paused); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if _, err := pending.db.Exec(`
+		UPDATE pending_decisions
+		SET approval_request_id = ?
+		WHERE session_id = ? AND task_id = ?
+	`, "legacy-approval-id", "session-1", paused.TaskID); err != nil {
+		t.Fatalf("inject legacy approval_request_id: %v", err)
+	}
+
+	_, handler := NewResumeTool(runtime, pending, t.TempDir(), testLogger())
+	ctx := WithSessionID(context.Background(), "session-1")
+	raw, err := handler(ctx, json.RawMessage(`{"task_id":"task-human-legacy","decision":"ship","reason":"user confirmed in chat"}`))
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+
+	var report protocol.TaskReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatalf("unmarshal report: %v", err)
+	}
+	if report.Status != "completed" {
+		t.Fatalf("status = %q, want completed", report.Status)
+	}
+}
+
 func TestResumeTool_ConsumesApprovedRequestAndUsesSelectedOption(t *testing.T) {
 	client := &scriptedLLM{
 		responses: []*llm.ChatResponse{
@@ -286,10 +470,16 @@ func TestResumeTool_ConsumesApprovedRequestAndUsesSelectedOption(t *testing.T) {
 	pending := newSQLitePendingRegistry(t)
 	paused := makePausedForResume(t, "task-risk")
 	paused.Brief.PermissionScope = "workspace-write"
-	paused.Packet.Category = protocol.CatHighRisk
-	paused.Packet.RiskLevel = "high"
+	paused.Packet.Category = protocol.CatToolApproval
+	paused.Packet.Question = "Allow: rm -rf tmp"
 	paused.Packet.RecommendedOption = "flat"
+	paused.Packet.Options = []protocol.DecisionOption{
+		{ID: "flat", Summary: "Allow execution"},
+		{ID: "deny", Summary: "Deny execution"},
+	}
+	paused.Packet.RejectOptionID = "deny"
 	paused.Packet.RecommendationReason = "destructive action needs explicit approval"
+	paused.Packet.RelevantFindings = []protocol.DecisionEvidence{{Finding: "This action changes workspace files."}}
 	if err := pending.Put("session-1", paused.TaskID, paused); err != nil {
 		t.Fatalf("Put: %v", err)
 	}

@@ -13,14 +13,15 @@ const requestDecisionDescription = `Request a decision from the runtime when Wor
 Rules:
 - request_decision MUST be the sole tool call in the round.
 - relevant_findings must contain summarized facts only. Never paste raw tool output.
-- choose the most specific escalation category and include clear options.`
+- choose the most specific category (auto / emotion_judgment / human_confirmation).
+- never use tool_approval; runtime sets that automatically.
+- include clear options.`
 
 var requestDecisionSchema = json.RawMessage(`{
   "type":"object",
   "properties":{
     "task_id":{"type":"string"},
-    "category":{"type":"string","enum":["execution_only","preference_sensitive","emotion_sensitive","tone_sensitive","relationship_sensitive","ambiguous_goal","strategy_shift","high_risk","irreversible"]},
-    "risk_level":{"type":"string","enum":["low","medium","high"]},
+    "category":{"type":"string","enum":["auto","emotion_judgment","human_confirmation"]},
     "goal_summary":{"type":"string"},
     "question":{"type":"string"},
     "why_blocked":{"type":"string"},
@@ -69,7 +70,7 @@ var requestDecisionSchema = json.RawMessage(`{
     "suggests_user_input":{"type":"boolean"},
     "created_at":{"type":"string","format":"date-time"}
   },
-  "required":["task_id","category","risk_level","goal_summary","question","why_blocked","options","suggests_user_input"],
+  "required":["task_id","category","goal_summary","question","why_blocked","options","suggests_user_input"],
   "additionalProperties":false
 }`)
 

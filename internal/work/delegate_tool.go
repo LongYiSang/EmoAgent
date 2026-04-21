@@ -98,7 +98,7 @@ func NewDelegateTool(runtime *Runtime, pending *PendingRegistry, journalDir stri
 			journal.Write("task_paused", outcome.Paused.Round, map[string]any{
 				"task_id":  outcome.Paused.TaskID,
 				"category": outcome.Paused.Packet.Category,
-				"risk":     outcome.Paused.Packet.RiskLevel,
+				"risk":     derivedRiskLevel(outcome.Paused.Packet.Category),
 			})
 		}
 		if progressCB != nil {

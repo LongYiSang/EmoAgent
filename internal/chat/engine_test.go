@@ -1098,7 +1098,7 @@ func TestEnginePendingDecisionChainAcrossTurns(t *testing.T) {
 		delegateSessionID = work.SessionIDFromContext(ctx)
 		packet := protocol.DecisionPacket{
 			TaskID:               pausedTaskID,
-			Category:             protocol.CatHighRisk,
+			Category:             protocol.CatHumanConfirmation,
 			RiskLevel:            "medium",
 			GoalSummary:          "删除 docs/todo 下 [finish] 文件",
 			Question:             "是否确认执行删除？",
@@ -1259,7 +1259,7 @@ func TestEnginePendingDecisionChainAcrossTurns(t *testing.T) {
 	}
 }
 
-func TestEngineSendMessage_EmitsApprovalRequiredBeforeFinalAssistantReply(t *testing.T) {
+func TestEngineSendMessage_EmitsApprovalRequiredBeforeFinalAssistantReplyForToolApproval(t *testing.T) {
 	llmClient := &scriptedEngineClient{
 		responses: []*llm.ChatResponse{
 			toolUseResponse("call_delegate", "delegate_to_work", `{"goal":"delete finish files","permission_scope":"workspace-write"}`),
@@ -1296,7 +1296,7 @@ func TestEngineSendMessage_EmitsApprovalRequiredBeforeFinalAssistantReply(t *tes
 	}, func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
 		packet := protocol.DecisionPacket{
 			TaskID:               pausedTaskID,
-			Category:             protocol.CatHighRisk,
+			Category:             protocol.CatToolApproval,
 			RiskLevel:            "medium",
 			GoalSummary:          "删除 docs/todo 下 [finish] 文件",
 			Question:             "是否确认执行删除？",
@@ -1305,7 +1305,7 @@ func TestEngineSendMessage_EmitsApprovalRequiredBeforeFinalAssistantReply(t *tes
 			RecommendedOption:    "confirm_delete",
 			RecommendationReason: "用户请求清理已完成文件",
 			RejectOptionID:       "cancel",
-			SuggestsUserInput:    true,
+			SuggestsUserInput:    false,
 			CreatedAt:            time.Now().UTC(),
 		}
 		if err := pending.Put(work.SessionIDFromContext(ctx), pausedTaskID, &work.PausedWork{

@@ -12,8 +12,7 @@ import (
 func testExecutionOnlyPacket() protocol.DecisionPacket {
 	return protocol.DecisionPacket{
 		TaskID:      "task-1",
-		Category:    protocol.CatExecutionOnly,
-		RiskLevel:   "low",
+		Category:    protocol.CatAuto,
 		GoalSummary: "Goal summary",
 		Question:    "Choose implementation strategy",
 		WhyBlocked:  "Need one option to continue",
@@ -140,7 +139,7 @@ func TestRuntimeDecider_RefusesNonExecutionCategory(t *testing.T) {
 	}
 	decider := NewLLMRuntimeDecider(client, "test-model")
 	packet := testExecutionOnlyPacket()
-	packet.Category = protocol.CatEmotionSensitive
+	packet.Category = protocol.CatEmotionJudgment
 
 	decision, err := decider.Decide(context.Background(), protocol.TaskBrief{Goal: "goal"}, packet)
 	if err != nil {

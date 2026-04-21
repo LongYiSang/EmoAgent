@@ -347,8 +347,8 @@ func TestBuildEmotionContextWithPendingSummariesAddsResumeNote(t *testing.T) {
 		{
 			TaskID:      "task-1",
 			Status:      "stale",
-			Category:    string(protocol.CatPreferenceSensitive),
-			RiskLevel:   "low",
+			Category:    string(protocol.CatHumanConfirmation),
+			RiskLevel:   "high",
 			GoalSummary: "goal",
 			Question:    "which option?",
 			Options: []protocol.DecisionOption{
@@ -393,6 +393,37 @@ func TestBuildEmotionContextWithPendingSummariesAddsResumeNote(t *testing.T) {
 	}
 	if !strings.Contains(assembled.System, "approval_request_id") {
 		t.Fatalf("system prompt should explain resume_work approval_request_id usage: %s", assembled.System)
+	}
+}
+
+func TestBuildEmotionContext_IncludesToolApprovalGuidance(t *testing.T) {
+	persona := &config.Persona{
+		Name:         "default",
+		SystemPrompt: "You are warm.",
+	}
+
+	assembled, err := ctxpkg.BuildEmotionContext(persona, nil, config.ContextConfig{
+		InputBudgetTokens:    24000,
+		SoftCompactRatio:     0.75,
+		HardCompactRatio:     0.92,
+		ReserveOutputTokens:  4096,
+		KeepRecentUserTurns:  1,
+		ToolResultSoftTokens: 1000,
+		ToolResultHardTokens: 3000,
+	}, runtimeenv.Facts{OS: "windows"})
+	if err != nil {
+		t.Fatalf("BuildEmotionContext: %v", err)
+	}
+
+	for _, snippet := range []string{
+		"destructive tool call needs approval",
+		"explain the operation",
+		"ask for confirmation",
+		"approval_request_id",
+	} {
+		if !strings.Contains(assembled.System, snippet) {
+			t.Fatalf("system prompt missing %q: %s", snippet, assembled.System)
+		}
 	}
 }
 

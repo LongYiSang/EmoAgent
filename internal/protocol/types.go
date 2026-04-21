@@ -28,15 +28,10 @@ type TaskReport struct {
 type EscalationCategory string
 
 const (
-	CatExecutionOnly         EscalationCategory = "execution_only"
-	CatPreferenceSensitive   EscalationCategory = "preference_sensitive"
-	CatEmotionSensitive      EscalationCategory = "emotion_sensitive"
-	CatToneSensitive         EscalationCategory = "tone_sensitive"
-	CatRelationshipSensitive EscalationCategory = "relationship_sensitive"
-	CatAmbiguousGoal         EscalationCategory = "ambiguous_goal"
-	CatStrategyShift         EscalationCategory = "strategy_shift"
-	CatHighRisk              EscalationCategory = "high_risk"
-	CatIrreversible          EscalationCategory = "irreversible"
+	CatAuto              EscalationCategory = "auto"
+	CatEmotionJudgment   EscalationCategory = "emotion_judgment"
+	CatHumanConfirmation EscalationCategory = "human_confirmation"
+	CatToolApproval      EscalationCategory = "tool_approval"
 )
 
 // DecisionOption describes one possible course of action.
@@ -65,7 +60,7 @@ type DecisionTradeoff struct {
 type DecisionPacket struct {
 	TaskID               string             `json:"task_id"`
 	Category             EscalationCategory `json:"category"`
-	RiskLevel            string             `json:"risk_level"`
+	RiskLevel            string             `json:"-"`
 	GoalSummary          string             `json:"goal_summary"`
 	Question             string             `json:"question"`
 	WhyBlocked           string             `json:"why_blocked"`

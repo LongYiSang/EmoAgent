@@ -9,7 +9,7 @@ import (
 	"github.com/longyisang/emoagent/internal/protocol"
 )
 
-// RuntimeDecider handles low-risk execution-only decisions within Work runtime.
+// RuntimeDecider handles low-risk auto decisions within Work runtime.
 type RuntimeDecider interface {
 	Decide(ctx context.Context, brief protocol.TaskBrief, packet protocol.DecisionPacket) (RuntimeDecision, error)
 }
@@ -42,7 +42,7 @@ func NewLLMRuntimeDecider(client llm.Client, model string) *LLMRuntimeDecider {
 }
 
 func (d *LLMRuntimeDecider) Decide(ctx context.Context, brief protocol.TaskBrief, packet protocol.DecisionPacket) (RuntimeDecision, error) {
-	if packet.Category != protocol.CatExecutionOnly {
+	if packet.Category != protocol.CatAuto {
 		return RuntimeDecision{
 			Escalate:       true,
 			EscalateReason: fmt.Sprintf("unsupported category %q for runtime decider", packet.Category),

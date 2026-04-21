@@ -35,6 +35,35 @@ func NewDispatcher(registry *Registry, validator SchemaValidator, logger *slog.L
 	}
 }
 
+// WouldNeedApproval reports whether the call should be intercepted for explicit
+// approval before execution.
+func (d *Dispatcher) WouldNeedApproval(ctx context.Context, call Call, maxPermission Permission) bool {
+	if d == nil || d.registry == nil {
+		return false
+	}
+	spec, ok := d.registry.GetSpec(call.Name)
+	if !ok {
+		return false
+	}
+	requiredPermission := effectivePermission(spec, call.Input)
+	if requiredPermission != PermApprovedDestructive {
+		return false
+	}
+	if len(spec.Parameters) > 0 && d.validator == nil {
+		return false
+	}
+	if d.validator != nil && len(spec.Parameters) > 0 {
+		if err := d.validator.Validate(spec.Parameters, call.Input); err != nil {
+			return false
+		}
+	}
+	if !PermissionSatisfied(maxPermission, requiredPermission) {
+		return false
+	}
+	_, ok = ApprovalFromContext(ctx)
+	return !ok
+}
+
 // Execute runs a single tool call through the fail-closed pipeline:
 //  1. Registry lookup → error if tool not found
 //  2. Schema validation → error if input invalid or schema exists but no validator is configured
@@ -94,7 +123,7 @@ func (d *Dispatcher) Execute(ctx context.Context, call Call, maxPermission Permi
 				"tool", call.Name,
 				"call_id", call.ID,
 			)
-			return errorResult(call.ID, fmt.Sprintf("approval required: tool %q needs an active approved request", call.Name))
+			return approvalRequiredResult(call.ID, fmt.Sprintf("approval required: tool %q needs an active approved request", call.Name))
 		}
 	}
 
@@ -119,9 +148,10 @@ func (d *Dispatcher) Execute(ctx context.Context, call Call, maxPermission Permi
 		"hash", digest.Hash,
 	)
 	return Result{
-		CallID:  call.ID,
-		Content: result,
-		IsError: false,
+		CallID:        call.ID,
+		Content:       result,
+		IsError:       false,
+		NeedsApproval: false,
 	}
 }
 
@@ -229,10 +259,17 @@ func ResultsToMessages(provider string, results []Result) []llm.Message {
 func errorResult(callID, msg string) Result {
 	errJSON, _ := json.Marshal(map[string]string{"error": msg})
 	return Result{
-		CallID:  callID,
-		Content: errJSON,
-		IsError: true,
+		CallID:        callID,
+		Content:       errJSON,
+		IsError:       true,
+		NeedsApproval: false,
 	}
+}
+
+func approvalRequiredResult(callID, msg string) Result {
+	result := errorResult(callID, msg)
+	result.NeedsApproval = true
+	return result
 }
 
 const maxInt = int(^uint(0) >> 1)

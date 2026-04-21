@@ -207,8 +207,7 @@ func TestDelegateTool_EmitsProgressEndOnReport(t *testing.T) {
 
 func TestDelegateTool_EmitsProgressPausedOnPause(t *testing.T) {
 	packetJSON := `{
-		"category":"execution_only",
-		"risk_level":"low",
+		"category":"auto",
 		"goal_summary":"need a technical decision",
 		"question":"pick one",
 		"why_blocked":"blocked",
@@ -231,6 +230,62 @@ func TestDelegateTool_EmitsProgressPausedOnPause(t *testing.T) {
 	}
 	if !hasProgressKind(events, progress.KindPaused) {
 		t.Fatalf("events = %#v, want paused event", events)
+	}
+}
+
+func TestDelegateTool_PausedJournalUsesDerivedRiskLevel(t *testing.T) {
+	packetJSON := `{
+		"category":"auto",
+		"goal_summary":"need a technical decision",
+		"question":"pick one",
+		"why_blocked":"blocked",
+		"options":[{"id":"a","summary":"A"},{"id":"b","summary":"B"}],
+		"suggests_user_input":false
+	}`
+	runtime := newTestRuntime(t, &scriptedLLM{
+		responses: []*llm.ChatResponse{toolUseResp("call-1", "request_decision", packetJSON)},
+	})
+	root := t.TempDir()
+	_, handler := NewDelegateTool(runtime, nil, root, testLogger())
+
+	input := json.RawMessage(`{"goal":"inspect config","permission_scope":"read-only"}`)
+	if _, err := handler(context.Background(), input); err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+
+	var found string
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() && strings.HasSuffix(path, ".jsonl") {
+			found = path
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir returned error: %v", err)
+	}
+	if found == "" {
+		t.Fatal("expected a journal file to be written")
+	}
+
+	data, err := os.ReadFile(found)
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	var pausedLine string
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.Contains(line, `"kind":"task_paused"`) {
+			pausedLine = line
+			break
+		}
+	}
+	if pausedLine == "" {
+		t.Fatalf("journal = %s, want task_paused line", data)
+	}
+	if !strings.Contains(pausedLine, `"risk":"low"`) {
+		t.Fatalf("task_paused line = %s, want derived low risk", pausedLine)
 	}
 }
 

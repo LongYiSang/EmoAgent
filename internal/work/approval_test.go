@@ -21,8 +21,7 @@ func newSQLiteApprovalService(t *testing.T) *ApprovalService {
 
 func sampleApprovalPacket(taskID string) protocol.DecisionPacket {
 	packet := validDecisionPacket(taskID)
-	packet.Category = protocol.CatHighRisk
-	packet.RiskLevel = "high"
+	packet.Category = protocol.CatHumanConfirmation
 	packet.RelevantFindings = []protocol.DecisionEvidence{{Finding: "This will remove generated files."}}
 	packet.RecommendationReason = "Deleting the generated files is the cleanest fix."
 	packet.Options = []protocol.DecisionOption{

@@ -60,7 +60,7 @@ func (s *ApprovalService) CreateRequestFromDecision(sessionID string, packet pro
 		SessionID:            sessionID,
 		TaskID:               packet.TaskID,
 		Category:             string(packet.Category),
-		RiskLevel:            packet.RiskLevel,
+		RiskLevel:            derivedRiskLevel(packet.Category),
 		GoalSummary:          packet.GoalSummary,
 		Question:             packet.Question,
 		Options:              append([]protocol.DecisionOption(nil), packet.Options...),

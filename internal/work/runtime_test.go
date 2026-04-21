@@ -87,6 +87,55 @@ func newTestRuntime(t *testing.T, client llm.Client) *Runtime {
 	})
 }
 
+func newApprovalTestRuntime(t *testing.T, client llm.Client, executed *[]string) *Runtime {
+	t.Helper()
+
+	registry := tool.NewRegistry()
+	registry.Register(tool.Spec{
+		Name:        "bash",
+		Description: "runs a shell command",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":false}`),
+		Scope:       tool.ScopeWork,
+		Permission:  tool.PermWorkspaceWrite,
+	}, func(_ context.Context, input json.RawMessage) (json.RawMessage, error) {
+		var payload struct {
+			Command string `json:"command"`
+		}
+		if err := json.Unmarshal(input, &payload); err != nil {
+			return nil, err
+		}
+		if executed != nil {
+			*executed = append(*executed, payload.Command)
+		}
+		return json.Marshal(map[string]string{"command": payload.Command})
+	})
+	registry.Register(NewFinishTaskTool(), FinishTaskPlaceholderHandler)
+	registry.Register(NewRequestDecisionTool(), RequestDecisionPlaceholderHandler)
+
+	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, testLogger())
+	return NewRuntime(RuntimeConfig{
+		LLM:                      client,
+		Provider:                 "openai",
+		Model:                    "test-model",
+		MaxTokens:                2048,
+		Temperature:              0.2,
+		MaxToolRounds:            4,
+		MaxInputTokens:           100000,
+		Registry:                 registry,
+		Dispatcher:               dispatcher,
+		Logger:                   testLogger(),
+		MaxEscalations:           3,
+		PendingSnapshotMaxTokens: 4000,
+		EnvironmentFacts: runtimeenv.Facts{
+			OS:            "linux",
+			WorkspaceRoot: "/repo",
+			PathStyle:     "posix",
+			BashEnabled:   true,
+			ShellDisplay:  "sh -c",
+		},
+	})
+}
+
 func newTestRuntimeWithDecider(t *testing.T, client llm.Client, decider RuntimeDecider) *Runtime {
 	t.Helper()
 	registry, dispatcher := newTestRegistryAndDispatcher(t)
@@ -126,11 +175,10 @@ func newValidatedBrief(t *testing.T) protocol.TaskBrief {
 	return brief
 }
 
-func decisionPacketJSON(category, risk string, includeFinding bool) string {
+func decisionPacketJSON(category string, includeFinding bool) string {
 	packet := map[string]any{
 		"task_id":             "task-1",
 		"category":            category,
-		"risk_level":          risk,
 		"goal_summary":        "choose next step",
 		"question":            "which option should we use?",
 		"why_blocked":         "need decision to continue",
@@ -378,7 +426,7 @@ func TestRuntime_WritesToolEventsToJournal(t *testing.T) {
 }
 
 func TestRuntime_RequestDecisionRuntimeDeciderPath(t *testing.T) {
-	packet := decisionPacketJSON(string(protocol.CatExecutionOnly), "low", false)
+	packet := decisionPacketJSON(string(protocol.CatAuto), false)
 	client := &scriptedLLM{
 		responses: []*llm.ChatResponse{
 			toolUseResp("decide-1", "request_decision", packet),
@@ -404,8 +452,7 @@ func TestRuntime_RequestDecisionRuntimeDeciderPath(t *testing.T) {
 func TestRuntime_RequestDecisionUnknownTaskIDIsNormalized(t *testing.T) {
 	packet := map[string]any{
 		"task_id":             "unknown",
-		"category":            string(protocol.CatExecutionOnly),
-		"risk_level":          "low",
+		"category":            string(protocol.CatAuto),
 		"goal_summary":        "choose next step",
 		"question":            "which option should we use?",
 		"why_blocked":         "need decision to continue",
@@ -440,7 +487,7 @@ func TestRuntime_RequestDecisionUnknownTaskIDIsNormalized(t *testing.T) {
 }
 
 func TestRuntime_RequestDecisionEscalatesToPaused(t *testing.T) {
-	packet := decisionPacketJSON(string(protocol.CatExecutionOnly), "low", false)
+	packet := decisionPacketJSON(string(protocol.CatAuto), false)
 	client := &scriptedLLM{
 		responses: []*llm.ChatResponse{
 			toolUseResp("decide-1", "request_decision", packet),
@@ -462,8 +509,8 @@ func TestRuntime_RequestDecisionEscalatesToPaused(t *testing.T) {
 	}
 }
 
-func TestRuntime_RequestDecisionBypassesDeciderForEmotionSensitive(t *testing.T) {
-	packet := decisionPacketJSON(string(protocol.CatEmotionSensitive), "low", true)
+func TestRuntime_RequestDecisionBypassesDeciderForEmotionJudgment(t *testing.T) {
+	packet := decisionPacketJSON(string(protocol.CatEmotionJudgment), true)
 	client := &scriptedLLM{
 		responses: []*llm.ChatResponse{
 			toolUseResp("decide-1", "request_decision", packet),
@@ -485,8 +532,240 @@ func TestRuntime_RequestDecisionBypassesDeciderForEmotionSensitive(t *testing.T)
 	}
 }
 
+func TestRuntime_AutoPausesOnApprovalBlockedTool(t *testing.T) {
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			toolUseResp("bash-1", "bash", `{"command":"rm -rf tmp"}`),
+		},
+	}
+	var executed []string
+	runtime := newApprovalTestRuntime(t, client, &executed)
+	brief := newValidatedBrief(t)
+	brief.TaskID = "task-approval"
+	brief.Goal = "delete generated tmp directory"
+	brief.PermissionScope = "approved-destructive"
+
+	root := t.TempDir()
+	now := time.Now().UTC()
+	journal, err := Open(root, brief.TaskID, now, testLogger())
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+
+	outcome := runtime.Run(context.Background(), brief, journal)
+	if err := journal.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+	if outcome.Paused == nil {
+		t.Fatalf("expected paused outcome, got %#v", outcome)
+	}
+	if outcome.Paused.PendingCallID != "bash-1" {
+		t.Fatalf("PendingCallID = %q, want bash-1", outcome.Paused.PendingCallID)
+	}
+	if len(executed) != 0 {
+		t.Fatalf("bash tool should not have executed before pause, got %#v", executed)
+	}
+	if outcome.Paused.PendingToolCall == nil {
+		t.Fatal("PendingToolCall should be captured on approval interception")
+	}
+	if outcome.Paused.PendingToolCall.Name != "bash" {
+		t.Fatalf("PendingToolCall.Name = %q, want bash", outcome.Paused.PendingToolCall.Name)
+	}
+	if string(outcome.Paused.PendingToolCall.Input) != `{"command":"rm -rf tmp"}` {
+		t.Fatalf("PendingToolCall.Input = %s", outcome.Paused.PendingToolCall.Input)
+	}
+	if outcome.Paused.Packet.Category != protocol.CatToolApproval {
+		t.Fatalf("Category = %q, want %q", outcome.Paused.Packet.Category, protocol.CatToolApproval)
+	}
+	if outcome.Paused.Packet.Question != "Allow: rm -rf tmp" {
+		t.Fatalf("Question = %q, want bash command prompt", outcome.Paused.Packet.Question)
+	}
+	if outcome.Paused.Packet.WhyBlocked != `Tool "bash" requires explicit human approval before execution.` {
+		t.Fatalf("WhyBlocked = %q", outcome.Paused.Packet.WhyBlocked)
+	}
+	if len(outcome.Paused.Packet.Options) != 2 {
+		t.Fatalf("Options = %#v, want allow/deny", outcome.Paused.Packet.Options)
+	}
+	if outcome.Paused.Packet.Options[0].ID != "allow" || outcome.Paused.Packet.Options[1].ID != "deny" {
+		t.Fatalf("Options = %#v, want allow then deny", outcome.Paused.Packet.Options)
+	}
+	if outcome.Paused.Packet.RecommendedOption != "allow" {
+		t.Fatalf("RecommendedOption = %q, want allow", outcome.Paused.Packet.RecommendedOption)
+	}
+	if outcome.Paused.Packet.RejectOptionID != "deny" {
+		t.Fatalf("RejectOptionID = %q, want deny", outcome.Paused.Packet.RejectOptionID)
+	}
+	if outcome.Paused.Packet.RecommendationReason != "Task goal requires this operation: "+brief.Goal {
+		t.Fatalf("RecommendationReason = %q", outcome.Paused.Packet.RecommendationReason)
+	}
+	if outcome.Paused.Packet.SuggestsUserInput {
+		t.Fatal("tool approval interception should not suggest user input")
+	}
+
+	data, err := os.ReadFile(filepath.Join(root, now.Format("2006-01-02"), brief.TaskID+".jsonl"))
+	if err != nil {
+		t.Fatalf("expected journal file: %v", err)
+	}
+	if !strings.Contains(string(data), `"kind":"tool_approval_intercepted"`) {
+		t.Fatalf("journal missing tool_approval_intercepted event: %s", data)
+	}
+}
+
+func TestRuntime_AutoPausesOnApprovalBlockedToolFiltersSiblingToolCalls(t *testing.T) {
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			mixedToolUseResp(
+				llm.ContentBlock{Type: "text", Text: "Need approval before continuing."},
+				llm.ContentBlock{Type: "tool_use", ID: "bash-1", Name: "bash", Input: json.RawMessage(`{"command":"rm -rf tmp"}`)},
+				llm.ContentBlock{Type: "tool_use", ID: "bash-2", Name: "bash", Input: json.RawMessage(`{"command":"echo hi"}`)},
+			),
+			toolUseResp("finish-1", "finish_task", finishTaskPayloadJSON("completed", "done", nil, nil)),
+		},
+	}
+	var executed []string
+	runtime := newApprovalTestRuntime(t, client, &executed)
+	brief := newValidatedBrief(t)
+	brief.TaskID = "task-approval-mixed"
+	brief.Goal = "delete generated tmp directory"
+	brief.PermissionScope = "approved-destructive"
+
+	outcome := runtime.Run(context.Background(), brief, nil)
+	if outcome.Paused == nil {
+		t.Fatalf("expected paused outcome, got %#v", outcome)
+	}
+	if len(executed) != 0 {
+		t.Fatalf("no tool should execute before approval pause, got %#v", executed)
+	}
+	if len(outcome.Paused.Messages) != 1 {
+		t.Fatalf("paused messages = %d, want 1 assistant tool-use message", len(outcome.Paused.Messages))
+	}
+	pausedMsg := outcome.Paused.Messages[0]
+	if pausedMsg.Role != llm.RoleAssistant {
+		t.Fatalf("paused message role = %q, want assistant", pausedMsg.Role)
+	}
+	if len(pausedMsg.ContentBlocks) != 2 {
+		t.Fatalf("paused content blocks = %#v, want text + blocked tool_use only", pausedMsg.ContentBlocks)
+	}
+	if pausedMsg.ContentBlocks[0].Type != "text" || pausedMsg.ContentBlocks[0].Text != "Need approval before continuing." {
+		t.Fatalf("first block = %#v, want preserved text", pausedMsg.ContentBlocks[0])
+	}
+	if pausedMsg.ContentBlocks[1].Type != "tool_use" || pausedMsg.ContentBlocks[1].ID != "bash-1" {
+		t.Fatalf("second block = %#v, want blocked tool call only", pausedMsg.ContentBlocks[1])
+	}
+	for _, block := range pausedMsg.ContentBlocks {
+		if block.Type == "tool_use" && block.ID == "bash-2" {
+			t.Fatalf("paused snapshot must not keep sibling tool_use blocks: %#v", pausedMsg.ContentBlocks)
+		}
+	}
+
+	resumed := runtime.Resume(tool.WithApproval(context.Background(), tool.ApprovalContext{
+		RequestID:        "req-1",
+		AllowDestructive: true,
+	}), outcome.Paused, protocol.DecisionResponse{TaskID: brief.TaskID}, nil)
+	if resumed.Report == nil || resumed.Report.Status != "completed" {
+		t.Fatalf("expected completed report after resume, got %#v", resumed)
+	}
+	if len(client.calls) != 2 {
+		t.Fatalf("LLM calls = %d, want 2", len(client.calls))
+	}
+	if len(client.calls[1].Messages) < 2 {
+		t.Fatalf("resumed messages = %#v, want filtered assistant message plus tool result", client.calls[1].Messages)
+	}
+	resumedAssistant := client.calls[1].Messages[0]
+	if len(resumedAssistant.ContentBlocks) != 2 {
+		t.Fatalf("resumed assistant blocks = %#v, want filtered paused snapshot", resumedAssistant.ContentBlocks)
+	}
+	for _, block := range resumedAssistant.ContentBlocks {
+		if block.Type == "tool_use" && block.ID == "bash-2" {
+			t.Fatalf("resumed transcript must not contain sibling tool_use blocks: %#v", resumedAssistant.ContentBlocks)
+		}
+	}
+	last := client.calls[1].Messages[len(client.calls[1].Messages)-1]
+	if last.ToolCallID != "bash-1" {
+		t.Fatalf("tool result call id = %q, want bash-1", last.ToolCallID)
+	}
+}
+
+func TestRuntime_AutoPausesOnApprovalBlockedToolWhenMixedWithRequestDecision(t *testing.T) {
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			mixedToolUseResp(
+				llm.ContentBlock{Type: "tool_use", ID: "decide-1", Name: "request_decision", Input: json.RawMessage(decisionPacketJSON(string(protocol.CatAuto), false))},
+				llm.ContentBlock{Type: "tool_use", ID: "bash-1", Name: "bash", Input: json.RawMessage(`{"command":"rm -rf tmp"}`)},
+			),
+		},
+	}
+	var executed []string
+	runtime := newApprovalTestRuntime(t, client, &executed)
+	brief := newValidatedBrief(t)
+	brief.TaskID = "task-approval-decision-mixed"
+	brief.Goal = "delete generated tmp directory"
+	brief.PermissionScope = "approved-destructive"
+
+	outcome := runtime.Run(context.Background(), brief, nil)
+	if outcome.Paused == nil {
+		t.Fatalf("expected paused outcome, got %#v", outcome)
+	}
+	if len(executed) != 0 {
+		t.Fatalf("blocked tool should not execute before pause, got %#v", executed)
+	}
+	if outcome.Paused.Packet.Category != protocol.CatToolApproval {
+		t.Fatalf("category = %q, want tool_approval", outcome.Paused.Packet.Category)
+	}
+	if outcome.Paused.PendingCallID != "bash-1" {
+		t.Fatalf("PendingCallID = %q, want bash-1", outcome.Paused.PendingCallID)
+	}
+	if outcome.Paused.PendingToolCall == nil || outcome.Paused.PendingToolCall.ID != "bash-1" {
+		t.Fatalf("PendingToolCall = %#v, want blocked bash call", outcome.Paused.PendingToolCall)
+	}
+	if len(outcome.Paused.Messages) != 1 {
+		t.Fatalf("paused messages = %#v, want one filtered assistant message", outcome.Paused.Messages)
+	}
+	for _, block := range outcome.Paused.Messages[0].ContentBlocks {
+		if block.Type == "tool_use" && block.ID == "decide-1" {
+			t.Fatalf("paused snapshot must drop request_decision sibling blocks: %#v", outcome.Paused.Messages[0].ContentBlocks)
+		}
+	}
+}
+
+func TestRuntime_AutoPausesOnApprovalBlockedToolWhenMixedWithFinishTask(t *testing.T) {
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			mixedToolUseResp(
+				llm.ContentBlock{Type: "tool_use", ID: "finish-1", Name: "finish_task", Input: json.RawMessage(finishTaskPayloadJSON("completed", "done", nil, nil))},
+				llm.ContentBlock{Type: "tool_use", ID: "bash-1", Name: "bash", Input: json.RawMessage(`{"command":"rm -rf tmp"}`)},
+			),
+		},
+	}
+	var executed []string
+	runtime := newApprovalTestRuntime(t, client, &executed)
+	brief := newValidatedBrief(t)
+	brief.TaskID = "task-approval-finish-mixed"
+	brief.Goal = "delete generated tmp directory"
+	brief.PermissionScope = "approved-destructive"
+
+	outcome := runtime.Run(context.Background(), brief, nil)
+	if outcome.Paused == nil {
+		t.Fatalf("expected paused outcome, got %#v", outcome)
+	}
+	if len(executed) != 0 {
+		t.Fatalf("blocked tool should not execute before pause, got %#v", executed)
+	}
+	if outcome.Paused.Packet.Category != protocol.CatToolApproval {
+		t.Fatalf("category = %q, want tool_approval", outcome.Paused.Packet.Category)
+	}
+	if outcome.Paused.PendingCallID != "bash-1" {
+		t.Fatalf("PendingCallID = %q, want bash-1", outcome.Paused.PendingCallID)
+	}
+	for _, block := range outcome.Paused.Messages[0].ContentBlocks {
+		if block.Type == "tool_use" && block.ID == "finish-1" {
+			t.Fatalf("paused snapshot must drop finish_task sibling blocks: %#v", outcome.Paused.Messages[0].ContentBlocks)
+		}
+	}
+}
+
 func TestRuntime_SoleCallViolationReturnsErrorForRequestDecision(t *testing.T) {
-	packet := decisionPacketJSON(string(protocol.CatExecutionOnly), "low", false)
+	packet := decisionPacketJSON(string(protocol.CatAuto), false)
 	client := &scriptedLLM{
 		responses: []*llm.ChatResponse{
 			mixedToolUseResp(
@@ -556,7 +835,7 @@ func TestRuntime_InvalidFinishTaskPayloadReturnsToolError(t *testing.T) {
 func TestRuntime_ResumeCanPauseAgain(t *testing.T) {
 	brief := newValidatedBrief(t)
 	brief.TaskID = "task-1"
-	packet := decisionPacketJSON(string(protocol.CatExecutionOnly), "low", false)
+	packet := decisionPacketJSON(string(protocol.CatAuto), false)
 	client := &scriptedLLM{
 		responses: []*llm.ChatResponse{
 			toolUseResp("decide-2", "request_decision", packet),
@@ -580,6 +859,143 @@ func TestRuntime_ResumeCanPauseAgain(t *testing.T) {
 	}, nil)
 	if outcome.Paused == nil {
 		t.Fatalf("expected second pause, got %#v", outcome)
+	}
+}
+
+func TestRuntime_ResumeReExecutesApprovedToolCall(t *testing.T) {
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			toolUseResp("finish-1", "finish_task", finishTaskPayloadJSON("completed", "done", nil, nil)),
+		},
+	}
+	var executed []string
+	runtime := newApprovalTestRuntime(t, client, &executed)
+
+	brief := protocol.TaskBrief{
+		TaskID:          "task-approval",
+		Goal:            "delete generated tmp directory",
+		PermissionScope: "approved-destructive",
+	}
+	if err := ValidateAndComplete(&brief); err != nil {
+		t.Fatalf("ValidateAndComplete returned error: %v", err)
+	}
+
+	call := tool.Call{
+		ID:    "bash-1",
+		Name:  "bash",
+		Input: json.RawMessage(`{"command":"rm -rf tmp"}`),
+	}
+	paused := &PausedWork{
+		TaskID: brief.TaskID,
+		Brief:  brief,
+		Messages: []llm.Message{{
+			Role: llm.RoleAssistant,
+			ContentBlocks: []llm.ContentBlock{
+				{Type: "tool_use", ID: call.ID, Name: call.Name, Input: call.Input},
+			},
+		}},
+		PendingToolCall: &call,
+		Packet:          validDecisionPacket(brief.TaskID),
+		Round:           1,
+		EscalationCount: 1,
+	}
+
+	outcome := runtime.Resume(tool.WithApproval(context.Background(), tool.ApprovalContext{
+		RequestID:        "req-1",
+		AllowDestructive: true,
+	}), paused, protocol.DecisionResponse{TaskID: brief.TaskID}, nil)
+	if outcome.Report == nil {
+		t.Fatalf("expected report outcome, got %#v", outcome)
+	}
+	if outcome.Report.Status != "completed" {
+		t.Fatalf("Status = %q, want completed", outcome.Report.Status)
+	}
+	if len(executed) != 1 || executed[0] != "rm -rf tmp" {
+		t.Fatalf("executed = %#v, want resumed destructive command", executed)
+	}
+	if len(client.calls) != 1 {
+		t.Fatalf("LLM calls = %d, want 1", len(client.calls))
+	}
+	last := client.calls[0].Messages[len(client.calls[0].Messages)-1]
+	if last.Role != llm.RoleTool {
+		t.Fatalf("last message role = %q, want tool", last.Role)
+	}
+	if last.ToolCallID != call.ID {
+		t.Fatalf("ToolCallID = %q, want %q", last.ToolCallID, call.ID)
+	}
+	if !strings.Contains(last.Content, `"command":"rm -rf tmp"`) {
+		t.Fatalf("tool result content = %q, want resumed bash output", last.Content)
+	}
+	if strings.Contains(last.Content, `"decision"`) {
+		t.Fatalf("resume should re-execute pending tool call instead of injecting a decision response: %q", last.Content)
+	}
+}
+
+func TestRuntime_ResumeRejectedApprovalDoesNotExecuteBlockedTool(t *testing.T) {
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			toolUseResp("finish-1", "finish_task", finishTaskPayloadJSON("completed", "replanned", nil, nil)),
+		},
+	}
+	var executed []string
+	runtime := newApprovalTestRuntime(t, client, &executed)
+
+	brief := protocol.TaskBrief{
+		TaskID:          "task-approval-reject",
+		Goal:            "delete generated tmp directory",
+		PermissionScope: "approved-destructive",
+	}
+	if err := ValidateAndComplete(&brief); err != nil {
+		t.Fatalf("ValidateAndComplete returned error: %v", err)
+	}
+
+	call := tool.Call{
+		ID:    "bash-1",
+		Name:  "bash",
+		Input: json.RawMessage(`{"command":"rm -rf tmp"}`),
+	}
+	paused := &PausedWork{
+		TaskID: brief.TaskID,
+		Brief:  brief,
+		Messages: []llm.Message{{
+			Role: llm.RoleAssistant,
+			ContentBlocks: []llm.ContentBlock{
+				{Type: "tool_use", ID: call.ID, Name: call.Name, Input: call.Input},
+			},
+		}},
+		PendingCallID:   call.ID,
+		PendingToolCall: &call,
+		Packet:          buildToolApprovalPacket(brief, call),
+		Round:           1,
+		EscalationCount: 1,
+	}
+
+	outcome := runtime.Resume(context.Background(), paused, protocol.DecisionResponse{
+		TaskID:   brief.TaskID,
+		Decision: "deny",
+		Reason:   "do not delete files",
+	}, nil)
+	if outcome.Report == nil || outcome.Report.Status != "completed" {
+		t.Fatalf("expected completed report, got %#v", outcome)
+	}
+	if len(executed) != 0 {
+		t.Fatalf("rejected approval must not execute blocked tool, got %#v", executed)
+	}
+	if len(client.calls) != 1 {
+		t.Fatalf("LLM calls = %d, want 1", len(client.calls))
+	}
+	last := client.calls[0].Messages[len(client.calls[0].Messages)-1]
+	if last.Role != llm.RoleTool {
+		t.Fatalf("last message role = %q, want tool", last.Role)
+	}
+	if last.ToolCallID != call.ID {
+		t.Fatalf("tool result call id = %q, want %q", last.ToolCallID, call.ID)
+	}
+	if !strings.Contains(last.Content, "approval denied") {
+		t.Fatalf("tool result content = %q, want approval denied error", last.Content)
+	}
+	if strings.Contains(last.Content, "approval required") {
+		t.Fatalf("tool result content = %q, should not trigger another approval-required loop", last.Content)
 	}
 }
 

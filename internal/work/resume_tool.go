@@ -15,7 +15,7 @@ import (
 const resumeToolDescription = `Resume a paused Work task after making an Emotion-level decision.
 
 Use this when delegate_to_work returned {"status":"needs_emotion_decision", ...}.
-Provide task_id and either decision fields or an approval_request_id for fail-closed decisions.`
+Provide task_id and either decision fields or an approval_request_id for approval-gated pauses.`
 
 var resumeToolSchema = json.RawMessage(`{
   "type":"object",
@@ -85,8 +85,9 @@ func NewResumeTool(runtime *Runtime, pending *PendingRegistry, journalDir string
 			}
 		}()
 
-		if claim.FailClosed {
-			if pending == nil || pending.approvals == nil || claim.ApprovalRequestID == "" || req.ApprovalRequestID == "" || req.ApprovalRequestID != claim.ApprovalRequestID {
+		approvalGated := requiresApprovalRequest(paused.Packet)
+		if approvalGated {
+			if pending == nil || pending.approvals == nil || req.ApprovalRequestID == "" || req.ApprovalRequestID != claim.ApprovalRequestID {
 				output, _ := json.Marshal(map[string]string{
 					"status":              "awaiting_approval",
 					"task_id":             req.TaskID,
@@ -176,7 +177,7 @@ func NewResumeTool(runtime *Runtime, pending *PendingRegistry, journalDir string
 			journal.Write("task_paused", outcome.Paused.Round, map[string]any{
 				"task_id":  outcome.Paused.TaskID,
 				"category": outcome.Paused.Packet.Category,
-				"risk":     outcome.Paused.Packet.RiskLevel,
+				"risk":     derivedRiskLevel(outcome.Paused.Packet.Category),
 			})
 		}
 		if progressCB != nil {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/protocol"
+	"github.com/longyisang/emoagent/internal/tool"
 )
 
 const (
@@ -34,6 +35,7 @@ type ResumeBlob struct {
 	Brief           protocol.TaskBrief      `json:"brief"`
 	Messages        []llm.Message           `json:"messages"`
 	PendingCallID   string                  `json:"pending_call_id"`
+	PendingToolCall *tool.Call              `json:"pending_tool_call,omitempty"`
 	Packet          protocol.DecisionPacket `json:"packet"`
 	Round           int                     `json:"round"`
 	EscalationCount int                     `json:"escalation_count"`
@@ -92,23 +94,34 @@ func defaultPendingRegistryConfig(cfg PendingRegistryConfig) PendingRegistryConf
 }
 
 func shouldFailClosed(packet protocol.DecisionPacket) bool {
-	if packet.RiskLevel == "high" {
-		return true
-	}
-	switch packet.Category {
-	case protocol.CatIrreversible, protocol.CatHighRisk:
-		return true
+	return derivedRiskLevel(packet.Category) == "high"
+}
+
+func requiresApprovalRequest(packet protocol.DecisionPacket) bool {
+	return packet.Category == protocol.CatToolApproval
+}
+
+func derivedRiskLevel(category protocol.EscalationCategory) string {
+	switch category {
+	case protocol.CatHumanConfirmation, protocol.CatToolApproval:
+		return "high"
 	default:
-		return false
+		return "low"
 	}
 }
 
 func resumeBlobFromPaused(paused *PausedWork) ResumeBlob {
+	var pendingToolCall *tool.Call
+	if paused.PendingToolCall != nil {
+		callCopy := *paused.PendingToolCall
+		pendingToolCall = &callCopy
+	}
 	return ResumeBlob{
 		TaskID:          paused.TaskID,
 		Brief:           paused.Brief,
 		Messages:        append([]llm.Message(nil), paused.Messages...),
 		PendingCallID:   paused.PendingCallID,
+		PendingToolCall: pendingToolCall,
 		Packet:          paused.Packet,
 		Round:           paused.Round,
 		EscalationCount: paused.EscalationCount,
@@ -117,11 +130,17 @@ func resumeBlobFromPaused(paused *PausedWork) ResumeBlob {
 }
 
 func (b ResumeBlob) PausedWork() *PausedWork {
+	var pendingToolCall *tool.Call
+	if b.PendingToolCall != nil {
+		callCopy := *b.PendingToolCall
+		pendingToolCall = &callCopy
+	}
 	return &PausedWork{
 		TaskID:          b.TaskID,
 		Brief:           b.Brief,
 		Messages:        append([]llm.Message(nil), b.Messages...),
 		PendingCallID:   b.PendingCallID,
+		PendingToolCall: pendingToolCall,
 		Packet:          b.Packet,
 		Round:           b.Round,
 		EscalationCount: b.EscalationCount,
@@ -135,7 +154,7 @@ func buildDecisionSummary(status string, failClosed bool, blob ResumeBlob, repor
 		Status:          status,
 		FailClosed:      failClosed,
 		Category:        string(blob.Packet.Category),
-		RiskLevel:       blob.Packet.RiskLevel,
+		RiskLevel:       derivedRiskLevel(blob.Packet.Category),
 		GoalSummary:     blob.Packet.GoalSummary,
 		Question:        blob.Packet.Question,
 		Options:         append([]protocol.DecisionOption(nil), blob.Packet.Options...),
