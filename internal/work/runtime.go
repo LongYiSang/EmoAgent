@@ -25,12 +25,18 @@ const (
 // RuntimeConfig describes the dependencies for one Work runtime instance.
 type RuntimeConfig struct {
 	LLM                      llm.Client
+	SummaryClient            llm.Client
+	SummaryModel             string
 	Provider                 string
 	Model                    string
 	MaxTokens                int
 	Temperature              float64
 	MaxToolRounds            int
 	MaxInputTokens           int
+	CompressSoftRatio        float64
+	CompressKeepRounds       int
+	ToolSnipSoftTokens       int
+	ToolSnipHardTokens       int
 	Registry                 *tool.Registry
 	Dispatcher               *tool.Dispatcher
 	Logger                   *slog.Logger
@@ -52,6 +58,7 @@ type PausedWork struct {
 	TaskID          string
 	Brief           protocol.TaskBrief
 	Messages        []llm.Message
+	Progress        WorkProgress
 	PendingCallID   string
 	Packet          protocol.DecisionPacket
 	Round           int
@@ -85,7 +92,7 @@ func NewRuntime(cfg RuntimeConfig) *Runtime {
 // Run executes the Work tool loop. Work always starts with an empty message
 // history so Emotion history cannot leak into the delegated task.
 func (r *Runtime) Run(ctx context.Context, brief protocol.TaskBrief, journal *Journal) RunOutcome {
-	return r.runLoop(ctx, brief, nil, 0, 0, journal)
+	return r.runLoop(ctx, brief, nil, WorkProgress{}, 0, 0, journal)
 }
 
 // Resume continues a previously paused Work task by appending DecisionResponse
@@ -121,13 +128,14 @@ func (r *Runtime) Resume(ctx context.Context, paused *PausedWork, resp protocol.
 		})
 	}
 
-	return r.runLoop(ctx, paused.Brief, messages, paused.Round+1, paused.EscalationCount, journal)
+	return r.runLoop(ctx, paused.Brief, messages, paused.Progress, paused.Round+1, paused.EscalationCount, journal)
 }
 
 func (r *Runtime) runLoop(
 	ctx context.Context,
 	brief protocol.TaskBrief,
 	seedMessages []llm.Message,
+	seedProgress WorkProgress,
 	startRound int,
 	escalationCount int,
 	journal *Journal,
@@ -137,6 +145,7 @@ func (r *Runtime) runLoop(
 	permission := tool.Permission(brief.PermissionScope)
 	messages := append([]llm.Message(nil), seedMessages...)
 	progressCB := progress.CallbackFromContext(ctx)
+	workProgress := seedProgress
 
 	for round := startRound; round < r.cfg.MaxToolRounds; round++ {
 		if err := ctx.Err(); err != nil {
@@ -146,6 +155,32 @@ func (r *Runtime) runLoop(
 			report := failedReport(brief, "context canceled: "+err.Error())
 			return RunOutcome{Report: &report}
 		}
+		preCompressTokens := estimateMessagesTokens(messages) + contextutil.EstimateTokens(system)
+		if r.cfg.SummaryClient != nil && r.cfg.CompressSoftRatio > 0 {
+			compressed, newProgress, err := compressWorkContext(
+				ctx, r.cfg.SummaryClient, r.cfg.SummaryModel,
+				messages, workProgress, system,
+				r.cfg.MaxInputTokens, r.cfg.CompressSoftRatio,
+				r.cfg.CompressKeepRounds,
+			)
+			if err != nil {
+				if r.cfg.Logger != nil {
+					r.cfg.Logger.Warn("work context compression failed, continuing without",
+						"error", err, "round", round)
+				}
+			} else {
+				messages = compressed
+				workProgress = newProgress
+				if journal != nil && !workProgress.IsZero() {
+					journal.Write("work_context_compressed", round, map[string]any{
+						"before_tokens":   preCompressTokens,
+						"after_tokens":    estimateMessagesTokens(messages) + contextutil.EstimateTokens(system),
+						"progress_tokens": estimateProgressTokens(workProgress),
+					})
+				}
+			}
+		}
+
 		if r.cfg.MaxInputTokens > 0 &&
 			estimateMessagesTokens(messages)+contextutil.EstimateTokens(system) > r.cfg.MaxInputTokens {
 			report := partialReport(brief, fmt.Sprintf("max input tokens exceeded (%d)", r.cfg.MaxInputTokens))
@@ -229,7 +264,7 @@ func (r *Runtime) runLoop(
 						}
 					}
 					logToolResults(journal, round, results)
-					messages = append(messages, tool.ResultsToMessages(r.cfg.Provider, results)...)
+					messages = r.appendResultsAndSnip(messages, results, journal, round)
 					return RunOutcome{}, false
 				}
 
@@ -237,7 +272,7 @@ func (r *Runtime) runLoop(
 				if err != nil {
 					results := []tool.Result{errorToolResult(finishCall.ID, "invalid finish_task payload: "+err.Error())}
 					logToolResults(journal, round, results)
-					messages = append(messages, tool.ResultsToMessages(r.cfg.Provider, results)...)
+					messages = r.appendResultsAndSnip(messages, results, journal, round)
 					return RunOutcome{}, false
 				}
 				if progressCB != nil {
@@ -280,7 +315,7 @@ func (r *Runtime) runLoop(
 						results = append(results, r.cfg.Dispatcher.Execute(ctx, call, permission))
 					}
 					logToolResults(journal, round, results)
-					messages = append(messages, tool.ResultsToMessages(r.cfg.Provider, results)...)
+					messages = r.appendResultsAndSnip(messages, results, journal, round)
 					return RunOutcome{}, false
 				}
 
@@ -288,7 +323,7 @@ func (r *Runtime) runLoop(
 				if err := json.Unmarshal(decisionCall.Input, &packet); err != nil {
 					results := []tool.Result{errorToolResult(decisionCall.ID, "invalid decision packet JSON: "+err.Error())}
 					logToolResults(journal, round, results)
-					messages = append(messages, tool.ResultsToMessages(r.cfg.Provider, results)...)
+					messages = r.appendResultsAndSnip(messages, results, journal, round)
 					return RunOutcome{}, false
 				}
 				if packet.TaskID == "" {
@@ -300,7 +335,7 @@ func (r *Runtime) runLoop(
 				if err := ValidateDecisionPacket(&packet, brief); err != nil {
 					results := []tool.Result{errorToolResult(decisionCall.ID, "invalid decision packet: "+err.Error())}
 					logToolResults(journal, round, results)
-					messages = append(messages, tool.ResultsToMessages(r.cfg.Provider, results)...)
+					messages = r.appendResultsAndSnip(messages, results, journal, round)
 					return RunOutcome{}, false
 				}
 
@@ -316,12 +351,12 @@ func (r *Runtime) runLoop(
 					return RunOutcome{Report: &report}, true
 				}
 
-				outcome, results := r.routeDecision(ctx, brief, decisionCall.ID, packet, messages, round, escalationCount, journal)
+				outcome, results := r.routeDecision(ctx, brief, decisionCall.ID, packet, messages, workProgress, round, escalationCount, journal)
 				if outcome.Report != nil || outcome.Paused != nil {
 					return outcome, true
 				}
 				logToolResults(journal, round, results)
-				messages = append(messages, tool.ResultsToMessages(r.cfg.Provider, results)...)
+				messages = r.appendResultsAndSnip(messages, results, journal, round)
 				escalationCount++
 				return RunOutcome{}, false
 			}
@@ -331,7 +366,7 @@ func (r *Runtime) runLoop(
 			}
 			results := r.cfg.Dispatcher.ExecuteAll(ctx, calls, permission)
 			logToolResults(journal, round, results)
-			messages = append(messages, tool.ResultsToMessages(r.cfg.Provider, results)...)
+			messages = r.appendResultsAndSnip(messages, results, journal, round)
 			return RunOutcome{}, false
 		}()
 		if shouldReturn {
@@ -362,6 +397,32 @@ func emitToolProgress(cb progress.Callback, calls []tool.Call, round int, taskID
 	}
 }
 
+func (r *Runtime) appendResultsAndSnip(messages []llm.Message, results []tool.Result, journal *Journal, round int) []llm.Message {
+	preLen := len(messages)
+	resultMessages := tool.ResultsToMessages(r.cfg.Provider, results)
+	messages = append(messages, resultMessages...)
+
+	if r.cfg.ToolSnipSoftTokens > 0 {
+		preSnipTokens := estimateMessagesTokens(messages)
+		currentRoundStart := preLen - 1
+		if currentRoundStart < 0 {
+			currentRoundStart = 0
+		}
+		messages = snipConsumedToolResults(messages, currentRoundStart, r.cfg.ToolSnipSoftTokens, r.cfg.ToolSnipHardTokens)
+		if journal != nil {
+			postSnipTokens := estimateMessagesTokens(messages)
+			if preSnipTokens != postSnipTokens {
+				journal.Write("tool_result_snipped", round, map[string]any{
+					"before_tokens": preSnipTokens,
+					"after_tokens":  postSnipTokens,
+				})
+			}
+		}
+	}
+
+	return messages
+}
+
 func heartbeatTicker(ctx context.Context, cb progress.Callback, round int, taskID string, interval time.Duration) {
 	if cb == nil || interval <= 0 {
 		return
@@ -389,6 +450,7 @@ func (r *Runtime) routeDecision(
 	callID string,
 	packet protocol.DecisionPacket,
 	messages []llm.Message,
+	workProgress WorkProgress,
 	round int,
 	escalationCount int,
 	journal *Journal,
@@ -438,6 +500,7 @@ func (r *Runtime) routeDecision(
 		TaskID:          brief.TaskID,
 		Brief:           brief,
 		Messages:        compactedMessages,
+		Progress:        workProgress,
 		PendingCallID:   callID,
 		Packet:          packet,
 		Round:           round,

@@ -218,14 +218,21 @@ func (a *App) Run(ctx context.Context) error {
 			}()
 
 			decider := work.NewLLMRuntimeDecider(workLLM, workProfile.Model)
+			workSummaryModel := resolveWorkSummaryModel(workProfile)
 			workRuntime := work.NewRuntime(work.RuntimeConfig{
 				LLM:                      workLLM,
+				SummaryClient:            workLLM,
+				SummaryModel:             workSummaryModel,
 				Provider:                 workProfile.Provider,
 				Model:                    workProfile.Model,
 				MaxTokens:                workProfile.MaxTokens,
 				Temperature:              workProfile.Temperature,
 				MaxToolRounds:            cfg.Work.MaxToolRounds,
 				MaxInputTokens:           cfg.Work.MaxInputTokens,
+				CompressSoftRatio:        cfg.Work.CompressSoftRatio,
+				CompressKeepRounds:       cfg.Work.CompressKeepRounds,
+				ToolSnipSoftTokens:       cfg.Work.ToolSnipSoftTokens,
+				ToolSnipHardTokens:       cfg.Work.ToolSnipHardTokens,
 				Registry:                 a.toolRegistry,
 				Dispatcher:               dispatcher,
 				Logger:                   a.Logger,
@@ -541,6 +548,13 @@ func (a *App) buildWorkClient() (llm.Client, config.LLMProfile, error) {
 		return nil, config.LLMProfile{}, err
 	}
 	return client, *profile, nil
+}
+
+func resolveWorkSummaryModel(profile config.LLMProfile) string {
+	if strings.TrimSpace(profile.SummaryModel) != "" {
+		return profile.SummaryModel
+	}
+	return profile.Model
 }
 
 // GetPersona returns a persona by key.

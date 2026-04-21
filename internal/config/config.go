@@ -130,6 +130,10 @@ type WorkConfig struct {
 	Profile                  string        `yaml:"profile"`
 	MaxToolRounds            int           `yaml:"max_tool_rounds"`
 	MaxInputTokens           int           `yaml:"max_input_tokens"`
+	CompressSoftRatio        float64       `yaml:"compress_soft_ratio"`
+	CompressKeepRounds       int           `yaml:"compress_keep_rounds"`
+	ToolSnipSoftTokens       int           `yaml:"tool_snip_soft_tokens"`
+	ToolSnipHardTokens       int           `yaml:"tool_snip_hard_tokens"`
 	JournalDir               string        `yaml:"journal_dir"`
 	MaxEscalationsPerTask    int           `yaml:"max_escalations_per_task"`
 	PendingDecisionTTL       time.Duration `yaml:"pending_decision_ttl"`
@@ -150,6 +154,18 @@ func (w *WorkConfig) ApplyDefaults() {
 	}
 	if w.MaxInputTokens == 0 {
 		w.MaxInputTokens = 100000
+	}
+	if w.CompressSoftRatio == 0 {
+		w.CompressSoftRatio = 0.7
+	}
+	if w.CompressKeepRounds == 0 {
+		w.CompressKeepRounds = 2
+	}
+	if w.ToolSnipSoftTokens == 0 {
+		w.ToolSnipSoftTokens = 500
+	}
+	if w.ToolSnipHardTokens == 0 {
+		w.ToolSnipHardTokens = 2000
 	}
 	if w.JournalDir == "" {
 		w.JournalDir = "./logs/work"
@@ -211,6 +227,10 @@ func DefaultConfig() *Config {
 			Profile:                  "default",
 			MaxToolRounds:            15,
 			MaxInputTokens:           100000,
+			CompressSoftRatio:        0.7,
+			CompressKeepRounds:       2,
+			ToolSnipSoftTokens:       500,
+			ToolSnipHardTokens:       2000,
 			JournalDir:               "./logs/work",
 			MaxEscalationsPerTask:    3,
 			PendingDecisionTTL:       30 * time.Minute,
@@ -323,6 +343,21 @@ func (c *Config) Validate() error {
 	}
 	if c.Work.ResumeClaimTTL <= 0 {
 		return fmt.Errorf("work.resume_claim_ttl must be > 0")
+	}
+	if !(c.Work.CompressSoftRatio > 0 && c.Work.CompressSoftRatio < 1) {
+		return fmt.Errorf("work.compress_soft_ratio must be between 0 and 1")
+	}
+	if c.Work.CompressKeepRounds <= 0 {
+		return fmt.Errorf("work.compress_keep_rounds must be > 0")
+	}
+	if c.Work.ToolSnipSoftTokens <= 0 {
+		return fmt.Errorf("work.tool_snip_soft_tokens must be > 0")
+	}
+	if c.Work.ToolSnipHardTokens <= 0 {
+		return fmt.Errorf("work.tool_snip_hard_tokens must be > 0")
+	}
+	if c.Work.ToolSnipSoftTokens >= c.Work.ToolSnipHardTokens {
+		return fmt.Errorf("work.tool_snip_soft_tokens must be < work.tool_snip_hard_tokens")
 	}
 	return nil
 }

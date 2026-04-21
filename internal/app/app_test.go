@@ -942,6 +942,21 @@ func TestResolveWorkProfilePrefersDB(t *testing.T) {
 	}
 }
 
+func TestResolveWorkSummaryModelFallsBackToWorkPrimaryModel(t *testing.T) {
+	profile := config.LLMProfile{
+		Model:        "work-main",
+		SummaryModel: "",
+	}
+	if got := resolveWorkSummaryModel(profile); got != "work-main" {
+		t.Fatalf("resolveWorkSummaryModel() = %q, want work-main", got)
+	}
+
+	profile.SummaryModel = "work-summary"
+	if got := resolveWorkSummaryModel(profile); got != "work-summary" {
+		t.Fatalf("resolveWorkSummaryModel() = %q, want work-summary", got)
+	}
+}
+
 func TestResolveWorkProfileSeedsFromConfigWhenDBMissing(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)

@@ -16,8 +16,8 @@ llm:
 
   provider: "openai"
   base_url: "https://api.moonshot.cn"
-  model: "kimi-k2.5"
-  summary_model: "kimi-k2.5"
+  model: "kimi-k2.6"
+  summary_model: "kimi-k2.6"
   max_tokens: 8192
   temperature: 1
   api_key_env: "OPENAI_API_KEY"
@@ -35,6 +35,11 @@ work:
   profile: "work"
   max_tool_rounds: 24
   max_input_tokens: 100000
+  # Context compression (prevents token budget exhaustion in long tasks)
+  compress_soft_ratio: 0.7
+  compress_keep_rounds: 2
+  tool_snip_soft_tokens: 500
+  tool_snip_hard_tokens: 2000
   journal_dir: "./logs/work"
 
 llm_profiles:

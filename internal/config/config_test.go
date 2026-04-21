@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -263,6 +264,89 @@ func TestValidateRejectsInvalidSummaryTemperature(t *testing.T) {
 	}}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error for invalid profile summary_temperature")
+	}
+}
+
+func TestWorkConfig_CompressionDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	w := cfg.Work
+	if w.CompressSoftRatio != 0.7 {
+		t.Fatalf("CompressSoftRatio = %f, want 0.7", w.CompressSoftRatio)
+	}
+	if w.CompressKeepRounds != 2 {
+		t.Fatalf("CompressKeepRounds = %d, want 2", w.CompressKeepRounds)
+	}
+	if w.ToolSnipSoftTokens != 500 {
+		t.Fatalf("ToolSnipSoftTokens = %d, want 500", w.ToolSnipSoftTokens)
+	}
+	if w.ToolSnipHardTokens != 2000 {
+		t.Fatalf("ToolSnipHardTokens = %d, want 2000", w.ToolSnipHardTokens)
+	}
+}
+
+func TestConfigValidateRejectsInvalidWorkCompression(t *testing.T) {
+	tests := []struct {
+		name string
+		mut  func(*Config)
+		want string
+	}{
+		{
+			name: "soft ratio <= 0",
+			mut: func(cfg *Config) {
+				cfg.Work.CompressSoftRatio = 0
+			},
+			want: "work.compress_soft_ratio must be between 0 and 1",
+		},
+		{
+			name: "soft ratio >= 1",
+			mut: func(cfg *Config) {
+				cfg.Work.CompressSoftRatio = 1
+			},
+			want: "work.compress_soft_ratio must be between 0 and 1",
+		},
+		{
+			name: "keep rounds <= 0",
+			mut: func(cfg *Config) {
+				cfg.Work.CompressKeepRounds = 0
+			},
+			want: "work.compress_keep_rounds must be > 0",
+		},
+		{
+			name: "tool snip soft <= 0",
+			mut: func(cfg *Config) {
+				cfg.Work.ToolSnipSoftTokens = 0
+			},
+			want: "work.tool_snip_soft_tokens must be > 0",
+		},
+		{
+			name: "tool snip hard <= 0",
+			mut: func(cfg *Config) {
+				cfg.Work.ToolSnipHardTokens = 0
+			},
+			want: "work.tool_snip_hard_tokens must be > 0",
+		},
+		{
+			name: "tool snip soft >= hard",
+			mut: func(cfg *Config) {
+				cfg.Work.ToolSnipSoftTokens = 3000
+				cfg.Work.ToolSnipHardTokens = 2000
+			},
+			want: "work.tool_snip_soft_tokens must be < work.tool_snip_hard_tokens",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			tt.mut(cfg)
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tt.want)
+			}
+		})
 	}
 }
 

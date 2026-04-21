@@ -147,7 +147,7 @@ flowchart LR
       - [x] 操作副产物-task_report日志位置调整 <-- 增加task完成工具，架构层解决
     - [x] Paused 持久化
   - [x] Work 进度流式回传
-  - [ ] 内部上下文压缩
+  - [x] 内部上下文压缩
 - [ ] ——— MVP ———
 - [ ] 持久记忆系统
 - [ ] 情感状态机（Valence/Arousal 2D 模型）
