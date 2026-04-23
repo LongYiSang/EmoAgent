@@ -1106,7 +1106,8 @@
     const duration = Number(toolField(tool, 'duration_ms') || toolField(tool, 'durationMS') || 0);
     const hash = toolField(tool, 'hash');
     const truncated = Boolean(toolField(tool, 'is_truncated') || toolField(tool, 'isTruncated'));
-    const expanded = collapse ? false : !node.dataset.hadEnd;
+    const wasExpanded = node.classList.contains('expanded');
+    const expanded = wasExpanded || (collapse ? false : !node.dataset.hadEnd);
     node.className = `cv1-tool ${status}${expanded ? ' expanded' : ''}`;
     node.dataset.toolId = id;
     if (collapse) node.dataset.hadEnd = '1';
@@ -1326,9 +1327,11 @@
           await loadSessionList(); await loadApprovals(currentSessionId);
           break;
         case 'tool_call_start':
+          pendingAssistant = null;
           upsertToolActivity(payload.tool || payload.Tool, false);
           break;
         case 'tool_call_end':
+          pendingAssistant = null;
           upsertToolActivity(payload.tool || payload.Tool, true);
           break;
         case 'error':

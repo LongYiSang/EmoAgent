@@ -537,6 +537,8 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 			approvalSnapshot, interrupted = emitApprovalDiff(rawWriter, approvalSnapshot, approvals.ListSessionApprovals(sessionID, nil))
 			if interrupted {
 				e.logger.Info("approval required; interrupting current turn", "session", sessionID, "round", round)
+				// By design: pre-tool narration streamed before an approval interrupt is intentionally
+				// not persisted. The turn is incomplete; the full reply will be saved after approval resumes.
 				return "", errApprovalPending
 			}
 		}
