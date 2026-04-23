@@ -64,6 +64,37 @@ func (d *Dispatcher) WouldNeedApproval(ctx context.Context, call Call, maxPermis
 	return !ok
 }
 
+// WouldNeedPermissionEscalation reports whether the call requires destructive
+// permission beyond the task's current workspace-write scope. This is distinct
+// from approval interception: Emotion must turn the pause into a user-facing
+// approval request and then resume Work with the user's answer.
+func (d *Dispatcher) WouldNeedPermissionEscalation(ctx context.Context, call Call, maxPermission Permission) bool {
+	if d == nil || d.registry == nil {
+		return false
+	}
+	spec, ok := d.registry.GetSpec(call.Name)
+	if !ok {
+		return false
+	}
+	requiredPermission := effectivePermission(spec, call.Input)
+	if requiredPermission != PermApprovedDestructive {
+		return false
+	}
+	if len(spec.Parameters) > 0 && d.validator == nil {
+		return false
+	}
+	if d.validator != nil && len(spec.Parameters) > 0 {
+		if err := d.validator.Validate(spec.Parameters, call.Input); err != nil {
+			return false
+		}
+	}
+	if maxPermission != PermWorkspaceWrite {
+		return false
+	}
+	_, ok = ApprovalFromContext(ctx)
+	return !ok
+}
+
 // Execute runs a single tool call through the fail-closed pipeline:
 //  1. Registry lookup → error if tool not found
 //  2. Schema validation → error if input invalid or schema exists but no validator is configured

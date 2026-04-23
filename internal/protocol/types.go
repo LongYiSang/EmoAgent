@@ -28,10 +28,11 @@ type TaskReport struct {
 type EscalationCategory string
 
 const (
-	CatAuto              EscalationCategory = "auto"
-	CatEmotionJudgment   EscalationCategory = "emotion_judgment"
-	CatHumanConfirmation EscalationCategory = "human_confirmation"
-	CatToolApproval      EscalationCategory = "tool_approval"
+	CatAuto                         EscalationCategory = "auto"
+	CatEmotionJudgment              EscalationCategory = "emotion_judgment"
+	CatHumanConfirmation            EscalationCategory = "human_confirmation"
+	CatPermissionEscalationRequired EscalationCategory = "permission_escalation_required"
+	CatToolApproval                 EscalationCategory = "tool_approval"
 )
 
 // DecisionOption describes one possible course of action.

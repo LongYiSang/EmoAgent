@@ -15,7 +15,8 @@ import (
 const resumeToolDescription = `Resume a paused Work task after making an Emotion-level decision.
 
 Use this when delegate_to_work returned {"status":"needs_emotion_decision", ...}.
-Provide task_id and either decision fields or an approval_request_id for approval-gated pauses.`
+Provide task_id and either decision fields or an approval_request_id for approval-gated pauses.
+For permission_escalation_required pauses, pass the user's approve/reject answer as decision and include permission_scope_override="approved-destructive" only when the user approved.`
 
 var resumeToolSchema = json.RawMessage(`{
   "type":"object",
@@ -24,7 +25,8 @@ var resumeToolSchema = json.RawMessage(`{
     "decision":{"type":"string"},
     "reason":{"type":"string"},
     "constraints_delta":{"type":"array","items":{"type":"string"}},
-    "approval_request_id":{"type":"string"}
+    "approval_request_id":{"type":"string"},
+    "permission_scope_override":{"type":"string","enum":["approved-destructive"]}
   },
   "required":["task_id"],
   "additionalProperties":false
@@ -42,11 +44,12 @@ func NewResumeTool(runtime *Runtime, pending *PendingRegistry, journalDir string
 
 	handler := func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 		var req struct {
-			TaskID            string   `json:"task_id"`
-			Decision          string   `json:"decision"`
-			Reason            string   `json:"reason"`
-			ConstraintsDelta  []string `json:"constraints_delta"`
-			ApprovalRequestID string   `json:"approval_request_id"`
+			TaskID                  string   `json:"task_id"`
+			Decision                string   `json:"decision"`
+			Reason                  string   `json:"reason"`
+			ConstraintsDelta        []string `json:"constraints_delta"`
+			ApprovalRequestID       string   `json:"approval_request_id"`
+			PermissionScopeOverride string   `json:"permission_scope_override"`
 		}
 		if err := decodeStrictJSON(input, &req); err != nil {
 			return nil, fmt.Errorf("resume_work: invalid input: %w", err)
@@ -117,6 +120,23 @@ func NewResumeTool(runtime *Runtime, pending *PendingRegistry, journalDir string
 			}
 		} else if req.Decision == "" {
 			return nil, fmt.Errorf("resume_work: decision is required when approval_request_id is absent")
+		} else {
+			if paused.Packet.Category == protocol.CatPermissionEscalationRequired {
+				if req.Decision != paused.Packet.RejectOptionID {
+					if req.PermissionScopeOverride != "approved-destructive" {
+						return nil, fmt.Errorf("resume_work: permission_scope_override=\"approved-destructive\" is required when approving permission escalation")
+					}
+					paused.Brief.PermissionScope = req.PermissionScopeOverride
+					resumeCtx = tool.WithApproval(resumeCtx, tool.ApprovalContext{
+						RequestID:        fmt.Sprintf("emotion-permission-escalation:%s", req.TaskID),
+						AllowDestructive: true,
+					})
+				} else if req.PermissionScopeOverride != "" {
+					return nil, fmt.Errorf("resume_work: permission_scope_override is only valid when approving permission escalation")
+				}
+			} else if req.PermissionScopeOverride != "" {
+				return nil, fmt.Errorf("resume_work: permission_scope_override is only valid for permission_escalation_required pauses")
+			}
 		}
 
 		journal, err := Open(journalDir, req.TaskID, time.Now().UTC(), logger)

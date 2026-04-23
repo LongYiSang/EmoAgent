@@ -15,6 +15,11 @@ import (
 const delegateToolDescription = `Delegate a high-effort or noisy sub-task to the Work subagent.
 
 Use this when a task needs multiple tool calls, file inspection, or verification work that should stay out of the main conversation.
+Permission guidance:
+- use read-only for analysis only
+- use workspace-write for non-destructive writes/edits
+- use approved-destructive when the goal includes delete/remove/move/rename/overwrite or equivalent irreversible file operations
+
 The result is one of:
 1. A TaskReport JSON (task completed normally)
 2. A {"status":"needs_emotion_decision","task_id":"...","decision_packet":{...}} JSON (task paused, needs your decision)

@@ -66,6 +66,22 @@ func TestDelegateTool_SchemaAcceptsFullBriefInput(t *testing.T) {
 	}
 }
 
+func TestDelegateTool_DescriptionIncludesPermissionGuidance(t *testing.T) {
+	runtime := newTestRuntime(t, &scriptedLLM{
+		responses: []*llm.ChatResponse{textResp(`{"status":"completed","summary":"ok"}`)},
+	})
+
+	spec, _ := NewDelegateTool(runtime, nil, t.TempDir(), testLogger())
+	for _, snippet := range []string{
+		"use approved-destructive when the goal includes delete/remove/move/rename/overwrite",
+		"use workspace-write for non-destructive writes/edits",
+	} {
+		if !strings.Contains(spec.Description, snippet) {
+			t.Fatalf("description missing %q: %s", snippet, spec.Description)
+		}
+	}
+}
+
 func TestDelegateTool_SchemaRejectsRemovedExpressionBrief(t *testing.T) {
 	runtime := newTestRuntime(t, &scriptedLLM{
 		responses: []*llm.ChatResponse{textResp(`{"status":"completed","summary":"ok"}`)},

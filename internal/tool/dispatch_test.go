@@ -272,6 +272,50 @@ func TestDispatcher_WouldNeedApproval(t *testing.T) {
 	}
 }
 
+func TestDispatcher_WouldNeedPermissionEscalation(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(Spec{
+		Name:        "bash",
+		Description: "Run shell command",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":false}`),
+		Scope:       ScopeWork,
+		Permission:  PermWorkspaceWrite,
+	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{"status":"ok"}`), nil
+	})
+	d := NewDispatcher(registry, MinimalSchemaValidator{}, slog.Default())
+
+	destructive := Call{
+		ID:    "call_bash_rm",
+		Name:  "bash",
+		Input: json.RawMessage(`{"command":"rm -rf tmp"}`),
+	}
+	nondestructive := Call{
+		ID:    "call_bash_echo",
+		Name:  "bash",
+		Input: json.RawMessage(`{"command":"echo hi"}`),
+	}
+
+	if !d.WouldNeedPermissionEscalation(context.Background(), destructive, PermWorkspaceWrite) {
+		t.Fatal("workspace-write destructive call should trigger permission escalation classification")
+	}
+	if d.WouldNeedPermissionEscalation(context.Background(), destructive, PermApprovedDestructive) {
+		t.Fatal("approved-destructive scope should use approval interception instead of permission escalation classification")
+	}
+	if d.WouldNeedPermissionEscalation(context.Background(), destructive, PermReadOnly) {
+		t.Fatal("read-only scope should stay a normal permission denial")
+	}
+	if d.WouldNeedPermissionEscalation(context.Background(), nondestructive, PermWorkspaceWrite) {
+		t.Fatal("non-destructive command should not trigger permission escalation classification")
+	}
+	if d.WouldNeedPermissionEscalation(WithApproval(context.Background(), ApprovalContext{
+		RequestID:        "req-1",
+		AllowDestructive: true,
+	}), destructive, PermWorkspaceWrite) {
+		t.Fatal("active approval context should suppress permission escalation classification")
+	}
+}
+
 func TestDispatcherExecute_BashNonDestructiveCommandDoesNotRequireApproval(t *testing.T) {
 	registry := NewRegistry()
 	registry.Register(Spec{

@@ -15,6 +15,12 @@ func TestRequestDecisionDescriptionAndSchemaMatchBatchAContract(t *testing.T) {
 	if !strings.Contains(spec.Description, "never use tool_approval") {
 		t.Fatalf("description = %q, want tool_approval runtime-only guidance", spec.Description)
 	}
+	if !strings.Contains(spec.Description, "never try to request destructive permission via request_decision") {
+		t.Fatalf("description = %q, want destructive permission escalation guidance", spec.Description)
+	}
+	if !strings.Contains(spec.Description, "use emotion_judgment only when Emotion should decide using relationship, tone, preference, or emotional context") {
+		t.Fatalf("description = %q, want emotion_judgment ownership guidance", spec.Description)
+	}
 
 	var schema struct {
 		Properties map[string]struct {

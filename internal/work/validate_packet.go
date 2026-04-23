@@ -41,7 +41,7 @@ func ValidateDecisionPacket(packet *protocol.DecisionPacket, brief protocol.Task
 	if brief.TaskID != "" && packet.TaskID != brief.TaskID {
 		return fmt.Errorf("decision packet task_id %q does not match brief %q", packet.TaskID, brief.TaskID)
 	}
-	if packet.Category == protocol.CatToolApproval {
+	if packet.Category == protocol.CatToolApproval || packet.Category == protocol.CatPermissionEscalationRequired {
 		return fmt.Errorf("category %q is runtime-only and must not appear in LLM decision packets", packet.Category)
 	}
 	if _, ok := validEscalationCategories[packet.Category]; !ok {

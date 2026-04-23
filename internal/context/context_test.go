@@ -427,6 +427,37 @@ func TestBuildEmotionContext_IncludesToolApprovalGuidance(t *testing.T) {
 	}
 }
 
+func TestBuildEmotionContext_IncludesPermissionEscalationGuidance(t *testing.T) {
+	persona := &config.Persona{
+		Name:         "default",
+		SystemPrompt: "You are warm.",
+	}
+
+	assembled, err := ctxpkg.BuildEmotionContext(persona, nil, config.ContextConfig{
+		InputBudgetTokens:    24000,
+		SoftCompactRatio:     0.75,
+		HardCompactRatio:     0.92,
+		ReserveOutputTokens:  4096,
+		KeepRecentUserTurns:  1,
+		ToolResultSoftTokens: 1000,
+		ToolResultHardTokens: 3000,
+	}, runtimeenv.Facts{OS: "windows"})
+	if err != nil {
+		t.Fatalf("BuildEmotionContext: %v", err)
+	}
+
+	for _, snippet := range []string{
+		"permission_escalation_required",
+		"always ask the user for destructive permission in Emotion's persona",
+		"Do not self-resolve permission_escalation_required inside Emotion",
+		"emotion_judgment",
+	} {
+		if !strings.Contains(assembled.System, snippet) {
+			t.Fatalf("system prompt missing %q: %s", snippet, assembled.System)
+		}
+	}
+}
+
 func TestCompactReportIncludesReasonAndTokenDeltas(t *testing.T) {
 	compacted, report, err := ctxpkg.ApplyReactiveCompact(
 		"session-1",

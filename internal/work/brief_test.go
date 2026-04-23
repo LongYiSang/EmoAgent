@@ -66,6 +66,33 @@ func TestValidateAndComplete_ApprovedDestructiveAccepted(t *testing.T) {
 	}
 }
 
+func TestValidateAndComplete_RejectsDestructiveGoalWithoutApprovedScope(t *testing.T) {
+	tests := []protocol.TaskBrief{
+		{Goal: "删除 hi.txt", PermissionScope: "workspace-write"},
+		{Goal: "delete tmp directory", PermissionScope: "workspace-write"},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.Goal, func(t *testing.T) {
+			if err := ValidateAndComplete(&tc); err == nil {
+				t.Fatalf("expected destructive goal to require approved-destructive: %#v", tc)
+			}
+		})
+	}
+}
+
+func TestValidateAndComplete_AllowsDestructiveGoalWithApprovedScope(t *testing.T) {
+	b := &protocol.TaskBrief{
+		Goal:            "删除 hi.txt",
+		PermissionScope: "approved-destructive",
+	}
+
+	if err := ValidateAndComplete(b); err != nil {
+		t.Fatalf("approved-destructive should accept destructive goal, got: %v", err)
+	}
+}
+
 func TestValidateAndComplete_UnsupportedScopeRejected(t *testing.T) {
 	for _, scope := range []string{"superuser", ""} {
 		t.Run(scope, func(t *testing.T) {

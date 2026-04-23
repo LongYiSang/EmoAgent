@@ -611,6 +611,61 @@ func TestRuntime_AutoPausesOnApprovalBlockedTool(t *testing.T) {
 	}
 }
 
+func TestRuntime_WorkspaceWriteDestructiveCallBecomesPermissionEscalationPause(t *testing.T) {
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			toolUseResp("bash-1", "bash", `{"command":"del hi.txt"}`),
+		},
+	}
+	var executed []string
+	runtime := newApprovalTestRuntime(t, client, &executed)
+	brief := newValidatedBrief(t)
+	brief.TaskID = "task-permission-escalation"
+	brief.Goal = "delete hi.txt after user approval"
+	brief.PermissionScope = "workspace-write"
+
+	root := t.TempDir()
+	now := time.Now().UTC()
+	journal, err := Open(root, brief.TaskID, now, testLogger())
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+
+	outcome := runtime.Run(context.Background(), brief, journal)
+	if err := journal.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+	if outcome.Paused == nil {
+		t.Fatalf("expected paused outcome, got %#v", outcome)
+	}
+	if len(executed) != 0 {
+		t.Fatalf("destructive tool should not run before user approval, got %#v", executed)
+	}
+	if outcome.Paused.Packet.Category != protocol.CatPermissionEscalationRequired {
+		t.Fatalf("Category = %q, want %q", outcome.Paused.Packet.Category, protocol.CatPermissionEscalationRequired)
+	}
+	if outcome.Paused.PendingToolCall == nil || outcome.Paused.PendingToolCall.ID != "bash-1" {
+		t.Fatalf("PendingToolCall = %#v, want blocked bash call", outcome.Paused.PendingToolCall)
+	}
+	if len(outcome.Paused.Packet.Options) != 2 {
+		t.Fatalf("Options = %#v, want approve/reject", outcome.Paused.Packet.Options)
+	}
+	if outcome.Paused.Packet.Options[0].ID != "approve" || outcome.Paused.Packet.Options[1].ID != "reject" {
+		t.Fatalf("Options = %#v, want approve/reject ids", outcome.Paused.Packet.Options)
+	}
+	if !outcome.Paused.Packet.SuggestsUserInput {
+		t.Fatal("permission escalation pause should require user input")
+	}
+
+	data, err := os.ReadFile(filepath.Join(root, now.Format("2006-01-02"), brief.TaskID+".jsonl"))
+	if err != nil {
+		t.Fatalf("expected journal file: %v", err)
+	}
+	if !strings.Contains(string(data), `"kind":"permission_escalation_intercepted"`) {
+		t.Fatalf("journal missing permission_escalation_intercepted event: %s", data)
+	}
+}
+
 func TestRuntime_AutoPausesOnApprovalBlockedToolFiltersSiblingToolCalls(t *testing.T) {
 	client := &scriptedLLM{
 		responses: []*llm.ChatResponse{

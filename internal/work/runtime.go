@@ -254,8 +254,30 @@ func (r *Runtime) runLoop(
 			if progressCB != nil {
 				emitToolProgress(progressCB, calls, round, brief.TaskID)
 			}
+			if blockedCall, ok := findPermissionEscalationBlockedCall(r.cfg.Dispatcher, ctx, calls, permission); ok {
+				messages[len(messages)-1] = filterAssistantMessageForBlockedCallPause(messages[len(messages)-1], blockedCall.ID)
+				if journal != nil {
+					journal.Write("permission_escalation_intercepted", round, map[string]any{
+						"task_id": brief.TaskID,
+						"call_id": blockedCall.ID,
+						"name":    blockedCall.Name,
+						"input":   string(blockedCall.Input),
+					})
+				}
+				if escalationCount >= r.cfg.MaxEscalations {
+					report := failedReport(brief, fmt.Sprintf("max escalations exceeded (%d)", r.cfg.MaxEscalations))
+					return RunOutcome{Report: &report}, true
+				}
+				packet := buildPermissionEscalationPacket(brief, blockedCall)
+				outcome, _ := r.routeDecision(ctx, brief, blockedCall.ID, packet, messages, workProgress, round, escalationCount, journal)
+				if outcome.Paused != nil {
+					callCopy := blockedCall
+					outcome.Paused.PendingToolCall = &callCopy
+				}
+				return outcome, true
+			}
 			if blockedCall, ok := findApprovalBlockedCall(r.cfg.Dispatcher, ctx, calls, permission); ok {
-				messages[len(messages)-1] = filterAssistantMessageForApprovalPause(messages[len(messages)-1], blockedCall.ID)
+				messages[len(messages)-1] = filterAssistantMessageForBlockedCallPause(messages[len(messages)-1], blockedCall.ID)
 				if journal != nil {
 					journal.Write("tool_approval_intercepted", round, map[string]any{
 						"task_id": brief.TaskID,
@@ -559,6 +581,18 @@ func findApprovalBlockedCall(dispatcher *tool.Dispatcher, ctx context.Context, c
 	return tool.Call{}, false
 }
 
+func findPermissionEscalationBlockedCall(dispatcher *tool.Dispatcher, ctx context.Context, calls []tool.Call, maxPermission tool.Permission) (tool.Call, bool) {
+	if dispatcher == nil {
+		return tool.Call{}, false
+	}
+	for _, call := range calls {
+		if dispatcher.WouldNeedPermissionEscalation(ctx, call, maxPermission) {
+			return call, true
+		}
+	}
+	return tool.Call{}, false
+}
+
 func buildToolApprovalPacket(brief protocol.TaskBrief, call tool.Call) protocol.DecisionPacket {
 	return protocol.DecisionPacket{
 		TaskID:               brief.TaskID,
@@ -572,6 +606,20 @@ func buildToolApprovalPacket(brief protocol.TaskBrief, call tool.Call) protocol.
 		RecommendationReason: "Task goal requires this operation: " + brief.Goal,
 		SuggestsUserInput:    false,
 		CreatedAt:            time.Now().UTC(),
+	}
+}
+
+func buildPermissionEscalationPacket(brief protocol.TaskBrief, call tool.Call) protocol.DecisionPacket {
+	return protocol.DecisionPacket{
+		TaskID:            brief.TaskID,
+		Category:          protocol.CatPermissionEscalationRequired,
+		GoalSummary:       brief.Goal,
+		Question:          permissionEscalationQuestion(call),
+		WhyBlocked:        fmt.Sprintf(`Tool %q requires destructive permission beyond the task's current scope.`, call.Name),
+		Options:           []protocol.DecisionOption{{ID: "approve", Summary: "User approves destructive permission"}, {ID: "reject", Summary: "User rejects destructive permission"}},
+		RejectOptionID:    "reject",
+		SuggestsUserInput: true,
+		CreatedAt:         time.Now().UTC(),
 	}
 }
 
@@ -590,7 +638,22 @@ func toolApprovalQuestion(call tool.Call) string {
 	return fmt.Sprintf(`Allow executing tool %q?`, call.Name)
 }
 
-func filterAssistantMessageForApprovalPause(message llm.Message, blockedCallID string) llm.Message {
+func permissionEscalationQuestion(call tool.Call) string {
+	if call.Name == "bash" {
+		var payload struct {
+			Command string `json:"command"`
+		}
+		if err := json.Unmarshal(call.Input, &payload); err == nil {
+			command := strings.TrimSpace(payload.Command)
+			if command != "" {
+				return "Ask the user whether to approve destructive permission for: " + command
+			}
+		}
+	}
+	return fmt.Sprintf(`Ask the user whether to grant destructive permission for tool %q.`, call.Name)
+}
+
+func filterAssistantMessageForBlockedCallPause(message llm.Message, blockedCallID string) llm.Message {
 	if blockedCallID == "" || len(message.ContentBlocks) == 0 {
 		return message
 	}

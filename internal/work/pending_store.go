@@ -103,7 +103,7 @@ func requiresApprovalRequest(packet protocol.DecisionPacket) bool {
 
 func derivedRiskLevel(category protocol.EscalationCategory) string {
 	switch category {
-	case protocol.CatHumanConfirmation, protocol.CatToolApproval:
+	case protocol.CatHumanConfirmation, protocol.CatPermissionEscalationRequired, protocol.CatToolApproval:
 		return "high"
 	default:
 		return "low"

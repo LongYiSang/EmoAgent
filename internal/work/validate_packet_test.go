@@ -197,3 +197,17 @@ func TestValidateDecisionPacket_ToolApprovalIsRuntimeOnly(t *testing.T) {
 		t.Fatalf("error = %q, want runtime-only guidance", err)
 	}
 }
+
+func TestValidateDecisionPacket_PermissionEscalationIsRuntimeOnly(t *testing.T) {
+	brief := protocol.TaskBrief{TaskID: "task-1"}
+	packet := validDecisionPacket(brief.TaskID)
+	packet.Category = protocol.CatPermissionEscalationRequired
+
+	err := ValidateDecisionPacket(&packet, brief)
+	if err == nil {
+		t.Fatal("expected permission_escalation_required to be rejected from LLM packets")
+	}
+	if !strings.Contains(err.Error(), "runtime-only") {
+		t.Fatalf("error = %q, want runtime-only guidance", err)
+	}
+}

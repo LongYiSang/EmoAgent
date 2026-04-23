@@ -177,3 +177,21 @@ func TestBuildWorkSystem_DisabledBashMentionsUnavailableShell(t *testing.T) {
 		t.Fatalf("permission section should not promise bash access when disabled: %s", text)
 	}
 }
+
+func TestBuildWorkSystem_DistinguishesPermissionEscalationFromEmotionJudgment(t *testing.T) {
+	text := BuildWorkSystem(protocol.TaskBrief{
+		Goal:            "inspect file",
+		PermissionScope: "workspace-write",
+	}, runtimeenv.Facts{OS: "linux"})
+
+	for _, snippet := range []string{
+		"emotion_judgment: choices that require Emotion to interpret user intent, tone, preference, or relationship context",
+		"Never use human_confirmation to ask for tool permission escalation.",
+		"If a workspace-write task hits a destructive tool call, runtime will pause with permission_escalation_required and Emotion must ask the user instead of deciding itself.",
+		"Only approved-destructive tasks may enter tool_approval.",
+	} {
+		if !strings.Contains(text, snippet) {
+			t.Fatalf("system prompt missing %q: %s", snippet, text)
+		}
+	}
+}

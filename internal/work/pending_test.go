@@ -51,6 +51,21 @@ func sampleApprovalPaused(taskID string) *PausedWork {
 	return paused
 }
 
+func samplePermissionEscalationPaused(taskID string) *PausedWork {
+	paused := samplePaused(taskID)
+	paused.Brief.PermissionScope = "workspace-write"
+	paused.Packet.Category = protocol.CatPermissionEscalationRequired
+	paused.Packet.Question = "Ask the user whether to approve destructive permission for: rm -rf tmp"
+	paused.Packet.Options = []protocol.DecisionOption{
+		{ID: "approve", Summary: "User approves destructive permission"},
+		{ID: "reject", Summary: "User rejects destructive permission"},
+	}
+	paused.Packet.RecommendedOption = ""
+	paused.Packet.RejectOptionID = "reject"
+	paused.Packet.SuggestsUserInput = true
+	return paused
+}
+
 func TestDerivedRiskLevel(t *testing.T) {
 	tests := []struct {
 		category protocol.EscalationCategory
@@ -59,6 +74,7 @@ func TestDerivedRiskLevel(t *testing.T) {
 		{category: protocol.CatAuto, want: "low"},
 		{category: protocol.CatEmotionJudgment, want: "low"},
 		{category: protocol.CatHumanConfirmation, want: "high"},
+		{category: protocol.CatPermissionEscalationRequired, want: "high"},
 		{category: protocol.CatToolApproval, want: "high"},
 	}
 
@@ -306,6 +322,26 @@ func TestPendingRegistry_PutCreatesApprovalForHighRiskPausedTask(t *testing.T) {
 	}
 	if list[0].Approval.Status != string(protocol.ApprovalStatusPending) {
 		t.Fatalf("Approval.Status = %q, want pending", list[0].Approval.Status)
+	}
+}
+
+func TestPendingRegistry_PutDoesNotCreateApprovalForPermissionEscalationPausedTask(t *testing.T) {
+	reg := newSQLitePendingRegistry(t)
+	paused := samplePermissionEscalationPaused("needs-scope")
+
+	if err := reg.Put("s1", paused.TaskID, paused); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	list := reg.ListInjectable("s1")
+	if len(list) != 1 {
+		t.Fatalf("ListInjectable = %#v, want one decision", list)
+	}
+	if list[0].Approval != nil {
+		t.Fatalf("Approval = %#v, want nil", list[0].Approval)
+	}
+	if list[0].RiskLevel != "high" {
+		t.Fatalf("RiskLevel = %q, want high", list[0].RiskLevel)
 	}
 }
 

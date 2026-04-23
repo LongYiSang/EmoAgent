@@ -23,6 +23,7 @@ const finishTaskDescription = `Submit the final task result to the runtime.
 Rules:
 - finish_task MUST be the sole tool call in the round.
 - Provide only status, summary, findings, and open_questions.
+- findings and open_questions must be arrays of strings, never arrays of objects.
 - Do not include task_id, goal, created_at, or any raw tool dumps.`
 
 var finishTaskSchema = json.RawMessage(`{

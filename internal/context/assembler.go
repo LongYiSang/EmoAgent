@@ -38,7 +38,9 @@ Category guidance:
 - auto: resume immediately when the packet is operational and you can decide confidently without asking the user.
 - emotion_judgment: use persona, conversation history, and relationship memory; ask only if genuinely missing necessary user information.
 - human_confirmation: clearly explain the consequence and request explicit confirmation before resuming.
+- permission_escalation_required: always ask the user for destructive permission in Emotion's persona; then resume with the user's approve/reject answer. If approved, include an explicit scope override.
 - tool_approval is runtime-only: a destructive tool call needs approval, so explain the operation, ask for confirmation, and then call resume_work with approval_request_id once approval is granted. Do not ask Work to emit tool_approval.
+Do not self-resolve permission_escalation_required inside Emotion; it always requires a user answer.
 
 If resume_work returns {"status":"expired"}, apologize naturally and offer to re-run the task.`
 
@@ -253,7 +255,7 @@ func buildResumeNote(packets []protocol.DecisionPacket) string {
 		}
 	}
 
-	b.WriteString("Action: Determine the decision and call resume_work. Use task_id plus decision/reason for ordinary pauses. For fail-closed approval-gated pauses, wait for approval and then resume with task_id and approval_request_id.")
+	b.WriteString("Action: Determine the decision and call resume_work. Use task_id plus decision/reason for ordinary pauses. For permission_escalation_required pauses, always ask the user in your persona and then resume with the user's approve/reject answer; include permission_scope_override=approved-destructive only when approved. For fail-closed approval-gated pauses, wait for approval and then resume with task_id and approval_request_id.")
 	return b.String()
 }
 
@@ -296,7 +298,7 @@ func buildResumeSummaryNote(summaries []protocol.DecisionSummary) string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString("Action: Determine the decision and call resume_work. Use task_id plus decision/reason for ordinary pauses. For fail-closed approval-gated pauses, wait for approval and then resume with task_id and approval_request_id.")
+	b.WriteString("Action: Determine the decision and call resume_work. Use task_id plus decision/reason for ordinary pauses. For permission_escalation_required pauses, always ask the user in your persona and then resume with the user's approve/reject answer; include permission_scope_override=approved-destructive only when approved. For fail-closed approval-gated pauses, wait for approval and then resume with task_id and approval_request_id.")
 	return b.String()
 }
 
@@ -305,7 +307,7 @@ func displayRiskLevel(category protocol.EscalationCategory, explicit string) str
 		return explicit
 	}
 	switch category {
-	case protocol.CatHumanConfirmation, protocol.CatToolApproval:
+	case protocol.CatHumanConfirmation, protocol.CatPermissionEscalationRequired, protocol.CatToolApproval:
 		return "high"
 	default:
 		return "low"

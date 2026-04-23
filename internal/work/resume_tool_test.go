@@ -416,6 +416,54 @@ func TestResumeTool_HumanConfirmationCanResumeWithoutApprovalRequestID(t *testin
 	}
 }
 
+func TestResumeTool_PermissionEscalationApproveReexecutesPendingToolCall(t *testing.T) {
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			textResp(`{"status":"completed","summary":"done"}`),
+		},
+	}
+	var executed []string
+	runtime := newApprovalTestRuntime(t, client, &executed)
+	pending := newSQLitePendingRegistry(t)
+	paused := makePausedForResume(t, "task-escalation")
+	paused.Brief.PermissionScope = "workspace-write"
+	paused.PendingToolCall = &tool.Call{
+		ID:    "bash-1",
+		Name:  "bash",
+		Input: json.RawMessage(`{"command":"rm -rf tmp"}`),
+	}
+	paused.Packet.Category = protocol.CatPermissionEscalationRequired
+	paused.Packet.Question = "Ask the user whether to approve destructive permission for: rm -rf tmp"
+	paused.Packet.Options = []protocol.DecisionOption{
+		{ID: "approve", Summary: "User approves destructive permission"},
+		{ID: "reject", Summary: "User rejects destructive permission"},
+	}
+	paused.Packet.RecommendedOption = ""
+	paused.Packet.RejectOptionID = "reject"
+	paused.Packet.SuggestsUserInput = true
+	if err := pending.Put("session-1", paused.TaskID, paused); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	_, handler := NewResumeTool(runtime, pending, t.TempDir(), testLogger())
+	ctx := WithSessionID(context.Background(), "session-1")
+	raw, err := handler(ctx, json.RawMessage(`{"task_id":"task-escalation","decision":"approve","reason":"user approved","permission_scope_override":"approved-destructive"}`))
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+
+	var report protocol.TaskReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatalf("unmarshal report: %v", err)
+	}
+	if report.Status != "completed" {
+		t.Fatalf("status = %q, want completed", report.Status)
+	}
+	if len(executed) != 1 || executed[0] != "rm -rf tmp" {
+		t.Fatalf("executed = %#v, want resumed destructive command", executed)
+	}
+}
+
 func TestResumeTool_LegacyHumanConfirmationApprovalRequestIDDoesNotBlockResume(t *testing.T) {
 	client := &scriptedLLM{
 		responses: []*llm.ChatResponse{
