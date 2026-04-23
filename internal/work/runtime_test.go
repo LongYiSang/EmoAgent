@@ -577,8 +577,11 @@ func TestRuntime_AutoPausesOnApprovalBlockedTool(t *testing.T) {
 	if outcome.Paused.Packet.Category != protocol.CatToolApproval {
 		t.Fatalf("Category = %q, want %q", outcome.Paused.Packet.Category, protocol.CatToolApproval)
 	}
-	if outcome.Paused.Packet.Question != "Allow: rm -rf tmp" {
-		t.Fatalf("Question = %q, want bash command prompt", outcome.Paused.Packet.Question)
+	if !strings.Contains(outcome.Paused.Packet.Question, "操作：") {
+		t.Fatalf("Question = %q, want operation summary", outcome.Paused.Packet.Question)
+	}
+	if !strings.Contains(outcome.Paused.Packet.Question, "命令：rm -rf tmp") {
+		t.Fatalf("Question = %q, want bash command preview", outcome.Paused.Packet.Question)
 	}
 	if outcome.Paused.Packet.WhyBlocked != `Tool "bash" requires explicit human approval before execution.` {
 		t.Fatalf("WhyBlocked = %q", outcome.Paused.Packet.WhyBlocked)
@@ -595,8 +598,8 @@ func TestRuntime_AutoPausesOnApprovalBlockedTool(t *testing.T) {
 	if outcome.Paused.Packet.RejectOptionID != "deny" {
 		t.Fatalf("RejectOptionID = %q, want deny", outcome.Paused.Packet.RejectOptionID)
 	}
-	if outcome.Paused.Packet.RecommendationReason != "Task goal requires this operation: "+brief.Goal {
-		t.Fatalf("RecommendationReason = %q", outcome.Paused.Packet.RecommendationReason)
+	if !strings.Contains(outcome.Paused.Packet.RecommendationReason, brief.Goal) {
+		t.Fatalf("RecommendationReason = %q, want goal context", outcome.Paused.Packet.RecommendationReason)
 	}
 	if outcome.Paused.Packet.SuggestsUserInput {
 		t.Fatal("tool approval interception should not suggest user input")
@@ -663,6 +666,37 @@ func TestRuntime_WorkspaceWriteDestructiveCallBecomesPermissionEscalationPause(t
 	}
 	if !strings.Contains(string(data), `"kind":"permission_escalation_intercepted"`) {
 		t.Fatalf("journal missing permission_escalation_intercepted event: %s", data)
+	}
+}
+
+func TestBuildToolApprovalPacket_NonBashUsesReadableCallSummary(t *testing.T) {
+	brief := protocol.TaskBrief{
+		TaskID:          "task-approval-generic",
+		Goal:            "clean generated artifacts",
+		PermissionScope: "approved-destructive",
+	}
+	call := tool.Call{
+		ID:   "delete-1",
+		Name: "dangerous_delete",
+		Input: json.RawMessage(`{
+			"path":"tmp/output",
+			"recursive":true,
+			"force":true
+		}`),
+	}
+
+	packet := buildToolApprovalPacket(brief, call)
+	if packet.Category != protocol.CatToolApproval {
+		t.Fatalf("Category = %q, want %q", packet.Category, protocol.CatToolApproval)
+	}
+	if !strings.Contains(packet.Question, "操作：") {
+		t.Fatalf("Question = %q, want operation summary", packet.Question)
+	}
+	if !strings.Contains(packet.Question, "调用：dangerous_delete") {
+		t.Fatalf("Question = %q, want tool call preview", packet.Question)
+	}
+	if strings.Contains(packet.Question, "{") {
+		t.Fatalf("Question = %q, should avoid raw JSON", packet.Question)
 	}
 }
 

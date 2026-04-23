@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -603,7 +605,7 @@ func buildToolApprovalPacket(brief protocol.TaskBrief, call tool.Call) protocol.
 		Options:              []protocol.DecisionOption{{ID: "allow", Summary: "Allow execution"}, {ID: "deny", Summary: "Deny execution"}},
 		RejectOptionID:       "deny",
 		RecommendedOption:    "allow",
-		RecommendationReason: "Task goal requires this operation: " + brief.Goal,
+		RecommendationReason: toolApprovalRecommendation(brief),
 		SuggestsUserInput:    false,
 		CreatedAt:            time.Now().UTC(),
 	}
@@ -624,18 +626,13 @@ func buildPermissionEscalationPacket(brief protocol.TaskBrief, call tool.Call) p
 }
 
 func toolApprovalQuestion(call tool.Call) string {
-	if call.Name == "bash" {
-		var payload struct {
-			Command string `json:"command"`
-		}
-		if err := json.Unmarshal(call.Input, &payload); err == nil {
-			command := strings.TrimSpace(payload.Command)
-			if command != "" {
-				return "Allow: " + command
-			}
-		}
+	lines := []string{"操作：" + toolApprovalOperation(call)}
+	if command := bashCommandPreview(call.Input); command != "" {
+		lines = append(lines, "命令："+command)
+		return strings.Join(lines, "\n")
 	}
-	return fmt.Sprintf(`Allow executing tool %q?`, call.Name)
+	lines = append(lines, "调用："+toolApprovalCallPreview(call))
+	return strings.Join(lines, "\n")
 }
 
 func permissionEscalationQuestion(call tool.Call) string {
@@ -651,6 +648,129 @@ func permissionEscalationQuestion(call tool.Call) string {
 		}
 	}
 	return fmt.Sprintf(`Ask the user whether to grant destructive permission for tool %q.`, call.Name)
+}
+
+func toolApprovalOperation(call tool.Call) string {
+	if strings.EqualFold(strings.TrimSpace(call.Name), "bash") {
+		return "执行 bash 命令"
+	}
+	if name := strings.TrimSpace(call.Name); name != "" {
+		return "执行工具 " + name
+	}
+	return "执行受限操作"
+}
+
+func toolApprovalCallPreview(call tool.Call) string {
+	name := strings.TrimSpace(call.Name)
+	if name == "" {
+		name = "unknown_tool"
+	}
+	if summary := summarizeToolApprovalInput(call.Input); summary != "" {
+		preview, _ := truncateContent(name+" ("+summary+")", 320)
+		return preview
+	}
+	preview, _ := truncateContent(name, 320)
+	return preview
+}
+
+func toolApprovalRecommendation(brief protocol.TaskBrief) string {
+	reason := "为完成当前任务，需要执行这一步。"
+	if goal := strings.TrimSpace(brief.Goal); goal != "" {
+		reason += " 任务目标：" + goal
+	}
+	preview, _ := truncateContent(reason, 380)
+	return preview
+}
+
+func bashCommandPreview(input json.RawMessage) string {
+	var payload struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(input, &payload); err != nil {
+		return ""
+	}
+	command := strings.TrimSpace(payload.Command)
+	if command == "" {
+		return ""
+	}
+	preview, _ := truncateContent(command, 320)
+	return preview
+}
+
+func summarizeToolApprovalInput(input json.RawMessage) string {
+	if len(input) == 0 {
+		return ""
+	}
+
+	var object map[string]any
+	if err := json.Unmarshal(input, &object); err == nil && len(object) > 0 {
+		keys := make([]string, 0, len(object))
+		for key := range object {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+
+		parts := make([]string, 0, minInt(len(keys), 4))
+		for i, key := range keys {
+			if i >= 4 {
+				parts = append(parts, "...")
+				break
+			}
+			parts = append(parts, key+"="+formatToolApprovalValue(object[key]))
+		}
+		preview, _ := truncateContent(strings.Join(parts, ", "), 240)
+		return preview
+	}
+
+	var scalar any
+	if err := json.Unmarshal(input, &scalar); err == nil {
+		preview, _ := truncateContent(formatToolApprovalValue(scalar), 240)
+		return preview
+	}
+	return ""
+}
+
+func formatToolApprovalValue(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return "null"
+	case string:
+		if typed == "" {
+			return `""`
+		}
+		return typed
+	case bool:
+		return strconv.FormatBool(typed)
+	case float64:
+		if typed == float64(int64(typed)) {
+			return strconv.FormatInt(int64(typed), 10)
+		}
+		return strconv.FormatFloat(typed, 'f', -1, 64)
+	case []any:
+		if len(typed) == 0 {
+			return "[]"
+		}
+		parts := make([]string, 0, minInt(len(typed), 3))
+		for i, item := range typed {
+			if i >= 3 {
+				parts = append(parts, "...")
+				break
+			}
+			parts = append(parts, formatToolApprovalValue(item))
+		}
+		return "[" + strings.Join(parts, ", ") + "]"
+	case map[string]any:
+		return "<object>"
+	default:
+		return fmt.Sprint(typed)
+	}
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func filterAssistantMessageForBlockedCallPause(message llm.Message, blockedCallID string) llm.Message {

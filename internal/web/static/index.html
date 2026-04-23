@@ -351,7 +351,27 @@
     }
     .cv1-approval-body{padding:16px 18px;display:grid;gap:12px;}
     .cv1-approval-title{font-size:15px;font-weight:700;line-height:1.45;color:var(--ink);}
-    .cv1-approval-q{font-size:14px;color:var(--ink-2);line-height:1.55;}
+    .cv1-approval-q{font-size:14px;color:var(--ink-2);line-height:1.55;white-space:pre-wrap;word-break:break-word;}
+    .cv1-approval-note{
+      display:grid;gap:6px;padding:12px 14px;border:1px solid var(--hair);
+      background:rgba(255,255,255,.8);border-radius:12px;
+    }
+    .cv1-approval-note-label{
+      font-size:11px;font-weight:700;color:var(--muted);
+      text-transform:uppercase;letter-spacing:.08em;
+    }
+    .cv1-approval-note-text{
+      font-size:13px;color:var(--ink-2);line-height:1.55;
+      white-space:pre-wrap;word-break:break-word;
+    }
+    .cv1-approval-code-wrap{
+      display:grid;gap:6px;padding:12px 14px;border:1px solid var(--hair);
+      background:#fff;border-radius:12px;
+    }
+    .cv1-approval-code{
+      margin:0;font-family:var(--font-mono);font-size:12.5px;line-height:1.6;
+      color:var(--ink);white-space:pre-wrap;word-break:break-word;
+    }
     .cv1-approval-opts{display:flex;flex-direction:column;gap:8px;}
     .cv1-approval-opt{
       padding:10px 14px;border:1px solid var(--hair);background:#fff;
@@ -711,6 +731,57 @@
   function approvalIdOf(item) { return approvalField(item, 'id'); }
   function approvalStatusOf(item) { return approvalField(item, 'status') || 'pending'; }
 
+  function approvalQuestionLines(text) {
+    return String(text || '')
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(Boolean);
+  }
+
+  function appendApprovalQuestionDetails(body, question, recommendationReason) {
+    for (const line of approvalQuestionLines(question)) {
+      if (line.startsWith('命令：') || line.startsWith('调用：')) {
+        const wrap = document.createElement('div');
+        wrap.className = 'cv1-approval-code-wrap';
+
+        const label = document.createElement('div');
+        label.className = 'cv1-approval-note-label';
+        label.textContent = line.startsWith('命令：') ? '命令' : '调用';
+
+        const code = document.createElement('pre');
+        code.className = 'cv1-approval-code';
+        code.textContent = line.slice(3).trim();
+
+        wrap.appendChild(label);
+        wrap.appendChild(code);
+        body.appendChild(wrap);
+        continue;
+      }
+
+      const q = document.createElement('div');
+      q.className = 'cv1-approval-q';
+      q.textContent = line;
+      body.appendChild(q);
+    }
+
+    if (!recommendationReason) return;
+
+    const note = document.createElement('div');
+    note.className = 'cv1-approval-note';
+
+    const label = document.createElement('div');
+    label.className = 'cv1-approval-note-label';
+    label.textContent = '原因';
+
+    const text = document.createElement('div');
+    text.className = 'cv1-approval-note-text';
+    text.textContent = recommendationReason;
+
+    note.appendChild(label);
+    note.appendChild(text);
+    body.appendChild(note);
+  }
+
   function mergeApprovals(items) {
     const merged = [];
     for (const item of items || []) {
@@ -824,12 +895,8 @@
       body.appendChild(summary);
     } else {
       const question = approvalField(item,'question');
-      if (question) {
-        const q = document.createElement('div');
-        q.className = 'cv1-approval-q';
-        q.textContent = question;
-        body.appendChild(q);
-      }
+      const recommendationReason = approvalField(item,'recommendation_reason') || approvalField(item,'recommendationReason');
+      appendApprovalQuestionDetails(body, question, recommendationReason);
 
       if (options.length) {
         const opts = document.createElement('div');
