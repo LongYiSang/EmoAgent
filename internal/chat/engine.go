@@ -41,6 +41,7 @@ type EngineConfig struct {
 	Pending            *work.PendingRegistry
 	Approvals          *work.ApprovalService
 	Environment        runtimeenv.Facts
+	RealtimeStreaming  bool
 }
 
 // RuntimeConfig is the hot-swappable subset of EngineConfig used for new requests.
@@ -52,6 +53,7 @@ type RuntimeConfig struct {
 	MaxTokens          int
 	Temperature        float64
 	ContextConfig      config.ContextConfig
+	RealtimeStreaming  bool
 }
 
 // Engine assembles conversation context and forwards requests to the LLM.
@@ -72,6 +74,7 @@ type Engine struct {
 	pending            *work.PendingRegistry
 	approvals          *work.ApprovalService
 	environment        runtimeenv.Facts
+	realtimeStreaming  bool
 }
 
 // UpdateConfig hot-swaps the active LLM client and request parameters for new sends.
@@ -91,6 +94,13 @@ func (e *Engine) UpdateConfig(client llm.Client, provider, model, summaryModel s
 	if err := contextCfg.Validate(); err == nil {
 		e.contextCfg = contextCfg
 	}
+}
+
+// UpdateRealtimeStreaming hot-swaps the browser streaming mode for new sends.
+func (e *Engine) UpdateRealtimeStreaming(enabled bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.realtimeStreaming = enabled
 }
 
 // NewEngine creates a chat engine from configuration.
@@ -116,6 +126,7 @@ func NewEngine(cfg EngineConfig) *Engine {
 		pending:            cfg.Pending,
 		approvals:          cfg.Approvals,
 		environment:        cfg.Environment,
+		realtimeStreaming:  cfg.RealtimeStreaming,
 	}
 }
 
@@ -132,6 +143,7 @@ func (e *Engine) RuntimeConfig() RuntimeConfig {
 		MaxTokens:          e.maxTokens,
 		Temperature:        e.temperature,
 		ContextConfig:      e.contextCfg,
+		RealtimeStreaming:  e.realtimeStreaming,
 	}
 }
 
@@ -204,6 +216,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	pending := e.pending
 	approvals := e.approvals
 	env := e.environment
+	realtimeStreaming := e.realtimeStreaming
 	e.mu.RUnlock()
 
 	if client == nil {
@@ -351,11 +364,19 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 		})
 	}
 
+	var assistantContent string
+	var visibleBuilder strings.Builder
 	for round := 0; ; round++ {
 		var roundDeltas []string
 		resp, err = client.ChatStream(ctx, req, func(event llm.StreamEvent) {
 			if event.Content != "" {
 				roundDeltas = append(roundDeltas, event.Content)
+				if realtimeStreaming {
+					visibleBuilder.WriteString(event.Content)
+					if cb != nil {
+						cb(event.Content)
+					}
+				}
 			}
 		})
 		if err != nil {
@@ -391,10 +412,24 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 		}
 
 		if resp.StopReason != "tool_use" {
-			if cb != nil {
+			if realtimeStreaming {
+				if visibleBuilder.Len() == 0 && resp.Content != "" {
+					visibleBuilder.WriteString(resp.Content)
+					if cb != nil {
+						cb(resp.Content)
+					}
+				}
+				assistantContent = visibleBuilder.String()
+				if assistantContent == "" {
+					assistantContent = resp.Content
+				}
+			} else if cb != nil {
 				for _, delta := range roundDeltas {
 					cb(delta)
 				}
+				assistantContent = resp.Content
+			} else {
+				assistantContent = resp.Content
 			}
 			break
 		}
@@ -415,9 +450,13 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 
 		// 1. Append assistant message (with tool_use ContentBlocks) to in-memory
 		//    context. These intermediate messages are NOT persisted to DB.
+		assistantText := resp.Content
+		if assistantText == "" && len(roundDeltas) > 0 {
+			assistantText = strings.Join(roundDeltas, "")
+		}
 		assistantMsg := llm.Message{
 			Role:             llm.RoleAssistant,
-			Content:          resp.Content,
+			Content:          assistantText,
 			ContentBlocks:    resp.ContentBlocks,
 			ReasoningContent: resp.ReasoningContent,
 		}
@@ -427,27 +466,62 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 		calls := tool.ExtractToolCalls(resp)
 		if len(calls) == 0 {
 			e.logger.Warn("tool_use stop reason but no tool calls extracted", "session", sessionID)
+			if realtimeStreaming {
+				assistantContent = visibleBuilder.String()
+				if assistantContent == "" {
+					assistantContent = resp.Content
+				}
+			} else {
+				assistantContent = resp.Content
+			}
 			break
 		}
 		for _, c := range calls {
 			e.logger.Info("tool call", "session", sessionID, "tool", c.Name, "call_id", c.ID)
 		}
 
-		results := dispatcher.ExecuteAll(ctx, calls, tool.PermReadOnly)
-		callNames := make(map[string]string, len(calls))
-		for _, call := range calls {
-			callNames[call.ID] = call.Name
-		}
-
-		snippedResults := make([]tool.Result, len(results))
-		for i, result := range results {
+		snippedResults := make([]tool.Result, len(calls))
+		for i, call := range calls {
+			if realtimeStreaming && rawWriter != nil {
+				rawWriter(WSMessage{
+					Type: "tool_call_start",
+					Tool: &ToolActivity{
+						ID:     call.ID,
+						Name:   call.Name,
+						Status: "running",
+					},
+				})
+			}
+			toolStarted := time.Now()
+			result := dispatcher.Execute(ctx, call, tool.PermReadOnly)
 			digest := contextutil.SnipToolResult(
-				callNames[result.CallID],
+				call.Name,
 				result.CallID,
 				result.Content,
 				contextCfg.ToolResultSoftTokens,
 				contextCfg.ToolResultHardTokens,
 			)
+			if realtimeStreaming && rawWriter != nil {
+				status := "success"
+				if result.NeedsApproval {
+					status = "approval_required"
+				} else if result.IsError {
+					status = "error"
+				}
+				rawWriter(WSMessage{
+					Type: "tool_call_end",
+					Tool: &ToolActivity{
+						ID:          result.CallID,
+						Name:        call.Name,
+						Status:      status,
+						DurationMS:  time.Since(toolStarted).Milliseconds(),
+						Preview:     digest.Preview,
+						Size:        digest.Size,
+						Hash:        digest.Hash,
+						IsTruncated: digest.IsTruncated,
+					},
+				})
+			}
 			snippedResults[i] = tool.Result{
 				CallID:  result.CallID,
 				Content: json.RawMessage(contextutil.ToolResultContent(digest)),
@@ -474,12 +548,12 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	e.logger.Info("llm response",
 		"session", sessionID,
 		"duration_ms", time.Since(start).Milliseconds(),
-		"response_len", len(resp.Content),
-		"response_content", resp.Content,
+		"response_len", len(assistantContent),
+		"response_content", assistantContent,
 	)
 
 	// Persist only the final assistant text reply to DB.
-	if err := e.db.AddMessageWithMetadata(ctx, uuid.NewString(), sessionID, "assistant", resp.Content, visibleMessageMetadata("assistant", resp.Content)); err != nil {
+	if err := e.db.AddMessageWithMetadata(ctx, uuid.NewString(), sessionID, "assistant", assistantContent, visibleMessageMetadata("assistant", assistantContent)); err != nil {
 		e.logger.Error("failed to store assistant message", "session", sessionID, "error", err)
 		return "", err
 	}
@@ -488,7 +562,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 		return "", err
 	}
 
-	return resp.Content, nil
+	return assistantContent, nil
 }
 
 func (e *Engine) ListSessionApprovals(ctx context.Context, sessionID string) ([]protocol.ApprovalRequest, error) {

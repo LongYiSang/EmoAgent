@@ -95,6 +95,12 @@ func (a *routeTestAdminApp) DeleteSession(ctx context.Context, id string) error 
 func (a *routeTestAdminApp) ListSessionApprovals(ctx context.Context, sessionID string) ([]protocol.ApprovalRequest, error) {
 	return nil, nil
 }
+func (a *routeTestAdminApp) GetChatSettings() config.ChatConfig {
+	return config.ChatConfig{}
+}
+func (a *routeTestAdminApp) UpdateChatSettings(settings config.ChatConfig) error {
+	return nil
+}
 func (a *routeTestAdminApp) GetDefaultPersonaName() string {
 	if a.defaultKey == "" {
 		return "default"
@@ -358,6 +364,47 @@ func TestActivatePersonaUpdatesRuntimeDefault(t *testing.T) {
 	}
 	if value != "tami" {
 		t.Fatalf("personas.default = %q, want tami", value)
+	}
+}
+
+func TestUpdateChatSettingsPersistsRuntimeOverrideAndHotUpdatesEngine(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	engine := chat.NewEngine(chat.EngineConfig{
+		DB:          db,
+		Logger:      logger,
+		Model:       "test-model",
+		MaxTokens:   128,
+		Temperature: 0.2,
+	})
+	a := &App{
+		Config: &config.Config{Chat: config.ChatConfig{RealtimeStreaming: false}},
+		DB:     db,
+		Logger: logger,
+		engine: engine,
+	}
+
+	if err := a.UpdateChatSettings(config.ChatConfig{RealtimeStreaming: true}); err != nil {
+		t.Fatalf("UpdateChatSettings: %v", err)
+	}
+
+	value, ok, err := db.GetRuntimeConfig("chat.realtime_streaming")
+	if err != nil {
+		t.Fatalf("GetRuntimeConfig: %v", err)
+	}
+	if !ok || value != "true" {
+		t.Fatalf("runtime chat.realtime_streaming = %q/%t, want true/true", value, ok)
+	}
+	if !a.Config.Chat.RealtimeStreaming {
+		t.Fatal("Config.Chat.RealtimeStreaming = false, want true")
+	}
+	if !engine.RuntimeConfig().RealtimeStreaming {
+		t.Fatal("engine realtime streaming = false, want true")
 	}
 }
 

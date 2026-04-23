@@ -316,6 +316,51 @@
     }
     .cv1-progress-text{font-size:14px;color:var(--ink-2);line-height:1.55;font-style:italic;}
 
+    /* ── Tool activity ── */
+    .cv1-tool{
+      align-self:flex-start;max-width:var(--thread-width);width:100%;
+      display:flex;gap:12px;align-items:flex-start;
+      animation:cv1-rise .24s var(--ease-out);
+    }
+    .cv1-tool-av{
+      width:32px;height:32px;flex-shrink:0;border-radius:50%;
+      background:linear-gradient(135deg,var(--mint-soft),var(--lavender-soft));
+      color:var(--mint-ink);display:grid;place-items:center;border:1px solid rgba(63,122,92,.12);
+    }
+    .cv1-tool-card{
+      flex:1;min-width:0;background:#FFFDFA;border:1px solid var(--hair);
+      border-radius:18px;border-top-left-radius:8px;overflow:hidden;box-shadow:var(--shadow-sm);
+    }
+    .cv1-tool-head{
+      width:100%;border:0;background:transparent;padding:11px 14px;
+      display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;text-align:left;
+    }
+    .cv1-tool-title{font-size:12.5px;font-weight:800;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .cv1-tool-badge{
+      display:inline-flex;align-items:center;padding:3px 8px;border-radius:999px;
+      font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;
+      background:var(--lavender-soft);color:var(--lavender-ink);
+    }
+    .cv1-tool.success .cv1-tool-badge{background:var(--mint-soft);color:var(--mint-ink);}
+    .cv1-tool.error .cv1-tool-badge,
+    .cv1-tool.approval_required .cv1-tool-badge{background:#FFF1F4;color:var(--rose-ink);}
+    .cv1-tool-caret{color:var(--muted);transition:transform .18s var(--ease-out);}
+    .cv1-tool.expanded .cv1-tool-caret{transform:rotate(180deg);}
+    .cv1-tool-body{
+      display:none;border-top:1px solid var(--hair);padding:12px 14px;
+      background:linear-gradient(180deg,#FFFDFA 0%,#FBFAF8 100%);
+      gap:9px;font-size:12px;color:var(--ink-2);
+    }
+    .cv1-tool.expanded .cv1-tool-body{display:grid;}
+    .cv1-tool-preview{
+      margin:0;white-space:pre-wrap;word-break:break-word;
+      font-family:var(--font-mono);font-size:11.5px;line-height:1.55;
+      padding:10px 11px;border-radius:11px;background:#fff;border:1px solid var(--hair);
+      max-height:180px;overflow:auto;
+    }
+    .cv1-tool-meta{display:flex;flex-wrap:wrap;gap:6px;color:var(--muted);font-family:var(--font-data);}
+    .cv1-tool-meta span{padding:3px 7px;border-radius:999px;background:rgba(126,103,94,.1);}
+
     /* ── Approvals ── */
     .cv1-approvals-wrap{
       display:none !important;
@@ -583,6 +628,7 @@
   const pendingApprovalActions = new Set();
   const dismissedApprovalIDs = new Set();
   let workProgressNode = null;
+  const toolActivityNodes = new Map();
 
   function escapeHTML(text) {
     return String(text ?? '')
@@ -608,6 +654,7 @@
   function clearMessages() {
     pendingAssistant = null;
     clearWorkProgress();
+    toolActivityNodes.clear();
     messagesEl.innerHTML = '';
   }
 
@@ -1035,6 +1082,77 @@
     workProgressNode = null;
   }
 
+  function toolField(item, field) {
+    if (!item || typeof item !== 'object') return '';
+    return item[field] ?? item[field[0].toUpperCase() + field.slice(1)] ?? '';
+  }
+
+  function toolStatusLabel(status) {
+    switch (status) {
+      case 'running': return 'running';
+      case 'success': return 'done';
+      case 'error': return 'error';
+      case 'approval_required': return 'approval';
+      default: return status || 'tool';
+    }
+  }
+
+  function renderToolActivity(node, tool, collapse) {
+    const id = toolField(tool, 'id');
+    const name = toolField(tool, 'name') || 'tool';
+    const status = toolField(tool, 'status') || 'running';
+    const preview = toolField(tool, 'preview');
+    const size = Number(toolField(tool, 'size') || 0);
+    const duration = Number(toolField(tool, 'duration_ms') || toolField(tool, 'durationMS') || 0);
+    const hash = toolField(tool, 'hash');
+    const truncated = Boolean(toolField(tool, 'is_truncated') || toolField(tool, 'isTruncated'));
+    const expanded = collapse ? false : !node.dataset.hadEnd;
+    node.className = `cv1-tool ${status}${expanded ? ' expanded' : ''}`;
+    node.dataset.toolId = id;
+    if (collapse) node.dataset.hadEnd = '1';
+    node.innerHTML = `
+      <div class="cv1-tool-av" aria-hidden="true">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4 4 0 0 0-5 5L4 17v3h3l5.7-5.7a4 4 0 0 0 5-5l-2.4 2.4-3-3 2.4-2.4z"/></svg>
+      </div>
+      <div class="cv1-tool-card">
+        <button class="cv1-tool-head" type="button" aria-expanded="${expanded ? 'true' : 'false'}">
+          <span class="cv1-tool-title">${escapeHTML(name)}</span>
+          <span class="cv1-tool-badge">${escapeHTML(toolStatusLabel(status))}</span>
+          <span class="cv1-tool-caret">⌄</span>
+        </button>
+        <div class="cv1-tool-body">
+          ${preview ? `<pre class="cv1-tool-preview">${escapeHTML(preview)}</pre>` : '<div class="cv1-tool-preview">Waiting for result...</div>'}
+          <div class="cv1-tool-meta">
+            ${duration ? `<span>${duration} ms</span>` : ''}
+            ${size ? `<span>${size} bytes</span>` : ''}
+            ${hash ? `<span>hash ${escapeHTML(hash)}</span>` : ''}
+            ${truncated ? '<span>truncated</span>' : ''}
+          </div>
+        </div>
+      </div>
+    `;
+    const head = node.querySelector('.cv1-tool-head');
+    head?.addEventListener('click', () => {
+      node.classList.toggle('expanded');
+      head.setAttribute('aria-expanded', node.classList.contains('expanded') ? 'true' : 'false');
+    });
+  }
+
+  function upsertToolActivity(tool, collapse = false) {
+    const id = toolField(tool, 'id');
+    if (!id) return;
+    let node = toolActivityNodes.get(id);
+    if (!node || !node.isConnected) {
+      node = document.createElement('div');
+      setTimelineMeta(node, 'tool', new Date().toISOString());
+      if (workProgressNode && workProgressNode.parentNode === messagesEl) messagesEl.insertBefore(node, workProgressNode);
+      else messagesEl.appendChild(node);
+      toolActivityNodes.set(id, node);
+    }
+    renderToolActivity(node, tool, collapse);
+    scrollToBottom();
+  }
+
   function scrollToBottom() { messagesEl.scrollTop = messagesEl.scrollHeight; }
 
   function clearApprovalState() {
@@ -1195,6 +1313,7 @@
           break;
         case 'stream_start':
           pendingAssistant = null;
+          toolActivityNodes.clear();
           setSending(true);
           break;
         case 'stream_delta':
@@ -1205,6 +1324,12 @@
           pendingAssistant = null; clearWorkProgress(); pendingApprovalActions.clear();
           setSending(false);
           await loadSessionList(); await loadApprovals(currentSessionId);
+          break;
+        case 'tool_call_start':
+          upsertToolActivity(payload.tool || payload.Tool, false);
+          break;
+        case 'tool_call_end':
+          upsertToolActivity(payload.tool || payload.Tool, true);
           break;
         case 'error':
           appendMessage('error', payload.content || 'Unknown error');

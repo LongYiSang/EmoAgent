@@ -211,6 +211,61 @@ func TestHandlerStreamsAssistantResponse(t *testing.T) {
 	}
 }
 
+func TestHandlerStreamsToolCallEvents(t *testing.T) {
+	handler, engine := newTestHandler()
+	engine.deltas = []string{"done"}
+	engine.sendReply = "done"
+	engine.sendHook = func(ctx context.Context) {
+		writer := wsWriterFromContext(ctx)
+		if writer == nil {
+			t.Fatal("ws writer missing from message context")
+		}
+		writer(WSMessage{Type: "tool_call_start", Tool: &ToolActivity{ID: "call-1", Name: "get_time", Status: "running"}})
+		writer(WSMessage{Type: "tool_call_end", Tool: &ToolActivity{ID: "call-1", Name: "get_time", Status: "success", Preview: `{"time":"17:00"}`, Size: 17, Hash: "abc123"}})
+	}
+
+	conn := dialTestWS(t, handler)
+	defer conn.Close(websocket.StatusNormalClosure, "bye")
+
+	var msg WSMessage
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(session_ready): %v", err)
+	}
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(greeting): %v", err)
+	}
+
+	if err := wsjson.Write(context.Background(), conn, WSMessage{Type: "message", Content: "use a tool"}); err != nil {
+		t.Fatalf("Write(message): %v", err)
+	}
+
+	var types []string
+	var toolEvents []ToolActivity
+	for len(types) < 5 {
+		msg = WSMessage{}
+		if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+			t.Fatalf("Read(stream): %v", err)
+		}
+		types = append(types, msg.Type)
+		if msg.Tool != nil {
+			toolEvents = append(toolEvents, *msg.Tool)
+		}
+	}
+
+	want := []string{"stream_start", "tool_call_start", "tool_call_end", "stream_delta", "stream_end"}
+	for i := range want {
+		if types[i] != want[i] {
+			t.Fatalf("types[%d] = %q, want %q (all=%#v)", i, types[i], want[i], types)
+		}
+	}
+	if len(toolEvents) != 2 {
+		t.Fatalf("toolEvents = %#v, want start and end", toolEvents)
+	}
+	if toolEvents[0].Status != "running" || toolEvents[1].Status != "success" || toolEvents[1].Preview == "" {
+		t.Fatalf("toolEvents = %#v, want running then successful preview", toolEvents)
+	}
+}
+
 func TestHandlerRepliesToPing(t *testing.T) {
 	handler, _ := newTestHandler()
 	conn := dialTestWS(t, handler)

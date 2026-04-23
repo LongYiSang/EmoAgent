@@ -12,7 +12,6 @@ llm:
   # model: "claude-sonnet-4-20250514"
   # max_completion_tokens TODO部分模型需要-暂未实现
   # thinking TODO部分模型可选
-  # stream TODO流式传输-暂未实现
 
   provider: "openai"
   base_url: "https://api.moonshot.cn"
@@ -21,6 +20,9 @@ llm:
   max_tokens: 8192
   temperature: 1
   api_key_env: "OPENAI_API_KEY"
+
+chat:
+  realtime_streaming: false
 
 context:
   input_budget_tokens: 216000
