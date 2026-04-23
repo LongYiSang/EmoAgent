@@ -22,6 +22,9 @@ func TestDefaultConfig(t *testing.T) {
 	if len(cfg.LLMProfiles) != 0 {
 		t.Errorf("default llm_profiles length = %d, want 0", len(cfg.LLMProfiles))
 	}
+	if cfg.Chat.RealtimeStreaming {
+		t.Error("default chat.realtime_streaming = true, want false")
+	}
 	if cfg.Context.InputBudgetTokens <= 0 {
 		t.Errorf("default context.input_budget_tokens = %d, want > 0", cfg.Context.InputBudgetTokens)
 	}
@@ -75,6 +78,8 @@ llm:
   model: claude-sonnet-4-20250514
   summary_temperature: 0.2
   api_key_env: ANTHROPIC_API_KEY
+chat:
+  realtime_streaming: true
 context:
   input_budget_tokens: 12345
   soft_compact_ratio: 0.7
@@ -112,6 +117,9 @@ llm_profiles:
 	}
 	if cfg.LLM.SummaryTemperature == nil || *cfg.LLM.SummaryTemperature != 0.2 {
 		t.Fatalf("llm.summary_temperature = %#v, want 0.2", cfg.LLM.SummaryTemperature)
+	}
+	if !cfg.Chat.RealtimeStreaming {
+		t.Fatal("chat.realtime_streaming = false, want true")
 	}
 	if cfg.Context.InputBudgetTokens != 12345 {
 		t.Errorf("context.input_budget_tokens = %d, want 12345", cfg.Context.InputBudgetTokens)

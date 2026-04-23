@@ -40,6 +40,8 @@ type AdminApp interface {
 	GetSessionDetail(ctx context.Context, id string) (*storage.SessionRecord, []storage.MessageRecord, error)
 	DeleteSession(ctx context.Context, id string) error
 	ListSessionApprovals(ctx context.Context, sessionID string) ([]protocol.ApprovalRequest, error)
+	GetChatSettings() config.ChatConfig
+	UpdateChatSettings(settings config.ChatConfig) error
 }
 
 type APIHandler struct {
@@ -79,6 +81,14 @@ type personaSummary struct {
 type personasResponse struct {
 	Default  string           `json:"default"`
 	Personas []personaSummary `json:"personas"`
+}
+
+type chatSettingsResponse struct {
+	RealtimeStreaming bool `json:"realtime_streaming"`
+}
+
+type chatSettingsRequest struct {
+	RealtimeStreaming bool `json:"realtime_streaming"`
 }
 
 type personaDetailResponse struct {
@@ -239,6 +249,29 @@ func (h *APIHandler) HandleDeleteLLMProfile(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (h *APIHandler) HandleGetChatSettings(w http.ResponseWriter, r *http.Request) {
+	settings := h.app.GetChatSettings()
+	writeJSON(w, http.StatusOK, chatSettingsResponse{
+		RealtimeStreaming: settings.RealtimeStreaming,
+	})
+}
+
+func (h *APIHandler) HandleUpdateChatSettings(w http.ResponseWriter, r *http.Request) {
+	var req chatSettingsRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	settings := config.ChatConfig{RealtimeStreaming: req.RealtimeStreaming}
+	if err := h.app.UpdateChatSettings(settings); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update chat settings")
+		return
+	}
+	writeJSON(w, http.StatusOK, chatSettingsResponse{
+		RealtimeStreaming: settings.RealtimeStreaming,
+	})
 }
 
 func (h *APIHandler) HandleListPersonas(w http.ResponseWriter, r *http.Request) {

@@ -280,6 +280,7 @@ func (a *App) Run(ctx context.Context) error {
 		Pending:            pendingRegistry,
 		Approvals:          approvalService,
 		Environment:        a.environment,
+		RealtimeStreaming:  cfg.Chat.RealtimeStreaming,
 	})
 	a.approvalService = approvalService
 	chatHandler := chat.NewHandler(a.engine, a, a.Logger)
@@ -329,6 +330,8 @@ func registerRoutes(mux *http.ServeMux, api *web.APIHandler, chatHandler http.Ha
 	mux.HandleFunc("PUT /api/llm-profiles/{id}", api.HandleUpdateLLMProfile)
 	mux.HandleFunc("POST /api/llm-profiles/{id}/activate", api.HandleActivateLLMProfile)
 	mux.HandleFunc("DELETE /api/llm-profiles/{id}", api.HandleDeleteLLMProfile)
+	mux.HandleFunc("GET /api/settings/chat", api.HandleGetChatSettings)
+	mux.HandleFunc("PUT /api/settings/chat", api.HandleUpdateChatSettings)
 	mux.HandleFunc("GET /api/personas", api.HandleListPersonas)
 	mux.HandleFunc("POST /api/personas", api.HandleCreatePersona)
 	mux.HandleFunc("GET /api/personas/{name}", api.HandleGetPersona)
@@ -403,6 +406,13 @@ func (a *App) applyRuntimeOverrides() error {
 			}
 		case "personas.default":
 			a.Config.Personas.Default = v
+		case "chat.realtime_streaming":
+			enabled, parseErr := strconv.ParseBool(v)
+			if parseErr == nil {
+				a.Config.Chat.RealtimeStreaming = enabled
+			} else {
+				a.Logger.Warn("invalid runtime override", "key", "chat.realtime_streaming", "value", v, "error", parseErr)
+			}
 		case "server.port":
 			if n, parseErr := strconv.Atoi(v); parseErr == nil {
 				a.Config.Server.Port = n
@@ -587,6 +597,37 @@ func (a *App) GetDefaultPersonaName() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.Config.Personas.Default
+}
+
+func (a *App) GetChatSettings() config.ChatConfig {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.Config == nil {
+		return config.ChatConfig{}
+	}
+	return a.Config.Chat
+}
+
+func (a *App) UpdateChatSettings(settings config.ChatConfig) error {
+	if a.DB == nil {
+		return fmt.Errorf("database is not initialized")
+	}
+	if err := a.DB.SetRuntimeConfig("chat.realtime_streaming", strconv.FormatBool(settings.RealtimeStreaming)); err != nil {
+		return err
+	}
+
+	a.mu.Lock()
+	if a.Config == nil {
+		a.Config = config.DefaultConfig()
+	}
+	a.Config.Chat = settings
+	engine := a.engine
+	a.mu.Unlock()
+
+	if engine != nil {
+		engine.UpdateRealtimeStreaming(settings.RealtimeStreaming)
+	}
+	return nil
 }
 
 // CreatePersona creates a new persona.

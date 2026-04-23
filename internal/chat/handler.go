@@ -28,6 +28,19 @@ type WSMessage struct {
 	Action    string                    `json:"action,omitempty"`
 	OptionID  string                    `json:"option_id,omitempty"`
 	Approval  *protocol.ApprovalRequest `json:"approval,omitempty"`
+	Tool      *ToolActivity             `json:"tool,omitempty"`
+}
+
+// ToolActivity is the compact, UI-safe description of a live tool call.
+type ToolActivity struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Status      string `json:"status"`
+	DurationMS  int64  `json:"duration_ms,omitempty"`
+	Preview     string `json:"preview,omitempty"`
+	Size        int    `json:"size,omitempty"`
+	Hash        string `json:"hash,omitempty"`
+	IsTruncated bool   `json:"is_truncated,omitempty"`
 }
 
 // AppInterface exposes the persona methods the handler needs from App.

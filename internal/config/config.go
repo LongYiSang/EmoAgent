@@ -11,6 +11,7 @@ import (
 type Config struct {
 	Server      ServerConfig    `yaml:"server"`
 	LLM         LLMConfig       `yaml:"llm"`
+	Chat        ChatConfig      `yaml:"chat"`
 	Context     ContextConfig   `yaml:"context"`
 	Work        WorkConfig      `yaml:"work"`
 	LLMProfiles []LLMProfile    `yaml:"llm_profiles"`
@@ -75,6 +76,10 @@ type LLMConfig struct {
 	MaxTokens          int      `yaml:"max_tokens"`
 	Temperature        float64  `yaml:"temperature"`
 	APIKeyEnv          string   `yaml:"api_key_env"`
+}
+
+type ChatConfig struct {
+	RealtimeStreaming bool `yaml:"realtime_streaming" json:"realtime_streaming"`
 }
 
 type LLMProfile struct {
@@ -213,6 +218,9 @@ func DefaultConfig() *Config {
 			Model:       "gpt-4o",
 			MaxTokens:   4096,
 			Temperature: 0.7,
+		},
+		Chat: ChatConfig{
+			RealtimeStreaming: false,
 		},
 		Context: ContextConfig{
 			InputBudgetTokens:    24000,

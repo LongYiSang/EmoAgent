@@ -391,6 +391,35 @@
     .av2-placeholder-inner .icon{font-size:32px;opacity:.4;}
     .av2-placeholder-inner p{margin:0;font-size:13px;color:var(--muted);}
 
+    .av2-settings{
+      grid-column:1/-1;overflow-y:auto;padding:28px;
+      display:grid;gap:16px;align-content:start;
+    }
+    .av2-settings-shell{max-width:860px;display:grid;gap:16px;}
+    .av2-setting-row{
+      display:flex;align-items:center;justify-content:space-between;gap:18px;
+      padding:16px;border:1px solid var(--hair);border-radius:16px;background:#FBFAF8;
+    }
+    .av2-setting-copy{display:grid;gap:4px;min-width:0;}
+    .av2-setting-title{font-size:14px;font-weight:800;color:var(--ink);}
+    .av2-setting-desc{font-size:12.5px;line-height:1.5;color:var(--muted);}
+    .av2-switch-input{
+      position:absolute;inline-size:1px;block-size:1px;overflow:hidden;
+      clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap;
+    }
+    .av2-toggle{
+      width:54px;height:30px;border-radius:999px;padding:3px;flex-shrink:0;
+      background:#E8DED6;border:1px solid var(--hair-strong);
+      transition:all .18s var(--ease-out);box-shadow:inset 0 1px 2px rgba(42,34,48,.06);
+    }
+    .av2-toggle span{
+      display:block;width:22px;height:22px;border-radius:50%;background:#fff;
+      box-shadow:0 2px 7px rgba(42,34,48,.18);transition:transform .18s var(--ease-out);
+    }
+    .av2-switch-input:checked + .av2-toggle{background:var(--mint);border-color:transparent;}
+    .av2-switch-input:checked + .av2-toggle span{transform:translateX(24px);}
+    .av2-switch-input:focus-visible + .av2-toggle{box-shadow:0 0 0 4px rgba(185,224,201,.35);}
+
     /* Toast */
     .toast-zone{
       position:fixed;right:18px;bottom:18px;display:grid;gap:10px;z-index:50;pointer-events:none;
@@ -634,13 +663,26 @@
 
   <!-- Settings tab -->
   <div class="av2-body" id="tab-settings" hidden>
-    <div style="grid-column:1/-1;" class="av2-placeholder">
-      <div class="av2-placeholder-inner">
-        <div class="icon">⚙️</div>
-        <strong>Settings</strong>
-        <p>Runtime settings are managed in config.yaml and via the WebUI.</p>
+    <section class="av2-settings">
+      <div class="av2-settings-shell">
+        <div class="av2-card">
+          <div class="av2-card-hd"><h3><span class="dot mint">S</span>Chat Settings</h3><span class="hint">Global</span></div>
+          <label class="av2-setting-row" for="chat-realtime-streaming">
+            <span class="av2-setting-copy">
+              <span class="av2-setting-title">Real-time streaming</span>
+              <span class="av2-setting-desc">Show assistant text and lightweight tool activity while the model is still responding.</span>
+            </span>
+            <input class="av2-switch-input" id="chat-realtime-streaming" type="checkbox">
+            <span class="av2-toggle" aria-hidden="true"><span></span></span>
+          </label>
+          <div class="av2-detail-actions">
+            <div class="av2-btns-row">
+              <button class="av2-btn primary" type="button" id="chat-settings-save">Save Settings</button>
+            </div>
+          </div>
+        </div>
       </div>
-    </div>
+    </section>
   </div>
 </div>
 
@@ -654,6 +696,8 @@
   const toastZone = document.getElementById('toast-zone');
   const llmForm = document.getElementById('llm-form');
   const personaForm = document.getElementById('persona-form');
+  const chatRealtimeStreamingEl = document.getElementById('chat-realtime-streaming');
+  const chatSettingsSaveEl = document.getElementById('chat-settings-save');
 
   const llmFields = {
     id: document.getElementById('llm-id'),
@@ -685,12 +729,14 @@
   const state = {
     llmProfiles: [], activeLLMId: '', selectedLLMId: '',
     personas: [], selectedPersonaKey: '', defaultPersonaKey: '',
+    chatSettings: { realtime_streaming: false },
   };
 
   const API = {
     llmProfiles: '/api/llm-profiles',
     llmProfile: id => `/api/llm-profiles/${encodeURIComponent(id)}`,
     llmActivate: id => `/api/llm-profiles/${encodeURIComponent(id)}/activate`,
+    chatSettings: '/api/settings/chat',
     personas: '/api/personas',
     persona: name => `/api/personas/${encodeURIComponent(name)}`,
     personaActivate: name => `/api/personas/${encodeURIComponent(name)}/activate`,
@@ -1093,6 +1139,14 @@
     setStatus('Personas loaded');
   }
 
+  async function loadChatSettings() {
+    const payload = await request(API.chatSettings);
+    state.chatSettings = {
+      realtime_streaming: Boolean(payload?.realtime_streaming ?? payload?.realtimeStreaming),
+    };
+    chatRealtimeStreamingEl.checked = state.chatSettings.realtime_streaming;
+  }
+
   async function selectLLMProfile(id, fetchDetail = true) {
     if (!id) return;
     state.selectedLLMId = id;
@@ -1190,6 +1244,18 @@
     } catch (error) { toast('Failed to save Persona', 'err', error.message); }
   }
 
+  async function saveChatSettings() {
+    const payload = { realtime_streaming: chatRealtimeStreamingEl.checked };
+    try {
+      const saved = await request(API.chatSettings, { method:'PUT', body: payload });
+      state.chatSettings = {
+        realtime_streaming: Boolean(saved?.realtime_streaming ?? saved?.realtimeStreaming),
+      };
+      chatRealtimeStreamingEl.checked = state.chatSettings.realtime_streaming;
+      toast('Chat settings saved', 'ok', state.chatSettings.realtime_streaming ? 'real-time streaming on' : 'real-time streaming off');
+    } catch (error) { toast('Failed to save chat settings', 'err', error.message); }
+  }
+
   async function deletePersona() {
     const key = personaFields.key.value.trim();
     if (!key) return;
@@ -1206,7 +1272,7 @@
   async function refreshAll() {
     try {
       setStatus('Refreshing...');
-      await Promise.all([loadLLMProfiles(), loadPersonas()]);
+      await Promise.all([loadLLMProfiles(), loadPersonas(), loadChatSettings()]);
       toast('Data refreshed', 'ok');
     } catch (error) { toast('Failed to refresh', 'err', error.message); setStatus('Refresh failed'); }
   }
@@ -1243,6 +1309,7 @@
   document.getElementById('llm-activate').addEventListener('click', activateLLMProfile);
   document.getElementById('llm-delete').addEventListener('click', deleteLLMProfile);
   document.getElementById('persona-delete').addEventListener('click', deletePersona);
+  chatSettingsSaveEl.addEventListener('click', saveChatSettings);
   llmForm.addEventListener('submit', saveLLMProfile);
   personaForm.addEventListener('submit', savePersona);
   autoGrow(personaFields.system_prompt);

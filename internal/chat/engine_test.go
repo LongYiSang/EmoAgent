@@ -56,6 +56,34 @@ func (f *fakeLLMClient) ChatStream(_ context.Context, req llm.ChatRequest, cb ll
 	return f.response, f.err
 }
 
+type observingStreamClient struct {
+	deltas     []string
+	response   *llm.ChatResponse
+	afterDelta func()
+}
+
+func (c *observingStreamClient) Chat(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+	panic("unexpected summary Chat call")
+}
+
+func (c *observingStreamClient) ChatStream(_ context.Context, req llm.ChatRequest, cb llm.StreamCallback) (*llm.ChatResponse, error) {
+	for _, delta := range c.deltas {
+		if cb != nil {
+			cb(llm.StreamEvent{Content: delta})
+		}
+		if c.afterDelta != nil {
+			c.afterDelta()
+		}
+	}
+	if cb != nil {
+		cb(llm.StreamEvent{Done: true})
+	}
+	if c.response != nil {
+		return c.response, nil
+	}
+	return endTurnResponse(strings.Join(c.deltas, "")), nil
+}
+
 type reactiveRetryLLMClient struct {
 	requests []llm.ChatRequest
 	errs     []error
@@ -271,6 +299,67 @@ func TestEngineSendMessageStreamsAndPersistsConversation(t *testing.T) {
 	}
 	if messages[3].Role != "assistant" || messages[3].Content != "Hi there" {
 		t.Fatalf("messages[3] = %#v, want persisted assistant message", messages[3])
+	}
+}
+
+func TestEngineBuffersDeltasWhenRealtimeStreamingDisabled(t *testing.T) {
+	var streamed []string
+	client := &observingStreamClient{
+		deltas: []string{"Hi"},
+		afterDelta: func() {
+			if len(streamed) != 0 {
+				t.Fatalf("streamed during ChatStream = %#v, want no callback until response is complete", streamed)
+			}
+		},
+	}
+	engine, _, _ := newTestEngine(t, client)
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	reply, err := engine.SendMessage(context.Background(), sessionID, &config.Persona{Name: "default", SystemPrompt: "You are warm."}, "hello", func(delta string) {
+		streamed = append(streamed, delta)
+	})
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if reply != "Hi" {
+		t.Fatalf("reply = %q, want Hi", reply)
+	}
+	if len(streamed) != 1 || streamed[0] != "Hi" {
+		t.Fatalf("streamed = %#v, want [Hi]", streamed)
+	}
+}
+
+func TestEngineRealtimeStreamingEmitsDeltaBeforeChatStreamReturns(t *testing.T) {
+	var streamed []string
+	client := &observingStreamClient{
+		deltas: []string{"Hi"},
+		afterDelta: func() {
+			if len(streamed) != 1 || streamed[0] != "Hi" {
+				t.Fatalf("streamed during ChatStream = %#v, want [Hi]", streamed)
+			}
+		},
+	}
+	engine, _, _ := newTestEngine(t, client)
+	engine.UpdateRealtimeStreaming(true)
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	reply, err := engine.SendMessage(context.Background(), sessionID, &config.Persona{Name: "default", SystemPrompt: "You are warm."}, "hello", func(delta string) {
+		streamed = append(streamed, delta)
+	})
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if reply != "Hi" {
+		t.Fatalf("reply = %q, want Hi", reply)
+	}
+	if len(streamed) != 1 || streamed[0] != "Hi" {
+		t.Fatalf("streamed = %#v, want [Hi]", streamed)
 	}
 }
 
@@ -608,6 +697,97 @@ func TestEngineToolLoopExecutesToolAndReturnsResponse(t *testing.T) {
 	}
 	if messages[1].Role != "assistant" || messages[1].Content != "It's 17:00 now!" {
 		t.Fatalf("messages[1] = %+v, want final assistant message", messages[1])
+	}
+}
+
+func TestEngineRealtimeToolLoopKeepsVisibleTextAndEmitsToolEvents(t *testing.T) {
+	mockLLM := &toolLoopLLMClient{}
+	registry := tool.NewRegistry()
+	registry.Register(tool.Spec{
+		Name:        "get_current_time",
+		Description: "Get current time",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+		Scope:       tool.ScopeBoth,
+		Permission:  tool.PermReadOnly,
+	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{"current_time":"17:00:00","timezone":"CST"}`), nil
+	})
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "chat.db"), logger)
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, logger)
+	engine := NewEngine(EngineConfig{
+		LLM:               mockLLM,
+		DB:                db,
+		Logger:            logger,
+		Model:             "test-model",
+		MaxTokens:         256,
+		Temperature:       0.2,
+		RealtimeStreaming: true,
+		ContextConfig: config.ContextConfig{
+			InputBudgetTokens:    24000,
+			SoftCompactRatio:     0.75,
+			HardCompactRatio:     0.92,
+			ReserveOutputTokens:  4096,
+			KeepRecentUserTurns:  6,
+			ToolResultSoftTokens: 1000,
+			ToolResultHardTokens: 3000,
+		},
+		Provider:   "openai",
+		Registry:   registry,
+		Dispatcher: dispatcher,
+	})
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	var streamed []string
+	var toolEvents []WSMessage
+	ctx := withWSWriter(context.Background(), func(msg WSMessage) {
+		if strings.HasPrefix(msg.Type, "tool_call_") {
+			toolEvents = append(toolEvents, msg)
+		}
+	})
+	reply, err := engine.SendMessage(ctx, sessionID, &config.Persona{Name: "default", SystemPrompt: "You are warm."}, "What time is it?", func(delta string) {
+		streamed = append(streamed, delta)
+	})
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if reply != "Let me check the current time.It's 17:00 now!" {
+		t.Fatalf("reply = %q, want visible pre-tool text plus final reply", reply)
+	}
+	if len(streamed) != 2 || streamed[0] != "Let me check the current time." || streamed[1] != "It's 17:00 now!" {
+		t.Fatalf("streamed = %#v, want pre-tool and final deltas", streamed)
+	}
+	if len(toolEvents) != 2 {
+		t.Fatalf("toolEvents = %#v, want start and end", toolEvents)
+	}
+	if toolEvents[0].Type != "tool_call_start" || toolEvents[0].Tool == nil || toolEvents[0].Tool.Status != "running" {
+		t.Fatalf("tool start event = %#v, want running tool_call_start", toolEvents[0])
+	}
+	if toolEvents[1].Type != "tool_call_end" || toolEvents[1].Tool == nil || toolEvents[1].Tool.Status != "success" || !strings.Contains(toolEvents[1].Tool.Preview, "17:00") {
+		t.Fatalf("tool end event = %#v, want successful preview", toolEvents[1])
+	}
+
+	messages, err := db.GetRecentMessages(context.Background(), sessionID, 10)
+	if err != nil {
+		t.Fatalf("GetRecentMessages: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("len(messages) = %d, want 2 visible messages", len(messages))
+	}
+	if messages[1].Role != "assistant" || messages[1].Content != reply {
+		t.Fatalf("assistant message = %#v, want persisted visible reply", messages[1])
+	}
+	if strings.Contains(messages[1].Content, "current_time") {
+		t.Fatalf("assistant message contains tool result JSON: %q", messages[1].Content)
 	}
 }
 

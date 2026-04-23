@@ -45,6 +45,9 @@ type fakeAdminApp struct {
 	lastPhrasesKey      string
 	lastPhrasesValue    map[string][]string
 	lastApprovalSession string
+	chatSettings        config.ChatConfig
+	lastChatSettings    config.ChatConfig
+	updateChatErr       error
 }
 
 func (f *fakeAdminApp) ListLLMProfiles() ([]config.LLMProfile, error) {
@@ -155,6 +158,13 @@ func (f *fakeAdminApp) ListSessionApprovals(_ context.Context, sessionID string)
 	f.lastApprovalSession = sessionID
 	return append([]protocol.ApprovalRequest(nil), f.approvals...), nil
 }
+func (f *fakeAdminApp) GetChatSettings() config.ChatConfig {
+	return f.chatSettings
+}
+func (f *fakeAdminApp) UpdateChatSettings(settings config.ChatConfig) error {
+	f.lastChatSettings = settings
+	return f.updateChatErr
+}
 
 func floatPtr(v float64) *float64 { return &v }
 
@@ -199,6 +209,52 @@ func TestHandleCreateLLMProfileMapsConflict(t *testing.T) {
 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409", rec.Code)
+	}
+}
+
+func TestHandleChatSettingsRoundTrip(t *testing.T) {
+	app := &fakeAdminApp{chatSettings: config.ChatConfig{RealtimeStreaming: true}}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/settings/chat", nil)
+	getRec := httptest.NewRecorder()
+	handler.HandleGetChatSettings(getRec, getReq)
+
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200", getRec.Code)
+	}
+	var getResp struct {
+		RealtimeStreaming bool `json:"realtime_streaming"`
+	}
+	if err := json.NewDecoder(getRec.Body).Decode(&getResp); err != nil {
+		t.Fatalf("Decode GET: %v", err)
+	}
+	if !getResp.RealtimeStreaming {
+		t.Fatal("GET realtime_streaming = false, want true")
+	}
+
+	putReq := httptest.NewRequest(http.MethodPut, "/api/settings/chat", bytes.NewBufferString(`{"realtime_streaming":false}`))
+	putRec := httptest.NewRecorder()
+	handler.HandleUpdateChatSettings(putRec, putReq)
+
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, want 200", putRec.Code)
+	}
+	if app.lastChatSettings.RealtimeStreaming {
+		t.Fatal("UpdateChatSettings received realtime_streaming = true, want false")
+	}
+}
+
+func TestHandleUpdateChatSettingsRejectsInvalidJSON(t *testing.T) {
+	app := &fakeAdminApp{}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/chat", bytes.NewBufferString(`{"realtime_streaming":"yes"}`))
+	rec := httptest.NewRecorder()
+	handler.HandleUpdateChatSettings(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
 	}
 }
 
