@@ -4,1360 +4,1360 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>EmoAgent</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #f4efe7;
-      --panel: rgba(255,255,255,.78);
-      --panel-strong: rgba(255,255,255,.92);
-      --text: #2f241f;
-      --muted: #7e675e;
-      --accent: #db6f4d;
-      --accent-soft: #f7d7c8;
-      --user: #2f241f;
-      --assistant: #fff8f3;
-      --border: rgba(47,36,31,.12);
-      --shadow: 0 20px 45px rgba(88,55,38,.12);
-      font-family: "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      --surface: #FFFDFB;
+      --surface-2: #FAF4EC;
+      --ink: #2A2230;
+      --ink-2: #4A3F52;
+      --muted: #8B7E8F;
+      --hair: rgba(42,34,48,.07);
+      --peach: #F5B99F;
+      --peach-ink: #C06B48;
+      --peach-soft: #FDE8DC;
+      --coral: #EE8D73;
+      --lavender: #CFC3E8;
+      --lavender-ink: #6B5A94;
+      --lavender-soft: #EFE9F8;
+      --mint-ink: #3F7A5C;
+      --mint-soft: #E6F3EB;
+      --rose: #F5C2D1;
+      --rose-ink: #B35576;
+      --primary-grad: linear-gradient(135deg,#F5B99F 0%,#EE8D73 100%);
+      --font-ui: 'Manrope','PingFang SC','Hiragino Sans GB',sans-serif;
+      --font-data: 'Inter','PingFang SC',sans-serif;
+      --font-mono: 'JetBrains Mono',ui-monospace,monospace;
+      --r-sm: 14px; --r-pill: 999px;
+      --shadow-sm: 0 1px 2px rgba(42,34,48,.04),0 2px 8px rgba(42,34,48,.03);
+      --shadow-lg: 0 12px 28px rgba(42,34,48,.06),0 28px 70px rgba(42,34,48,.08);
+      --shadow-glow: 0 12px 34px rgba(238,141,115,.22);
+      --ease-out: cubic-bezier(.2,.8,.2,1);
+      --thread-width: 760px;
     }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      color: var(--text);
+    *{box-sizing:border-box;}
+    html,body{margin:0;padding:0;height:100%;}
+    body{
+      font-family:var(--font-ui);color:var(--ink);
       background:
-        radial-gradient(circle at top left, rgba(219,111,77,.18), transparent 32%),
-        radial-gradient(circle at bottom right, rgba(143,182,166,.18), transparent 28%),
-        linear-gradient(160deg, #f7f1ea 0%, #efe5d8 100%);
-      display: grid;
-      place-items: center;
-      padding: 24px;
-    }
-    button,
-    textarea {
-      font: inherit;
-    }
-    .shell {
-      width: min(1180px, 100%);
-      height: min(780px, calc(100vh - 48px));
-      background: var(--panel);
-      backdrop-filter: blur(18px);
-      border: 1px solid var(--border);
-      border-radius: 28px;
-      box-shadow: var(--shadow);
-      display: grid;
-      grid-template-columns: 290px minmax(0, 1fr);
-      overflow: hidden;
-      min-height: 0;
-    }
-    .sidebar {
-      border-right: 1px solid var(--border);
-      background: rgba(255,255,255,.58);
-      display: grid;
-      grid-template-rows: auto auto 1fr;
-      min-height: 0;
-    }
-    .sidebar-head,
-    .sidebar-actions {
-      padding: 18px;
-      border-bottom: 1px solid var(--border);
-    }
-    .sidebar-head h1 {
-      margin: 0;
-      font-size: 21px;
-      font-weight: 700;
-    }
-    .sidebar-head p {
-      margin: 8px 0 0;
-      color: var(--muted);
-      font-size: 13px;
-      line-height: 1.5;
-    }
-    .sidebar-actions {
-      display: grid;
-      gap: 10px;
-    }
-    .actions-row {
-      display: flex;
-      gap: 10px;
-    }
-    .ghost-button,
-    .primary-button,
-    .session-delete,
-    .menu-button {
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      cursor: pointer;
-      transition: transform .16s ease, opacity .16s ease, border-color .16s ease;
-    }
-    .ghost-button,
-    .menu-button {
-      background: rgba(255,255,255,.88);
-      color: var(--text);
-    }
-    .primary-button {
-      background: linear-gradient(135deg, #db6f4d, #c95735);
-      color: white;
-      border-color: transparent;
-    }
-    .ghost-button,
-    .primary-button,
-    .menu-button {
-      min-height: 44px;
-      padding: 0 14px;
-      font-weight: 700;
-    }
-    .ghost-button:hover,
-    .primary-button:hover,
-    .session-delete:hover,
-    .menu-button:hover {
-      transform: translateY(-1px);
-    }
-    .session-delete {
-      width: 34px;
-      height: 34px;
-      background: rgba(255,255,255,.9);
-      color: #b44b3b;
-    }
-    .menu-button {
-      display: none;
-      align-items: center;
-      justify-content: center;
-      width: 44px;
-      padding: 0;
-    }
-    .session-list {
-      padding: 16px;
-      overflow-y: auto;
-      display: grid;
-      gap: 10px;
-      align-content: start;
-    }
-    .session-item,
-    .session-empty {
-      border: 1px solid var(--border);
-      border-radius: 20px;
-      background: rgba(255,255,255,.78);
-    }
-    .session-item {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 10px;
-      padding: 14px;
-      cursor: pointer;
-      text-align: left;
-      transition: transform .16s ease, border-color .16s ease, background .16s ease;
-    }
-    .session-item:hover {
-      transform: translateY(-1px);
-      border-color: rgba(219,111,77,.28);
-    }
-    .session-item.active {
-      border-color: rgba(219,111,77,.35);
-      background: linear-gradient(180deg, rgba(255,244,236,.95), rgba(255,255,255,.94));
-    }
-    .session-main {
-      min-width: 0;
-      display: grid;
-      grid-template-rows: auto minmax(0, 1fr) auto auto;
-      min-height: 0;
-      height: 100%;
-      overflow: hidden;
-    }
-    .session-title {
-      font-size: 14px;
-      font-weight: 700;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .session-meta,
-    .session-preview,
-    .session-empty {
-      font-size: 12px;
-      color: var(--muted);
-      line-height: 1.5;
-    }
-    .session-preview {
-      margin-top: 6px;
-      overflow: hidden;
-      display: -webkit-box;
-      -webkit-line-clamp: 2;
-      -webkit-box-orient: vertical;
-    }
-    .session-empty {
-      padding: 18px;
-    }
-    .chat-header {
-      padding: 22px 24px 18px;
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 16px;
-    }
-    .chat-header h2 {
-      margin: 0;
-      font-size: 20px;
-      font-weight: 700;
-    }
-    .sub {
-      margin-top: 6px;
-      font-size: 13px;
-      color: var(--muted);
-    }
-    .header-tools {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-    }
-    .status {
-      padding: 8px 12px;
-      border-radius: 999px;
-      font-size: 12px;
-      background: var(--accent-soft);
-      color: var(--accent);
-      white-space: nowrap;
-    }
-    .admin-link {
-      display: inline-flex;
-      align-items: center;
-      padding: 8px 12px;
-      border-radius: 999px;
-      font-size: 12px;
-      color: var(--text);
-      background: rgba(255,255,255,.78);
-      border: 1px solid var(--border);
-      text-decoration: none;
-      white-space: nowrap;
-    }
-    .admin-link:hover {
-      border-color: rgba(219,111,77,.28);
-    }
-    .approval-stack {
-      display: none;
-      gap: 12px;
-      padding: 16px 24px 0;
-      overflow-y: auto;
-      max-height: 220px;
-    }
-    .approval-card {
-      border: 1px solid rgba(219,111,77,.18);
-      background: linear-gradient(180deg, rgba(255,248,243,.96), rgba(255,255,255,.94));
-      border-radius: 20px;
-      padding: 16px;
-      display: grid;
-      gap: 12px;
-      box-shadow: 0 10px 20px rgba(88,55,38,.06);
-    }
-    .approval-head {
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      align-items: flex-start;
-    }
-    .approval-title {
-      font-size: 15px;
-      font-weight: 700;
-    }
-    .approval-meta {
-      font-size: 12px;
-      color: var(--muted);
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-top: 6px;
-    }
-    .approval-status {
-      display: inline-flex;
-      align-items: center;
-      padding: 6px 10px;
-      border-radius: 999px;
-      background: rgba(219,111,77,.12);
-      color: var(--accent);
-      font-size: 12px;
-      font-weight: 700;
-      white-space: nowrap;
-    }
-    .approval-body {
-      display: grid;
-      gap: 10px;
-      font-size: 14px;
-      line-height: 1.6;
-    }
-    .approval-options {
-      display: grid;
-      gap: 8px;
-      margin: 0;
-      padding: 0;
-      list-style: none;
-    }
-    .approval-option {
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 10px 12px;
-      background: rgba(255,255,255,.82);
-    }
-    .approval-option strong {
-      display: block;
-      margin-bottom: 4px;
-      font-size: 13px;
-    }
-    .approval-actions {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-    }
-    .approval-action {
-      min-height: 40px;
-      padding: 0 14px;
-      border-radius: 14px;
-      border: 1px solid var(--border);
-      background: rgba(255,255,255,.95);
-      color: var(--text);
-      cursor: pointer;
-      font-weight: 700;
-    }
-    .approval-action.primary {
-      background: linear-gradient(135deg, #db6f4d, #c95735);
-      color: white;
-      border-color: transparent;
-    }
-    .approval-action:disabled {
-      opacity: .5;
-      cursor: default;
-    }
-    .messages {
-      padding: 24px;
-      overflow-y: auto;
-      display: flex;
-      flex-direction: column;
-      gap: 14px;
-      min-height: 0;
-      height: 100%;
-      overscroll-behavior: contain;
-    }
-    .message {
-      max-width: min(78%, 680px);
-      padding: 14px 16px;
-      border-radius: 20px;
-      line-height: 1.55;
-      white-space: pre-wrap;
-      word-break: break-word;
-      border: 1px solid transparent;
-      animation: rise .2s ease-out;
-    }
-    .message.user {
-      margin-left: auto;
-      background: var(--user);
-      color: white;
-      border-bottom-right-radius: 6px;
-    }
-    .message.assistant {
-      background: var(--assistant);
-      border-color: var(--border);
-      border-bottom-left-radius: 6px;
-    }
-    .message.error {
-      background: #fff1f0;
-      border-color: rgba(176,58,46,.18);
-      color: #9d2e1f;
-    }
-    .message.pending {
-      opacity: .86;
-      box-shadow: inset 0 0 0 1px rgba(255,255,255,.12);
-    }
-    .message.failed {
-      border-color: rgba(180,75,59,.4);
-      box-shadow: inset 0 0 0 1px rgba(180,75,59,.2);
-    }
-    .message.work-progress {
-      font-style: italic;
-      opacity: .72;
-      border-style: dashed;
-      animation: progressPulse 1.4s ease-in-out infinite;
-    }
-    .message-content {
-      white-space: pre-wrap;
-    }
-    .message-status {
-      margin-top: 8px;
-      font-size: 12px;
-      opacity: .82;
-    }
-    .message-retry {
-      margin-top: 8px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 32px;
-      padding: 0 12px;
-      border: 1px solid rgba(255,255,255,.24);
-      border-radius: 999px;
-      background: rgba(255,255,255,.14);
-      color: inherit;
-      cursor: pointer;
-    }
-    .message-retry:hover {
-      border-color: rgba(255,255,255,.4);
-    }
-    form {
-      padding: 18px 20px 20px;
-      border-top: 1px solid var(--border);
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 12px;
-      align-items: end;
-      background: rgba(255,255,255,.55);
-      min-height: 0;
-    }
-    textarea {
-      width: 100%;
-      min-height: 56px;
-      max-height: 180px;
-      resize: vertical;
-      border-radius: 18px;
-      border: 1px solid var(--border);
-      padding: 15px 16px;
-      color: inherit;
-      background: rgba(255,255,255,.82);
-      outline: none;
-    }
-    textarea:focus {
-      border-color: rgba(219,111,77,.45);
-      box-shadow: 0 0 0 4px rgba(219,111,77,.12);
-    }
-    .send-button {
-      height: 56px;
-      border: 0;
-      border-radius: 18px;
-      padding: 0 22px;
-      font-weight: 700;
-      color: white;
-      background: linear-gradient(135deg, #db6f4d, #c95735);
-      cursor: pointer;
-      transition: transform .16s ease, opacity .16s ease;
-    }
-    .send-button:disabled,
-    textarea:disabled,
-    .ghost-button:disabled,
-    .primary-button:disabled,
-    .session-delete:disabled {
-      cursor: not-allowed;
-      opacity: .65;
-      transform: none;
-    }
-    @keyframes rise {
-      from { opacity: 0; transform: translateY(8px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-    @keyframes progressPulse {
-      0% { opacity: .55; }
-      50% { opacity: .9; }
-      100% { opacity: .55; }
-    }
-    @media (max-width: 960px) {
-      body { padding: 0; }
-      .shell {
-        width: 100%;
-        height: 100vh;
-        border-radius: 0;
-        grid-template-columns: 1fr;
+        radial-gradient(1200px 700px at 10% -10%,#FCE5D6 0%,transparent 45%),
+        radial-gradient(900px 600px at 110% 10%,#E6DAF3 0%,transparent 40%),
+        radial-gradient(1000px 700px at 50% 120%,#D8ECE0 0%,transparent 50%),
+        #FBF7F2;
+      -webkit-font-smoothing:antialiased;
+      display:grid;place-items:center;
+    }
+    button,input,textarea,select{font:inherit;color:inherit;}
+    button{cursor:pointer;}
+
+    /* ── Shell ── */
+    .cv1{
+      width:min(1280px,100vw);height:min(820px,100vh);
+      border-radius:32px;background:var(--surface);
+      box-shadow:var(--shadow-lg);overflow:hidden;
+      display:grid;grid-template-columns:76px 1fr;
+    }
+
+    /* ── Rail ── */
+    .cv1-rail{
+      background:linear-gradient(180deg,#FDF7F1 0%,#F7EFE6 100%);
+      border-right:1px solid var(--hair);
+      padding:20px 12px;
+      display:flex;flex-direction:column;align-items:center;gap:14px;
+    }
+    .cv1-logo{
+      width:44px;height:44px;border-radius:14px;
+      background:var(--primary-grad);
+      display:grid;place-items:center;
+      color:#fff;font-weight:800;font-size:18px;
+      box-shadow:var(--shadow-glow);letter-spacing:-.02em;flex-shrink:0;
+    }
+    .cv1-rail-btn{
+      width:48px;height:48px;border:0;background:transparent;
+      border-radius:14px;display:grid;place-items:center;
+      color:var(--ink-2);transition:all .18s var(--ease-out);
+      text-decoration:none;
+    }
+    .cv1-rail-btn:hover{background:rgba(42,34,48,.04);color:var(--ink);}
+    .cv1-rail-btn.active{background:#fff;box-shadow:var(--shadow-sm);color:var(--peach-ink);}
+    .cv1-rail-spacer{flex:1;}
+    .cv1-avatar{
+      width:40px;height:40px;border-radius:50%;
+      background:linear-gradient(135deg,var(--lavender),var(--rose));
+      display:grid;place-items:center;
+      color:#fff;font-weight:700;font-size:15px;
+      box-shadow:var(--shadow-sm);flex-shrink:0;
+    }
+
+    /* ── Main ── */
+    .cv1-main{display:grid;grid-template-columns:auto 1fr;min-height:0;overflow:hidden;}
+
+    /* ── Drawer ── */
+    .cv1-drawer{
+      width:300px;background:rgba(255,253,251,.6);
+      border-right:1px solid var(--hair);
+      display:grid;grid-template-rows:auto auto 1fr;
+      transition:width .3s var(--ease-out),opacity .2s;overflow:hidden;
+    }
+    .cv1-drawer.collapsed{width:0;opacity:0;}
+    .cv1-drawer-head{padding:22px 22px 12px;}
+    .cv1-drawer-title{
+      font-size:11px;font-weight:700;text-transform:uppercase;
+      letter-spacing:.12em;color:var(--muted);margin-bottom:4px;
+    }
+    .cv1-persona-chip{
+      display:inline-flex;align-items:center;gap:8px;
+      padding:6px 10px 6px 6px;border-radius:var(--r-pill);
+      background:var(--lavender-soft);color:var(--lavender-ink);
+      font-size:12px;font-weight:600;
+    }
+    .cv1-persona-dot{
+      width:18px;height:18px;border-radius:50%;
+      background:linear-gradient(135deg,var(--lavender),var(--rose));flex-shrink:0;
+    }
+    .cv1-drawer-actions{padding:8px 14px 14px;display:grid;grid-template-columns:1fr auto;gap:8px;}
+    .cv1-btn{
+      border:0;min-height:40px;padding:0 16px;border-radius:14px;
+      font-weight:600;font-size:14px;
+      display:inline-flex;align-items:center;justify-content:center;gap:6px;
+      transition:all .18s var(--ease-out);
+    }
+    .cv1-btn.primary{background:var(--primary-grad);color:#fff;box-shadow:var(--shadow-glow);}
+    .cv1-btn.primary:hover{transform:translateY(-1px);filter:brightness(1.03);}
+    .cv1-btn.ghost{background:#fff;color:var(--ink);border:1px solid var(--hair);}
+    .cv1-btn.ghost:hover{background:var(--peach-soft);border-color:transparent;}
+    .cv1-btn.icon{width:40px;padding:0;}
+    .cv1-btn:disabled{opacity:.55;cursor:not-allowed;transform:none;filter:none;}
+
+    /* ── Session list ── */
+    .cv1-sessions{overflow-y:auto;padding:4px 10px 14px;display:grid;gap:4px;align-content:start;}
+    .cv1-sessions::-webkit-scrollbar{width:6px;}
+    .cv1-sessions::-webkit-scrollbar-thumb{background:var(--hair);border-radius:999px;}
+    .cv1-session{
+      padding:12px 46px 12px 14px;border-radius:var(--r-sm);cursor:pointer;
+      display:grid;grid-template-columns:1fr;gap:6px;
+      transition:background .15s var(--ease-out);position:relative;
+      background:transparent;border:0;text-align:left;width:100%;
+      outline:none;
+    }
+    .cv1-session:hover{background:rgba(245,185,159,.09);}
+    .cv1-session:focus-visible{
+      background:rgba(245,185,159,.12);
+      box-shadow:0 0 0 2px rgba(238,141,115,.22);
+    }
+    .cv1-session.active{background:#fff;box-shadow:var(--shadow-sm);}
+    .cv1-session.active::before{
+      content:'';position:absolute;left:4px;top:50%;transform:translateY(-50%);
+      width:3px;height:20px;border-radius:2px;background:var(--primary-grad);
+    }
+    .cv1-s-title{
+      font-size:13.5px;font-weight:600;color:var(--ink);
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    }
+    .cv1-s-meta{font-size:11px;color:var(--muted);font-family:var(--font-data);}
+    .cv1-s-preview{
+      font-size:12px;color:var(--ink-2);opacity:.7;
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px;
+    }
+    .cv1-s-del{
+      opacity:0;width:28px;height:28px;border-radius:10px;
+      background:rgba(255,255,255,.9);border:1px solid rgba(42,34,48,.06);color:var(--muted);
+      display:grid;place-items:center;transition:all .15s var(--ease-out);
+      position:absolute;top:10px;right:10px;
+      box-shadow:0 6px 14px rgba(42,34,48,.06);
+      pointer-events:none;
+    }
+    .cv1-session:hover .cv1-s-del,
+    .cv1-session:focus-within .cv1-s-del,
+    .cv1-session.active .cv1-s-del{opacity:1;pointer-events:auto;}
+    .cv1-s-del:hover{
+      background:#FFF1F4;border-color:rgba(211,107,131,.18);
+      color:var(--rose-ink);transform:translateY(-1px);
+    }
+    .cv1-s-del svg{width:14px;height:14px;}
+    .cv1-session-empty{padding:14px;font-size:12px;color:var(--muted);line-height:1.5;}
+
+    /* ── Conversation ── */
+    .cv1-conv{
+      display:grid;grid-template-rows:auto 1fr auto auto;
+      min-height:0;overflow:hidden;
+      background:
+        radial-gradient(800px 400px at 80% -10%,rgba(245,185,159,.08),transparent 55%),
+        radial-gradient(600px 400px at 0% 110%,rgba(207,195,232,.10),transparent 55%),
+        var(--surface);
+    }
+    .cv1-top{
+      padding:18px 28px;border-bottom:1px solid var(--hair);
+      display:flex;align-items:center;justify-content:space-between;gap:16px;
+      background:rgba(255,253,251,.7);backdrop-filter:blur(20px);flex-shrink:0;
+    }
+    .cv1-top-left{display:flex;align-items:center;gap:14px;min-width:0;}
+    .cv1-drawer-toggle{
+      width:36px;height:36px;border-radius:10px;border:1px solid var(--hair);
+      background:#fff;display:grid;place-items:center;color:var(--ink-2);
+      transition:all .15s var(--ease-out);font-size:16px;flex-shrink:0;
+    }
+    .cv1-drawer-toggle:hover{border-color:var(--peach);color:var(--peach-ink);}
+    .cv1-conv-meta{min-width:0;}
+    .cv1-conv-title{
+      font-size:16px;font-weight:700;margin:0;letter-spacing:-.01em;
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    }
+    .cv1-conv-sub{
+      font-size:12px;color:var(--muted);margin-top:2px;
+      display:flex;align-items:center;gap:8px;
+    }
+    .cv1-conv-sub .dot{width:6px;height:6px;border-radius:50%;background:var(--mint-ink);flex-shrink:0;}
+    .cv1-top-right{display:flex;align-items:center;gap:8px;}
+    .cv1-status{
+      display:inline-flex;align-items:center;gap:6px;
+      padding:6px 11px 6px 9px;border-radius:var(--r-pill);
+      background:var(--mint-soft);color:var(--mint-ink);font-size:12px;font-weight:600;
+    }
+    .cv1-status .dot{
+      width:6px;height:6px;border-radius:50%;background:var(--mint-ink);
+      animation:cv1-pulse 2s var(--ease-out) infinite;flex-shrink:0;
+    }
+    @keyframes cv1-pulse{
+      0%,100%{box-shadow:0 0 0 0 rgba(185,224,201,.7);}
+      50%{box-shadow:0 0 0 6px rgba(185,224,201,0);}
+    }
+
+    /* ── Thread ── */
+    .cv1-thread{
+      overflow-y:auto;padding:28px 28px 12px;
+      display:flex;flex-direction:column;gap:18px;
+      min-height:0;overscroll-behavior:contain;
+    }
+    .cv1-thread::-webkit-scrollbar{width:8px;}
+    .cv1-thread::-webkit-scrollbar-thumb{background:var(--hair);border-radius:999px;}
+    .cv1-msg{
+      max-width:var(--thread-width);width:100%;
+      display:flex;gap:12px;align-items:flex-end;
+      animation:cv1-rise .28s var(--ease-out);
+    }
+    .cv1-msg.user{align-self:flex-end;flex-direction:row-reverse;}
+    @keyframes cv1-rise{
+      from{opacity:0;transform:translateY(10px);}
+      to{opacity:1;transform:translateY(0);}
+    }
+    .cv1-msg-av{
+      width:32px;height:32px;flex-shrink:0;border-radius:50%;
+      display:grid;place-items:center;font-weight:700;font-size:13px;color:#fff;
+    }
+    .cv1-msg.assistant .cv1-msg-av{background:linear-gradient(135deg,var(--lavender),var(--rose));}
+    .cv1-msg.user .cv1-msg-av{background:linear-gradient(135deg,var(--peach),var(--coral));}
+    .cv1-msg.error .cv1-msg-av{background:linear-gradient(135deg,#F3A8B7,#D86B83);}
+    .cv1-bubble{
+      max-width:calc(100% - 44px);padding:14px 18px;border-radius:22px;
+      font-size:15px;line-height:1.6;letter-spacing:-.005em;
+    }
+    .cv1-msg.assistant .cv1-bubble{
+      background:#fff;border:1px solid var(--hair);
+      border-bottom-left-radius:8px;color:var(--ink);box-shadow:var(--shadow-sm);
+    }
+    .cv1-msg.user .cv1-bubble{
+      background:linear-gradient(135deg,#2F2738 0%,#3A2E44 100%);
+      color:#fff;border-bottom-right-radius:8px;
+    }
+    .cv1-msg.error .cv1-bubble{
+      background:#FFF1F4;border:1px solid rgba(211,107,131,.25);
+      border-bottom-left-radius:8px;color:#A33860;
+    }
+    .cv1-msg.pending .cv1-bubble{opacity:.75;}
+    .cv1-msg.failed .cv1-bubble{border-color:rgba(211,107,131,.5);box-shadow:0 0 0 2px rgba(211,107,131,.15);}
+    .message-content{white-space:pre-wrap;word-break:break-word;}
+    .message-status{margin-top:8px;font-size:12px;opacity:.75;color:var(--muted);}
+    .cv1-msg.user .message-status{color:rgba(255,255,255,.65);}
+    .message-retry{
+      margin-top:8px;display:inline-flex;align-items:center;justify-content:center;
+      min-height:30px;padding:0 12px;border:1px solid rgba(255,255,255,.24);
+      border-radius:999px;background:rgba(255,255,255,.14);cursor:pointer;
+      font-size:12px;font-weight:600;
+    }
+    .message-retry:hover{border-color:rgba(255,255,255,.4);}
+
+    /* ── Work progress ── */
+    .cv1-progress{
+      align-self:flex-start;max-width:var(--thread-width);width:100%;
+      display:flex;gap:12px;align-items:flex-start;
+    }
+    .cv1-progress-av{
+      width:32px;height:32px;flex-shrink:0;border-radius:50%;
+      background:linear-gradient(135deg,var(--lavender),var(--rose));
+      display:grid;place-items:center;color:#fff;position:relative;
+    }
+    .cv1-progress-av::after{
+      content:'';position:absolute;inset:-4px;border-radius:50%;
+      border:2px solid var(--lavender);border-top-color:transparent;
+      animation:cv1-spin 1s linear infinite;opacity:.6;
+    }
+    @keyframes cv1-spin{to{transform:rotate(360deg);}}
+    .cv1-progress-card{
+      flex:1;background:linear-gradient(180deg,rgba(239,233,248,.6),rgba(255,253,251,.95));
+      border:1px solid var(--lavender);border-radius:18px;border-top-left-radius:8px;
+      padding:14px 16px;display:grid;gap:6px;
+    }
+    .cv1-progress-label{
+      font-size:12px;font-weight:700;color:var(--lavender-ink);
+      text-transform:uppercase;letter-spacing:.1em;
+      display:inline-flex;align-items:center;gap:6px;
+    }
+    .cv1-progress-label .sparkle{
+      display:inline-block;width:10px;height:10px;background:var(--lavender-ink);
+      clip-path:polygon(50% 0%,60% 40%,100% 50%,60% 60%,50% 100%,40% 60%,0% 50%,40% 40%);
+      animation:cv1-twinkle 1.4s ease-in-out infinite;
+    }
+    @keyframes cv1-twinkle{
+      0%,100%{opacity:.4;transform:scale(.8) rotate(0deg);}
+      50%{opacity:1;transform:scale(1) rotate(45deg);}
+    }
+    .cv1-progress-text{font-size:14px;color:var(--ink-2);line-height:1.55;font-style:italic;}
+
+    /* ── Approvals ── */
+    .cv1-approvals-wrap{
+      display:none !important;
+    }
+    .cv1-approval{
+      background:linear-gradient(180deg,#FFFDFA 0%,#FDF4EA 100%);
+      border:1.5px solid var(--peach);border-radius:22px;overflow:hidden;
+      box-shadow:0 12px 32px rgba(245,185,159,.18);
+      min-width:0;
+    }
+    .cv1-msg-approval{align-items:flex-start;}
+    .cv1-msg-approval .cv1-approval{flex:1;}
+    .cv1-approval-top{
+      padding:14px 18px;
+      background:linear-gradient(135deg,rgba(245,185,159,.18),rgba(238,141,115,.12));
+      border-bottom:1px solid rgba(245,185,159,.35);
+      display:flex;align-items:center;justify-content:space-between;gap:12px;
+    }
+    .cv1-approval-tag{
+      display:inline-flex;align-items:center;gap:7px;
+      font-size:12px;font-weight:700;color:var(--peach-ink);
+      text-transform:uppercase;letter-spacing:.1em;
+    }
+    .cv1-approval-tag .glyph{
+      width:16px;height:16px;border-radius:50%;background:var(--peach-ink);
+      display:grid;place-items:center;color:#fff;font-size:10px;font-weight:800;
+    }
+    .cv1-approval-meta-row{display:flex;align-items:center;gap:8px;}
+    .cv1-approval-expire{font-size:11px;color:var(--muted);font-family:var(--font-data);}
+    .cv1-approval-badge{
+      display:inline-flex;align-items:center;padding:3px 8px;border-radius:999px;
+      font-size:11px;font-weight:700;background:var(--peach-soft);color:var(--peach-ink);
+    }
+    .cv1-approval-body{padding:16px 18px;display:grid;gap:12px;}
+    .cv1-approval-title{font-size:15px;font-weight:700;line-height:1.45;color:var(--ink);}
+    .cv1-approval-q{font-size:14px;color:var(--ink-2);line-height:1.55;}
+    .cv1-approval-opts{display:flex;flex-direction:column;gap:8px;}
+    .cv1-approval-opt{
+      padding:10px 14px;border:1px solid var(--hair);background:#fff;
+      border-radius:12px;display:flex;align-items:center;justify-content:space-between;
+      gap:10px;font-size:13px;
+    }
+    .cv1-opt-key{
+      font-family:var(--font-mono);font-size:11px;padding:2px 8px;
+      background:var(--surface-2,#FAF4EC);border-radius:6px;color:var(--muted);font-weight:600;
+    }
+    .cv1-approval-actions{display:flex;gap:10px;padding-top:2px;}
+    .cv1-approval-btn{
+      flex:1;min-height:44px;border:0;border-radius:14px;
+      font-weight:700;font-size:14px;
+      display:inline-flex;align-items:center;justify-content:center;gap:8px;
+      transition:all .16s var(--ease-out);
+    }
+    .cv1-approval-btn:disabled{opacity:.5;cursor:not-allowed;}
+    .cv1-approval-btn.allow{background:var(--primary-grad);color:#fff;box-shadow:var(--shadow-glow);}
+    .cv1-approval-btn.allow:hover{transform:translateY(-1px);}
+    .cv1-approval-btn.deny{background:#fff;color:var(--ink);border:1px solid var(--hair);}
+    .cv1-approval-btn.deny:hover{background:var(--surface-2,#FAF4EC);border-color:var(--rose);color:var(--rose-ink);}
+    .cv1-approval.consumed{
+      border-color:#B9E0C9;background:linear-gradient(180deg,#FFFDFA 0%,#EAF6EF 100%);opacity:.9;
+    }
+    .cv1-approval.consumed .cv1-approval-top{background:rgba(185,224,201,.3);border-bottom-color:#B9E0C9;}
+    .cv1-approval.consumed .cv1-approval-tag{color:var(--mint-ink);}
+    .cv1-approval.consumed .cv1-approval-tag .glyph{background:var(--mint-ink);}
+    .cv1-approval.settled{box-shadow:var(--shadow-sm);}
+    .cv1-approval.settled .cv1-approval-body{gap:10px;}
+    .cv1-approval-summary{font-size:13px;color:var(--ink-2);line-height:1.5;}
+    .cv1-approval-close{
+      width:28px;height:28px;border:0;border-radius:9px;
+      background:rgba(255,255,255,.72);color:var(--muted);
+      display:grid;place-items:center;font-size:16px;line-height:1;
+      transition:all .16s var(--ease-out);flex-shrink:0;
+    }
+    .cv1-approval-close:hover{background:#fff;color:var(--ink);}
+
+    /* ── Composer ── */
+    .cv1-composer{
+      padding:12px 24px 18px;border-top:1px solid var(--hair);
+      background:rgba(255,253,251,.8);backdrop-filter:blur(18px);flex-shrink:0;
+    }
+    .cv1-composer-form{
+      max-width:var(--thread-width);margin:0 auto;
+      background:#fff;border:1px solid var(--hair);border-radius:24px;
+      padding:6px 6px 6px 18px;
+      display:grid;grid-template-columns:1fr auto;align-items:end;gap:6px;
+      box-shadow:var(--shadow-sm);transition:border-color .15s,box-shadow .15s;
+    }
+    .cv1-composer-form:focus-within{
+      border-color:var(--peach);box-shadow:0 0 0 4px rgba(245,185,159,.18);
+    }
+    .cv1-composer-form textarea{
+      border:0;background:transparent;resize:none;
+      padding:12px 6px;font-size:15px;outline:none;
+      min-height:44px;max-height:140px;line-height:1.5;
+      color:var(--ink);width:100%;
+    }
+    .cv1-composer-form textarea::placeholder{color:var(--muted);}
+    .cv1-composer-form textarea:disabled{opacity:.6;}
+    .cv1-send{
+      width:44px;height:44px;border:0;border-radius:14px;
+      background:var(--primary-grad);color:#fff;
+      box-shadow:var(--shadow-glow);display:grid;place-items:center;
+      transition:transform .15s var(--ease-out);flex-shrink:0;
+    }
+    .cv1-send:hover{transform:translateY(-1px);}
+    .cv1-send:disabled{opacity:.55;cursor:not-allowed;transform:none;}
+    .cv1-composer-hint{
+      max-width:var(--thread-width);margin:8px auto 0;
+      font-size:11px;color:var(--muted);
+      display:flex;justify-content:space-between;align-items:center;
+      font-family:var(--font-data);
+    }
+    .cv1-composer-hint kbd{
+      background:#fff;border:1px solid var(--hair);border-radius:5px;
+      padding:1px 5px;font-family:var(--font-mono);font-size:10.5px;
+    }
+
+    /* ── Mobile ── */
+    @media(max-width:900px){
+      body{padding:0;}
+      .cv1{width:100vw;height:100vh;border-radius:0;}
+      .cv1-drawer{
+        position:fixed;left:76px;top:0;bottom:0;z-index:20;
+        transform:translateX(-100%);opacity:0;width:min(300px,80vw)!important;
+        background:rgba(255,253,251,.97);
+        box-shadow:18px 0 32px rgba(42,34,48,.12);
+        transition:transform .22s var(--ease-out),opacity .2s;
       }
-      .sidebar {
-        position: fixed;
-        inset: 0 auto 0 0;
-        width: min(320px, 86vw);
-        z-index: 20;
-        transform: translateX(-100%);
-        transition: transform .22s ease;
-        box-shadow: 18px 0 32px rgba(47,36,31,.12);
-      }
-      .sidebar.open {
-        transform: translateX(0);
-      }
-      .menu-button {
-        display: inline-flex;
-      }
+      .cv1-drawer.open{transform:translateX(0);opacity:1;}
     }
-    @media (max-width: 720px) {
-      .message { max-width: 88%; }
-      form { grid-template-columns: 1fr; }
-      .send-button { width: 100%; }
-      .actions-row {
-        display: grid;
-        grid-template-columns: 1fr;
-      }
+    @media(max-width:600px){
+      .cv1{grid-template-columns:0 1fr;}
+      .cv1-rail{display:none;}
+      .cv1-drawer{left:0;width:min(280px,88vw)!important;}
     }
   </style>
 </head>
 <body>
-  <main class="shell">
-    <aside class="sidebar" id="sidebar">
-      <div class="sidebar-head">
-        <h1>EmoAgent</h1>
-        <p id="sidebar-persona">Persona: loading...</p>
-      </div>
-      <div class="sidebar-actions">
-        <div class="actions-row">
-          <button class="primary-button" id="new-chat" type="button">+ New Chat</button>
-          <button class="ghost-button" id="refresh-sessions" type="button">Refresh</button>
+<div class="cv1">
+  <!-- Rail -->
+  <aside class="cv1-rail">
+    <div class="cv1-logo">E</div>
+    <button class="cv1-rail-btn active" title="Chat">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+    </button>
+    <button class="cv1-rail-btn" id="toggle-sidebar-rail" title="Sessions">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
+    </button>
+    <a class="cv1-rail-btn" href="/admin.html" title="Admin">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    </a>
+    <div class="cv1-rail-spacer"></div>
+    <div class="cv1-avatar" id="user-avatar">U</div>
+  </aside>
+
+  <!-- Main -->
+  <div class="cv1-main">
+    <!-- Drawer -->
+    <aside class="cv1-drawer" id="sidebar">
+      <div class="cv1-drawer-head">
+        <div class="cv1-drawer-title">Persona</div>
+        <div class="cv1-persona-chip">
+          <span class="cv1-persona-dot"></span>
+          <span id="sidebar-persona">loading...</span>
         </div>
       </div>
-      <section class="session-list" id="session-list">
-        <div class="session-empty">正在加载会话列表...</div>
-      </section>
+      <div class="cv1-drawer-actions">
+        <button class="cv1-btn primary" id="new-chat" type="button">+ New Chat</button>
+        <button class="cv1-btn ghost icon" id="refresh-sessions" type="button" title="Refresh">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>
+        </button>
+      </div>
+      <div class="cv1-sessions" id="session-list">
+        <div class="cv1-session-empty">正在加载会话列表...</div>
+      </div>
     </aside>
 
-    <section class="session-main">
-      <header class="chat-header">
-        <div>
-          <h2>EmoAgent</h2>
-          <div class="sub" id="subtitle">P3 conversation loop</div>
+    <!-- Conversation -->
+    <section class="cv1-conv">
+      <header class="cv1-top">
+        <div class="cv1-top-left">
+          <button class="cv1-drawer-toggle" id="toggle-sidebar" type="button">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+          </button>
+          <div class="cv1-conv-meta">
+            <h2 class="cv1-conv-title" id="conv-title">EmoAgent</h2>
+            <div class="cv1-conv-sub"><span class="dot"></span><span id="subtitle">loading...</span></div>
+          </div>
         </div>
-        <div class="header-tools">
-          <button class="menu-button" id="toggle-sidebar" type="button">≡</button>
-          <a class="admin-link" href="/admin.html">Admin</a>
-          <div class="status" id="status">Connecting...</div>
+        <div class="cv1-top-right">
+          <div class="cv1-status"><span class="dot"></span><span id="status">Connecting...</span></div>
         </div>
       </header>
-      <section class="messages" id="messages"></section>
-      <section class="approval-stack" id="approvals"></section>
-      <form id="composer">
-        <textarea id="input" placeholder="Enter 输入 Shift+Enter 换行"></textarea>
-        <button class="send-button" id="send" type="submit">Send</button>
-      </form>
+
+      <div class="cv1-thread" id="messages"></div>
+
+      <div class="cv1-approvals-wrap" id="approvals"></div>
+
+      <div class="cv1-composer">
+        <form class="cv1-composer-form" id="composer">
+          <textarea id="input" placeholder="输入消息...  Enter 发送 · Shift+Enter 换行" rows="1"></textarea>
+          <button class="cv1-send" id="send" type="submit">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+          </button>
+        </form>
+        <div class="cv1-composer-hint">
+          <span id="session-hint">No active session</span>
+          <span><kbd>Enter</kbd> 发送 · <kbd>Shift+Enter</kbd> 换行</span>
+        </div>
+      </div>
     </section>
-  </main>
+  </div>
+</div>
 
-  <script>
-    const statusEl = document.getElementById('status');
-    const subtitleEl = document.getElementById('subtitle');
-    const sidebarPersonaEl = document.getElementById('sidebar-persona');
-    const approvalsEl = document.getElementById('approvals');
-    const messagesEl = document.getElementById('messages');
-    const sessionListEl = document.getElementById('session-list');
-    const sidebarEl = document.getElementById('sidebar');
-    const form = document.getElementById('composer');
-    const input = document.getElementById('input');
-    const send = document.getElementById('send');
-    const newChatButton = document.getElementById('new-chat');
-    const refreshSessionsButton = document.getElementById('refresh-sessions');
-    const toggleSidebarButton = document.getElementById('toggle-sidebar');
+<script>
+  const statusEl = document.getElementById('status');
+  const subtitleEl = document.getElementById('subtitle');
+  const convTitleEl = document.getElementById('conv-title');
+  const sidebarPersonaEl = document.getElementById('sidebar-persona');
+  const approvalsEl = document.getElementById('approvals');
+  const messagesEl = document.getElementById('messages');
+  const sessionListEl = document.getElementById('session-list');
+  const sidebarEl = document.getElementById('sidebar');
+  const form = document.getElementById('composer');
+  const input = document.getElementById('input');
+  const send = document.getElementById('send');
+  const newChatButton = document.getElementById('new-chat');
+  const refreshSessionsButton = document.getElementById('refresh-sessions');
+  const toggleSidebarButton = document.getElementById('toggle-sidebar');
+  const toggleSidebarRailButton = document.getElementById('toggle-sidebar-rail');
+  const sessionHintEl = document.getElementById('session-hint');
 
-    let socket = null;
-    let reconnectDelay = 1000;
-    let reconnectTimer = null;
-    let pendingAssistant = null;
-    let sending = false;
-    let manuallyClosed = false;
-    let wsSkipGreeting = false;
-    let connectAttempt = null;
-    let currentSessionId = new URLSearchParams(location.search).get('session_id') || '';
-    let currentPersonaKey = '';
-    let sessionList = [];
-    let approvals = [];
-    const pendingApprovalActions = new Set();
-    let workProgressNode = null;
+  let socket = null;
+  let reconnectDelay = 1000;
+  let reconnectTimer = null;
+  let pendingAssistant = null;
+  let sending = false;
+  let manuallyClosed = false;
+  let wsSkipGreeting = false;
+  let connectAttempt = null;
+  let currentSessionId = new URLSearchParams(location.search).get('session_id') || '';
+  let currentPersonaKey = '';
+  let sessionList = [];
+  let approvals = [];
+  const pendingApprovalActions = new Set();
+  const dismissedApprovalIDs = new Set();
+  let workProgressNode = null;
 
-    function messageField(item, field) {
-      if (!item || typeof item !== 'object') {
-        return '';
-      }
-      return item[field] ?? item[field[0].toUpperCase() + field.slice(1)] ?? '';
-    }
+  function escapeHTML(text) {
+    return String(text ?? '')
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
 
-    function setStatus(text) {
-      statusEl.textContent = text;
-    }
+  function messageField(item, field) {
+    if (!item || typeof item !== 'object') return '';
+    return item[field] ?? item[field[0].toUpperCase() + field.slice(1)] ?? '';
+  }
 
-    function setSending(next) {
-      sending = next;
-      input.disabled = next;
-      send.disabled = next;
-      renderApprovals();
-      if (!next) {
-        input.focus();
-      }
-    }
+  function setStatus(text) { statusEl.textContent = text; }
 
-    function clearMessages() {
-      pendingAssistant = null;
-      clearWorkProgress();
-      messagesEl.innerHTML = '';
-    }
+  function setSending(next) {
+    sending = next;
+    input.disabled = next;
+    send.disabled = next;
+    renderApprovals();
+    if (!next) input.focus();
+  }
 
-    function appendMessage(role, content) {
-      const node = document.createElement('div');
-      node.className = `message ${role}`;
-      const body = document.createElement('div');
-      body.className = 'message-content';
-      body.textContent = content;
-      node.appendChild(body);
-      messagesEl.appendChild(node);
-      scrollToBottom();
-      return node;
-    }
+  function clearMessages() {
+    pendingAssistant = null;
+    clearWorkProgress();
+    messagesEl.innerHTML = '';
+  }
 
-    function setMessageContent(node, content) {
-      if (!node) {
+  function timelineMillis(raw, fallback = Date.now()) {
+    const parsed = Date.parse(raw || '');
+    return Number.isNaN(parsed) ? fallback : parsed;
+  }
+
+  function setTimelineMeta(node, kind, createdAt) {
+    if (!node) return;
+    const effectiveCreatedAt = createdAt || new Date().toISOString();
+    node.dataset.timelineKind = kind;
+    node.dataset.createdAt = effectiveCreatedAt;
+    node.dataset.timelineMs = String(timelineMillis(effectiveCreatedAt));
+  }
+
+  function messageCreatedAtOf(item) {
+    return messageField(item, 'createdAt') || messageField(item, 'created_at');
+  }
+
+  function approvalCreatedAtOf(item) {
+    return approvalField(item, 'created_at') || approvalField(item, 'createdAt');
+  }
+
+  function insertApprovalNode(node) {
+    if (!node) return;
+    const nodeMs = Number(node.dataset.timelineMs || `${Date.now()}`);
+    for (const child of messagesEl.children) {
+      if (child === node || child === workProgressNode) continue;
+      const childMs = Number(child.dataset.timelineMs || `${Number.MAX_SAFE_INTEGER}`);
+      if (nodeMs < childMs) {
+        messagesEl.insertBefore(node, child);
         return;
       }
-      const body = node.querySelector('.message-content');
-      if (body) {
-        body.textContent = content;
-      } else {
-        node.textContent = content;
-      }
-      scrollToBottom();
     }
-
-    function messageTextOf(node) {
-      if (!node) {
-        return '';
-      }
-      return node.dataset.messageContent || node.querySelector('.message-content')?.textContent || '';
+    if (workProgressNode && workProgressNode.parentNode === messagesEl) {
+      messagesEl.insertBefore(node, workProgressNode);
+      return;
     }
+    messagesEl.appendChild(node);
+  }
 
-    function setLocalUserMessageState(node, state, onRetry) {
-      if (!node) {
-        return;
-      }
+  function appendMessage(role, content, options = {}) {
+    const node = document.createElement('div');
+    node.className = `cv1-msg ${role}`;
+    const av = document.createElement('div');
+    av.className = 'cv1-msg-av';
+    av.textContent = role === 'user' ? 'U' : (role === 'error' ? '!' : 'E');
+    const bubble = document.createElement('div');
+    bubble.className = 'cv1-bubble';
+    const body = document.createElement('div');
+    body.className = 'message-content';
+    body.textContent = content;
+    bubble.appendChild(body);
+    node.appendChild(av);
+    node.appendChild(bubble);
+    setTimelineMeta(node, 'message', options.createdAt);
+    messagesEl.appendChild(node);
+    if (!options.skipScroll) scrollToBottom();
+    return node;
+  }
 
-      node.classList.toggle('pending', state === 'pending');
-      node.classList.toggle('failed', state === 'failed');
+  function setMessageContent(node, content) {
+    if (!node) return;
+    const body = node.querySelector('.message-content');
+    if (body) body.textContent = content;
+    else node.textContent = content;
+    scrollToBottom();
+  }
 
-      node.querySelector('.message-status')?.remove();
-      node.querySelector('.message-retry')?.remove();
+  function messageTextOf(node) {
+    if (!node) return '';
+    return node.dataset.messageContent || node.querySelector('.message-content')?.textContent || '';
+  }
 
-      if (state === 'pending' || state === 'failed') {
-        const status = document.createElement('div');
-        status.className = 'message-status';
-        status.textContent = state === 'pending' ? 'Sending...' : 'Send failed';
-        node.appendChild(status);
-      }
-
-      if (state === 'failed' && typeof onRetry === 'function') {
-        const retryButton = document.createElement('button');
-        retryButton.className = 'message-retry';
-        retryButton.type = 'button';
-        retryButton.textContent = 'Retry';
-        retryButton.addEventListener('click', () => {
-          onRetry();
-        });
-        node.appendChild(retryButton);
-      }
+  function setLocalUserMessageState(node, state, onRetry) {
+    if (!node) return;
+    node.classList.toggle('pending', state === 'pending');
+    node.classList.toggle('failed', state === 'failed');
+    const bubble = node.querySelector('.cv1-bubble');
+    bubble?.querySelector('.message-status')?.remove();
+    bubble?.querySelector('.message-retry')?.remove();
+    if (state === 'pending' || state === 'failed') {
+      const status = document.createElement('div');
+      status.className = 'message-status';
+      status.textContent = state === 'pending' ? 'Sending...' : 'Send failed';
+      bubble?.appendChild(status);
     }
-
-    function appendLocalUserMessage(content) {
-      const node = appendMessage('user', content);
-      node.dataset.messageContent = content;
-      setLocalUserMessageState(node, 'pending');
-      return node;
+    if (state === 'failed' && typeof onRetry === 'function') {
+      const btn = document.createElement('button');
+      btn.className = 'message-retry';
+      btn.type = 'button';
+      btn.textContent = 'Retry';
+      btn.addEventListener('click', () => { onRetry(); });
+      bubble?.appendChild(btn);
     }
+  }
 
-    function renderHistory(messages) {
-      clearMessages();
-      for (const item of messages || []) {
-        const role = messageField(item, 'role') || 'assistant';
-        const content = messageField(item, 'content');
-        if (content) {
-          appendMessage(role, content);
-        }
-      }
+  function appendLocalUserMessage(content) {
+    const node = appendMessage('user', content, { createdAt: new Date().toISOString() });
+    node.dataset.messageContent = content;
+    setLocalUserMessageState(node, 'pending');
+    return node;
+  }
+
+  function renderHistory(messages) {
+    clearMessages();
+    for (const item of messages || []) {
+      const role = messageField(item, 'role') || 'assistant';
+      const content = messageField(item, 'content');
+      if (content) appendMessage(role, content, { createdAt: messageCreatedAtOf(item), skipScroll: true });
     }
+    scrollToBottom();
+  }
 
-    function approvalField(item, field) {
-      if (!item || typeof item !== 'object') {
-        return '';
-      }
-      return item[field] ?? item[field[0].toUpperCase() + field.slice(1)] ?? '';
-    }
+  function approvalField(item, field) {
+    if (!item || typeof item !== 'object') return '';
+    return item[field] ?? item[field[0].toUpperCase() + field.slice(1)] ?? '';
+  }
+  function approvalOptionsOf(item) { return item?.options || item?.Options || []; }
+  function approvalIdOf(item) { return approvalField(item, 'id'); }
+  function approvalStatusOf(item) { return approvalField(item, 'status') || 'pending'; }
 
-    function approvalOptionsOf(item) {
-      return item?.options || item?.Options || [];
-    }
-
-    function approvalIdOf(item) {
-      return approvalField(item, 'id');
-    }
-
-    function upsertApproval(item) {
+  function mergeApprovals(items) {
+    const merged = [];
+    for (const item of items || []) {
       const id = approvalIdOf(item);
-      if (!id) {
-        return;
-      }
-      const next = [...approvals];
-      const index = next.findIndex((candidate) => approvalIdOf(candidate) === id);
-      if (index >= 0) {
-        next[index] = item;
-      } else {
-        next.push(item);
-      }
-      approvals = next;
-      if ((approvalField(item, 'status') || 'pending') !== 'pending') {
-        pendingApprovalActions.delete(id);
-      }
-      renderApprovals();
+      if (!id) continue;
+      const index = merged.findIndex(current => approvalIdOf(current) === id);
+      if (index >= 0) merged[index] = item;
+      else merged.push(item);
+    }
+    return merged;
+  }
+
+  function visibleApprovalsOf(items = approvals) {
+    return (items || []).filter(item => {
+      const id = approvalIdOf(item);
+      if (!id) return false;
+      const status = approvalStatusOf(item);
+      return status === 'pending' || !dismissedApprovalIDs.has(id);
+    });
+  }
+
+  function findApprovalNode(id) {
+    for (const node of messagesEl.querySelectorAll('.cv1-msg-approval')) {
+      if (node.dataset.approvalId === id) return node;
+    }
+    return null;
+  }
+
+  function dismissApproval(id) {
+    if (!id) return;
+    dismissedApprovalIDs.add(id);
+    renderApprovals();
+  }
+
+  function buildApprovalNode(item) {
+    const approvalID = approvalIdOf(item);
+    const status = approvalStatusOf(item);
+    const actionPending = approvalID ? pendingApprovalActions.has(approvalID) : false;
+    const rejectOptionID = approvalField(item, 'reject_option_id') || approvalField(item, 'rejectOptionID');
+    const options = approvalOptionsOf(item);
+    const consumed = status !== 'pending';
+    const selectedID = approvalField(item, 'selected_option_id') || approvalField(item, 'selectedOptionID');
+    const selectedOption = options.find(option => approvalField(option, 'id') === selectedID);
+    const statusLabel = status === 'approved' ? '已批准' : (status === 'rejected' ? '已拒绝' : (consumed ? '已处理' : '等待审批'));
+
+    const shell = document.createElement('div');
+    shell.className = 'cv1-msg assistant cv1-msg-approval';
+    shell.dataset.approvalId = approvalID;
+    setTimelineMeta(shell, 'approval', approvalCreatedAtOf(item));
+
+    const av = document.createElement('div');
+    av.className = 'cv1-msg-av';
+    av.textContent = 'E';
+    shell.appendChild(av);
+
+    const card = document.createElement('div');
+    card.className = `cv1-approval${consumed ? ' consumed settled' : ''}`;
+
+    const top = document.createElement('div');
+    top.className = 'cv1-approval-top';
+
+    const tag = document.createElement('div');
+    tag.className = 'cv1-approval-tag';
+    const glyph = document.createElement('span');
+    glyph.className = 'glyph';
+    glyph.textContent = consumed ? '✓' : '!';
+    const tagText = document.createElement('span');
+    tagText.textContent = consumed ? 'Human Approval Resolved' : 'Human Approval Required';
+    tag.appendChild(glyph);
+    tag.appendChild(tagText);
+    top.appendChild(tag);
+
+    const meta = document.createElement('div');
+    meta.className = 'cv1-approval-meta-row';
+    const expire = document.createElement('span');
+    expire.className = 'cv1-approval-expire';
+    expire.textContent = `Expires: ${formatSessionTime(approvalField(item,'expires_at') || approvalField(item,'expiresAt'))}`;
+    const badge = document.createElement('span');
+    badge.className = 'cv1-approval-badge';
+    badge.textContent = statusLabel;
+    meta.appendChild(expire);
+    meta.appendChild(badge);
+
+    if (consumed) {
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.className = 'cv1-approval-close';
+      closeBtn.title = '关闭';
+      closeBtn.setAttribute('aria-label', '关闭审批结果');
+      closeBtn.textContent = '×';
+      closeBtn.addEventListener('click', () => { dismissApproval(approvalID); });
+      meta.appendChild(closeBtn);
     }
 
-    function syncPendingApprovalActions() {
-      const pendingIDs = new Set();
-      for (const item of approvals) {
-        const id = approvalIdOf(item);
-        if (!id) {
-          continue;
+    top.appendChild(meta);
+    card.appendChild(top);
+
+    const body = document.createElement('div');
+    body.className = 'cv1-approval-body';
+
+    const title = document.createElement('div');
+    title.className = 'cv1-approval-title';
+    title.textContent = approvalField(item,'goal_summary') || approvalField(item,'goalSummary') || '需要人工审批';
+    body.appendChild(title);
+
+    if (consumed) {
+      const summary = document.createElement('div');
+      summary.className = 'cv1-approval-summary';
+      const decisionText = selectedOption ? (approvalField(selectedOption, 'summary') || selectedID) : selectedID;
+      summary.textContent = decisionText ? `${statusLabel} · ${decisionText}` : statusLabel;
+      body.appendChild(summary);
+    } else {
+      const question = approvalField(item,'question');
+      if (question) {
+        const q = document.createElement('div');
+        q.className = 'cv1-approval-q';
+        q.textContent = question;
+        body.appendChild(q);
+      }
+
+      if (options.length) {
+        const opts = document.createElement('div');
+        opts.className = 'cv1-approval-opts';
+        for (const option of options) {
+          const optID = approvalField(option,'id');
+          const row = document.createElement('div');
+          row.className = 'cv1-approval-opt';
+          row.innerHTML = `<span>${escapeHTML(approvalField(option,'summary'))}</span><span class="cv1-opt-key">${escapeHTML(optID)}</span>`;
+          opts.appendChild(row);
         }
-        if ((approvalField(item, 'status') || 'pending') === 'pending') {
-          pendingIDs.add(id);
-        }
+        body.appendChild(opts);
       }
-      for (const id of pendingApprovalActions) {
-        if (!pendingIDs.has(id)) {
-          pendingApprovalActions.delete(id);
-        }
+
+      const actions = document.createElement('div');
+      actions.className = 'cv1-approval-actions';
+
+      if (rejectOptionID) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'cv1-approval-btn deny';
+        btn.disabled = actionPending || sending;
+        btn.textContent = '拒绝';
+        btn.addEventListener('click', async () => { await sendApprovalAction(approvalID,'reject',''); });
+        actions.appendChild(btn);
+      }
+
+      for (const option of options) {
+        const optID = approvalField(option,'id');
+        if (!optID || optID === rejectOptionID) continue;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'cv1-approval-btn allow';
+        btn.disabled = actionPending || sending;
+        btn.textContent = `批准 ${approvalField(option,'summary') || optID}`;
+        btn.addEventListener('click', async () => { await sendApprovalAction(approvalID,'approve',optID); });
+        actions.appendChild(btn);
+      }
+
+      if (actions.childElementCount) body.appendChild(actions);
+    }
+
+    card.appendChild(body);
+    shell.appendChild(card);
+    return shell;
+  }
+
+  function upsertApproval(item) {
+    const id = approvalIdOf(item);
+    if (!id) return;
+    approvals = mergeApprovals([...approvals.filter(current => approvalIdOf(current) !== id), item]);
+    if (approvalStatusOf(item) !== 'pending') pendingApprovalActions.delete(id);
+    renderApprovals();
+  }
+
+  function syncPendingApprovalActions() {
+    const pendingIDs = new Set();
+    for (const item of approvals) {
+      const id = approvalIdOf(item);
+      if (id && (approvalField(item, 'status') || 'pending') === 'pending') pendingIDs.add(id);
+    }
+    for (const id of pendingApprovalActions) {
+      if (!pendingIDs.has(id)) pendingApprovalActions.delete(id);
+    }
+  }
+
+  async function loadApprovals(sessionID = currentSessionId) {
+    if (!sessionID) { approvals = []; renderApprovals(); return; }
+    let loadedApprovals = [];
+    try {
+      const payload = await requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/approvals`);
+      loadedApprovals = payload.approvals || [];
+    } catch (_) {}
+    approvals = mergeApprovals(loadedApprovals);
+    syncPendingApprovalActions();
+    renderApprovals();
+  }
+
+  function renderApprovals() {
+    const visibleApprovals = currentSessionId ? visibleApprovalsOf() : [];
+    const visibleIDs = new Set(visibleApprovals.map(item => approvalIdOf(item)));
+
+    for (const node of messagesEl.querySelectorAll('.cv1-msg-approval')) {
+      if (!visibleIDs.has(node.dataset.approvalId || '')) node.remove();
+    }
+
+    if (!visibleApprovals.length) return;
+
+    let appended = false;
+    const orderedApprovals = [...visibleApprovals].sort((left, right) => {
+      return timelineMillis(approvalCreatedAtOf(left)) - timelineMillis(approvalCreatedAtOf(right));
+    });
+
+    for (const item of orderedApprovals) {
+      const approvalID = approvalIdOf(item);
+      if (!approvalID) continue;
+      const nextNode = buildApprovalNode(item);
+      const currentNode = findApprovalNode(approvalID);
+      if (currentNode) currentNode.replaceWith(nextNode);
+      else {
+        insertApprovalNode(nextNode);
+        appended = true;
       }
     }
 
-    async function loadApprovals(sessionID = currentSessionId) {
-      if (!sessionID) {
-        approvals = [];
-        renderApprovals();
-        return;
-      }
-      try {
-        const payload = await requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/approvals`);
-        approvals = payload.approvals || [];
-      } catch (_) {
-        approvals = [];
-      }
-      syncPendingApprovalActions();
-      renderApprovals();
+    if (appended) scrollToBottom();
+  }
+
+  function ensureWorkProgressNode() {
+    if (workProgressNode && workProgressNode.isConnected) return workProgressNode;
+    const node = document.createElement('div');
+    node.className = 'cv1-progress';
+    node.innerHTML = `
+      <div class="cv1-progress-av">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a7 7 0 0 1 7-7h2a7 7 0 0 1 7 7v1"/></svg>
+      </div>
+      <div class="cv1-progress-card">
+        <div class="cv1-progress-label"><span class="sparkle"></span>正在处理...</div>
+        <div class="cv1-progress-text message-content"></div>
+      </div>
+    `;
+    messagesEl.appendChild(node);
+    workProgressNode = node;
+    return node;
+  }
+
+  function showWorkProgress(text) {
+    const content = (text || '').trim();
+    if (!content) return;
+    const node = ensureWorkProgressNode();
+    setMessageContent(node, content);
+  }
+
+  function clearWorkProgress() {
+    if (workProgressNode && workProgressNode.parentNode) workProgressNode.parentNode.removeChild(workProgressNode);
+    workProgressNode = null;
+  }
+
+  function scrollToBottom() { messagesEl.scrollTop = messagesEl.scrollHeight; }
+
+  function clearApprovalState() {
+    approvals = [];
+    pendingApprovalActions.clear();
+    dismissedApprovalIDs.clear();
+  }
+
+  function updateSubtitle() {
+    subtitleEl.textContent = currentPersonaKey ? `Persona: ${currentPersonaKey}` : 'EmoAgent';
+    sidebarPersonaEl.textContent = currentPersonaKey || 'loading...';
+  }
+
+  function syncURL() {
+    const url = new URL(location.href);
+    currentPersonaKey ? url.searchParams.set('persona', currentPersonaKey) : url.searchParams.delete('persona');
+    currentSessionId ? url.searchParams.set('session_id', currentSessionId) : url.searchParams.delete('session_id');
+    history.replaceState({}, '', url);
+    sessionHintEl.textContent = currentSessionId ? `Session · ${currentSessionId.substring(0,13)}` : 'No active session';
+  }
+
+  function formatSessionTime(raw) {
+    if (!raw) return 'Unknown time';
+    const date = new Date(raw);
+    if (Number.isNaN(date.getTime())) return raw;
+    return date.toLocaleString('zh-CN', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+  }
+
+  function previewText(item) { return item.LastMessage || item.last_message || item.lastMessage || 'No messages yet'; }
+  function sessionIdOf(item) { return item.ID || item.id || ''; }
+  function sessionPersonaOf(item) { return item.Persona || item.persona || ''; }
+
+  function renderSessionList() {
+    sessionListEl.innerHTML = '';
+    if (!sessionList.length) {
+      sessionListEl.innerHTML = '<div class="cv1-session-empty">当前 Persona 还没有非空会话。</div>';
+      return;
     }
+    for (const item of sessionList) {
+      const sessionID = sessionIdOf(item);
+      const title = item.Title || item.title || '';
+      const timeStr = formatSessionTime(item.UpdatedAt || item.updated_at || item.updatedAt);
 
-    function renderApprovals() {
-      approvalsEl.innerHTML = '';
-      if (!currentSessionId || !approvals.length) {
-        approvalsEl.style.display = 'none';
-        return;
-      }
-      approvalsEl.style.display = 'grid';
+      const row = document.createElement('div');
+      row.className = `cv1-session${sessionID === currentSessionId ? ' active' : ''}`;
+      row.tabIndex = 0;
+      row.setAttribute('role', 'button');
+      row.setAttribute('aria-label', `打开会话 ${title || timeStr}`);
 
-      for (const item of approvals) {
-        const approvalID = approvalIdOf(item);
-        const status = approvalField(item, 'status') || 'pending';
-        const actionPending = approvalID ? pendingApprovalActions.has(approvalID) : false;
-        const rejectOptionID = approvalField(item, 'reject_option_id') || approvalField(item, 'rejectOptionID');
-        const options = approvalOptionsOf(item);
-        const card = document.createElement('article');
-        card.className = 'approval-card';
+      const titleEl = document.createElement('div');
+      titleEl.className = 'cv1-s-title';
+      titleEl.textContent = title || timeStr;
 
-        const header = document.createElement('div');
-        header.className = 'approval-head';
-        header.innerHTML = `
-          <div>
-            <div class="approval-title">${approvalField(item, 'goal_summary') || approvalField(item, 'goalSummary') || '需要人工审批'}</div>
-            <div class="approval-meta">
-              <span>Task: ${approvalField(item, 'task_id') || approvalField(item, 'taskID') || '-'}</span>
-              <span>Expires: ${formatSessionTime(approvalField(item, 'expires_at') || approvalField(item, 'expiresAt'))}</span>
-            </div>
-          </div>
-          <span class="approval-status">${status}</span>
-        `;
-        card.appendChild(header);
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'cv1-s-del';
+      delBtn.title = 'Delete';
+      delBtn.setAttribute('aria-label', '删除会话');
+      delBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4.5A1.5 1.5 0 0 1 9.5 3h5A1.5 1.5 0 0 1 16 4.5V6"/><path d="M18 6l-1 13a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L6 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>';
+      delBtn.addEventListener('click', async e => { e.stopPropagation(); await deleteSession(sessionID); });
 
-        const body = document.createElement('div');
-        body.className = 'approval-body';
-        body.innerHTML = `<div>${approvalField(item, 'question') || ''}</div>`;
-        card.appendChild(body);
+      const meta = document.createElement('div');
+      meta.className = 'cv1-s-meta';
+      meta.textContent = `${timeStr} · ${item.MessageCount ?? item.message_count ?? 0} messages`;
 
-        if (options.length) {
-          const list = document.createElement('ul');
-          list.className = 'approval-options';
-          for (const option of options) {
-            const selected = (approvalField(item, 'selected_option_id') || approvalField(item, 'selectedOptionID')) === approvalField(option, 'id');
-            const row = document.createElement('li');
-            row.className = 'approval-option';
-            row.innerHTML = `
-              <strong>${approvalField(option, 'id')}${selected ? ' · selected' : ''}</strong>
-              <span>${approvalField(option, 'summary')}</span>
-            `;
-            list.appendChild(row);
-          }
-          card.appendChild(list);
-        }
+      const preview = document.createElement('div');
+      preview.className = 'cv1-s-preview';
+      preview.textContent = previewText(item);
 
-        if (status === 'pending') {
-          const actions = document.createElement('div');
-          actions.className = 'approval-actions';
-          for (const option of options) {
-            const optionID = approvalField(option, 'id');
-            if (!optionID || optionID === rejectOptionID) {
-              continue;
-            }
-            const button = document.createElement('button');
-            button.type = 'button';
-            button.className = 'approval-action primary';
-            button.disabled = actionPending;
-            button.textContent = `批准 ${approvalField(option, 'summary') || optionID}`;
-            button.addEventListener('click', async () => {
-              await sendApprovalAction(approvalID, 'approve', optionID);
-            });
-            actions.appendChild(button);
-          }
-          if (rejectOptionID) {
-            const rejectSummary = options.find((option) => approvalField(option, 'id') === rejectOptionID)?.summary || rejectOptionID;
-            const button = document.createElement('button');
-            button.type = 'button';
-            button.className = 'approval-action';
-            button.disabled = actionPending;
-            button.textContent = `拒绝并选择 ${rejectSummary}`;
-            button.addEventListener('click', async () => {
-              await sendApprovalAction(approvalID, 'reject', '');
-            });
-            actions.appendChild(button);
-          }
-          card.appendChild(actions);
-        }
-
-        approvalsEl.appendChild(card);
-      }
-    }
-
-    function ensureWorkProgressNode() {
-      if (workProgressNode && workProgressNode.isConnected) {
-        return workProgressNode;
-      }
-      const node = document.createElement('div');
-      node.className = 'message assistant work-progress';
-      const body = document.createElement('div');
-      body.className = 'message-content';
-      node.appendChild(body);
-      messagesEl.appendChild(node);
-      workProgressNode = node;
-      return node;
-    }
-
-    function showWorkProgress(text) {
-      const content = (text || '').trim();
-      if (!content) {
-        return;
-      }
-      const node = ensureWorkProgressNode();
-      setMessageContent(node, content);
-    }
-
-    function clearWorkProgress() {
-      if (workProgressNode && workProgressNode.parentNode) {
-        workProgressNode.parentNode.removeChild(workProgressNode);
-      }
-      workProgressNode = null;
-    }
-
-    function scrollToBottom() {
-      messagesEl.scrollTop = messagesEl.scrollHeight;
-    }
-
-    function updateSubtitle() {
-      subtitleEl.textContent = currentPersonaKey
-        ? `Persona: ${currentPersonaKey}`
-        : 'P3 conversation loop';
-      sidebarPersonaEl.textContent = currentPersonaKey
-        ? `Persona: ${currentPersonaKey}`
-        : 'Persona: loading...';
-    }
-
-    function syncURL() {
-      const url = new URL(location.href);
-      if (currentPersonaKey) {
-        url.searchParams.set('persona', currentPersonaKey);
-      } else {
-        url.searchParams.delete('persona');
-      }
-      if (currentSessionId) {
-        url.searchParams.set('session_id', currentSessionId);
-      } else {
-        url.searchParams.delete('session_id');
-      }
-      history.replaceState({}, '', url);
-    }
-
-    function formatSessionTime(raw) {
-      if (!raw) {
-        return 'Unknown time';
-      }
-      const date = new Date(raw);
-      if (Number.isNaN(date.getTime())) {
-        return raw;
-      }
-      return date.toLocaleString('zh-CN', {
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
+      row.appendChild(titleEl);
+      row.appendChild(delBtn);
+      row.appendChild(meta);
+      row.appendChild(preview);
+      row.addEventListener('click', async () => {
+        if (sessionID && sessionID !== currentSessionId) await switchSession(sessionID, sessionPersonaOf(item) || currentPersonaKey);
       });
-    }
-
-    function previewText(item) {
-      return item.LastMessage || item.last_message || item.lastMessage || 'No messages yet';
-    }
-
-    function sessionIdOf(item) {
-      return item.ID || item.id || '';
-    }
-
-    function sessionPersonaOf(item) {
-      return item.Persona || item.persona || '';
-    }
-
-    function renderSessionList() {
-      sessionListEl.innerHTML = '';
-      if (!sessionList.length) {
-        sessionListEl.innerHTML = '<div class="session-empty">当前 Persona 还没有非空会话。</div>';
-        return;
-      }
-
-      for (const item of sessionList) {
-        const sessionID = sessionIdOf(item);
-        const row = document.createElement('div');
-        row.className = `session-item ${sessionID === currentSessionId ? 'active' : ''}`;
-
-        const title = item.Title || item.title || '';
-        const main = document.createElement('div');
-        main.innerHTML = `
-          <div class="session-title">${title || formatSessionTime(item.UpdatedAt || item.updated_at || item.updatedAt)}</div>
-          <div class="session-meta">${formatSessionTime(item.UpdatedAt || item.updated_at || item.updatedAt)} · ${(item.MessageCount ?? item.message_count ?? 0)} messages</div>
-          <div class="session-preview">${previewText(item)}</div>
-        `;
-
-        const deleteButton = document.createElement('button');
-        deleteButton.className = 'session-delete';
-        deleteButton.type = 'button';
-        deleteButton.textContent = '×';
-        deleteButton.title = 'Delete session';
-        deleteButton.addEventListener('click', async (event) => {
-          event.stopPropagation();
-          await deleteSession(sessionID);
-        });
-
-        row.appendChild(main);
-        row.appendChild(deleteButton);
-        row.addEventListener('click', async () => {
-          if (sessionID && sessionID !== currentSessionId) {
-            await switchSession(sessionID, sessionPersonaOf(item) || currentPersonaKey);
-          }
-        });
-        sessionListEl.appendChild(row);
-      }
-    }
-
-    async function requestJSON(url, options = {}) {
-      const response = await fetch(url, {
-        credentials: 'same-origin',
-        headers: { 'Accept': 'application/json' },
-        ...options,
+      row.addEventListener('keydown', async event => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        if (sessionID && sessionID !== currentSessionId) await switchSession(sessionID, sessionPersonaOf(item) || currentPersonaKey);
       });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(payload.error || response.statusText || 'Request failed');
-      }
-      return payload;
+      sessionListEl.appendChild(row);
     }
+  }
 
-    function wsURL() {
-      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const url = new URL(`${protocol}//${location.host}/ws`);
-      if (currentPersonaKey) {
-        url.searchParams.set('persona', currentPersonaKey);
-      }
-      if (currentSessionId) {
-        url.searchParams.set('session_id', currentSessionId);
-      }
-      if (wsSkipGreeting) {
-        url.searchParams.set('skip_greeting', '1');
-      }
-      return url.toString();
-    }
+  async function requestJSON(url, options = {}) {
+    const response = await fetch(url, { credentials:'same-origin', headers:{'Accept':'application/json'}, ...options });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || response.statusText || 'Request failed');
+    return payload;
+  }
 
-    function rejectConnectAttempt(message) {
-      if (!connectAttempt || typeof connectAttempt.reject !== 'function') {
-        connectAttempt = null;
-        return;
-      }
-      const { reject } = connectAttempt;
-      connectAttempt = null;
-      reject(new Error(message || 'Failed to connect'));
-    }
+  function wsURL() {
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const url = new URL(`${protocol}//${location.host}/ws`);
+    if (currentPersonaKey) url.searchParams.set('persona', currentPersonaKey);
+    if (currentSessionId) url.searchParams.set('session_id', currentSessionId);
+    if (wsSkipGreeting) url.searchParams.set('skip_greeting', '1');
+    return url.toString();
+  }
 
-    function resolveConnectAttempt() {
-      if (!connectAttempt || typeof connectAttempt.resolve !== 'function') {
-        connectAttempt = null;
-        return;
-      }
-      const { resolve } = connectAttempt;
-      connectAttempt = null;
-      resolve();
-    }
+  function rejectConnectAttempt(message) {
+    if (!connectAttempt || typeof connectAttempt.reject !== 'function') { connectAttempt = null; return; }
+    const { reject } = connectAttempt;
+    connectAttempt = null;
+    reject(new Error(message || 'Failed to connect'));
+  }
 
-    async function closeSocket() {
-      clearTimeout(reconnectTimer);
-      if (!socket || socket.readyState >= WebSocket.CLOSING) {
-        socket = null;
-        return;
-      }
-      manuallyClosed = true;
-      await new Promise((resolve) => {
-        const current = socket;
-        current.addEventListener('close', () => resolve(), { once: true });
-        current.close();
-        setTimeout(resolve, 250);
-      });
-      socket = null;
-    }
+  function resolveConnectAttempt() {
+    if (!connectAttempt || typeof connectAttempt.resolve !== 'function') { connectAttempt = null; return; }
+    const { resolve } = connectAttempt;
+    connectAttempt = null;
+    resolve();
+  }
 
-    function connect() {
-      clearTimeout(reconnectTimer);
-      manuallyClosed = false;
-      setStatus('Connecting...');
-      const currentSocket = new WebSocket(wsURL());
-      let handshakeFailed = false;
-      socket = currentSocket;
-      wsSkipGreeting = false;
+  async function closeSocket() {
+    clearTimeout(reconnectTimer);
+    if (!socket || socket.readyState >= WebSocket.CLOSING) { socket = null; return; }
+    manuallyClosed = true;
+    await new Promise(resolve => {
+      const current = socket;
+      current.addEventListener('close', () => resolve(), { once: true });
+      current.close();
+      setTimeout(resolve, 250);
+    });
+    socket = null;
+  }
 
-      currentSocket.addEventListener('open', () => {
-        if (socket !== currentSocket) {
-          return;
-        }
-        reconnectDelay = 1000;
-        setStatus('Connected');
-      });
+  function connect() {
+    clearTimeout(reconnectTimer);
+    manuallyClosed = false;
+    setStatus('Connecting...');
+    const currentSocket = new WebSocket(wsURL());
+    let handshakeFailed = false;
+    socket = currentSocket;
+    wsSkipGreeting = false;
 
-      currentSocket.addEventListener('message', async (event) => {
-        if (socket !== currentSocket) {
-          return;
-        }
-        const payload = JSON.parse(event.data);
-        switch (payload.type) {
-          case 'session_ready':
-            currentSessionId = payload.session_id || payload.SessionID || currentSessionId;
-            currentPersonaKey = payload.persona || payload.Persona || currentPersonaKey;
-            syncURL();
-            updateSubtitle();
-            if (connectAttempt?.awaitingSessionReady) {
-              resolveConnectAttempt();
-            }
-            await loadSessionList();
-            await loadApprovals(currentSessionId);
-            break;
-          case 'greeting':
-            appendMessage('assistant', payload.content || '');
-            break;
-          case 'stream_start':
-            pendingAssistant = appendMessage('assistant', '');
-            setSending(true);
-            break;
-          case 'stream_delta':
-            if (!pendingAssistant) {
-              pendingAssistant = appendMessage('assistant', '');
-            }
-            setMessageContent(pendingAssistant, `${messageTextOf(pendingAssistant)}${payload.content || ''}`);
-            break;
-          case 'stream_end':
-            pendingAssistant = null;
-            clearWorkProgress();
-            pendingApprovalActions.clear();
-            setSending(false);
-            await loadSessionList();
-            await loadApprovals(currentSessionId);
-            break;
-          case 'error':
-            appendMessage('error', payload.content || 'Unknown error');
-            pendingAssistant = null;
-            clearWorkProgress();
-            pendingApprovalActions.clear();
-            setSending(false);
-            await loadSessionList();
-            await loadApprovals(currentSessionId);
-            break;
-          case 'approval_required':
-          case 'approval_updated':
-            upsertApproval(payload.approval || payload.Approval);
-            break;
-          case 'work_progress':
-            showWorkProgress(payload.content || '');
-            break;
-          case 'work_progress_end':
-            clearWorkProgress();
-            break;
-          case 'pong':
-            break;
-        }
-      });
+    currentSocket.addEventListener('open', () => {
+      if (socket !== currentSocket) return;
+      reconnectDelay = 1000;
+      setStatus('Connected');
+    });
 
-      currentSocket.addEventListener('close', () => {
-        if (socket !== currentSocket) {
-          return;
-        }
-        pendingAssistant = null;
-        clearWorkProgress();
-        setSending(false);
-        const pendingHandshake = Boolean(connectAttempt?.awaitingSessionReady) || handshakeFailed;
-        if (pendingHandshake) {
-          rejectConnectAttempt('Failed to connect');
-        }
-        socket = null;
-        if (manuallyClosed) {
-          return;
-        }
-        if (pendingHandshake) {
-          setStatus('Failed to connect');
-          return;
-        }
-        setStatus(`Disconnected, retrying in ${Math.round(reconnectDelay / 1000)}s`);
-        reconnectTimer = setTimeout(async () => {
-          if (currentSessionId) {
-            try {
-              const detail = await loadSessionDetail(currentSessionId);
-              renderHistory(detail.messages || []);
-              await loadApprovals(currentSessionId);
-            } catch (_) { /* ignore */ }
-          }
-          connect();
-        }, reconnectDelay);
-        reconnectDelay = Math.min(reconnectDelay * 2, 30000);
-      });
-
-      currentSocket.addEventListener('error', () => {
-        if (socket !== currentSocket) {
-          return;
-        }
-        if (connectAttempt?.awaitingSessionReady) {
-          handshakeFailed = true;
-          rejectConnectAttempt('Connection error');
-        }
-        setStatus('Connection error');
-      });
-    }
-
-    async function ensureConnected() {
-      if (socket && socket.readyState === WebSocket.OPEN) {
-        return;
-      }
-      if (connectAttempt?.promise) {
-        return connectAttempt.promise;
-      }
-      await closeSocket();
-      wsSkipGreeting = true;
-      connectAttempt = {
-        resolve: null,
-        reject: null,
-        awaitingSessionReady: true,
-        initiatedBySend: true,
-        promise: null,
-      };
-      connectAttempt.promise = new Promise((resolve, reject) => {
-        connectAttempt.resolve = resolve;
-        connectAttempt.reject = reject;
-        connect();
-      });
-      return connectAttempt.promise;
-    }
-
-    async function loadSessionList() {
-      if (!currentPersonaKey) {
-        sessionList = [];
-        renderSessionList();
-        return;
-      }
-      try {
-        const payload = await requestJSON(`/api/sessions?persona=${encodeURIComponent(currentPersonaKey)}&limit=20`);
-        sessionList = payload.sessions || [];
-      } catch (error) {
-        sessionList = [];
-        setStatus(error.message || 'Failed to load sessions');
-      }
-      renderSessionList();
-    }
-
-    async function loadDefaultPersona() {
-      const payload = await requestJSON('/api/personas');
-      return payload.default || 'default';
-    }
-
-    async function loadSessionDetail(id) {
-      return requestJSON(`/api/sessions/${encodeURIComponent(id)}`);
-    }
-
-    async function bootstrapChat() {
-      setStatus('Loading...');
-      const params = new URLSearchParams(location.search);
-      currentPersonaKey = params.get('persona') || '';
-      currentSessionId = params.get('session_id') || '';
-
-      if (currentSessionId) {
-        try {
-          const detail = await loadSessionDetail(currentSessionId);
-          currentPersonaKey = detail.persona || detail.Persona || currentPersonaKey;
-          renderHistory(detail.messages || []);
+    currentSocket.addEventListener('message', async event => {
+      if (socket !== currentSocket) return;
+      const payload = JSON.parse(event.data);
+      switch (payload.type) {
+        case 'session_ready':
+          currentSessionId = payload.session_id || payload.SessionID || currentSessionId;
+          currentPersonaKey = payload.persona || payload.Persona || currentPersonaKey;
+          syncURL(); updateSubtitle();
+          if (connectAttempt?.awaitingSessionReady) resolveConnectAttempt();
+          await loadSessionList();
           await loadApprovals(currentSessionId);
-        } catch (error) {
-          currentSessionId = '';
+          break;
+        case 'greeting':
+          appendMessage('assistant', payload.content || '');
+          break;
+        case 'stream_start':
+          pendingAssistant = appendMessage('assistant', '');
+          setSending(true);
+          break;
+        case 'stream_delta':
+          if (!pendingAssistant) pendingAssistant = appendMessage('assistant', '');
+          setMessageContent(pendingAssistant, `${messageTextOf(pendingAssistant)}${payload.content || ''}`);
+          break;
+        case 'stream_end':
+          pendingAssistant = null; clearWorkProgress(); pendingApprovalActions.clear();
+          setSending(false);
+          await loadSessionList(); await loadApprovals(currentSessionId);
+          break;
+        case 'error':
+          appendMessage('error', payload.content || 'Unknown error');
+          pendingAssistant = null; clearWorkProgress(); pendingApprovalActions.clear();
+          setSending(false);
+          await loadSessionList(); await loadApprovals(currentSessionId);
+          break;
+        case 'approval_required':
+        case 'approval_updated':
+          upsertApproval(payload.approval || payload.Approval);
+          break;
+        case 'work_progress':
+          showWorkProgress(payload.content || '');
+          break;
+        case 'work_progress_end':
+          clearWorkProgress();
+          break;
+        case 'pong':
+          break;
+      }
+    });
+
+    currentSocket.addEventListener('close', () => {
+      if (socket !== currentSocket) return;
+      pendingAssistant = null; clearWorkProgress(); setSending(false);
+      const pendingHandshake = Boolean(connectAttempt?.awaitingSessionReady) || handshakeFailed;
+      if (pendingHandshake) rejectConnectAttempt('Failed to connect');
+      socket = null;
+      if (manuallyClosed) return;
+      if (pendingHandshake) { setStatus('Failed to connect'); return; }
+      setStatus(`Disconnected, retrying in ${Math.round(reconnectDelay/1000)}s`);
+      reconnectTimer = setTimeout(async () => {
+        if (currentSessionId) {
+          try {
+            const detail = await loadSessionDetail(currentSessionId);
+            renderHistory(detail.messages || []);
+            await loadApprovals(currentSessionId);
+          } catch (_) {}
         }
-      }
+        connect();
+      }, reconnectDelay);
+      reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+    });
 
-      if (!currentSessionId) {
-        currentPersonaKey = currentPersonaKey || await loadDefaultPersona();
-        clearMessages();
-        approvals = [];
-        renderApprovals();
-      }
+    currentSocket.addEventListener('error', () => {
+      if (socket !== currentSocket) return;
+      if (connectAttempt?.awaitingSessionReady) { handshakeFailed = true; rejectConnectAttempt('Connection error'); }
+      setStatus('Connection error');
+    });
+  }
 
-      updateSubtitle();
-      syncURL();
-      await loadSessionList();
-      setStatus('Ready');
-    }
+  async function ensureConnected() {
+    if (socket && socket.readyState === WebSocket.OPEN) return;
+    if (connectAttempt?.promise) return connectAttempt.promise;
+    await closeSocket();
+    wsSkipGreeting = true;
+    connectAttempt = { resolve:null, reject:null, awaitingSessionReady:true, initiatedBySend:true, promise:null };
+    connectAttempt.promise = new Promise((resolve, reject) => {
+      connectAttempt.resolve = resolve;
+      connectAttempt.reject = reject;
+      connect();
+    });
+    return connectAttempt.promise;
+  }
 
-    async function switchSession(sessionID, personaKey) {
-      setStatus('Loading session...');
+  async function loadSessionList() {
+    if (!currentPersonaKey) { sessionList = []; renderSessionList(); return; }
+    try {
+      const payload = await requestJSON(`/api/sessions?persona=${encodeURIComponent(currentPersonaKey)}&limit=20`);
+      sessionList = payload.sessions || [];
+    } catch (error) { sessionList = []; setStatus(error.message || 'Failed to load sessions'); }
+    renderSessionList();
+  }
+
+  async function loadDefaultPersona() {
+    const payload = await requestJSON('/api/personas');
+    return payload.default || 'default';
+  }
+
+  async function loadSessionDetail(id) { return requestJSON(`/api/sessions/${encodeURIComponent(id)}`); }
+
+  async function bootstrapChat() {
+    setStatus('Loading...');
+    const params = new URLSearchParams(location.search);
+    currentPersonaKey = params.get('persona') || '';
+    currentSessionId = params.get('session_id') || '';
+    clearApprovalState();
+
+    if (currentSessionId) {
       try {
-        const detail = await loadSessionDetail(sessionID);
-        await closeSocket();
-        currentSessionId = sessionID;
-        currentPersonaKey = detail.persona || detail.Persona || personaKey || currentPersonaKey;
+        const detail = await loadSessionDetail(currentSessionId);
+        currentPersonaKey = detail.persona || detail.Persona || currentPersonaKey;
         renderHistory(detail.messages || []);
         await loadApprovals(currentSessionId);
-        updateSubtitle();
-        syncURL();
-        renderSessionList();
-        sidebarEl.classList.remove('open');
-        setStatus('Ready');
-      } catch (error) {
-        setStatus(error.message || 'Failed to load session');
-        renderSessionList();
-      }
+      } catch (_) { currentSessionId = ''; }
     }
 
-    async function startNewChat() {
+    if (!currentSessionId) {
+      currentPersonaKey = currentPersonaKey || await loadDefaultPersona();
+      clearMessages();
+      renderApprovals();
+    }
+
+    updateSubtitle(); syncURL();
+    await loadSessionList();
+    setStatus('Ready');
+  }
+
+  async function switchSession(sessionID, personaKey) {
+    setStatus('Loading session...');
+    try {
+      const detail = await loadSessionDetail(sessionID);
       await closeSocket();
-      currentSessionId = '';
-      clearMessages();
-      approvals = [];
-      renderApprovals();
-      updateSubtitle();
-      syncURL();
-      renderSessionList();
-      sidebarEl.classList.remove('open');
+      clearApprovalState();
+      currentSessionId = sessionID;
+      currentPersonaKey = detail.persona || detail.Persona || personaKey || currentPersonaKey;
+      renderHistory(detail.messages || []);
+      await loadApprovals(currentSessionId);
+      updateSubtitle(); syncURL(); renderSessionList();
+      closeMobileDrawer();
       setStatus('Ready');
-    }
+    } catch (error) { setStatus(error.message || 'Failed to load session'); renderSessionList(); }
+  }
 
-    async function deleteSession(sessionID) {
-      if (!sessionID) {
-        return;
-      }
-      if (!confirm('Delete this session?')) {
-        return;
-      }
-      try {
-        await requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}`, { method: 'DELETE' });
-        if (sessionID === currentSessionId) {
-          await startNewChat();
-        } else {
-          await loadSessionList();
-        }
-      } catch (error) {
-        setStatus(error.message || 'Failed to delete session');
-        await loadSessionList();
-      }
-    }
+  async function startNewChat() {
+    await closeSocket();
+    clearApprovalState();
+    currentSessionId = '';
+    clearMessages();
+    renderApprovals();
+    updateSubtitle(); syncURL(); renderSessionList();
+    closeMobileDrawer();
+    setStatus('Ready');
+  }
 
-    async function sendMessage(content, node) {
-      setLocalUserMessageState(node, 'pending');
-      setSending(true);
-      try {
-        await ensureConnected();
-        socket.send(JSON.stringify({ type: 'message', content }));
-        setLocalUserMessageState(node, 'sent');
-      } catch (error) {
-        setLocalUserMessageState(node, 'failed', async () => {
-          await sendMessage(content, node);
-        });
-        setSending(false);
-        setStatus(error.message || 'Failed to connect');
-      }
-    }
+  async function deleteSession(sessionID) {
+    if (!sessionID) return;
+    if (!confirm('Delete this session?')) return;
+    try {
+      await requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}`, { method:'DELETE' });
+      if (sessionID === currentSessionId) await startNewChat();
+      else await loadSessionList();
+    } catch (error) { setStatus(error.message || 'Failed to delete session'); await loadSessionList(); }
+  }
 
-    async function sendApprovalAction(requestID, action, optionID) {
-      if (!requestID || pendingApprovalActions.has(requestID)) {
-        return;
-      }
-      pendingApprovalActions.add(requestID);
+  async function sendMessage(content, node) {
+    setLocalUserMessageState(node, 'pending');
+    setSending(true);
+    try {
+      await ensureConnected();
+      socket.send(JSON.stringify({ type:'message', content }));
+      setLocalUserMessageState(node, 'sent');
+    } catch (error) {
+      setLocalUserMessageState(node, 'failed', async () => { await sendMessage(content, node); });
+      setSending(false);
+      setStatus(error.message || 'Failed to connect');
+    }
+  }
+
+  async function sendApprovalAction(requestID, action, optionID) {
+    if (!requestID || pendingApprovalActions.has(requestID)) return;
+    pendingApprovalActions.add(requestID);
+    renderApprovals();
+    try {
+      await ensureConnected();
+      socket.send(JSON.stringify({ type:'approval_action', request_id:requestID, action, option_id:optionID||'' }));
+    } catch (error) {
+      pendingApprovalActions.delete(requestID);
       renderApprovals();
-      try {
-        await ensureConnected();
-        socket.send(JSON.stringify({
-          type: 'approval_action',
-          request_id: requestID,
-          action,
-          option_id: optionID || '',
-        }));
-      } catch (error) {
-        pendingApprovalActions.delete(requestID);
-        renderApprovals();
-        setStatus(error.message || 'Failed to send approval action');
-      }
+      setStatus(error.message || 'Failed to send approval action');
     }
+  }
 
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const content = input.value.trim();
-      if (!content || sending) {
-        return;
-      }
-      const userMessage = appendLocalUserMessage(content);
-      input.value = '';
-      input.style.height = '56px';
-      await sendMessage(content, userMessage);
-    });
+  function closeMobileDrawer() {
+    if (window.innerWidth <= 900) sidebarEl.classList.remove('open');
+  }
 
-    newChatButton.addEventListener('click', async () => {
-      await startNewChat();
-    });
-
-    refreshSessionsButton.addEventListener('click', async () => {
-      await loadSessionList();
-    });
-
-    toggleSidebarButton.addEventListener('click', () => {
+  function toggleDrawer() {
+    if (window.innerWidth <= 900) {
       sidebarEl.classList.toggle('open');
-    });
+    } else {
+      sidebarEl.classList.toggle('collapsed');
+    }
+  }
 
-    input.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        form.requestSubmit();
-      }
-    });
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const content = input.value.trim();
+    if (!content || sending) return;
+    const userMessage = appendLocalUserMessage(content);
+    input.value = '';
+    input.style.height = '44px';
+    await sendMessage(content, userMessage);
+  });
 
-    input.addEventListener('input', () => {
-      input.style.height = '56px';
-      input.style.height = `${Math.min(input.scrollHeight, 180)}px`;
-    });
+  newChatButton.addEventListener('click', async () => { await startNewChat(); });
+  refreshSessionsButton.addEventListener('click', async () => { await loadSessionList(); });
+  toggleSidebarButton.addEventListener('click', toggleDrawer);
+  toggleSidebarRailButton?.addEventListener('click', toggleDrawer);
 
-    window.addEventListener('beforeunload', () => {
-      manuallyClosed = true;
-      clearTimeout(reconnectTimer);
-      if (socket && socket.readyState < WebSocket.CLOSING) {
-        socket.close();
-      }
-    });
+  input.addEventListener('keydown', event => {
+    if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); form.requestSubmit(); }
+  });
 
-    bootstrapChat().catch((error) => {
-      setStatus(error.message || 'Failed to initialize chat');
-      clearMessages();
-      appendMessage('error', error.message || 'Failed to initialize chat');
-    });
-  </script>
+  input.addEventListener('input', () => {
+    input.style.height = '44px';
+    input.style.height = `${Math.min(input.scrollHeight, 140)}px`;
+  });
+
+  window.addEventListener('beforeunload', () => {
+    manuallyClosed = true;
+    clearTimeout(reconnectTimer);
+    if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
+  });
+
+  bootstrapChat().catch(error => {
+    setStatus(error.message || 'Failed to initialize chat');
+    clearMessages();
+    appendMessage('error', error.message || 'Failed to initialize chat');
+  });
+</script>
 </body>
 </html>

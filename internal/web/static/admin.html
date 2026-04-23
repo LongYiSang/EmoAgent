@@ -4,1175 +4,1260 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>EmoAgent Admin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #f4efe7;
-      --panel: rgba(255,255,255,.8);
-      --panel-strong: rgba(255,250,246,.94);
-      --text: #2f241f;
-      --muted: #7e675e;
-      --accent: #db6f4d;
-      --accent-2: #c95735;
-      --accent-soft: #f7d7c8;
+      --surface: #FFFDFB;
+      --surface-2: #FAF4EC;
+      --ink: #2A2230;
+      --ink-2: #4A3F52;
+      --muted: #8B7E8F;
+      --hair: rgba(42,34,48,.07);
+      --hair-strong: rgba(42,34,48,.12);
+      --peach: #F5B99F;
+      --peach-ink: #C06B48;
+      --peach-soft: #FDE8DC;
+      --coral: #EE8D73;
+      --lavender: #CFC3E8;
+      --lavender-ink: #6B5A94;
+      --lavender-soft: #EFE9F8;
+      --mint: #B9E0C9;
+      --mint-ink: #3F7A5C;
+      --mint-soft: #E6F3EB;
+      --butter: #F6E4A1;
+      --butter-ink: #8B6E1E;
+      --butter-soft: #FBF4D6;
+      --rose: #F5C2D1;
+      --rose-ink: #B35576;
       --success: #2e8b57;
       --danger: #b94b3b;
-      --warn: #ad6a21;
-      --border: rgba(47,36,31,.12);
-      --shadow: 0 22px 54px rgba(88,55,38,.13);
-      --radius: 24px;
-      font-family: "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      --primary-grad: linear-gradient(135deg,#F5B99F 0%,#EE8D73 100%);
+      --danger-grad: linear-gradient(135deg,#F3A8B7 0%,#D86B83 100%);
+      --font-ui: 'Manrope','PingFang SC','Hiragino Sans GB',sans-serif;
+      --font-data: 'Inter','PingFang SC',sans-serif;
+      --font-mono: 'JetBrains Mono',ui-monospace,monospace;
+      --r-sm: 14px; --r-md: 20px; --r-lg: 26px; --r-pill: 999px;
+      --shadow-sm: 0 1px 2px rgba(42,34,48,.04),0 2px 8px rgba(42,34,48,.03);
+      --shadow-md: 0 4px 12px rgba(42,34,48,.05),0 16px 40px rgba(42,34,48,.06);
+      --shadow-lg: 0 12px 28px rgba(42,34,48,.06),0 28px 70px rgba(42,34,48,.08);
+      --shadow-glow: 0 12px 34px rgba(238,141,115,.22);
+      --ease-out: cubic-bezier(.2,.8,.2,1);
     }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      color: var(--text);
+    *{box-sizing:border-box;}
+    html,body{margin:0;padding:0;height:100%;overflow:hidden;}
+    body{
+      font-family:var(--font-ui);color:var(--ink);
       background:
-        radial-gradient(circle at top left, rgba(219,111,77,.18), transparent 30%),
-        radial-gradient(circle at top right, rgba(143,182,166,.16), transparent 28%),
-        linear-gradient(160deg, #f8f2eb 0%, #efe4d8 100%);
+        radial-gradient(1200px 700px at 10% -10%,#FCE5D6 0%,transparent 45%),
+        radial-gradient(900px 600px at 110% 10%,#E6DAF3 0%,transparent 40%),
+        radial-gradient(1000px 700px at 50% 120%,#D8ECE0 0%,transparent 50%),
+        #FBF7F2;
+      -webkit-font-smoothing:antialiased;
     }
-    a { color: inherit; }
-    button, input, select, textarea { font: inherit; }
-    button { cursor: pointer; }
-    .page {
-      width: min(1440px, calc(100vw - 32px));
-      min-height: calc(100vh - 32px);
-      margin: 16px auto;
-      padding: 18px;
-      border: 1px solid var(--border);
-      border-radius: 30px;
-      background: var(--panel);
-      backdrop-filter: blur(18px);
-      box-shadow: var(--shadow);
-      display: grid;
-      grid-template-rows: auto auto 1fr;
-      gap: 16px;
+    button,input,textarea,select{font:inherit;color:inherit;}
+    button{cursor:pointer;}
+    a{color:inherit;}
+
+    /* ── Shell ── */
+    .av2{
+      height:100vh;
+      display:grid;grid-template-rows:auto 1fr;
+      background:linear-gradient(180deg,#FDF7F0 0%,#F7EEF4 100%);
+      overflow:hidden;
     }
-    .topbar {
-      display: flex;
-      justify-content: space-between;
-      gap: 16px;
-      align-items: flex-start;
-      padding: 6px 4px 2px;
+
+    /* ── Top bar ── */
+    .av2-top{
+      padding:18px 28px;
+      display:flex;align-items:center;gap:20px;flex-wrap:nowrap;
+      border-bottom:1px solid var(--hair);
+      background:rgba(255,253,251,.7);backdrop-filter:blur(22px);
+      flex-shrink:0;
     }
-    .brand h1 {
-      margin: 0;
-      font-size: 28px;
-      line-height: 1.1;
-      letter-spacing: -.02em;
+    .av2-brand{display:flex;align-items:center;gap:14px;flex-shrink:0;white-space:nowrap;}
+    .av2-brand .logo{
+      width:42px;height:42px;border-radius:13px;
+      background:var(--primary-grad);
+      display:grid;place-items:center;color:#fff;font-weight:800;font-size:18px;
+      box-shadow:var(--shadow-glow);flex-shrink:0;
     }
-    .brand p {
-      margin: 8px 0 0;
-      color: var(--muted);
-      font-size: 13px;
-      line-height: 1.5;
+    .av2-brand h1{margin:0;font-size:17px;font-weight:800;letter-spacing:-.015em;white-space:nowrap;}
+    .av2-brand .sub{font-size:11px;color:var(--muted);white-space:nowrap;}
+
+    .av2-tabs{
+      display:inline-flex;background:#fff;border:1px solid var(--hair);
+      padding:4px;border-radius:14px;gap:2px;margin:0 auto;
+      box-shadow:var(--shadow-sm);flex-shrink:0;white-space:nowrap;
     }
-    .top-actions {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-      gap: 10px;
+    .av2-tab{
+      border:0;background:transparent;padding:8px 16px;border-radius:10px;
+      font-size:13px;font-weight:700;color:var(--muted);
+      display:inline-flex;align-items:center;gap:8px;
+      transition:all .15s var(--ease-out);white-space:nowrap;
     }
-    .pill, .btn, .input, .select, .textarea, .card {
-      border: 1px solid var(--border);
-      background: rgba(255,255,255,.78);
+    .av2-tab:hover{color:var(--ink);}
+    .av2-tab.active{background:var(--ink);color:#fff;box-shadow:0 4px 14px rgba(42,34,48,.25);}
+    .av2-tab .cnt{
+      font-family:var(--font-data);font-size:11px;padding:1px 7px;
+      border-radius:999px;background:var(--surface-2,#FAF4EC);color:var(--muted);font-weight:700;
     }
-    .pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 10px 14px;
-      border-radius: 999px;
-      text-decoration: none;
+    .av2-tab.active .cnt{background:rgba(255,255,255,.16);color:rgba(255,255,255,.85);}
+
+    .av2-top-r{display:flex;align-items:center;gap:10px;flex-shrink:0;margin-left:auto;}
+    .av2-status{
+      display:inline-flex;align-items:center;gap:7px;
+      padding:7px 12px;border-radius:999px;
+      background:var(--mint-soft);color:var(--mint-ink);
+      font-size:12px;font-weight:700;white-space:nowrap;
     }
-    .pill.primary {
-      background: linear-gradient(135deg, var(--accent), var(--accent-2));
-      color: #fff;
-      border-color: transparent;
+    .av2-status .dot{width:6px;height:6px;border-radius:50%;background:var(--mint-ink);flex-shrink:0;}
+    .av2-linkpill{
+      padding:7px 14px;border-radius:999px;border:1px solid var(--hair);
+      background:#fff;font-size:12.5px;font-weight:600;white-space:nowrap;
+      display:inline-flex;align-items:center;gap:6px;text-decoration:none;
+      transition:all .15s var(--ease-out);
     }
-    .toolbar {
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      align-items: center;
-      padding: 14px;
-      border-radius: var(--radius);
-      background: var(--panel-strong);
-      border: 1px solid var(--border);
+    .av2-linkpill:hover{border-color:var(--peach);color:var(--peach-ink);}
+    .av2-linkpill.primary{background:var(--primary-grad);color:#fff;border-color:transparent;box-shadow:var(--shadow-glow);}
+    .av2-refresh-btn{
+      padding:7px 14px;border-radius:999px;border:1px solid var(--hair);
+      background:#fff;font-size:12px;font-weight:600;white-space:nowrap;
+      display:inline-flex;align-items:center;gap:6px;
+      transition:all .15s var(--ease-out);
     }
-    .toolbar-left, .toolbar-right {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 10px;
+    .av2-refresh-btn:hover{border-color:var(--peach);color:var(--peach-ink);}
+
+    /* ── Tab panels ── */
+    .av2-body{
+      min-height:0;display:grid;
+      grid-template-columns:380px 1fr;
+      overflow:hidden;
     }
-    .status {
-      padding: 9px 12px;
-      border-radius: 999px;
-      font-size: 12px;
-      color: var(--accent);
-      background: var(--accent-soft);
-      white-space: nowrap;
+    .av2-body[hidden]{display:none;}
+
+    /* ── Master list ── */
+    .av2-master{
+      padding:20px 18px;border-right:1px solid var(--hair);
+      overflow-y:auto;display:grid;
+      grid-template-rows:auto auto auto 1fr;gap:12px;
+      background:rgba(255,253,251,.5);
     }
-    .hint { font-size: 12px; color: var(--muted); }
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      min-height: 42px;
-      padding: 0 14px;
-      border-radius: 14px;
-      color: var(--text);
-      transition: transform .16s ease, border-color .16s ease;
+    .av2-master::-webkit-scrollbar{width:6px;}
+    .av2-master::-webkit-scrollbar-thumb{background:var(--hair);border-radius:999px;}
+    .av2-master-hd{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;}
+    .av2-master-hd h2{margin:0;font-size:15px;font-weight:800;letter-spacing:-.01em;}
+    .av2-master-hd .hint{font-size:11px;color:var(--muted);margin-top:3px;}
+
+    .av2-search{
+      display:flex;align-items:center;gap:8px;padding:10px 14px;
+      background:#fff;border:1px solid var(--hair);border-radius:13px;
+      color:var(--muted);font-size:13px;
     }
-    .btn:hover, .pill:hover { transform: translateY(-1px); border-color: rgba(219,111,77,.28); }
-    .btn.primary {
-      color: #fff;
-      border-color: transparent;
-      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    .av2-search input{border:0;outline:0;background:transparent;width:100%;color:var(--ink);font-size:13px;}
+
+    .av2-master-actions{display:grid;grid-template-columns:1fr auto;gap:8px;}
+    .av2-new{
+      border:0;min-height:40px;border-radius:13px;
+      background:var(--primary-grad);color:#fff;
+      font-weight:700;font-size:13px;
+      display:inline-flex;align-items:center;justify-content:center;gap:8px;
+      box-shadow:var(--shadow-glow);transition:transform .15s var(--ease-out);
     }
-    .btn.ghost { background: rgba(255,255,255,.5); }
-    .btn.danger {
-      color: #fff;
-      border-color: transparent;
-      background: linear-gradient(135deg, #d15a4a, #a63f31);
+    .av2-new:hover{transform:translateY(-1px);}
+    .av2-ghost{
+      min-height:40px;padding:0 14px;border-radius:13px;border:1px solid var(--hair);
+      background:#fff;font-size:13px;font-weight:600;
+      display:inline-flex;align-items:center;gap:6px;
+      transition:all .15s var(--ease-out);
     }
-    .btn:disabled { opacity: .55; cursor: not-allowed; transform: none; }
-    .workspace {
-      display: grid;
-      grid-template-columns: 300px minmax(0,1.15fr) 340px;
-      gap: 16px;
-      min-height: 0;
+    .av2-ghost:hover{border-color:var(--peach);color:var(--peach-ink);}
+
+    .av2-list{display:grid;gap:8px;align-content:start;padding-bottom:10px;}
+
+    /* Persona cards */
+    .av2-persona{
+      background:#fff;border:1px solid var(--hair);border-radius:18px;
+      padding:13px;display:grid;grid-template-columns:44px 1fr auto;
+      gap:10px;cursor:pointer;transition:all .18s var(--ease-out);align-items:center;
     }
-    .panel {
-      min-height: 0;
-      border-radius: var(--radius);
-      border: 1px solid var(--border);
-      background: rgba(255,255,255,.72);
-      box-shadow: 0 14px 35px rgba(88,55,38,.08);
-      overflow: hidden;
-      display: grid;
-      grid-template-rows: auto 1fr;
+    .av2-persona:hover{transform:translateY(-1px);border-color:var(--peach);}
+    .av2-persona.active{
+      border-color:transparent;
+      background:linear-gradient(135deg,#FDE8DC 0%,#FFFDFB 100%);
+      box-shadow:0 14px 32px rgba(245,185,159,.18),inset 0 0 0 1.5px var(--peach);
     }
-    .panel-head {
-      padding: 16px 16px 12px;
-      border-bottom: 1px solid var(--border);
-      background: rgba(255,255,255,.56);
+    .av2-av{
+      width:44px;height:44px;border-radius:13px;
+      display:grid;place-items:center;color:#fff;font-weight:800;font-size:18px;
+      letter-spacing:-.02em;flex-shrink:0;
     }
-    .panel-head h2, .section-title h3 { margin: 0; }
-    .panel-head p {
-      margin: 6px 0 0;
-      font-size: 12px;
-      color: var(--muted);
-      line-height: 1.45;
+    .av2-av.lav{background:linear-gradient(135deg,#CFC3E8,#F5C2D1);}
+    .av2-av.peach{background:linear-gradient(135deg,#F5B99F,#EE8D73);}
+    .av2-av.mint{background:linear-gradient(135deg,#B9E0C9,#9DCCAF);}
+    .av2-av.butter{background:linear-gradient(135deg,#F6E4A1,#E3C77A);}
+    .av2-av.coral{background:linear-gradient(135deg,#EE8D73,#C95735);}
+    .av2-persona .info{min-width:0;}
+    .av2-persona .nm{font-size:14px;font-weight:800;display:flex;align-items:center;gap:8px;overflow:hidden;}
+    .av2-persona .nm .chip{
+      font-size:9.5px;font-weight:800;padding:2px 7px;border-radius:999px;
+      background:var(--mint-soft);color:var(--mint-ink);
+      text-transform:uppercase;letter-spacing:.1em;white-space:nowrap;flex-shrink:0;
     }
-    .panel-body { min-height: 0; overflow: auto; padding: 14px; }
-    .section-title {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      margin-bottom: 2px;
+    .av2-persona .desc{
+      font-size:12px;color:var(--muted);margin-top:2px;
+      overflow:hidden;text-overflow:ellipsis;
+      display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+      line-height:1.45;
     }
-    .section-title h3 { font-size: 14px; }
-    .section-title span { color: var(--muted); font-size: 12px; }
-    .list-tools { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
-    .list { display: grid; gap: 10px; }
-    .list-item {
-      border-radius: 18px;
-      border: 1px solid var(--border);
-      background: rgba(255,255,255,.76);
-      padding: 13px 14px;
-      text-align: left;
-      color: inherit;
-      width: 100%;
-      display: grid;
-      gap: 6px;
-      transition: transform .16s ease, border-color .16s ease, background .16s ease;
+    .av2-persona .tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px;}
+    .av2-persona .tag{
+      font-size:10.5px;padding:2px 7px;border-radius:6px;
+      background:var(--surface-2,#FAF4EC);color:var(--ink-2);font-family:var(--font-data);
     }
-    .list-item:hover { transform: translateY(-1px); border-color: rgba(219,111,77,.3); }
-    .list-item.active {
-      background: linear-gradient(180deg, rgba(255,244,236,.95), rgba(255,255,255,.92));
-      border-color: rgba(219,111,77,.35);
-      box-shadow: 0 12px 28px rgba(219,111,77,.12);
+    .av2-persona .nav-arrow{color:var(--muted);flex-shrink:0;}
+    .av2-persona.active .nav-arrow{color:var(--peach-ink);}
+
+    /* LLM profile cards */
+    .av2-llm-item{
+      background:#fff;border:1px solid var(--hair);border-radius:18px;
+      padding:13px 14px;cursor:pointer;transition:all .18s var(--ease-out);
+      width:100%;text-align:left;
     }
-    .item-top, .item-meta {
-      display: flex;
-      justify-content: space-between;
-      gap: 10px;
-      align-items: center;
+    .av2-llm-item:hover{transform:translateY(-1px);border-color:var(--peach);}
+    .av2-llm-item.active{
+      border-color:transparent;
+      background:linear-gradient(135deg,#FDE8DC 0%,#FFFDFB 100%);
+      box-shadow:0 14px 32px rgba(245,185,159,.18),inset 0 0 0 1.5px var(--peach);
     }
-    .item-title {
-      font-weight: 700;
-      font-size: 14px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+    .av2-llm-top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px;}
+    .av2-llm-name{font-size:14px;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .badge{
+      display:inline-flex;align-items:center;padding:3px 8px;
+      border-radius:999px;font-size:11px;font-weight:700;white-space:nowrap;
     }
-    .item-sub {
-      font-size: 12px;
-      color: var(--muted);
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+    .badge.ok{color:var(--success);background:rgba(46,139,87,.12);}
+    .badge.neutral{color:var(--muted);background:rgba(126,103,94,.12);}
+    .av2-llm-sub{font-size:12px;color:var(--muted);margin-top:2px;font-family:var(--font-data);}
+    .av2-llm-tags{display:flex;gap:4px;margin-top:6px;flex-wrap:wrap;}
+
+    /* ── Detail panel ── */
+    .av2-detail{
+      overflow-y:auto;padding:22px 28px;
+      display:grid;gap:18px;align-content:start;
     }
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      padding: 5px 8px;
-      border-radius: 999px;
-      font-size: 11px;
-      line-height: 1;
-      white-space: nowrap;
+    .av2-detail::-webkit-scrollbar{width:6px;}
+    .av2-detail::-webkit-scrollbar-thumb{background:var(--hair);border-radius:999px;}
+
+    /* Hero card */
+    .av2-hero{
+      border-radius:22px;padding:22px 26px;
+      background:linear-gradient(135deg,#CFC3E8 0%,#F5C2D1 60%,#FDE8DC 100%);
+      color:#fff;position:relative;overflow:hidden;
+      display:flex;gap:18px;align-items:center;min-height:120px;flex-shrink:0;
     }
-    .badge.ok { color: var(--success); background: rgba(46,139,87,.12); }
-    .badge.neutral { color: var(--muted); background: rgba(126,103,94,.12); }
-    .form-card {
-      border-radius: 20px;
-      border: 1px solid var(--border);
-      background: rgba(255,255,255,.82);
-      padding: 14px;
-      display: grid;
-      gap: 12px;
+    .av2-hero::before{
+      content:'';position:absolute;width:200px;height:200px;border-radius:50%;
+      background:rgba(255,255,255,.22);right:-70px;top:-70px;pointer-events:none;
     }
-    .editor-grid { display: grid; gap: 14px; }
-    .form-row { display: grid; gap: 8px; }
-    .form-row.two { grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; }
-    label { font-size: 12px; color: var(--muted); }
-    .input, .select, .textarea {
-      width: 100%;
-      border-radius: 14px;
-      color: var(--text);
-      outline: none;
-      padding: 12px 13px;
-      transition: border-color .16s ease, box-shadow .16s ease;
+    .av2-hero::after{
+      content:'';position:absolute;width:110px;height:110px;border-radius:50%;
+      background:rgba(255,255,255,.16);left:40%;bottom:-55px;pointer-events:none;
     }
-    .textarea { resize: vertical; min-height: 96px; line-height: 1.5; }
-    .input:focus, .select:focus, .textarea:focus {
-      border-color: rgba(219,111,77,.42);
-      box-shadow: 0 0 0 4px rgba(219,111,77,.12);
+    .av2-hero-av{
+      width:78px;height:78px;border-radius:22px;
+      background:linear-gradient(135deg,#F5B99F,#EE8D73);
+      display:grid;place-items:center;
+      font-size:32px;font-weight:800;letter-spacing:-.03em;
+      box-shadow:0 14px 30px rgba(238,141,115,.4);position:relative;z-index:1;flex-shrink:0;
     }
-    .actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      align-items: center;
-      justify-content: space-between;
-      padding-top: 4px;
+    .av2-hero-meta{flex:1;min-width:0;position:relative;z-index:1;}
+    .av2-hero-meta .label{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.14em;opacity:.85;}
+    .av2-hero-meta h2{margin:3px 0 2px;font-size:26px;font-weight:800;letter-spacing:-.02em;}
+    .av2-hero-meta .desc{font-size:13px;opacity:.9;max-width:520px;line-height:1.5;}
+    .av2-hero-meta .inline{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;}
+    .av2-hero-meta .key{
+      background:rgba(255,255,255,.3);padding:3px 10px;border-radius:999px;
+      font-family:var(--font-mono);font-size:10.5px;backdrop-filter:blur(6px);
     }
-    .actions .left, .actions .right {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
+    .av2-hero-actions{display:flex;flex-direction:column;gap:8px;position:relative;z-index:1;flex-shrink:0;}
+    .av2-btn-white{
+      background:#fff;color:var(--ink);border:0;
+      min-height:38px;padding:0 16px;border-radius:11px;
+      font-weight:700;font-size:12.5px;
+      display:inline-flex;align-items:center;justify-content:center;gap:6px;
+      white-space:nowrap;transition:all .15s var(--ease-out);
     }
-    .empty {
-      border: 1px dashed rgba(47,36,31,.18);
-      border-radius: 18px;
-      padding: 18px;
-      color: var(--muted);
-      background: rgba(255,255,255,.45);
-      line-height: 1.55;
+    .av2-btn-white:hover{background:var(--peach-soft);}
+    .av2-btn-white.primary{background:var(--ink);color:#fff;}
+    .av2-btn-white.primary:hover{background:#3A2E44;}
+    .av2-btn-white:disabled{opacity:.5;cursor:not-allowed;}
+
+    /* Form cards */
+    .av2-split{display:grid;grid-template-columns:1.2fr 1fr;gap:14px;}
+    .av2-card{
+      background:#fff;border:1px solid var(--hair);border-radius:18px;
+      padding:16px 18px;display:grid;gap:12px;
     }
-    .toast-zone {
-      position: fixed;
-      right: 18px;
-      bottom: 18px;
-      display: grid;
-      gap: 10px;
-      z-index: 50;
-      pointer-events: none;
+    .av2-card-hd{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+    .av2-card-hd h3{margin:0;font-size:12.5px;font-weight:800;display:flex;align-items:center;gap:7px;}
+    .av2-card-hd .dot{
+      width:20px;height:20px;border-radius:6px;
+      display:grid;place-items:center;font-size:11px;font-weight:800;
     }
-    .toast {
-      min-width: 220px;
-      max-width: min(380px, calc(100vw - 36px));
-      padding: 12px 14px;
-      border-radius: 16px;
-      box-shadow: 0 16px 36px rgba(88,55,38,.18);
-      background: rgba(255,255,255,.96);
-      border: 1px solid var(--border);
-      color: var(--text);
-      pointer-events: none;
+    .av2-card-hd .dot.peach{background:var(--peach-soft);color:var(--peach-ink);}
+    .av2-card-hd .dot.lav{background:var(--lavender-soft);color:var(--lavender-ink);}
+    .av2-card-hd .dot.mint{background:var(--mint-soft);color:var(--mint-ink);}
+    .av2-card-hd .dot.butter{background:var(--butter-soft);color:var(--butter-ink);}
+    .av2-card-hd .hint{font-size:11px;color:var(--muted);}
+
+    .av2-fld{display:grid;gap:5px;}
+    .av2-fld label{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;}
+    .av2-input{
+      border:1px solid var(--hair);background:#FBFAF8;border-radius:11px;
+      padding:10px 12px;font-size:13.5px;outline:none;transition:all .15s;color:var(--ink);width:100%;
     }
-    .toast.ok { border-color: rgba(46,139,87,.25); }
-    .toast.err { border-color: rgba(185,75,59,.3); }
-    .toast .small { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; }
-    @keyframes rise {
-      from { opacity: 0; transform: translateY(8px); }
-      to { opacity: 1; transform: translateY(0); }
+    .av2-input:focus{border-color:var(--peach);background:#fff;box-shadow:0 0 0 4px rgba(245,185,159,.18);}
+    .av2-input.mono{font-family:var(--font-mono);font-size:12.5px;}
+    .av2-textarea{min-height:90px;resize:vertical;line-height:1.55;}
+    .av2-grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+    .av2-select{
+      border:1px solid var(--hair);background:#FBFAF8;border-radius:11px;
+      padding:10px 12px;font-size:13.5px;outline:none;transition:all .15s;color:var(--ink);width:100%;
     }
-    @media (max-width: 1180px) {
-      .workspace { grid-template-columns: 280px minmax(0,1fr); }
-      .persona-col { grid-column: 1 / -1; }
+    .av2-select:focus{border-color:var(--peach);background:#fff;box-shadow:0 0 0 4px rgba(245,185,159,.18);}
+
+    .av2-quirks{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px;}
+    .av2-quirk{
+      display:inline-flex;align-items:center;gap:6px;
+      padding:5px 10px 5px 12px;background:var(--butter-soft);color:var(--butter-ink);
+      border-radius:999px;font-size:12px;font-weight:600;
     }
-    @media (max-width: 860px) {
-      .page {
-        width: 100vw;
-        min-height: 100vh;
-        margin: 0;
-        border-radius: 0;
-        padding: 12px;
-      }
-      .workspace { grid-template-columns: 1fr; }
-      .form-row.two { grid-template-columns: 1fr; }
-      .topbar, .toolbar { align-items: stretch; }
-      .top-actions, .toolbar-left, .toolbar-right, .actions, .actions .left, .actions .right { width: 100%; }
-      .btn, .pill { width: 100%; }
-      .toast-zone { right: 12px; left: 12px; bottom: 12px; }
-      .toast { max-width: none; }
+    .av2-quirk .x{
+      width:16px;height:16px;border-radius:50%;background:rgba(139,110,30,.12);
+      display:grid;place-items:center;font-size:11px;line-height:1;cursor:pointer;border:0;
+      color:var(--butter-ink);padding:0;
+    }
+    .av2-quirk-add{
+      background:transparent;border:1px dashed var(--hair-strong);color:var(--muted);
+      cursor:pointer;padding:5px 12px;border-radius:999px;
+      font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:5px;
+      transition:all .15s var(--ease-out);
+    }
+    .av2-quirk-add:hover{border-color:var(--peach);color:var(--peach-ink);}
+
+    .av2-preview{
+      border:1px dashed var(--hair-strong);border-radius:14px;padding:12px;
+      background:var(--surface-2,#FAF4EC);display:grid;gap:7px;
+    }
+    .av2-preview .lbl{font-size:10px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);}
+    .av2-preview .bubble{
+      background:#fff;padding:11px 13px;border-radius:12px;
+      font-size:13px;line-height:1.5;box-shadow:var(--shadow-sm);
+    }
+
+    .av2-mini-list{display:grid;gap:7px;}
+    .av2-mini-item{
+      display:flex;align-items:center;gap:10px;
+      padding:9px 12px;background:#FBFAF8;border:1px solid var(--hair);border-radius:10px;font-size:12.5px;
+    }
+    .av2-mini-item .k{font-family:var(--font-mono);font-size:11.5px;color:var(--muted);margin-right:auto;}
+    .av2-mini-item .v{font-weight:700;}
+
+    .av2-detail-actions{
+      display:flex;align-items:center;justify-content:space-between;padding:2px;
+    }
+    .av2-btn{
+      min-height:42px;padding:0 18px;border-radius:13px;border:1px solid var(--hair);
+      background:#fff;font-weight:700;font-size:13.5px;
+      display:inline-flex;align-items:center;gap:8px;color:var(--ink);
+      transition:all .15s var(--ease-out);
+    }
+    .av2-btn:hover{border-color:var(--peach);color:var(--peach-ink);}
+    .av2-btn.primary{background:var(--primary-grad);color:#fff;border-color:transparent;box-shadow:var(--shadow-glow);}
+    .av2-btn.primary:hover{transform:translateY(-1px);filter:brightness(1.03);}
+    .av2-btn.danger{color:var(--rose-ink);border-color:rgba(243,168,183,.5);}
+    .av2-btn.danger:hover{background:var(--danger-grad);color:#fff;border-color:transparent;}
+    .av2-btn:disabled{opacity:.55;cursor:not-allowed;transform:none;filter:none;}
+    .av2-btns-row{display:flex;gap:8px;}
+
+    /* Placeholder tab content */
+    .av2-placeholder{
+      display:grid;place-items:center;height:100%;
+      color:var(--muted);font-size:14px;
+    }
+    .av2-placeholder-inner{text-align:center;display:grid;gap:8px;}
+    .av2-placeholder-inner .icon{font-size:32px;opacity:.4;}
+    .av2-placeholder-inner p{margin:0;font-size:13px;color:var(--muted);}
+
+    /* Toast */
+    .toast-zone{
+      position:fixed;right:18px;bottom:18px;display:grid;gap:10px;z-index:50;pointer-events:none;
+    }
+    .toast{
+      min-width:220px;max-width:min(380px,calc(100vw - 36px));
+      padding:11px 14px;border-radius:14px;
+      box-shadow:0 16px 36px rgba(88,55,38,.18);
+      background:rgba(255,255,255,.96);border:1px solid var(--hair);
+      color:var(--ink);pointer-events:none;animation:toast-in .2s var(--ease-out);
+    }
+    @keyframes toast-in{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:translateY(0);}}
+    .toast.ok{border-color:rgba(46,139,87,.25);}
+    .toast.err{border-color:rgba(185,75,59,.3);}
+    .toast .small{display:block;margin-top:3px;color:var(--muted);font-size:12px;}
+
+    @media(max-width:900px){
+      .av2-top{flex-wrap:wrap;}
+      .av2-tabs{margin:0;}
+      .av2-body{grid-template-columns:260px 1fr;}
+    }
+    @media(max-width:700px){
+      .av2-body{grid-template-columns:1fr;}
+      .av2-detail{display:none;}
+      .av2-split{grid-template-columns:1fr;}
     }
   </style>
 </head>
 <body>
-  <main class="page">
-    <section class="topbar">
-      <div class="brand">
+<div class="av2">
+  <header class="av2-top">
+    <div class="av2-brand">
+      <div class="logo">E</div>
+      <div>
         <h1>EmoAgent Admin</h1>
-        <p>Manage LLM profiles, active switching, and personas from one page.</p>
+        <div class="sub">Manage LLM profiles and personas</div>
       </div>
-      <div class="top-actions">
-        <a class="pill" href="/index.html">Open Chat</a>
-        <a class="pill primary" href="/admin.html">Admin</a>
+    </div>
+
+    <div class="av2-tabs">
+      <button class="av2-tab" id="tab-llm-btn" onclick="switchTab('llm')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
+        LLM Profiles<span class="cnt" id="llm-count-tab">0</span>
+      </button>
+      <button class="av2-tab active" id="tab-personas-btn" onclick="switchTab('personas')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a7 7 0 0 1 7-7h2a7 7 0 0 1 7 7v1"/></svg>
+        Personas<span class="cnt" id="persona-count-tab">0</span>
+      </button>
+      <button class="av2-tab" id="tab-settings-btn" onclick="switchTab('settings')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Settings
+      </button>
+    </div>
+
+    <div class="av2-top-r">
+      <div class="av2-status"><span class="dot"></span><span id="status">Ready</span></div>
+      <button class="av2-refresh-btn" id="refresh-all">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>
+        Refresh
+      </button>
+      <a class="av2-linkpill" href="/index.html">Open Chat</a>
+    </div>
+  </header>
+
+  <!-- LLM Profiles tab -->
+  <div class="av2-body" id="tab-llm" hidden>
+    <aside class="av2-master">
+      <div class="av2-master-hd">
+        <div>
+          <h2>LLM Profiles</h2>
+          <div class="hint" id="llm-summary-hint">Select a profile to edit</div>
+        </div>
       </div>
+      <div class="av2-search">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/></svg>
+        <input placeholder="Search profiles…" id="llm-search">
+      </div>
+      <div class="av2-master-actions">
+        <button class="av2-new" id="new-profile">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+          New Profile
+        </button>
+        <button class="av2-ghost" id="reload-profiles">Reload</button>
+      </div>
+      <div class="av2-list" id="llm-list"></div>
+    </aside>
+
+    <section class="av2-detail" id="llm-detail">
+      <!-- Hero -->
+      <div class="av2-hero" id="llm-hero">
+        <div class="av2-hero-av" id="llm-hero-av">+</div>
+        <div class="av2-hero-meta">
+          <div class="label" id="llm-hero-label">LLM Profile</div>
+          <h2 id="llm-hero-name">New Profile</h2>
+          <div class="desc" id="llm-hero-desc">Configure an LLM provider and model</div>
+          <div class="inline">
+            <span class="key" id="llm-hero-key"></span>
+            <span class="key" id="llm-hero-provider"></span>
+          </div>
+        </div>
+        <div class="av2-hero-actions">
+          <button class="av2-btn-white primary" id="llm-activate">Activate</button>
+        </div>
+      </div>
+
+      <form id="llm-form">
+        <div class="av2-card">
+          <div class="av2-card-hd"><h3><span class="dot peach">i</span>Identity</h3><span class="hint">Required</span></div>
+          <div class="av2-grid2">
+            <div class="av2-fld"><label for="llm-id">ID</label><input class="av2-input mono" id="llm-id" name="id" placeholder="moonshot" autocomplete="off"></div>
+            <div class="av2-fld"><label for="llm-name">Name</label><input class="av2-input" id="llm-name" name="name" placeholder="Moonshot K2.5" autocomplete="off"></div>
+          </div>
+          <div class="av2-grid2">
+            <div class="av2-fld">
+              <label for="llm-provider">Provider</label>
+              <select class="av2-select" id="llm-provider" name="provider">
+                <option value="openai">openai</option>
+                <option value="anthropic">anthropic</option>
+              </select>
+            </div>
+            <div class="av2-fld"><label for="llm-api-key-env">API Key Env</label><input class="av2-input mono" id="llm-api-key-env" name="api_key_env" placeholder="MOONSHOT_API_KEY" autocomplete="off"></div>
+          </div>
+        </div>
+
+        <div class="av2-card">
+          <div class="av2-card-hd"><h3><span class="dot lav">M</span>Model</h3><span class="hint">Chat &amp; summary settings</span></div>
+          <div class="av2-fld"><label for="llm-base-url">Base URL</label><input class="av2-input mono" id="llm-base-url" name="base_url" placeholder="https://api.moonshot.cn" autocomplete="off"></div>
+          <div class="av2-grid2">
+            <div class="av2-fld"><label for="llm-model">Model</label><input class="av2-input" id="llm-model" name="model" placeholder="kimi-k2.5" autocomplete="off"></div>
+            <div class="av2-fld"><label for="llm-summary-model">Summary Model</label><input class="av2-input" id="llm-summary-model" name="summary_model" placeholder="(inherit)" autocomplete="off"></div>
+          </div>
+          <div class="av2-grid2">
+            <div class="av2-fld"><label for="llm-max-tokens">Max Tokens</label><input class="av2-input" id="llm-max-tokens" name="max_tokens" type="number" min="1" placeholder="4096"></div>
+            <div class="av2-fld"><label for="llm-temperature">Temperature</label><input class="av2-input" id="llm-temperature" name="temperature" type="number" min="0" max="2" step="0.1" placeholder="1.0"></div>
+          </div>
+          <div class="av2-fld"><label for="llm-summary-temperature">Summary Temperature</label><input class="av2-input" id="llm-summary-temperature" name="summary_temperature" type="number" min="0" max="2" step="0.1" placeholder="inherit (0.1)"></div>
+        </div>
+
+        <div class="av2-card">
+          <div class="av2-card-hd"><h3><span class="dot mint">C</span>Context Budget</h3><span class="hint">Leave blank to inherit global</span></div>
+          <div class="av2-grid2">
+            <div class="av2-fld"><label for="llm-input-budget-tokens">Input Budget Tokens</label><input class="av2-input" id="llm-input-budget-tokens" name="input_budget_tokens" type="number" min="1" placeholder="inherit"></div>
+            <div class="av2-fld"><label for="llm-reserve-output-tokens">Reserve Output Tokens</label><input class="av2-input" id="llm-reserve-output-tokens" name="reserve_output_tokens" type="number" min="1" placeholder="inherit"></div>
+          </div>
+          <div class="av2-grid2">
+            <div class="av2-fld"><label for="llm-soft-compact-ratio">Soft Compact Ratio</label><input class="av2-input" id="llm-soft-compact-ratio" name="soft_compact_ratio" type="number" min="0" max="1" step="0.01" placeholder="inherit"></div>
+            <div class="av2-fld"><label for="llm-hard-compact-ratio">Hard Compact Ratio</label><input class="av2-input" id="llm-hard-compact-ratio" name="hard_compact_ratio" type="number" min="0" max="1" step="0.01" placeholder="inherit"></div>
+          </div>
+        </div>
+
+        <div class="av2-detail-actions">
+          <div class="av2-btns-row">
+            <button class="av2-btn primary" type="submit" id="llm-save">Save Profile</button>
+          </div>
+          <button class="av2-btn danger" type="button" id="llm-delete">Delete</button>
+        </div>
+      </form>
     </section>
+  </div>
 
-    <section class="toolbar">
-      <div class="toolbar-left">
-        <div class="status" id="status">Ready</div>
-        <div class="hint" id="summary">LLM Profiles and Personas can be managed here.</div>
+  <!-- Personas tab -->
+  <div class="av2-body" id="tab-personas">
+    <aside class="av2-master">
+      <div class="av2-master-hd">
+        <div>
+          <h2>Personas</h2>
+          <div class="hint" id="persona-summary-hint">Select a persona to edit</div>
+        </div>
       </div>
-      <div class="toolbar-right">
-        <button class="btn ghost" id="refresh-all" type="button">Refresh All</button>
+      <div class="av2-search">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/></svg>
+        <input placeholder="Search personas…" id="persona-search">
       </div>
+      <div class="av2-master-actions">
+        <button class="av2-new" id="new-persona">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+          New Persona
+        </button>
+        <button class="av2-ghost" id="reload-personas">Reload</button>
+      </div>
+      <div class="av2-list" id="persona-list"></div>
+    </aside>
+
+    <section class="av2-detail">
+      <!-- Hero -->
+      <div class="av2-hero" id="persona-hero">
+        <div class="av2-hero-av" id="persona-hero-av">+</div>
+        <div class="av2-hero-meta">
+          <div class="label" id="persona-hero-label">Persona</div>
+          <h2 id="persona-hero-name">New Persona</h2>
+          <div class="desc" id="persona-hero-desc">Define personality, tone, and greeting</div>
+          <div class="inline">
+            <span class="key" id="persona-hero-key"></span>
+            <span class="key" id="persona-hero-tone"></span>
+          </div>
+        </div>
+        <div class="av2-hero-actions">
+          <button class="av2-btn-white primary" id="persona-activate">Activate</button>
+          <a class="av2-btn-white" href="/index.html">Open Chat</a>
+        </div>
+      </div>
+
+      <form id="persona-form">
+        <div class="av2-split">
+          <div class="av2-card">
+            <div class="av2-card-hd"><h3><span class="dot peach">i</span>Identity</h3><span class="hint">Display + routing keys</span></div>
+            <div class="av2-grid2">
+              <div class="av2-fld"><label for="persona-key">Key</label><input class="av2-input mono" id="persona-key" name="key" placeholder="default" autocomplete="off"></div>
+              <div class="av2-fld"><label for="persona-tone">Tone</label><input class="av2-input" id="persona-tone" name="tone" placeholder="warm, supportive" autocomplete="off"></div>
+            </div>
+            <div class="av2-fld"><label for="persona-name">Display Name</label><input class="av2-input" id="persona-name" name="name" placeholder="Emo" autocomplete="off"></div>
+            <div class="av2-fld"><label for="persona-description">Description</label><input class="av2-input" id="persona-description" name="description" placeholder="A warm and caring companion" autocomplete="off"></div>
+          </div>
+
+          <div class="av2-card">
+            <div class="av2-card-hd"><h3><span class="dot lav">Q</span>Quirks</h3><span class="hint">One per line</span></div>
+            <div class="av2-quirks" id="quirks-display"></div>
+            <textarea class="av2-input av2-textarea" id="persona-quirks" name="quirks" placeholder="occasionally uses emoticons&#10;remembers past conversations" style="display:none"></textarea>
+            <div class="av2-preview" id="greeting-preview" style="display:none">
+              <div class="lbl">Greeting preview</div>
+              <div class="bubble" id="greeting-preview-text"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="av2-card">
+          <div class="av2-card-hd"><h3><span class="dot mint">G</span>Greeting &amp; System Prompt</h3><span class="hint">Shown at the top of every new session</span></div>
+          <div class="av2-fld"><label for="persona-greeting">Greeting</label><input class="av2-input" id="persona-greeting" name="greeting" placeholder="Hey! Nice to see you again." autocomplete="off"></div>
+          <div class="av2-fld"><label for="persona-system-prompt">System Prompt</label><textarea class="av2-input av2-textarea" id="persona-system-prompt" name="system_prompt" placeholder="You are Emo..." style="min-height:130px"></textarea></div>
+        </div>
+
+        <div class="av2-detail-actions">
+          <div class="av2-btns-row">
+            <button class="av2-btn primary" type="submit" id="persona-save">Save Persona</button>
+          </div>
+          <button class="av2-btn danger" type="button" id="persona-delete">Delete</button>
+        </div>
+      </form>
     </section>
+  </div>
 
-    <section class="workspace">
-      <aside class="panel">
-        <div class="panel-head">
-          <div class="section-title">
-            <h2>LLM Profiles</h2>
-            <span id="llm-count">0 items</span>
-          </div>
-          <p>Select a profile to edit it. Activating a profile updates the chat runtime.</p>
-        </div>
-        <div class="panel-body">
-          <div class="list-tools">
-            <button class="btn primary" id="new-profile" type="button">New Profile</button>
-            <button class="btn ghost" id="reload-profiles" type="button">Reload</button>
-          </div>
-          <div class="list" id="llm-list"></div>
-        </div>
-      </aside>
+  <!-- Settings tab -->
+  <div class="av2-body" id="tab-settings" hidden>
+    <div style="grid-column:1/-1;" class="av2-placeholder">
+      <div class="av2-placeholder-inner">
+        <div class="icon">⚙️</div>
+        <strong>Settings</strong>
+        <p>Runtime settings are managed in config.yaml and via the WebUI.</p>
+      </div>
+    </div>
+  </div>
+</div>
 
-      <section class="panel">
-        <div class="panel-head">
-          <div class="section-title">
-            <h2 id="llm-title">LLM Editor</h2>
-            <span id="llm-subtitle">未选择 Profile</span>
-          </div>
-          <p>Edit the selected profile here. Saving will create or update one LLM profile.</p>
-        </div>
-        <div class="panel-body">
-          <form class="editor-grid" id="llm-form">
-            <div class="form-card">
-              <div class="section-title">
-                <h3>基础信息</h3>
-                <span>Required fields and active state</span>
-              </div>
-              <div class="form-row two">
-                <div class="form-row">
-                  <label for="llm-id">ID</label>
-                  <input class="input" id="llm-id" name="id" placeholder="moonshot" autocomplete="off">
-                </div>
-                <div class="form-row">
-                  <label for="llm-name">Name</label>
-                  <input class="input" id="llm-name" name="name" placeholder="Moonshot K2.5" autocomplete="off">
-                </div>
-              </div>
-              <div class="form-row two">
-                <div class="form-row">
-                  <label for="llm-provider">Provider</label>
-                  <select class="select" id="llm-provider" name="provider">
-                    <option value="openai">openai</option>
-                    <option value="anthropic">anthropic</option>
-                  </select>
-                </div>
-                <div class="form-row">
-                  <label for="llm-api-key-env">API Key Env</label>
-                  <input class="input" id="llm-api-key-env" name="api_key_env" placeholder="MOONSHOT_API_KEY" autocomplete="off">
-                </div>
-              </div>
-            </div>
+<div class="toast-zone" id="toast-zone" aria-live="polite"></div>
 
-            <div class="form-card">
-              <div class="section-title">
-                <h3>模型参数</h3>
-                <span>聊天与摘要使用的模型设置</span>
-              </div>
-              <div class="form-row">
-                <label for="llm-base-url">Base URL</label>
-                <input class="input" id="llm-base-url" name="base_url" placeholder="https://api.moonshot.cn" autocomplete="off">
-              </div>
-              <div class="form-row two">
-                <div class="form-row">
-                  <label for="llm-model">Model</label>
-                  <input class="input" id="llm-model" name="model" placeholder="kimi-k2.5" autocomplete="off">
-                </div>
-                <div class="form-row">
-                  <label for="llm-summary-model">Summary Model</label>
-                  <input class="input" id="llm-summary-model" name="summary_model" placeholder="" autocomplete="off">
-                </div>
-              </div>
-              <div class="form-row two">
-                <div class="form-row">
-                  <label for="llm-max-tokens">Max Tokens</label>
-                  <input class="input" id="llm-max-tokens" name="max_tokens" type="number" min="1" step="1" placeholder="4096">
-                </div>
-                <div class="form-row">
-                  <label for="llm-temperature">Temperature</label>
-                  <input class="input" id="llm-temperature" name="temperature" type="number" min="0" max="2" step="0.1" placeholder="1.0">
-                </div>
-              </div>
-              <div class="form-row">
-                <label for="llm-summary-temperature">Summary Temperature</label>
-                <input class="input" id="llm-summary-temperature" name="summary_temperature" type="number" min="0" max="2" step="0.1" placeholder="inherit (default 0.1)">
-              </div>
-            </div>
+<script>
+  const statusEl = document.getElementById('status');
+  const llmListEl = document.getElementById('llm-list');
+  const personaListEl = document.getElementById('persona-list');
+  const personaActivateButtonEl = document.getElementById('persona-activate');
+  const toastZone = document.getElementById('toast-zone');
+  const llmForm = document.getElementById('llm-form');
+  const personaForm = document.getElementById('persona-form');
 
-            <div class="form-card">
-              <div class="section-title">
-                <h3>Context Budget Overrides</h3>
-                <span>Leave blank to inherit the global context config</span>
-              </div>
-              <div class="form-row two">
-                <div class="form-row">
-                  <label for="llm-input-budget-tokens">Input Budget Tokens</label>
-                  <input class="input" id="llm-input-budget-tokens" name="input_budget_tokens" type="number" min="1" step="1" placeholder="inherit">
-                </div>
-                <div class="form-row">
-                  <label for="llm-reserve-output-tokens">Reserve Output Tokens</label>
-                  <input class="input" id="llm-reserve-output-tokens" name="reserve_output_tokens" type="number" min="1" step="1" placeholder="inherit">
-                </div>
-              </div>
-              <div class="form-row two">
-                <div class="form-row">
-                  <label for="llm-soft-compact-ratio">Soft Compact Ratio</label>
-                  <input class="input" id="llm-soft-compact-ratio" name="soft_compact_ratio" type="number" min="0" max="1" step="0.01" placeholder="inherit">
-                </div>
-                <div class="form-row">
-                  <label for="llm-hard-compact-ratio">Hard Compact Ratio</label>
-                  <input class="input" id="llm-hard-compact-ratio" name="hard_compact_ratio" type="number" min="0" max="1" step="0.01" placeholder="inherit">
-                </div>
-              </div>
-            </div>
+  const llmFields = {
+    id: document.getElementById('llm-id'),
+    name: document.getElementById('llm-name'),
+    provider: document.getElementById('llm-provider'),
+    base_url: document.getElementById('llm-base-url'),
+    api_key_env: document.getElementById('llm-api-key-env'),
+    model: document.getElementById('llm-model'),
+    summary_model: document.getElementById('llm-summary-model'),
+    summary_temperature: document.getElementById('llm-summary-temperature'),
+    max_tokens: document.getElementById('llm-max-tokens'),
+    temperature: document.getElementById('llm-temperature'),
+    input_budget_tokens: document.getElementById('llm-input-budget-tokens'),
+    soft_compact_ratio: document.getElementById('llm-soft-compact-ratio'),
+    hard_compact_ratio: document.getElementById('llm-hard-compact-ratio'),
+    reserve_output_tokens: document.getElementById('llm-reserve-output-tokens'),
+  };
 
-            <div class="actions">
-              <div class="left">
-                <button class="btn primary" id="llm-save" type="submit">Save Profile</button>
-                <button class="btn ghost" id="llm-activate" type="button">Activate</button>
-              </div>
-              <div class="right">
-                <button class="btn danger" id="llm-delete" type="button">Delete</button>
-              </div>
-            </div>
-          </form>
-        </div>
-      </section>
+  const personaFields = {
+    key: document.getElementById('persona-key'),
+    name: document.getElementById('persona-name'),
+    tone: document.getElementById('persona-tone'),
+    description: document.getElementById('persona-description'),
+    greeting: document.getElementById('persona-greeting'),
+    system_prompt: document.getElementById('persona-system-prompt'),
+    quirks: document.getElementById('persona-quirks'),
+  };
 
-      <aside class="panel persona-col">
-        <div class="panel-head">
-          <div class="section-title">
-            <h2>Persona 管理</h2>
-            <span id="persona-count">0 items</span>
-          </div>
-          <p>Persona API routes use the internal key. Display name is only used in the UI.</p>
-        </div>
-        <div class="panel-body">
-          <div class="list-tools">
-            <button class="btn primary" id="new-persona" type="button">New Persona</button>
-            <button class="btn ghost" id="persona-activate" type="button">Activate</button>
-            <button class="btn ghost" id="reload-personas" type="button">Reload</button>
-          </div>
-          <div class="list" id="persona-list"></div>
-          <div class="empty" id="persona-empty" hidden>No personas loaded yet. Create one or refresh to load current data.</div>
-          <div style="height:14px;"></div>
+  const state = {
+    llmProfiles: [], activeLLMId: '', selectedLLMId: '',
+    personas: [], selectedPersonaKey: '', defaultPersonaKey: '',
+  };
 
-          <form class="editor-grid" id="persona-form">
-            <div class="form-card">
-              <div class="section-title">
-                <h3>Persona Editor</h3>
-                <span id="persona-subtitle">未选择 Persona</span>
-              </div>
-                <div class="form-row two">
-                  <div class="form-row">
-                    <label for="persona-key">Key</label>
-                    <input class="input" id="persona-key" name="key" placeholder="default" autocomplete="off">
-                  </div>
-                  <div class="form-row">
-                    <label for="persona-tone">Tone</label>
-                    <input class="input" id="persona-tone" name="tone" placeholder="warm, supportive" autocomplete="off">
-                  </div>
-                </div>
-                <div class="form-row">
-                  <label for="persona-name">Display Name</label>
-                  <input class="input" id="persona-name" name="name" placeholder="Emo" autocomplete="off">
-                </div>
-              <div class="form-row">
-                <label for="persona-description">Description</label>
-                <input class="input" id="persona-description" name="description" placeholder="A warm and caring companion" autocomplete="off">
-              </div>
-              <div class="form-row">
-                <label for="persona-greeting">Greeting</label>
-                <input class="input" id="persona-greeting" name="greeting" placeholder="Hey! Nice to see you again." autocomplete="off">
-              </div>
-              <div class="form-row">
-                <label for="persona-system-prompt">System Prompt</label>
-                <textarea class="textarea" id="persona-system-prompt" name="system_prompt" placeholder="You are Emo..."></textarea>
-              </div>
-              <div class="form-row">
-                <label for="persona-quirks">Quirks, one per line</label>
-                <textarea class="textarea" id="persona-quirks" name="quirks" placeholder="occasionally uses emoticons&#10;remembers past conversations"></textarea>
-              </div>
-              <div class="actions">
-                <div class="left">
-                  <button class="btn primary" id="persona-save" type="submit">Save Persona</button>
-                </div>
-                <div class="right">
-                  <button class="btn danger" id="persona-delete" type="button">Delete</button>
-                </div>
-              </div>
-            </div>
-          </form>
-        </div>
-      </aside>
-    </section>
-  </main>
+  const API = {
+    llmProfiles: '/api/llm-profiles',
+    llmProfile: id => `/api/llm-profiles/${encodeURIComponent(id)}`,
+    llmActivate: id => `/api/llm-profiles/${encodeURIComponent(id)}/activate`,
+    personas: '/api/personas',
+    persona: name => `/api/personas/${encodeURIComponent(name)}`,
+    personaActivate: name => `/api/personas/${encodeURIComponent(name)}/activate`,
+  };
 
-  <div class="toast-zone" id="toast-zone" aria-live="polite" aria-atomic="true"></div>
+  // ── Tab switching ──
+  function switchTab(tab) {
+    ['llm','personas','settings'].forEach(t => {
+      document.getElementById(`tab-${t}`).hidden = t !== tab;
+      document.getElementById(`tab-${t}-btn`).classList.toggle('active', t === tab);
+    });
+  }
+  window.switchTab = switchTab;
 
-  <script>
-    const statusEl = document.getElementById('status');
-    const summaryEl = document.getElementById('summary');
-    const llmCountEl = document.getElementById('llm-count');
-    const personaCountEl = document.getElementById('persona-count');
-    const llmTitleEl = document.getElementById('llm-title');
-    const llmSubtitleEl = document.getElementById('llm-subtitle');
-    const personaSubtitleEl = document.getElementById('persona-subtitle');
-    const llmListEl = document.getElementById('llm-list');
-    const personaListEl = document.getElementById('persona-list');
-    const personaEmptyEl = document.getElementById('persona-empty');
-    const personaActivateButtonEl = document.getElementById('persona-activate');
-    const toastZone = document.getElementById('toast-zone');
-    const llmForm = document.getElementById('llm-form');
-    const personaForm = document.getElementById('persona-form');
+  // ── Utilities ──
+  function setStatus(text) { statusEl.textContent = text; }
 
-    const llmFields = {
-      id: document.getElementById('llm-id'),
-      name: document.getElementById('llm-name'),
-      provider: document.getElementById('llm-provider'),
-      base_url: document.getElementById('llm-base-url'),
-      api_key_env: document.getElementById('llm-api-key-env'),
-      model: document.getElementById('llm-model'),
-      summary_model: document.getElementById('llm-summary-model'),
-      summary_temperature: document.getElementById('llm-summary-temperature'),
-      max_tokens: document.getElementById('llm-max-tokens'),
-      temperature: document.getElementById('llm-temperature'),
-      input_budget_tokens: document.getElementById('llm-input-budget-tokens'),
-      soft_compact_ratio: document.getElementById('llm-soft-compact-ratio'),
-      hard_compact_ratio: document.getElementById('llm-hard-compact-ratio'),
-      reserve_output_tokens: document.getElementById('llm-reserve-output-tokens'),
+  function txt(v, fb = '') { return v === undefined || v === null ? fb : String(v); }
+  function numText(v) { return v === undefined || v === null || v === '' ? '' : String(v); }
+  function llmIdOf(item) { return txt(item?.id || item?.name); }
+
+  function escapeHTML(text) {
+    return txt(text)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  function toast(message, kind = 'ok', detail = '') {
+    const node = document.createElement('div');
+    node.className = `toast ${kind}`;
+    node.innerHTML = `${escapeHTML(message)}${detail ? `<span class="small">${escapeHTML(detail)}</span>` : ''}`;
+    toastZone.appendChild(node);
+    setTimeout(() => { node.style.opacity = '0'; node.style.transform = 'translateY(8px)'; node.style.transition = 'opacity .2s ease,transform .2s ease'; }, 2400);
+    setTimeout(() => node.remove(), 2850);
+  }
+
+  function parseMaybeJSON(value) {
+    if (value === null || value === undefined || value === '') return null;
+    if (typeof value !== 'string') return value;
+    try { return JSON.parse(value); } catch { return value; }
+  }
+
+  function normalizeLLM(profile) {
+    return {
+      id: txt(profile?.id || profile?.name),
+      name: txt(profile?.name || profile?.id),
+      provider: txt(profile?.provider, 'openai'),
+      base_url: txt(profile?.base_url || profile?.baseURL),
+      api_key_env: txt(profile?.api_key_env || profile?.apiKeyEnv),
+      model: txt(profile?.model),
+      summary_model: txt(profile?.summary_model || profile?.summaryModel),
+      summary_temperature: profile?.summary_temperature ?? profile?.summaryTemperature ?? null,
+      max_tokens: Number(profile?.max_tokens ?? profile?.maxTokens ?? 0) || 0,
+      temperature: Number(profile?.temperature ?? 0),
+      input_budget_tokens: profile?.input_budget_tokens ?? profile?.inputBudgetTokens ?? null,
+      soft_compact_ratio: profile?.soft_compact_ratio ?? profile?.softCompactRatio ?? null,
+      hard_compact_ratio: profile?.hard_compact_ratio ?? profile?.hardCompactRatio ?? null,
+      reserve_output_tokens: profile?.reserve_output_tokens ?? profile?.reserveOutputTokens ?? null,
     };
+  }
 
-    const personaFields = {
-      key: document.getElementById('persona-key'),
-      name: document.getElementById('persona-name'),
-      tone: document.getElementById('persona-tone'),
-      description: document.getElementById('persona-description'),
-      greeting: document.getElementById('persona-greeting'),
-      system_prompt: document.getElementById('persona-system-prompt'),
-      quirks: document.getElementById('persona-quirks'),
+  function normalizePersona(persona) {
+    return {
+      key: txt(persona?.key || persona?.id || persona?.name),
+      name: txt(persona?.name || persona?.key || persona?.id),
+      description: txt(persona?.description),
+      tone: txt(persona?.tone),
+      greeting: txt(persona?.greeting),
+      system_prompt: txt(persona?.system_prompt || persona?.systemPrompt),
+      quirks: Array.isArray(persona?.quirks)
+        ? persona.quirks.map(i => txt(i)).filter(Boolean)
+        : txt(persona?.quirks).split(/\r?\n/).map(i => i.trim()).filter(Boolean),
     };
+  }
 
-    const state = {
-      llmProfiles: [],
-      activeLLMId: '',
-      selectedLLMId: '',
-      personas: [],
-      selectedPersonaKey: '',
-      defaultPersonaKey: '',
-    };
-
-    const API = {
-      llmProfiles: '/api/llm-profiles',
-      llmProfile: (id) => `/api/llm-profiles/${encodeURIComponent(id)}`,
-      llmActivate: (id) => `/api/llm-profiles/${encodeURIComponent(id)}/activate`,
-      personas: '/api/personas',
-      persona: (name) => `/api/personas/${encodeURIComponent(name)}`,
-      personaActivate: (name) => `/api/personas/${encodeURIComponent(name)}/activate`,
-    };
-
-    function setStatus(text) {
-      statusEl.textContent = text;
+  async function request(url, options = {}) {
+    const init = { credentials:'same-origin', headers:{}, ...options };
+    if (init.body && typeof init.body === 'object' && !(init.body instanceof FormData)) {
+      init.headers['Content-Type'] = 'application/json';
+      init.body = JSON.stringify(init.body);
     }
+    const response = await fetch(url, init);
+    const type = response.headers.get('content-type') || '';
+    const payload = type.includes('application/json')
+      ? await response.json()
+      : parseMaybeJSON(await response.text());
+    if (!response.ok) throw new Error((payload && (payload.error || payload.message)) || response.statusText || 'Request failed');
+    return payload;
+  }
 
-    function setSummary(text) {
-      summaryEl.textContent = text;
-    }
+  function syncPersonaActions() {
+    const selected = state.selectedPersonaKey.trim();
+    const canActivate = selected !== '' && selected !== state.defaultPersonaKey;
+    personaActivateButtonEl.disabled = !canActivate;
+  }
 
-    function txt(value, fallback = '') {
-      if (value === undefined || value === null) return fallback;
-      return String(value);
-    }
+  // ── Avatar color helpers ──
+  const AVATAR_COLORS = ['lav','peach','mint','butter','coral'];
+  function avatarColor(key) {
+    let h = 0;
+    for (let i = 0; i < (key||'').length; i++) h = ((h << 5) - h + key.charCodeAt(i)) | 0;
+    return AVATAR_COLORS[Math.abs(h) % AVATAR_COLORS.length];
+  }
 
-    function numText(value) {
-      if (value === undefined || value === null || value === '') return '';
-      return String(value);
-    }
+  // ── LLM form ──
+  function updateLLMHero(data) {
+    document.getElementById('llm-hero-av').textContent = (data.id || data.name || 'N')[0]?.toUpperCase() || '+';
+    document.getElementById('llm-hero-label').textContent = state.activeLLMId === data.id ? 'LLM Profile · Active' : 'LLM Profile';
+    document.getElementById('llm-hero-name').textContent = data.name || data.id || 'New Profile';
+    document.getElementById('llm-hero-desc').textContent = data.base_url || 'Configure provider and model';
+    const keyEl = document.getElementById('llm-hero-key');
+    const provEl = document.getElementById('llm-hero-provider');
+    keyEl.textContent = data.id ? `id: ${data.id}` : '';
+    keyEl.style.display = data.id ? '' : 'none';
+    provEl.textContent = data.provider ? `provider: ${data.provider}` : '';
+    provEl.style.display = data.provider ? '' : 'none';
+  }
 
-    function llmIdOf(item) {
-      return txt(item?.id || item?.name);
-    }
+  function clearLLMForm() {
+    llmForm.reset();
+    Object.values(llmFields).forEach(f => { f.value = ''; });
+    llmFields.provider.value = 'openai';
+    llmFields.id.readOnly = false;
+    state.selectedLLMId = '';
+    llmForm.dataset.mode = 'create';
+    updateLLMHero({ id:'', name:'New Profile', base_url:'' });
+    renderLLMList();
+  }
 
-    function escapeHTML(text) {
-      return txt(text)
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;')
-        .replaceAll("'", '&#39;');
-    }
+  function fillLLMForm(profile) {
+    const data = normalizeLLM(profile);
+    llmFields.id.value = data.id;
+    llmFields.id.readOnly = !!state.selectedLLMId;
+    llmFields.name.value = data.name;
+    llmFields.provider.value = data.provider || 'openai';
+    llmFields.base_url.value = data.base_url;
+    llmFields.api_key_env.value = data.api_key_env;
+    llmFields.model.value = data.model;
+    llmFields.summary_model.value = data.summary_model;
+    llmFields.summary_temperature.value = numText(data.summary_temperature);
+    llmFields.max_tokens.value = data.max_tokens || '';
+    llmFields.temperature.value = Number.isFinite(data.temperature) ? String(data.temperature) : '';
+    llmFields.input_budget_tokens.value = numText(data.input_budget_tokens);
+    llmFields.soft_compact_ratio.value = numText(data.soft_compact_ratio);
+    llmFields.hard_compact_ratio.value = numText(data.hard_compact_ratio);
+    llmFields.reserve_output_tokens.value = numText(data.reserve_output_tokens);
+    llmForm.dataset.mode = state.selectedLLMId ? 'edit' : 'create';
+    updateLLMHero(data);
+  }
 
-    function toast(message, kind = 'ok', detail = '') {
-      const node = document.createElement('div');
-      node.className = `toast ${kind}`;
-      node.innerHTML = `${escapeHTML(message)}${detail ? `<span class="small">${escapeHTML(detail)}</span>` : ''}`;
-      toastZone.appendChild(node);
-      setTimeout(() => {
-        node.style.opacity = '0';
-        node.style.transform = 'translateY(8px)';
-        node.style.transition = 'opacity .2s ease, transform .2s ease';
-      }, 2400);
-      setTimeout(() => node.remove(), 2850);
-    }
+  // ── Persona form ──
+  function updatePersonaHero(data) {
+    const initial = (data.name || data.key || 'N')[0]?.toUpperCase() || '+';
+    document.getElementById('persona-hero-av').textContent = initial;
+    document.getElementById('persona-hero-label').textContent =
+      state.defaultPersonaKey === data.key ? 'Persona · Active' : 'Persona';
+    document.getElementById('persona-hero-name').textContent = data.name || data.key || 'New Persona';
+    document.getElementById('persona-hero-desc').textContent = data.description || 'Define personality, tone, and greeting';
+    const keyEl = document.getElementById('persona-hero-key');
+    const toneEl = document.getElementById('persona-hero-tone');
+    keyEl.textContent = data.key ? `key: ${data.key}` : '';
+    keyEl.style.display = data.key ? '' : 'none';
+    toneEl.textContent = data.tone ? `tone: ${data.tone}` : '';
+    toneEl.style.display = data.tone ? '' : 'none';
+    syncPersonaActions();
+  }
 
-    function parseMaybeJSON(value) {
-      if (value === null || value === undefined || value === '') return null;
-      if (typeof value !== 'string') return value;
-      try {
-        return JSON.parse(value);
-      } catch {
-        return value;
-      }
-    }
-
-    function normalizeLLM(profile) {
-      return {
-        id: txt(profile?.id || profile?.name),
-        name: txt(profile?.name || profile?.id),
-        provider: txt(profile?.provider, 'openai'),
-        base_url: txt(profile?.base_url || profile?.baseURL),
-        api_key_env: txt(profile?.api_key_env || profile?.apiKeyEnv),
-        model: txt(profile?.model),
-        summary_model: txt(profile?.summary_model || profile?.summaryModel),
-        summary_temperature: profile?.summary_temperature ?? profile?.summaryTemperature ?? null,
-        max_tokens: Number(profile?.max_tokens ?? profile?.maxTokens ?? 0) || 0,
-        temperature: Number(profile?.temperature ?? 0),
-        input_budget_tokens: profile?.input_budget_tokens ?? profile?.inputBudgetTokens ?? null,
-        soft_compact_ratio: profile?.soft_compact_ratio ?? profile?.softCompactRatio ?? null,
-        hard_compact_ratio: profile?.hard_compact_ratio ?? profile?.hardCompactRatio ?? null,
-        reserve_output_tokens: profile?.reserve_output_tokens ?? profile?.reserveOutputTokens ?? null,
-      };
-    }
-
-    function normalizePersona(persona) {
-      return {
-        key: txt(persona?.key || persona?.id || persona?.name),
-        name: txt(persona?.name || persona?.key || persona?.id),
-        description: txt(persona?.description),
-        tone: txt(persona?.tone),
-        greeting: txt(persona?.greeting),
-        system_prompt: txt(persona?.system_prompt || persona?.systemPrompt),
-        quirks: Array.isArray(persona?.quirks)
-          ? persona.quirks.map((item) => txt(item)).filter(Boolean)
-          : txt(persona?.quirks).split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
-      };
-    }
-
-    async function request(url, options = {}) {
-      const init = { credentials: 'same-origin', headers: {}, ...options };
-      if (init.body && typeof init.body === 'object' && !(init.body instanceof FormData)) {
-        init.headers['Content-Type'] = 'application/json';
-        init.body = JSON.stringify(init.body);
-      }
-      const response = await fetch(url, init);
-      const type = response.headers.get('content-type') || '';
-      const payload = type.includes('application/json')
-        ? await response.json()
-        : parseMaybeJSON(await response.text());
-      if (!response.ok) {
-        throw new Error((payload && (payload.error || payload.message)) || response.statusText || 'Request failed');
-      }
-      return payload;
-    }
-
-    function syncPersonaActions() {
-      const selected = state.selectedPersonaKey.trim();
-      const canActivate = selected !== '' && selected !== state.defaultPersonaKey;
-      personaActivateButtonEl.disabled = !canActivate;
-    }
-
-    function clearLLMForm() {
-      llmForm.reset();
-      llmFields.id.value = '';
-      llmFields.id.readOnly = false;
-      llmFields.name.value = '';
-      llmFields.provider.value = 'openai';
-      llmFields.base_url.value = '';
-      llmFields.api_key_env.value = '';
-      llmFields.model.value = '';
-      llmFields.summary_model.value = '';
-      llmFields.summary_temperature.value = '';
-      llmFields.max_tokens.value = '';
-      llmFields.temperature.value = '';
-      llmFields.input_budget_tokens.value = '';
-      llmFields.soft_compact_ratio.value = '';
-      llmFields.hard_compact_ratio.value = '';
-      llmFields.reserve_output_tokens.value = '';
-      state.selectedLLMId = '';
-      llmForm.dataset.mode = 'create';
-      llmTitleEl.textContent = 'LLM Editor';
-      llmSubtitleEl.textContent = 'Create a new profile';
-      renderLLMList();
-    }
-
-    function fillLLMForm(profile) {
-      const data = normalizeLLM(profile);
-      llmFields.id.value = data.id;
-      llmFields.id.readOnly = !!state.selectedLLMId;
-      llmFields.name.value = data.name;
-      llmFields.provider.value = data.provider || 'openai';
-      llmFields.base_url.value = data.base_url;
-      llmFields.api_key_env.value = data.api_key_env;
-      llmFields.model.value = data.model;
-      llmFields.summary_model.value = data.summary_model;
-      llmFields.summary_temperature.value = numText(data.summary_temperature);
-      llmFields.max_tokens.value = data.max_tokens || '';
-      llmFields.temperature.value = Number.isFinite(data.temperature) ? String(data.temperature) : '';
-      llmFields.input_budget_tokens.value = numText(data.input_budget_tokens);
-      llmFields.soft_compact_ratio.value = numText(data.soft_compact_ratio);
-      llmFields.hard_compact_ratio.value = numText(data.hard_compact_ratio);
-      llmFields.reserve_output_tokens.value = numText(data.reserve_output_tokens);
-      llmForm.dataset.mode = state.selectedLLMId ? 'edit' : 'create';
-      llmTitleEl.textContent = data.id ? `Editing: ${data.id}` : 'LLM Editor';
-      llmSubtitleEl.textContent = state.activeLLMId === data.id
-        ? 'Currently active profile'
-        : (data.id ? 'Inactive profile' : 'Create a new profile');
-    }
-
-    function clearPersonaForm() {
-      personaForm.reset();
-      Object.values(personaFields).forEach((field) => {
-        field.value = '';
-        field.readOnly = false;
+  function renderQuirksDisplay(quirks) {
+    const container = document.getElementById('quirks-display');
+    container.innerHTML = '';
+    for (const q of quirks) {
+      const chip = document.createElement('span');
+      chip.className = 'av2-quirk';
+      chip.textContent = q;
+      const x = document.createElement('button');
+      x.type = 'button';
+      x.className = 'x';
+      x.textContent = '×';
+      x.addEventListener('click', () => {
+        const lines = personaFields.quirks.value.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+        const idx = lines.indexOf(q);
+        if (idx >= 0) lines.splice(idx, 1);
+        personaFields.quirks.value = lines.join('\n');
+        renderQuirksDisplay(lines);
       });
-      state.selectedPersonaKey = '';
-      personaForm.dataset.mode = 'create';
-      personaSubtitleEl.textContent = 'Create a new persona';
-      renderPersonaList();
+      chip.appendChild(x);
+      container.appendChild(chip);
+    }
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'av2-quirk-add';
+    addBtn.textContent = '+ Add quirk';
+    addBtn.addEventListener('click', () => {
+      const q = prompt('New quirk:');
+      if (q?.trim()) {
+        const lines = personaFields.quirks.value.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+        lines.push(q.trim());
+        personaFields.quirks.value = lines.join('\n');
+        renderQuirksDisplay(lines);
+      }
+    });
+    container.appendChild(addBtn);
+  }
+
+  function updateGreetingPreview(greeting) {
+    const preview = document.getElementById('greeting-preview');
+    const text = document.getElementById('greeting-preview-text');
+    if (greeting) {
+      preview.style.display = '';
+      text.textContent = greeting;
+    } else {
+      preview.style.display = 'none';
+    }
+  }
+
+  function clearPersonaForm() {
+    personaForm.reset();
+    Object.values(personaFields).forEach(f => { f.value = ''; if (f.tagName === 'INPUT') f.readOnly = false; });
+    state.selectedPersonaKey = '';
+    personaForm.dataset.mode = 'create';
+    renderQuirksDisplay([]);
+    updateGreetingPreview('');
+    updatePersonaHero({ key:'', name:'New Persona', description:'' });
+    renderPersonaList();
+  }
+
+  function fillPersonaForm(persona) {
+    const data = normalizePersona(persona);
+    personaFields.key.value = data.key;
+    personaFields.key.readOnly = !!state.selectedPersonaKey;
+    personaFields.name.value = data.name;
+    personaFields.tone.value = data.tone;
+    personaFields.description.value = data.description;
+    personaFields.greeting.value = data.greeting;
+    personaFields.system_prompt.value = data.system_prompt;
+    personaFields.quirks.value = data.quirks.join('\n');
+    personaForm.dataset.mode = state.selectedPersonaKey ? 'edit' : 'create';
+    renderQuirksDisplay(data.quirks);
+    updateGreetingPreview(data.greeting);
+    updatePersonaHero(data);
+  }
+
+  // ── Render lists ──
+  function renderLLMList() {
+    llmListEl.innerHTML = '';
+    const count = state.llmProfiles.length;
+    document.getElementById('llm-count-tab').textContent = count;
+    document.getElementById('llm-summary-hint').textContent = `${count} profile${count !== 1 ? 's' : ''} · active: ${state.activeLLMId || 'none'}`;
+    if (!count) {
+      llmListEl.innerHTML = '<div style="padding:14px;font-size:12px;color:var(--muted)">No LLM profiles yet. Click New Profile to create one.</div>';
+      return;
+    }
+    for (const profile of state.llmProfiles) {
+      const item = normalizeLLM(profile);
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `av2-llm-item${item.id === state.selectedLLMId ? ' active' : ''}`;
+      btn.innerHTML = `
+        <div class="av2-llm-top">
+          <div class="av2-llm-name">${escapeHTML(item.name || item.id || '(untitled)')}</div>
+          <span class="badge ${item.id === state.activeLLMId ? 'ok' : 'neutral'}">${item.id === state.activeLLMId ? 'active' : 'idle'}</span>
+        </div>
+        <div class="av2-llm-sub">${escapeHTML(item.id || '')} · ${escapeHTML(item.provider || '')} · ${escapeHTML(item.model || '')}</div>
+        <div class="av2-llm-tags">
+          <span class="badge neutral">${escapeHTML(item.base_url || 'no base_url')}</span>
+          <span class="badge neutral">${escapeHTML(item.api_key_env || 'no env')}</span>
+        </div>
+      `;
+      btn.addEventListener('click', () => selectLLMProfile(item.id));
+      llmListEl.appendChild(btn);
+    }
+  }
+
+  function renderPersonaList() {
+    personaListEl.innerHTML = '';
+    const count = state.personas.length;
+    document.getElementById('persona-count-tab').textContent = count;
+    document.getElementById('persona-summary-hint').textContent = `${count} persona${count !== 1 ? 's' : ''} · active: ${state.defaultPersonaKey || 'none'}`;
+    if (!count) {
+      personaListEl.innerHTML = '<div style="padding:14px;font-size:12px;color:var(--muted)">No personas yet. Click New Persona to create one.</div>';
       syncPersonaActions();
+      return;
     }
-
-    function fillPersonaForm(persona) {
-      const data = normalizePersona(persona);
-      personaFields.key.value = data.key;
-      personaFields.key.readOnly = !!state.selectedPersonaKey;
-      personaFields.name.value = data.name;
-      personaFields.name.readOnly = false;
-      personaFields.description.value = data.description;
-      personaFields.tone.value = data.tone;
-      personaFields.greeting.value = data.greeting;
-      personaFields.system_prompt.value = data.system_prompt;
-      personaFields.quirks.value = data.quirks.join('\n');
-      personaForm.dataset.mode = state.selectedPersonaKey ? 'edit' : 'create';
-      personaSubtitleEl.textContent = data.key ? `Editing: ${data.key}` : 'Create a new persona';
-      syncPersonaActions();
-    }
-
-    function renderLLMList() {
-      llmListEl.innerHTML = '';
-      llmCountEl.textContent = `${state.llmProfiles.length} items`;
-      if (!state.llmProfiles.length) {
-        llmListEl.innerHTML = '<div class="empty">No LLM profiles yet. Click New Profile to create the first one.</div>';
-        return;
-      }
-      for (const profile of state.llmProfiles) {
-        const item = normalizeLLM(profile);
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = `list-item ${item.id === state.selectedLLMId ? 'active' : ''}`;
-        button.innerHTML = `
-          <div class="item-top">
-            <div class="item-title">${escapeHTML(item.name || item.id || '(untitled)')}</div>
-            <span class="badge ${item.id === state.activeLLMId ? 'ok' : 'neutral'}">${item.id === state.activeLLMId ? 'active' : 'idle'}</span>
+    for (const item of state.personas) {
+      const persona = normalizePersona(item);
+      const color = avatarColor(persona.key);
+      const btn = document.createElement('div');
+      btn.className = `av2-persona${persona.key === state.selectedPersonaKey ? ' active' : ''}`;
+      btn.setAttribute('role', 'button');
+      btn.tabIndex = 0;
+      btn.innerHTML = `
+        <div class="av2-av ${color}">${escapeHTML((persona.name || persona.key || '?')[0]?.toUpperCase())}</div>
+        <div class="info">
+          <div class="nm">${escapeHTML(persona.name || persona.key || '(untitled)')}${persona.key === state.defaultPersonaKey ? '<span class="chip">active</span>' : ''}</div>
+          <div class="desc">${escapeHTML(persona.description || 'No description')}</div>
+          <div class="tags">
+            ${persona.tone ? `<span class="tag">${escapeHTML(persona.tone)}</span>` : ''}
+            ${persona.quirks.length ? `<span class="tag">${persona.quirks.length} quirks</span>` : ''}
           </div>
-          <div class="item-sub">${escapeHTML(item.id || '')} · ${escapeHTML(item.provider || '')} · ${escapeHTML(item.model || '')}</div>
-          <div class="item-meta">
-            <span class="badge neutral">${escapeHTML(item.base_url || 'no base_url')}</span>
-            <span class="badge neutral">${escapeHTML(item.api_key_env || 'no env')}</span>
-          </div>
-        `;
-        button.addEventListener('click', () => selectLLMProfile(item.id));
-        llmListEl.appendChild(button);
-      }
+        </div>
+        <span class="nav-arrow">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+        </span>
+      `;
+      btn.addEventListener('click', () => selectPersona(persona.key));
+      btn.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') selectPersona(persona.key); });
+      personaListEl.appendChild(btn);
     }
+    syncPersonaActions();
+  }
 
-    function renderPersonaList() {
-      personaListEl.innerHTML = '';
-      personaCountEl.textContent = `${state.personas.length} items`;
-      personaEmptyEl.hidden = state.personas.length > 0;
-      if (!state.personas.length) {
-        personaListEl.innerHTML = '<div class="empty">No personas yet. Click New Persona to create one.</div>';
-        syncPersonaActions();
-        return;
-      }
-      for (const item of state.personas) {
-        const persona = normalizePersona(item);
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = `list-item ${persona.key === state.selectedPersonaKey ? 'active' : ''}`;
-        button.innerHTML = `
-          <div class="item-top">
-            <div class="item-title">${escapeHTML(persona.name || persona.key || '(untitled)')}</div>
-            <span class="badge ${persona.key === state.defaultPersonaKey ? 'ok' : 'neutral'}">${persona.key === state.defaultPersonaKey ? 'active' : 'persona'}</span>
-          </div>
-          <div class="item-sub">${escapeHTML(persona.description || 'No description')}</div>
-          <div class="item-meta">
-            <span class="badge neutral">${escapeHTML(persona.tone || 'no tone')}</span>
-            <span class="badge neutral">${escapeHTML(String(persona.quirks.length || 0))} quirks</span>
-          </div>
-        `;
-        button.addEventListener('click', () => selectPersona(persona.key));
-        personaListEl.appendChild(button);
-      }
-      syncPersonaActions();
+  // ── Form payloads & validation ──
+  function llmPayloadFromForm() {
+    const inputBudget = llmFields.input_budget_tokens.value.trim();
+    const softRatio = llmFields.soft_compact_ratio.value.trim();
+    const hardRatio = llmFields.hard_compact_ratio.value.trim();
+    const reserveOutput = llmFields.reserve_output_tokens.value.trim();
+    const summaryTemperature = llmFields.summary_temperature.value.trim();
+    return {
+      id: llmFields.id.value.trim(), name: llmFields.name.value.trim(),
+      provider: llmFields.provider.value.trim(), base_url: llmFields.base_url.value.trim(),
+      api_key_env: llmFields.api_key_env.value.trim(), model: llmFields.model.value.trim(),
+      summary_model: llmFields.summary_model.value.trim(),
+      summary_temperature: summaryTemperature === '' ? null : Number(summaryTemperature),
+      max_tokens: Number(llmFields.max_tokens.value || 0), temperature: Number(llmFields.temperature.value || 0),
+      input_budget_tokens: inputBudget === '' ? null : Number(inputBudget),
+      soft_compact_ratio: softRatio === '' ? null : Number(softRatio),
+      hard_compact_ratio: hardRatio === '' ? null : Number(hardRatio),
+      reserve_output_tokens: reserveOutput === '' ? null : Number(reserveOutput),
+    };
+  }
+
+  function personaPayloadFromForm() {
+    return {
+      key: personaFields.key.value.trim(), name: personaFields.name.value.trim(),
+      description: personaFields.description.value.trim(), tone: personaFields.tone.value.trim(),
+      greeting: personaFields.greeting.value.trim(), system_prompt: personaFields.system_prompt.value.trim(),
+      quirks: personaFields.quirks.value.split(/\r?\n/).map(l => l.trim()).filter(Boolean),
+    };
+  }
+
+  function validateLLM(p) {
+    if (!p.id) throw new Error('ID is required');
+    if (!p.name) throw new Error('Name is required');
+    if (!p.provider) throw new Error('Provider is required');
+    if (!p.base_url) throw new Error('Base URL is required');
+    if (!p.model) throw new Error('Model is required');
+    if (!Number.isFinite(p.max_tokens) || p.max_tokens <= 0) throw new Error('Max Tokens must be > 0');
+    if (!Number.isFinite(p.temperature) || p.temperature < 0 || p.temperature > 2) throw new Error('Temperature must be 0–2');
+    if (p.summary_temperature !== null && (!Number.isFinite(p.summary_temperature) || p.summary_temperature < 0 || p.summary_temperature > 2)) throw new Error('Summary Temperature must be 0–2');
+    if (p.input_budget_tokens !== null && (!Number.isFinite(p.input_budget_tokens) || p.input_budget_tokens <= 0)) throw new Error('Input Budget Tokens must be > 0');
+    if (p.reserve_output_tokens !== null && (!Number.isFinite(p.reserve_output_tokens) || p.reserve_output_tokens <= 0)) throw new Error('Reserve Output Tokens must be > 0');
+    if (p.soft_compact_ratio !== null && (!Number.isFinite(p.soft_compact_ratio) || p.soft_compact_ratio <= 0 || p.soft_compact_ratio >= 1)) throw new Error('Soft Compact Ratio must be 0–1');
+    if (p.hard_compact_ratio !== null && (!Number.isFinite(p.hard_compact_ratio) || p.hard_compact_ratio <= 0 || p.hard_compact_ratio >= 1)) throw new Error('Hard Compact Ratio must be 0–1');
+    if (p.soft_compact_ratio !== null && p.hard_compact_ratio !== null && p.soft_compact_ratio >= p.hard_compact_ratio) throw new Error('Soft Compact Ratio must be < Hard Compact Ratio');
+  }
+
+  function validatePersona(p) {
+    if (!p.key) throw new Error('Persona key is required');
+  }
+
+  // ── API calls ──
+  async function loadLLMProfiles() {
+    setStatus('Loading LLM profiles...');
+    const payload = await request(API.llmProfiles);
+    const data = payload || {};
+    const raw = data.profiles ?? data.items ?? data;
+    state.llmProfiles = Array.isArray(raw) ? raw : raw && typeof raw === 'object' ? Object.values(raw) : [];
+    state.activeLLMId = txt(data.active_id || data.activeId || '');
+    renderLLMList();
+    if (!state.selectedLLMId && state.activeLLMId) {
+      await selectLLMProfile(state.activeLLMId, false);
+    } else if (!state.selectedLLMId && state.llmProfiles.length) {
+      await selectLLMProfile(llmIdOf(state.llmProfiles[0]), false);
+    } else if (state.selectedLLMId) {
+      const current = state.llmProfiles.find(i => llmIdOf(i) === state.selectedLLMId);
+      if (current) fillLLMForm(current);
     }
+    setStatus('LLM profiles loaded');
+  }
 
-    function llmPayloadFromForm() {
-      const inputBudget = llmFields.input_budget_tokens.value.trim();
-      const softRatio = llmFields.soft_compact_ratio.value.trim();
-      const hardRatio = llmFields.hard_compact_ratio.value.trim();
-      const reserveOutput = llmFields.reserve_output_tokens.value.trim();
-      const summaryTemperature = llmFields.summary_temperature.value.trim();
-      return {
-        id: llmFields.id.value.trim(),
-        name: llmFields.name.value.trim(),
-        provider: llmFields.provider.value.trim(),
-        base_url: llmFields.base_url.value.trim(),
-        api_key_env: llmFields.api_key_env.value.trim(),
-        model: llmFields.model.value.trim(),
-        summary_model: llmFields.summary_model.value.trim(),
-        summary_temperature: summaryTemperature === '' ? null : Number(summaryTemperature),
-        max_tokens: Number(llmFields.max_tokens.value || 0),
-        temperature: Number(llmFields.temperature.value || 0),
-        input_budget_tokens: inputBudget === '' ? null : Number(inputBudget),
-        soft_compact_ratio: softRatio === '' ? null : Number(softRatio),
-        hard_compact_ratio: hardRatio === '' ? null : Number(hardRatio),
-        reserve_output_tokens: reserveOutput === '' ? null : Number(reserveOutput),
-      };
+  async function loadPersonas() {
+    setStatus('Loading personas...');
+    const payload = await request(API.personas);
+    const data = payload || {};
+    const raw = data.personas ?? data.items ?? data;
+    state.defaultPersonaKey = txt(data.default);
+    state.personas = Array.isArray(raw) ? raw : raw && typeof raw === 'object' ? Object.values(raw) : [];
+    renderPersonaList();
+    const currentKeys = new Set(state.personas.map(i => normalizePersona(i).key));
+    const selectedExists = state.selectedPersonaKey && currentKeys.has(state.selectedPersonaKey);
+    let fallback = state.defaultPersonaKey;
+    if (!fallback && state.personas.length) fallback = normalizePersona(state.personas[0]).key;
+    if ((!selectedExists || !state.selectedPersonaKey) && fallback) {
+      await selectPersona(fallback, false);
+    } else if (state.selectedPersonaKey) {
+      const current = state.personas.find(i => normalizePersona(i).key === state.selectedPersonaKey);
+      if (current) fillPersonaForm(current);
     }
+    setStatus('Personas loaded');
+  }
 
-    function personaPayloadFromForm() {
-      return {
-        key: personaFields.key.value.trim(),
-        name: personaFields.name.value.trim(),
-        description: personaFields.description.value.trim(),
-        tone: personaFields.tone.value.trim(),
-        greeting: personaFields.greeting.value.trim(),
-        system_prompt: personaFields.system_prompt.value.trim(),
-        quirks: personaFields.quirks.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
-      };
-    }
+  async function selectLLMProfile(id, fetchDetail = true) {
+    if (!id) return;
+    state.selectedLLMId = id;
+    renderLLMList();
+    try {
+      if (fetchDetail) {
+        const detail = await request(API.llmProfile(id));
+        fillLLMForm(detail?.profile || detail?.data || detail);
+      } else {
+        const found = state.llmProfiles.find(i => llmIdOf(i) === id);
+        if (found) fillLLMForm(found);
+      }
+      setStatus(`Selected: ${id}`);
+    } catch (error) { toast('Failed to load LLM profile', 'err', error.message); }
+    renderLLMList();
+  }
 
-    function validateLLM(payload) {
-      if (!payload.id) throw new Error('ID is required');
-      if (!payload.name) throw new Error('Name is required');
-      if (!payload.provider) throw new Error('Provider is required');
-      if (!payload.base_url) throw new Error('Base URL is required');
-      if (!payload.model) throw new Error('Model is required');
-      if (!Number.isFinite(payload.max_tokens) || payload.max_tokens <= 0) {
-        throw new Error('Max Tokens must be greater than 0');
+  async function selectPersona(key, fetchDetail = true) {
+    if (!key) return;
+    state.selectedPersonaKey = key;
+    renderPersonaList();
+    try {
+      if (fetchDetail) {
+        const detail = await request(API.persona(key));
+        fillPersonaForm(detail?.persona || detail?.data || detail);
+      } else {
+        const found = state.personas.find(i => normalizePersona(i).key === key);
+        if (found) fillPersonaForm(found);
       }
-      if (!Number.isFinite(payload.temperature) || payload.temperature < 0 || payload.temperature > 2) {
-        throw new Error('Temperature must be between 0 and 2');
-      }
-      if (payload.summary_temperature !== null && (!Number.isFinite(payload.summary_temperature) || payload.summary_temperature < 0 || payload.summary_temperature > 2)) {
-        throw new Error('Summary Temperature must be between 0 and 2');
-      }
-      if (payload.input_budget_tokens !== null && (!Number.isFinite(payload.input_budget_tokens) || payload.input_budget_tokens <= 0)) {
-        throw new Error('Input Budget Tokens must be greater than 0');
-      }
-      if (payload.reserve_output_tokens !== null && (!Number.isFinite(payload.reserve_output_tokens) || payload.reserve_output_tokens <= 0)) {
-        throw new Error('Reserve Output Tokens must be greater than 0');
-      }
-      if (payload.soft_compact_ratio !== null && (!Number.isFinite(payload.soft_compact_ratio) || payload.soft_compact_ratio <= 0 || payload.soft_compact_ratio >= 1)) {
-        throw new Error('Soft Compact Ratio must be between 0 and 1');
-      }
-      if (payload.hard_compact_ratio !== null && (!Number.isFinite(payload.hard_compact_ratio) || payload.hard_compact_ratio <= 0 || payload.hard_compact_ratio >= 1)) {
-        throw new Error('Hard Compact Ratio must be between 0 and 1');
-      }
-      if (payload.soft_compact_ratio !== null && payload.hard_compact_ratio !== null && payload.soft_compact_ratio >= payload.hard_compact_ratio) {
-        throw new Error('Soft Compact Ratio must be less than Hard Compact Ratio');
-      }
-    }
+      setStatus(`Selected: ${key}`);
+    } catch (error) { toast('Failed to load persona', 'err', error.message); }
+    renderPersonaList();
+    syncPersonaActions();
+  }
 
-    function validatePersona(payload) {
-      if (!payload.key) throw new Error('Persona key is required');
-    }
+  async function activatePersona() {
+    const key = state.selectedPersonaKey || personaFields.key.value.trim();
+    if (!key || key === state.defaultPersonaKey) return;
+    if (!confirm(`Activate Persona "${key}"? Returning to chat will start a new conversation with it.`)) return;
+    try {
+      await request(API.personaActivate(key), { method:'POST' });
+      toast('Persona activated', 'ok', key);
+      await loadPersonas();
+      await selectPersona(key, false);
+    } catch (error) { toast('Failed to activate Persona', 'err', error.message); }
+  }
 
-    async function loadLLMProfiles() {
-      setStatus('Loading LLM profiles...');
-      const payload = await request(API.llmProfiles);
-      const data = payload || {};
-      const rawProfiles = data.profiles ?? data.items ?? data;
-      state.llmProfiles = Array.isArray(rawProfiles)
-        ? rawProfiles
-        : rawProfiles && typeof rawProfiles === 'object'
-          ? Object.values(rawProfiles)
-          : [];
-      state.activeLLMId = txt(data.active_id || data.activeId || '');
-      renderLLMList();
-      if (!state.selectedLLMId && state.activeLLMId) {
-        await selectLLMProfile(state.activeLLMId, false);
-      } else if (!state.selectedLLMId && state.llmProfiles.length) {
-        await selectLLMProfile(llmIdOf(state.llmProfiles[0]), false);
-      } else if (state.selectedLLMId) {
-        const current = state.llmProfiles.find((item) => llmIdOf(item) === state.selectedLLMId);
-        if (current) fillLLMForm(current);
-      }
-      setSummary(`LLM Profiles: ${state.llmProfiles.length}, active: ${state.activeLLMId || 'none'}`);
-      setStatus('LLM profiles loaded');
-    }
+  async function activateLLMProfile() {
+    const id = llmFields.id.value.trim();
+    if (!id) return;
+    try {
+      await request(API.llmActivate(id), { method:'POST' });
+      toast('Profile activated', 'ok', id);
+      await loadLLMProfiles();
+      await selectLLMProfile(id, false);
+    } catch (error) { toast('Failed to activate profile', 'err', error.message); }
+  }
 
-    async function loadPersonas() {
-      setStatus('Loading personas...');
-      const payload = await request(API.personas);
-      const data = payload || {};
-      const rawPersonas = data.personas ?? data.items ?? data;
-      state.defaultPersonaKey = txt(data.default);
-      state.personas = Array.isArray(rawPersonas)
-        ? rawPersonas
-        : rawPersonas && typeof rawPersonas === 'object'
-          ? Object.values(rawPersonas)
-          : [];
-      renderPersonaList();
+  async function saveLLMProfile(event) {
+    event.preventDefault();
+    const payload = llmPayloadFromForm();
+    try {
+      validateLLM(payload);
+      const editing = state.selectedLLMId && state.selectedLLMId === payload.id;
+      await request(editing ? API.llmProfile(state.selectedLLMId) : API.llmProfiles, { method: editing ? 'PUT' : 'POST', body: payload });
+      toast('LLM profile saved', 'ok', payload.id);
+      await loadLLMProfiles();
+      await selectLLMProfile(payload.id, true);
+    } catch (error) { toast('Failed to save LLM profile', 'err', error.message); }
+  }
 
-      const currentKeys = new Set(state.personas.map((item) => normalizePersona(item).key));
-      const selectedExists = state.selectedPersonaKey && currentKeys.has(state.selectedPersonaKey);
-      let fallbackKey = state.defaultPersonaKey;
-      if (!fallbackKey && state.personas.length) {
-        fallbackKey = normalizePersona(state.personas[0]).key;
-      }
-      if ((!selectedExists || !state.selectedPersonaKey) && fallbackKey) {
-        await selectPersona(fallbackKey, false);
-      } else if (state.selectedPersonaKey) {
-        const current = state.personas.find((item) => normalizePersona(item).key === state.selectedPersonaKey);
-        if (current) fillPersonaForm(current);
-      }
-      setSummary(`LLM Profiles: ${state.llmProfiles.length}, Personas: ${state.personas.length}, active persona: ${state.defaultPersonaKey || 'none'}`);
-      setStatus('Personas loaded');
-    }
-
-    async function selectLLMProfile(id, fetchDetail = true) {
-      if (!id) return;
-      state.selectedLLMId = id;
-      renderLLMList();
-      try {
-        if (fetchDetail) {
-          const detail = await request(API.llmProfile(id));
-          fillLLMForm(detail?.profile || detail?.data || detail);
-        } else {
-          const found = state.llmProfiles.find((item) => llmIdOf(item) === id);
-          if (found) fillLLMForm(found);
-        }
-        setStatus(`Selected LLM profile: ${id}`);
-      } catch (error) {
-        toast('Failed to load LLM profile', 'err', error.message);
-        setStatus('LLM profile load failed');
-      }
-      renderLLMList();
-    }
-
-    async function selectPersona(key, fetchDetail = true) {
-      if (!key) return;
-      state.selectedPersonaKey = key;
-      renderPersonaList();
-      try {
-        if (fetchDetail) {
-          const detail = await request(API.persona(key));
-          fillPersonaForm(detail?.persona || detail?.data || detail);
-        } else {
-          const found = state.personas.find((item) => normalizePersona(item).key === key);
-          if (found) fillPersonaForm(found);
-        }
-        setStatus(`Selected persona: ${key}`);
-      } catch (error) {
-        toast('Failed to load persona', 'err', error.message);
-        setStatus('Persona load failed');
-      }
-      renderPersonaList();
-      syncPersonaActions();
-    }
-
-    async function activatePersona() {
-      const key = state.selectedPersonaKey || personaFields.key.value.trim();
-      if (!key || key === state.defaultPersonaKey) return;
-      if (!confirm(`Activate Persona "${key}"? Returning to chat will start a new conversation with it.`)) return;
-      try {
-        await request(API.personaActivate(key), { method: 'POST' });
-        toast('Persona activated', 'ok', key);
-        await loadPersonas();
-        await selectPersona(key, false);
-      } catch (error) {
-        toast('Failed to activate Persona', 'err', error.message);
-      }
-    }
-
-    async function saveLLMProfile(event) {
-      event.preventDefault();
-      const payload = llmPayloadFromForm();
-      try {
-        validateLLM(payload);
-        const editingExisting = state.selectedLLMId && state.selectedLLMId === payload.id;
-        await request(editingExisting ? API.llmProfile(state.selectedLLMId) : API.llmProfiles, {
-          method: editingExisting ? 'PUT' : 'POST',
-          body: payload,
-        });
-        toast('LLM profile saved', 'ok', payload.id);
-        await loadLLMProfiles();
-        await selectLLMProfile(payload.id, true);
-      } catch (error) {
-        toast('Failed to save LLM profile', 'err', error.message);
-      }
-    }
-
-    async function activateLLMProfile() {
-      const id = llmFields.id.value.trim();
-      if (!id) return;
-      try {
-        await request(API.llmActivate(id), { method: 'POST' });
-        toast('Profile activated', 'ok', id);
-        await loadLLMProfiles();
-        await selectLLMProfile(id, false);
-      } catch (error) {
-        toast('Failed to activate profile', 'err', error.message);
-      }
-    }
-
-    async function deleteLLMProfile() {
-      const id = llmFields.id.value.trim();
-      if (!id) return;
-      if (!confirm(`Delete LLM Profile "${id}"?`)) return;
-      try {
-        await request(API.llmProfile(id), { method: 'DELETE' });
-        toast('Profile deleted', 'ok', id);
-        clearLLMForm();
-        await loadLLMProfiles();
-        if (state.llmProfiles.length) {
-          await selectLLMProfile(llmIdOf(state.llmProfiles[0]), false);
-        }
-      } catch (error) {
-        toast('Failed to delete profile', 'err', error.message);
-      }
-    }
-
-    async function savePersona(event) {
-      event.preventDefault();
-      const payload = personaPayloadFromForm();
-      try {
-        validatePersona(payload);
-        const editingExisting = state.selectedPersonaKey && state.selectedPersonaKey === payload.key;
-        await request(editingExisting ? API.persona(state.selectedPersonaKey) : API.personas, {
-          method: editingExisting ? 'PUT' : 'POST',
-          body: payload,
-        });
-        toast('Persona saved', 'ok', payload.name || payload.key);
-        await loadPersonas();
-        await selectPersona(payload.key, true);
-      } catch (error) {
-        toast('Failed to save Persona', 'err', error.message);
-      }
-    }
-
-    async function deletePersona() {
-      const key = personaFields.key.value.trim();
-      if (!key) return;
-      if (!confirm(`Delete Persona "${key}"?`)) return;
-      try {
-        await request(API.persona(key), { method: 'DELETE' });
-        toast('Persona deleted', 'ok', key);
-        clearPersonaForm();
-        await loadPersonas();
-        if (state.personas.length) {
-          await selectPersona(normalizePersona(state.personas[0]).key, false);
-        }
-      } catch (error) {
-        toast('Failed to delete Persona', 'err', error.message);
-      }
-    }
-
-    function autoGrow(textarea) {
-      const resize = () => {
-        textarea.style.height = 'auto';
-        textarea.style.height = `${Math.min(textarea.scrollHeight, 260)}px`;
-      };
-      textarea.addEventListener('input', resize);
-      resize();
-    }
-
-    async function refreshAll() {
-      try {
-        setStatus('Refreshing...');
-        await Promise.all([loadLLMProfiles(), loadPersonas()]);
-        toast('Data refreshed', 'ok');
-      } catch (error) {
-        toast('Failed to refresh data', 'err', error.message);
-        setStatus('Refresh failed');
-      }
-    }
-
-    document.getElementById('refresh-all').addEventListener('click', refreshAll);
-    document.getElementById('reload-profiles').addEventListener('click', loadLLMProfiles);
-    document.getElementById('reload-personas').addEventListener('click', loadPersonas);
-    document.getElementById('new-profile').addEventListener('click', () => {
+  async function deleteLLMProfile() {
+    const id = llmFields.id.value.trim();
+    if (!id) return;
+    if (!confirm(`Delete LLM Profile "${id}"?`)) return;
+    try {
+      await request(API.llmProfile(id), { method:'DELETE' });
+      toast('Profile deleted', 'ok', id);
       clearLLMForm();
-      llmFields.id.focus();
-    });
-    document.getElementById('new-persona').addEventListener('click', () => {
-      clearPersonaForm();
-      personaFields.key.focus();
-    });
-    document.getElementById('persona-activate').addEventListener('click', activatePersona);
-    document.getElementById('llm-activate').addEventListener('click', activateLLMProfile);
-    document.getElementById('llm-delete').addEventListener('click', deleteLLMProfile);
-    document.getElementById('persona-delete').addEventListener('click', deletePersona);
-    llmForm.addEventListener('submit', saveLLMProfile);
-    personaForm.addEventListener('submit', savePersona);
-    autoGrow(personaFields.system_prompt);
-    autoGrow(personaFields.quirks);
-    window.addEventListener('keydown', (event) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
-        event.preventDefault();
-        if (document.activeElement && personaForm.contains(document.activeElement)) {
-          personaForm.requestSubmit();
-        } else {
-          llmForm.requestSubmit();
-        }
-      }
-    });
+      await loadLLMProfiles();
+      if (state.llmProfiles.length) await selectLLMProfile(llmIdOf(state.llmProfiles[0]), false);
+    } catch (error) { toast('Failed to delete profile', 'err', error.message); }
+  }
 
-    clearLLMForm();
-    clearPersonaForm();
-    refreshAll();
-  </script>
+  async function savePersona(event) {
+    event.preventDefault();
+    const payload = personaPayloadFromForm();
+    try {
+      validatePersona(payload);
+      const editing = state.selectedPersonaKey && state.selectedPersonaKey === payload.key;
+      await request(editing ? API.persona(state.selectedPersonaKey) : API.personas, { method: editing ? 'PUT' : 'POST', body: payload });
+      toast('Persona saved', 'ok', payload.name || payload.key);
+      await loadPersonas();
+      await selectPersona(payload.key, true);
+    } catch (error) { toast('Failed to save Persona', 'err', error.message); }
+  }
+
+  async function deletePersona() {
+    const key = personaFields.key.value.trim();
+    if (!key) return;
+    if (!confirm(`Delete Persona "${key}"?`)) return;
+    try {
+      await request(API.persona(key), { method:'DELETE' });
+      toast('Persona deleted', 'ok', key);
+      clearPersonaForm();
+      await loadPersonas();
+      if (state.personas.length) await selectPersona(normalizePersona(state.personas[0]).key, false);
+    } catch (error) { toast('Failed to delete Persona', 'err', error.message); }
+  }
+
+  async function refreshAll() {
+    try {
+      setStatus('Refreshing...');
+      await Promise.all([loadLLMProfiles(), loadPersonas()]);
+      toast('Data refreshed', 'ok');
+    } catch (error) { toast('Failed to refresh', 'err', error.message); setStatus('Refresh failed'); }
+  }
+
+  function autoGrow(el) {
+    const resize = () => { el.style.height = 'auto'; el.style.height = `${Math.min(el.scrollHeight, 260)}px`; };
+    el.addEventListener('input', resize);
+    resize();
+  }
+
+  // ── Sync greeting preview live ──
+  personaFields.greeting.addEventListener('input', () => {
+    updateGreetingPreview(personaFields.greeting.value);
+  });
+  // Sync tone/key/name live
+  ['name','key','tone','description'].forEach(f => {
+    personaFields[f]?.addEventListener('input', () => {
+      updatePersonaHero({
+        key: personaFields.key.value,
+        name: personaFields.name.value,
+        description: personaFields.description.value,
+        tone: personaFields.tone.value,
+      });
+    });
+  });
+
+  // ── Event listeners ──
+  document.getElementById('refresh-all').addEventListener('click', refreshAll);
+  document.getElementById('reload-profiles').addEventListener('click', loadLLMProfiles);
+  document.getElementById('reload-personas').addEventListener('click', loadPersonas);
+  document.getElementById('new-profile').addEventListener('click', () => { clearLLMForm(); llmFields.id.focus(); switchTab('llm'); });
+  document.getElementById('new-persona').addEventListener('click', () => { clearPersonaForm(); personaFields.key.focus(); });
+  document.getElementById('persona-activate').addEventListener('click', activatePersona);
+  document.getElementById('llm-activate').addEventListener('click', activateLLMProfile);
+  document.getElementById('llm-delete').addEventListener('click', deleteLLMProfile);
+  document.getElementById('persona-delete').addEventListener('click', deletePersona);
+  llmForm.addEventListener('submit', saveLLMProfile);
+  personaForm.addEventListener('submit', savePersona);
+  autoGrow(personaFields.system_prompt);
+
+  window.addEventListener('keydown', event => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
+      event.preventDefault();
+      if (document.activeElement && personaForm.contains(document.activeElement)) personaForm.requestSubmit();
+      else if (document.activeElement && llmForm.contains(document.activeElement)) llmForm.requestSubmit();
+    }
+  });
+
+  clearLLMForm();
+  clearPersonaForm();
+  refreshAll();
+</script>
 </body>
 </html>
