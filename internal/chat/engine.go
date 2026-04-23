@@ -22,6 +22,8 @@ import (
 	"github.com/longyisang/emoagent/internal/work"
 )
 
+var errApprovalPending = errors.New("approval pending")
+
 // EngineConfig defines the dependencies for Engine.
 type EngineConfig struct {
 	LLM                llm.Client
@@ -457,7 +459,12 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 		toolMsgs := tool.ResultsToMessages(provider, snippedResults)
 		messages = append(messages, toolMsgs...)
 		if rawWriter != nil && approvals != nil {
-			approvalSnapshot = emitApprovalDiff(rawWriter, approvalSnapshot, approvals.ListSessionApprovals(sessionID, nil))
+			var interrupted bool
+			approvalSnapshot, interrupted = emitApprovalDiff(rawWriter, approvalSnapshot, approvals.ListSessionApprovals(sessionID, nil))
+			if interrupted {
+				e.logger.Info("approval required; interrupting current turn", "session", sessionID, "round", round)
+				return "", errApprovalPending
+			}
 		}
 
 		// Rebuild request for next round.
@@ -518,11 +525,62 @@ func (e *Engine) ContinueAfterApproval(ctx context.Context, sessionID string, pe
 	if approval == nil {
 		return "", errors.New("approval is required")
 	}
+	if note, handled, err := e.resumeApprovalDirectly(ctx, sessionID, approval); err != nil {
+		return "", err
+	} else if handled {
+		return e.sendTurn(ctx, sessionID, persona, cb, turnOptions{
+			persistUser: false,
+			extraSystem: note,
+		})
+	}
 	note := buildApprovalContinuationNote(approval)
 	return e.sendTurn(ctx, sessionID, persona, cb, turnOptions{
 		persistUser: false,
 		extraSystem: note,
 	})
+}
+
+func (e *Engine) resumeApprovalDirectly(ctx context.Context, sessionID string, approval *protocol.ApprovalRequest) (string, bool, error) {
+	if approval == nil || strings.TrimSpace(sessionID) == "" {
+		return "", false, nil
+	}
+	if approval.ID == "" || approval.TaskID == "" {
+		return "", false, nil
+	}
+
+	e.mu.RLock()
+	registry := e.registry
+	dispatcher := e.dispatcher
+	e.mu.RUnlock()
+	if registry == nil || dispatcher == nil {
+		return "", false, nil
+	}
+	if _, ok := registry.GetSpec("resume_work"); !ok {
+		return "", false, nil
+	}
+
+	input, err := json.Marshal(map[string]string{
+		"task_id":             approval.TaskID,
+		"approval_request_id": approval.ID,
+	})
+	if err != nil {
+		return "", false, err
+	}
+
+	resumeCtx := work.WithSessionID(ctx, sessionID)
+	result := dispatcher.Execute(resumeCtx, tool.Call{
+		ID:    "internal_resume_approval",
+		Name:  "resume_work",
+		Input: input,
+	}, tool.PermReadOnly)
+	if result.NeedsApproval {
+		return "", false, fmt.Errorf("resume_work unexpectedly requested approval for %s", approval.ID)
+	}
+	if result.IsError {
+		return "", false, decodeToolError(result.Content)
+	}
+
+	return buildApprovalOutcomeNote(approval, result.Content), true, nil
 }
 
 func effectiveSummaryModel(model, summaryModel string) string {
@@ -561,6 +619,29 @@ func buildApprovalContinuationNote(approval *protocol.ApprovalRequest) string {
 	)
 }
 
+func buildApprovalOutcomeNote(approval *protocol.ApprovalRequest, outcome json.RawMessage) string {
+	if approval == nil {
+		return ""
+	}
+	return fmt.Sprintf(
+		"## Internal Approval Event\nApproval request %s for task %s is now %s. The user's decision has already been applied and the paused Work task has already been resumed internally. Do not call resume_work again for this approval_request_id.\n\n## Internal Resume Outcome\n%s\n\nUse the internal outcome above to continue naturally. If it is already a final result, explain it to the user in your own words. If the task paused again, continue from the current pending state instead of reusing the consumed approval. Never expose raw JSON or internal IDs to the user.",
+		approval.ID,
+		approval.TaskID,
+		approval.Status,
+		string(outcome),
+	)
+}
+
+func decodeToolError(content json.RawMessage) error {
+	var payload map[string]string
+	if err := json.Unmarshal(content, &payload); err == nil {
+		if msg := strings.TrimSpace(payload["error"]); msg != "" {
+			return errors.New(msg)
+		}
+	}
+	return fmt.Errorf("tool execution failed: %s", strings.TrimSpace(string(content)))
+}
+
 func snapshotApprovalStatuses(approvals []protocol.ApprovalRequest) map[string]string {
 	if len(approvals) == 0 {
 		return map[string]string{}
@@ -572,11 +653,12 @@ func snapshotApprovalStatuses(approvals []protocol.ApprovalRequest) map[string]s
 	return snapshot
 }
 
-func emitApprovalDiff(emit func(WSMessage), previous map[string]string, current []protocol.ApprovalRequest) map[string]string {
+func emitApprovalDiff(emit func(WSMessage), previous map[string]string, current []protocol.ApprovalRequest) (map[string]string, bool) {
 	next := snapshotApprovalStatuses(current)
 	if emit == nil {
-		return next
+		return next, false
 	}
+	interrupted := false
 	for i := range current {
 		approval := current[i]
 		prevStatus, existed := previous[approval.ID]
@@ -586,11 +668,12 @@ func emitApprovalDiff(emit func(WSMessage), previous map[string]string, current 
 		eventType := "approval_updated"
 		if approval.Status == string(protocol.ApprovalStatusPending) {
 			eventType = "approval_required"
+			interrupted = true
 		}
 		approvalCopy := approval
 		emit(WSMessage{Type: eventType, Approval: &approvalCopy})
 	}
-	return next
+	return next, interrupted
 }
 
 func logCompactReport(logger *slog.Logger, level slog.Level, report contextutil.CompactReport, retryAttempt int, errorKind llm.ErrorKind, message string) {

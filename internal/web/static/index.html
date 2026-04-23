@@ -1127,7 +1127,7 @@
           appendMessage('assistant', payload.content || '');
           break;
         case 'stream_start':
-          pendingAssistant = appendMessage('assistant', '');
+          pendingAssistant = null;
           setSending(true);
           break;
         case 'stream_delta':

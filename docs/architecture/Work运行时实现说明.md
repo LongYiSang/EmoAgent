@@ -116,7 +116,10 @@ delegate_to_work
 
 ### `resume_work`
 
-`resume_work` 是 Emotion 侧恢复 Work 的入口。它支持两种恢复方式：
+`resume_work` 是恢复 Work 的统一入口。它在工具注册上仍属于 Emotion scope，但实际调用方分两类：
+
+- 普通暂停 / 提权暂停：由 Emotion 在理解用户答复后调用
+- 审批门控暂停：由系统执行层在收到 `approval_action` 后直接携带 `approval_request_id` 调用
 
 - 普通暂停：提供 `task_id` + `decision` / `reason` / `constraints_delta`
 - 提权暂停：对 `permission_escalation_required` 提供 `task_id` + 用户的 `decision` / `reason`；若用户批准，还要附带 `permission_scope_override="approved-destructive"`
@@ -127,7 +130,7 @@ delegate_to_work
 - `approved`：执行之前冻结的 `PendingToolCall`
 - `rejected`：注入拒绝结果，不执行那个工具调用
 
-这就是“持有破坏性调用，等审批回来再继续”的实现方式。
+这就是“持有破坏性调用，等审批回来再继续”的实现方式。当前 WebSocket / chat engine 会在用户点击审批后直接走这条恢复链路，而不是再等待一轮 Emotion LLM 生成 `resume_work` 调用。
 
 ---
 
@@ -148,12 +151,13 @@ delegate_to_work
 - 如果用户拒绝，运行时会向 Work 注入一个“未执行”的错误工具结果
 - 如果用户批准，Emotion 必须带 `permission_scope_override="approved-destructive"` 恢复；运行时会更新本次任务的有效 scope，并带着批准上下文执行冻结的工具调用
 
-只有任务已经处于 `approved-destructive` 路径，并且具体工具调用仍然需要审批门控时，运行时才会生成 `tool_approval`。这一类暂停会创建 `approval_request_id`，走独立的审批恢复链路。
+只有任务已经处于 `approved-destructive` 路径，并且具体工具调用仍然需要审批门控时，运行时才会生成 `tool_approval`。这一类暂停会创建 `approval_request_id`，走独立的审批恢复链路：审批请求由交互层直接展示，用户点击后由系统执行层按 `approval_request_id` 直接恢复 Work，再把恢复结果交回 Emotion 做对外表达。
 
 这样可以保证：
 
 - 提权是否继续，始终由用户拍板，Emotion 只负责转述和恢复
 - `tool_approval` 仍然保留给真正的审批门控场景
+- `tool_approval` 的恢复不再依赖额外一轮 Emotion LLM，从而减少审批窗口出现后的点击等待
 - 模型不会把权限升级伪装成普通 `human_confirmation`
 
 ---

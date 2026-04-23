@@ -160,7 +160,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					cancel()
 				}
 			})
-			if err != nil {
+			if err != nil && !errors.Is(err, errApprovalPending) {
 				if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: err.Error()}, &writeMu); writeErr != nil {
 					return
 				}
@@ -222,7 +222,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					}
 					cancel()
 				}
-			}); err != nil {
+			}); err != nil && !errors.Is(err, errApprovalPending) {
 				if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: err.Error()}, &writeMu); writeErr != nil {
 					return
 				}

@@ -51,7 +51,7 @@ flowchart TB
       W_tool["工具集<br/>read · write · bash<br/>edit · list · fetch"]
       W_perm["权限域<br/>read-only · workspace-write<br/>approved-destructive"]
       W_approval["runtime-generated tool_approval<br/>destructive calls"]
-      W_resume["resume_work<br/>ordinary decision / approval_request_id"]
+      W_resume["resume_work<br/>ordinary decision / approval_request_id<br/>approval_action 可直接续跑"]
       W_stream["进度流式回传"]
       W_cmp["内部上下文压缩"]
   end
@@ -100,10 +100,12 @@ flowchart LR
   RD -->|需人格 / 关系判断| Emo["Emotion Root"]
   Emo -->|可决策| RS
   Emo -.->|高风险 / 不可逆| U["用户确认"]
-  U -->|approval_request_id| RS
+  U -->|普通回复| Emo
+  U -->|approval_action| Sys["系统执行层<br/>Chat Engine / WS handler"]
+  Sys -->|approval_request_id| RS
 ```
 
-三层递进：先由 Work 运行时的 **RuntimeDecider** 自主决断执行细节；需要人格或关系上下文时升级到 **Emotion**；涉及高风险或不可逆操作时再升级到 **用户**。Work 通过 `TaskReport` / `DecisionPacket` 维护暂停点，`resume_work` 同时支持普通决策续跑和 `approval_request_id` 续跑，危险调用则由运行时生成的 `tool_approval` 处理。每一层的决策都以 `append-only` 的 Resume Note 注入 Work 原上下文，不泄漏工具痕迹。
+三层递进：先由 Work 运行时的 **RuntimeDecider** 自主决断执行细节；需要人格或关系上下文时升级到 **Emotion**；涉及高风险或不可逆操作时再升级到 **用户**。区别在于恢复执行现在分两条路径：普通决策与 `permission_escalation_required` 仍由 Emotion 调用 `resume_work`；审批门控的 `tool_approval` 在用户点击审批后，由系统执行层直接携带 `approval_request_id` 续跑 Work，再把恢复结果交回 Emotion 组织最终对外表达。每一层的决策都以 `append-only` 的 Resume Note 注入 Work 原上下文，不泄漏工具痕迹。
 
 详细架构设计见 [docs/architecture/架构.md](docs/architecture/架构.md)
 

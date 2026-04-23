@@ -1259,11 +1259,10 @@ func TestEnginePendingDecisionChainAcrossTurns(t *testing.T) {
 	}
 }
 
-func TestEngineSendMessage_EmitsApprovalRequiredBeforeFinalAssistantReplyForToolApproval(t *testing.T) {
+func TestEngineSendMessage_StopsTurnImmediatelyWhenToolApprovalIsRaised(t *testing.T) {
 	llmClient := &scriptedEngineClient{
 		responses: []*llm.ChatResponse{
 			toolUseResponse("call_delegate", "delegate_to_work", `{"goal":"delete finish files","permission_scope":"workspace-write"}`),
-			endTurnResponse("我需要你确认是否继续执行删除操作。"),
 		},
 	}
 
@@ -1361,30 +1360,142 @@ func TestEngineSendMessage_EmitsApprovalRequiredBeforeFinalAssistantReplyForTool
 			timeline = append(timeline, "delta:"+delta)
 		}
 	})
-	if err != nil {
-		t.Fatalf("SendMessage: %v", err)
+	if !errors.Is(err, errApprovalPending) {
+		t.Fatalf("SendMessage err = %v, want errApprovalPending", err)
 	}
-	if !strings.Contains(reply, "确认") {
-		t.Fatalf("reply = %q, want confirmation prompt", reply)
+	if reply != "" {
+		t.Fatalf("reply = %q, want empty reply when approval interrupts the turn", reply)
 	}
 
-	var approvalIndex, deltaIndex int = -1, -1
+	var approvalIndex int = -1
 	for i, item := range timeline {
 		if item == "approval_required" && approvalIndex == -1 {
 			approvalIndex = i
 		}
-		if strings.HasPrefix(item, "delta:") && deltaIndex == -1 {
-			deltaIndex = i
+		if strings.HasPrefix(item, "delta:") {
+			t.Fatalf("timeline = %#v, want no assistant deltas after approval_required", timeline)
 		}
 	}
 	if approvalIndex == -1 {
 		t.Fatalf("timeline = %#v, want approval_required event", timeline)
 	}
-	if deltaIndex == -1 {
-		t.Fatalf("timeline = %#v, want assistant delta", timeline)
+	if got := len(llmClient.requests); got != 1 {
+		t.Fatalf("ChatStream requests = %d, want 1 when approval interrupts the turn", got)
 	}
-	if approvalIndex > deltaIndex {
-		t.Fatalf("timeline = %#v, want approval_required before assistant delta", timeline)
+}
+
+func TestEngineContinueAfterApproval_ResumesWorkDirectlyBeforeNarrating(t *testing.T) {
+	llmClient := &scriptedEngineClient{
+		responses: []*llm.ChatResponse{
+			endTurnResponse("已经处理好了。"),
+		},
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chat.db")
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+	db, err := storage.Open(path, logger)
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	registry := tool.NewRegistry()
+	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, logger)
+
+	var resumeCalls []struct {
+		TaskID            string `json:"task_id"`
+		ApprovalRequestID string `json:"approval_request_id"`
+	}
+	registry.Register(tool.Spec{
+		Name:        "resume_work",
+		Description: "test resume",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"task_id":{"type":"string"},"approval_request_id":{"type":"string"}},"required":["task_id","approval_request_id"],"additionalProperties":false}`),
+		Scope:       tool.ScopeEmotion,
+		Permission:  tool.PermReadOnly,
+	}, func(_ context.Context, input json.RawMessage) (json.RawMessage, error) {
+		var req struct {
+			TaskID            string `json:"task_id"`
+			ApprovalRequestID string `json:"approval_request_id"`
+		}
+		if err := json.Unmarshal(input, &req); err != nil {
+			return nil, err
+		}
+		resumeCalls = append(resumeCalls, req)
+		return json.Marshal(protocol.TaskReport{
+			TaskID:    req.TaskID,
+			Status:    "completed",
+			Goal:      "删除 finish 文件",
+			Summary:   "已完成删除。",
+			Findings:  []string{"删除了 1 个文件"},
+			CreatedAt: time.Now().UTC(),
+		})
+	})
+
+	engine := NewEngine(EngineConfig{
+		LLM:          llmClient,
+		DB:           db,
+		Logger:       logger,
+		Model:        "test-model",
+		SummaryModel: "summary-model",
+		MaxTokens:    512,
+		Temperature:  0.2,
+		ContextConfig: config.ContextConfig{
+			InputBudgetTokens:    24000,
+			SoftCompactRatio:     0.75,
+			HardCompactRatio:     0.92,
+			ReserveOutputTokens:  4096,
+			KeepRecentUserTurns:  6,
+			ToolResultSoftTokens: 1000,
+			ToolResultHardTokens: 3000,
+		},
+		Provider:   "openai",
+		Registry:   registry,
+		Dispatcher: dispatcher,
+	})
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	persona := &config.Persona{Name: "default", SystemPrompt: "You are warm."}
+
+	var streamed []string
+	reply, err := engine.ContinueAfterApproval(context.Background(), sessionID, persona, &protocol.ApprovalRequest{
+		ID:               "approval-1",
+		SessionID:        sessionID,
+		TaskID:           "task-1",
+		Category:         string(protocol.CatToolApproval),
+		Status:           string(protocol.ApprovalStatusApproved),
+		SelectedOptionID: "confirm_delete",
+	}, func(delta string) {
+		if delta != "" {
+			streamed = append(streamed, delta)
+		}
+	})
+	if err != nil {
+		t.Fatalf("ContinueAfterApproval: %v", err)
+	}
+	if reply != "已经处理好了。" {
+		t.Fatalf("reply = %q, want %q", reply, "已经处理好了。")
+	}
+	if len(resumeCalls) != 1 {
+		t.Fatalf("resume_work calls = %d, want 1", len(resumeCalls))
+	}
+	if resumeCalls[0].TaskID != "task-1" || resumeCalls[0].ApprovalRequestID != "approval-1" {
+		t.Fatalf("resume_work call = %#v, want task_id=task-1 approval_request_id=approval-1", resumeCalls[0])
+	}
+	if len(streamed) != 1 || streamed[0] != "已经处理好了。" {
+		t.Fatalf("streamed = %#v, want [已经处理好了。]", streamed)
+	}
+	if len(llmClient.requests) != 1 {
+		t.Fatalf("ChatStream requests = %d, want 1 narration request", len(llmClient.requests))
+	}
+	if !strings.Contains(llmClient.requests[0].System, "already been resumed internally") {
+		t.Fatalf("system = %q, want direct-resume note", llmClient.requests[0].System)
+	}
+	if !strings.Contains(llmClient.requests[0].System, "已完成删除。") {
+		t.Fatalf("system = %q, want task report summary in narration prompt", llmClient.requests[0].System)
 	}
 }
 
