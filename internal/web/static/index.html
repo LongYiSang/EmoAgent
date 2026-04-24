@@ -1408,8 +1408,13 @@
   }
 
   async function loadDefaultPersona() {
+    try {
+      const active = await requestJSON('/api/agent-configs/active');
+      if (active && active.persona_key) return active.persona_key;
+    } catch (_) {}
     const payload = await requestJSON('/api/personas');
-    return payload.default || 'default';
+    const personas = payload.personas || [];
+    return personas[0]?.key || '';
   }
 
   async function loadSessionDetail(id) { return requestJSON(`/api/sessions/${encodeURIComponent(id)}`); }

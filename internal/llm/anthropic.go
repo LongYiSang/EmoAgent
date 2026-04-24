@@ -186,17 +186,7 @@ func (c *anthropicClient) doRequest(ctx context.Context, body []byte, stream boo
 }
 
 func (c *anthropicClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
-	aReq := anthropicRequest{
-		Model:       req.Model,
-		Messages:    c.toMessages(req),
-		System:      req.System,
-		MaxTokens:   req.MaxTokens,
-		Temperature: req.Temperature,
-		Stream:      false,
-		Tools:       c.convertTools(req.Tools),
-	}
-
-	body, err := json.Marshal(aReq)
+	body, err := json.Marshal(c.anthropicPayload(req, false))
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
@@ -229,22 +219,12 @@ func (c *anthropicClient) Chat(ctx context.Context, req ChatRequest) (*ChatRespo
 }
 
 func (c *anthropicClient) ChatStream(ctx context.Context, req ChatRequest, cb StreamCallback) (*ChatResponse, error) {
-	aReq := anthropicRequest{
-		Model:       req.Model,
-		Messages:    c.toMessages(req),
-		System:      req.System,
-		MaxTokens:   req.MaxTokens,
-		Temperature: req.Temperature,
-		Stream:      true,
-		Tools:       c.convertTools(req.Tools),
-	}
-
-	body, err := json.Marshal(aReq)
+	body, err := json.Marshal(c.anthropicPayload(req, true))
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	c.logger.Debug("llm http request", "model", aReq.Model, "messages_count", len(aReq.Messages))
+	c.logger.Debug("llm http request", "model", req.Model, "messages_count", len(req.Messages))
 
 	resp, err := c.doRequest(ctx, body, true)
 	if err != nil {
@@ -368,4 +348,49 @@ func (c *anthropicClient) ChatStream(ctx context.Context, req ChatRequest, cb St
 
 	chatResp.Content = accumulated
 	return &chatResp, nil
+}
+
+func (c *anthropicClient) anthropicPayload(req ChatRequest, stream bool) map[string]any {
+	params := effectiveRequestParams(req)
+	payload := sanitizedExtra(params.Extra, map[string]struct{}{
+		"model": {}, "messages": {}, "system": {}, "max_tokens": {}, "temperature": {}, "top_p": {},
+		"presence_penalty": {}, "frequency_penalty": {}, "reasoning_effort": {}, "thinking": {},
+		"output_config": {}, "stream": {}, "tools": {},
+	})
+	payload["model"] = req.Model
+	payload["messages"] = c.toMessages(req)
+	if req.System != "" {
+		payload["system"] = req.System
+	}
+	if params.MaxTokens > 0 {
+		payload["max_tokens"] = params.MaxTokens
+	}
+	if params.Temperature != nil {
+		payload["temperature"] = *params.Temperature
+	}
+	if params.TopP != nil {
+		payload["top_p"] = *params.TopP
+	}
+	if params.Thinking != nil {
+		switch params.Thinking.Mode {
+		case "manual":
+			thinking := map[string]any{"type": "enabled"}
+			if params.Thinking.BudgetTokens != nil {
+				thinking["budget_tokens"] = *params.Thinking.BudgetTokens
+			}
+			payload["thinking"] = thinking
+		case "adaptive":
+			payload["thinking"] = map[string]any{"type": "adaptive"}
+			if params.Thinking.Effort != "" {
+				payload["output_config"] = map[string]any{"effort": params.Thinking.Effort}
+			}
+		}
+	}
+	if stream {
+		payload["stream"] = true
+	}
+	if tools := c.convertTools(req.Tools); len(tools) > 0 {
+		payload["tools"] = tools
+	}
+	return payload
 }

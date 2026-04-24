@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -14,29 +12,28 @@ import (
 
 	"github.com/longyisang/emoagent/internal/apperrors"
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/storage"
 )
 
 type fakeAdminApp struct {
-	profiles            []config.LLMProfile
-	active              *config.LLMProfile
+	providers           []config.LLMProvider
+	agentConfigs        []config.AgentConfig
+	activeAgent         *config.AgentConfig
 	personas            map[string]*config.Persona
 	progressPhrases     map[string]map[string][]string
 	sessions            []storage.SessionSummary
 	sessionDetail       *storage.SessionRecord
 	sessionMessages     []storage.MessageRecord
-	defaultKey          string
 	createErr           error
 	activateErr         error
-	activatePersonaErr  error
-	getErr              error
 	sessionErr          error
 	deleteSessionErr    error
 	approvals           []protocol.ApprovalRequest
-	lastCreate          config.LLMProfile
+	lastProvider        config.LLMProvider
+	lastAgentConfig     config.AgentConfig
 	lastActivate        string
-	lastPersonaActivate string
 	lastPersonaKey      string
 	lastPersona         *config.Persona
 	lastSessionPersona  string
@@ -50,38 +47,67 @@ type fakeAdminApp struct {
 	updateChatErr       error
 }
 
-func (f *fakeAdminApp) ListLLMProfiles() ([]config.LLMProfile, error) {
-	return append([]config.LLMProfile(nil), f.profiles...), nil
+func (f *fakeAdminApp) ListLLMProviders() ([]config.LLMProvider, error) {
+	return append([]config.LLMProvider(nil), f.providers...), nil
 }
-func (f *fakeAdminApp) GetLLMProfile(id string) (*config.LLMProfile, error) {
-	if f.getErr != nil {
-		return nil, f.getErr
-	}
-	for i := range f.profiles {
-		if f.profiles[i].Name == id {
-			cp := f.profiles[i]
+func (f *fakeAdminApp) GetLLMProvider(id string) (*config.LLMProvider, error) {
+	for i := range f.providers {
+		if f.providers[i].ID == id {
+			cp := f.providers[i]
 			return &cp, nil
 		}
 	}
-	return nil, errors.New("llm profile not found")
+	return nil, apperrors.ErrLLMProviderNotFound
 }
-func (f *fakeAdminApp) GetActiveLLMProfile() (*config.LLMProfile, bool) {
-	if f.active == nil {
-		return nil, false
-	}
-	cp := *f.active
-	return &cp, true
-}
-func (f *fakeAdminApp) CreateLLMProfile(profile config.LLMProfile) error {
-	f.lastCreate = profile
+func (f *fakeAdminApp) CreateLLMProvider(provider config.LLMProvider) error {
+	f.lastProvider = provider
 	return f.createErr
 }
-func (f *fakeAdminApp) UpdateLLMProfile(id string, profile config.LLMProfile) error { return nil }
-func (f *fakeAdminApp) ActivateLLMProfile(id string) error {
+func (f *fakeAdminApp) UpdateLLMProvider(id string, provider config.LLMProvider) error {
+	provider.ID = id
+	f.lastProvider = provider
+	return nil
+}
+func (f *fakeAdminApp) DeleteLLMProvider(id string) error { return nil }
+func (f *fakeAdminApp) RefreshLLMProviderModels(id string) ([]llm.ModelInfo, error) {
+	return []llm.ModelInfo{{ID: "model-a"}}, nil
+}
+func (f *fakeAdminApp) GetLLMProviderModels(id string) ([]llm.ModelInfo, error) {
+	return []llm.ModelInfo{{ID: "model-a"}}, nil
+}
+func (f *fakeAdminApp) ListAgentConfigs() ([]config.AgentConfig, error) {
+	return append([]config.AgentConfig(nil), f.agentConfigs...), nil
+}
+func (f *fakeAdminApp) GetAgentConfig(id string) (*config.AgentConfig, error) {
+	for i := range f.agentConfigs {
+		if f.agentConfigs[i].ID == id {
+			cp := f.agentConfigs[i]
+			return &cp, nil
+		}
+	}
+	return nil, apperrors.ErrAgentConfigNotFound
+}
+func (f *fakeAdminApp) GetActiveAgentConfig() (*config.AgentConfig, bool, error) {
+	if f.activeAgent == nil {
+		return nil, false, nil
+	}
+	cp := *f.activeAgent
+	return &cp, true, nil
+}
+func (f *fakeAdminApp) CreateAgentConfig(agent config.AgentConfig) error {
+	f.lastAgentConfig = agent
+	return f.createErr
+}
+func (f *fakeAdminApp) UpdateAgentConfig(id string, agent config.AgentConfig) error {
+	agent.ID = id
+	f.lastAgentConfig = agent
+	return nil
+}
+func (f *fakeAdminApp) ActivateAgentConfig(id string) error {
 	f.lastActivate = id
 	return f.activateErr
 }
-func (f *fakeAdminApp) DeleteLLMProfile(id string) error         { return nil }
+func (f *fakeAdminApp) DeleteAgentConfig(id string) error        { return nil }
 func (f *fakeAdminApp) ListPersonas() map[string]*config.Persona { return f.personas }
 func (f *fakeAdminApp) GetPersona(name string) (*config.Persona, bool) {
 	p, ok := f.personas[name]
@@ -94,10 +120,6 @@ func (f *fakeAdminApp) CreatePersona(key string, p *config.Persona) error {
 }
 func (f *fakeAdminApp) UpdatePersona(key string, p *config.Persona) error { return nil }
 func (f *fakeAdminApp) DeletePersona(key string) error                    { return nil }
-func (f *fakeAdminApp) ActivatePersona(key string) error {
-	f.lastPersonaActivate = key
-	return f.activatePersonaErr
-}
 func (f *fakeAdminApp) GetProgressPhrases(key string) (map[string][]string, error) {
 	if f.progressPhrases == nil {
 		return map[string][]string{}, nil
@@ -124,7 +146,6 @@ func (f *fakeAdminApp) UpdateProgressPhrases(key string, phrases map[string][]st
 	f.progressPhrases[key] = f.lastPhrasesValue
 	return nil
 }
-func (f *fakeAdminApp) GetDefaultPersonaName() string { return f.defaultKey }
 func (f *fakeAdminApp) ListSessions(_ context.Context, persona string, limit int) ([]storage.SessionSummary, error) {
 	f.lastSessionPersona = persona
 	f.lastSessionLimit = limit
@@ -166,52 +187,59 @@ func (f *fakeAdminApp) UpdateChatSettings(settings config.ChatConfig) error {
 	return f.updateChatErr
 }
 
-func floatPtr(v float64) *float64 { return &v }
-
-func TestHandleListLLMProfiles(t *testing.T) {
-	app := &fakeAdminApp{
-		profiles: []config.LLMProfile{{Name: "default", Provider: "openai", SummaryTemperature: floatPtr(0.11), SummaryMaxTokens: 3072}},
-		active:   &config.LLMProfile{Name: "default", Provider: "openai", SummaryTemperature: floatPtr(0.11), SummaryMaxTokens: 3072},
-	}
+func TestHandleCreateLLMProviderNormalizesPayload(t *testing.T) {
+	app := &fakeAdminApp{}
 	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
-	req := httptest.NewRequest(http.MethodGet, "/api/llm-profiles", nil)
+	body := bytes.NewBufferString(`{"id":" moonshot ","name":" Moonshot ","protocol":"openai_compatible","base_url":"https://api.moonshot.cn/","api_key_env":" MOONSHOT_API_KEY ","enabled":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/llm-providers", body)
 	rec := httptest.NewRecorder()
-	handler.HandleListLLMProfiles(rec, req)
+	handler.HandleCreateLLMProvider(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", rec.Code)
 	}
-
-	var resp llmProfilesResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("Decode: %v", err)
+	if app.lastProvider.ID != "moonshot" || app.lastProvider.BaseURL != "https://api.moonshot.cn" {
+		t.Fatalf("lastProvider = %#v, want normalized id/base_url", app.lastProvider)
 	}
-	if resp.ActiveID != "default" {
-		t.Fatalf("ActiveID = %q, want default", resp.ActiveID)
-	}
-	if len(resp.Profiles) != 1 || resp.Profiles[0].ID != "default" {
-		t.Fatalf("Profiles = %#v, want one default profile", resp.Profiles)
-	}
-	if resp.Profiles[0].SummaryTemperature == nil || *resp.Profiles[0].SummaryTemperature != 0.11 {
-		t.Fatalf("SummaryTemperature = %#v, want 0.11", resp.Profiles[0].SummaryTemperature)
-	}
-	if resp.Profiles[0].SummaryMaxTokens != 3072 {
-		t.Fatalf("SummaryMaxTokens = %d, want 3072", resp.Profiles[0].SummaryMaxTokens)
+	if app.lastProvider.ModelDiscovery != "manual" {
+		t.Fatalf("ModelDiscovery = %q, want manual", app.lastProvider.ModelDiscovery)
 	}
 }
 
-func TestHandleCreateLLMProfileMapsConflict(t *testing.T) {
-	app := &fakeAdminApp{createErr: apperrors.ErrLLMProfileExists}
+func TestHandleCreateAgentConfigParsesBindings(t *testing.T) {
+	app := &fakeAdminApp{}
 	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
-	body := bytes.NewBufferString(`{"id":"default","name":"Default","provider":"openai","base_url":"https://api.openai.com","model":"gpt-4o","max_tokens":128,"temperature":0.7}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/llm-profiles", body)
+	body := bytes.NewBufferString(`{
+		"id":"default",
+		"name":"Default",
+		"persona_key":"default",
+		"emotion":{
+			"main":{"provider_id":"moonshot","model":"emotion-main","params":{"max_tokens":111,"temperature":0.2,"stream":true}},
+			"summary":{"provider_id":"moonshot","model":"emotion-summary","params":{"max_tokens":222,"temperature":0.1,"stream":false}}
+		},
+		"work":{
+			"main":{"provider_id":"anthropic","model":"work-main","params":{"max_tokens":333,"thinking":{"mode":"enabled","budget_tokens":1024}}},
+			"summary":{"provider_id":"moonshot","model":"work-summary","params":{"max_tokens":444}}
+		},
+		"context_overrides":{"input_budget_tokens":9000}
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/agent-configs", body)
 	rec := httptest.NewRecorder()
-	handler.HandleCreateLLMProfile(rec, req)
+	handler.HandleCreateAgentConfig(rec, req)
 
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want 409", rec.Code)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", rec.Code)
+	}
+	if app.lastAgentConfig.Emotion.Main.Model != "emotion-main" || app.lastAgentConfig.Work.Summary.Model != "work-summary" {
+		t.Fatalf("lastAgentConfig = %#v, want parsed models", app.lastAgentConfig)
+	}
+	if app.lastAgentConfig.Emotion.Main.Params.Temperature == nil || *app.lastAgentConfig.Emotion.Main.Params.Temperature != 0.2 {
+		t.Fatalf("emotion main temperature = %#v, want 0.2", app.lastAgentConfig.Emotion.Main.Params.Temperature)
+	}
+	if app.lastAgentConfig.Work.Main.Params.Thinking == nil || app.lastAgentConfig.Work.Main.Params.Thinking.BudgetTokens == nil || *app.lastAgentConfig.Work.Main.Params.Thinking.BudgetTokens != 1024 {
+		t.Fatalf("work thinking = %#v, want budget 1024", app.lastAgentConfig.Work.Main.Params.Thinking)
 	}
 }
 
@@ -261,130 +289,6 @@ func TestHandleUpdateChatSettingsRejectsInvalidJSON(t *testing.T) {
 	}
 }
 
-func TestHandleCreateLLMProfileParsesBudgetOverrides(t *testing.T) {
-	app := &fakeAdminApp{}
-	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
-
-	body := bytes.NewBufferString(`{"id":"default","name":"Default","provider":"openai","base_url":"https://api.openai.com","model":"gpt-4o","max_tokens":128,"temperature":0.7,"input_budget_tokens":12000,"soft_compact_ratio":0.6,"hard_compact_ratio":0.85,"reserve_output_tokens":1024}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/llm-profiles", body)
-	rec := httptest.NewRecorder()
-	handler.HandleCreateLLMProfile(rec, req)
-
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("status = %d, want 201", rec.Code)
-	}
-	if app.lastCreate.InputBudgetTokens == nil || *app.lastCreate.InputBudgetTokens != 12000 {
-		t.Fatalf("InputBudgetTokens = %#v, want 12000", app.lastCreate.InputBudgetTokens)
-	}
-	if app.lastCreate.SoftCompactRatio == nil || *app.lastCreate.SoftCompactRatio != 0.6 {
-		t.Fatalf("SoftCompactRatio = %#v, want 0.6", app.lastCreate.SoftCompactRatio)
-	}
-	if app.lastCreate.HardCompactRatio == nil || *app.lastCreate.HardCompactRatio != 0.85 {
-		t.Fatalf("HardCompactRatio = %#v, want 0.85", app.lastCreate.HardCompactRatio)
-	}
-	if app.lastCreate.ReserveOutputTokens == nil || *app.lastCreate.ReserveOutputTokens != 1024 {
-		t.Fatalf("ReserveOutputTokens = %#v, want 1024", app.lastCreate.ReserveOutputTokens)
-	}
-}
-
-func TestHandleCreateLLMProfileParsesSummaryTemperature(t *testing.T) {
-	t.Run("numeric summary temperature", func(t *testing.T) {
-		app := &fakeAdminApp{}
-		handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
-
-		body := bytes.NewBufferString(`{"id":"default","name":"Default","provider":"openai","base_url":"https://api.openai.com","model":"gpt-4o","max_tokens":128,"temperature":0.7,"summary_temperature":0.15}`)
-		req := httptest.NewRequest(http.MethodPost, "/api/llm-profiles", body)
-		rec := httptest.NewRecorder()
-		handler.HandleCreateLLMProfile(rec, req)
-
-		if rec.Code != http.StatusCreated {
-			t.Fatalf("status = %d, want 201", rec.Code)
-		}
-		if app.lastCreate.SummaryTemperature == nil || *app.lastCreate.SummaryTemperature != 0.15 {
-			t.Fatalf("SummaryTemperature = %#v, want 0.15", app.lastCreate.SummaryTemperature)
-		}
-	})
-
-	t.Run("null summary temperature", func(t *testing.T) {
-		app := &fakeAdminApp{}
-		handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
-
-		body := bytes.NewBufferString(`{"id":"default","name":"Default","provider":"openai","base_url":"https://api.openai.com","model":"gpt-4o","max_tokens":128,"temperature":0.7,"summary_temperature":null}`)
-		req := httptest.NewRequest(http.MethodPost, "/api/llm-profiles", body)
-		rec := httptest.NewRecorder()
-		handler.HandleCreateLLMProfile(rec, req)
-
-		if rec.Code != http.StatusCreated {
-			t.Fatalf("status = %d, want 201", rec.Code)
-		}
-		if app.lastCreate.SummaryTemperature != nil {
-			t.Fatalf("SummaryTemperature = %#v, want nil", app.lastCreate.SummaryTemperature)
-		}
-	})
-}
-
-func TestHandleCreateLLMProfileParsesSummaryMaxTokens(t *testing.T) {
-	app := &fakeAdminApp{}
-	handler := NewAPIHandler(app, slog.Default())
-	body := bytes.NewBufferString(`{"id":"default","name":"Default","provider":"openai","base_url":"https://api.openai.com","model":"gpt-4o","max_tokens":128,"temperature":0.7,"summary_max_tokens":3072}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/llm-profiles", body)
-	rec := httptest.NewRecorder()
-
-	handler.HandleCreateLLMProfile(rec, req)
-
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	if app.lastCreate.SummaryMaxTokens != 3072 {
-		t.Fatalf("SummaryMaxTokens = %d, want 3072", app.lastCreate.SummaryMaxTokens)
-	}
-}
-
-func TestHandleGetLLMProfileMapsWrappedNotFound(t *testing.T) {
-	app := &fakeAdminApp{getErr: fmt.Errorf("wrapped: %w", apperrors.ErrLLMProfileNotFound)}
-	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
-
-	req := httptest.NewRequest(http.MethodGet, "/api/llm-profiles/missing", nil)
-	req.SetPathValue("id", "missing")
-	rec := httptest.NewRecorder()
-	handler.HandleGetLLMProfile(rec, req)
-
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", rec.Code)
-	}
-}
-
-func TestHandleGetLLMProfileMapsUnknownErrorToInternalServerError(t *testing.T) {
-	app := &fakeAdminApp{getErr: errors.New("db down")}
-	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
-
-	req := httptest.NewRequest(http.MethodGet, "/api/llm-profiles/missing", nil)
-	req.SetPathValue("id", "missing")
-	rec := httptest.NewRecorder()
-	handler.HandleGetLLMProfile(rec, req)
-
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", rec.Code)
-	}
-}
-
-func TestHandleActivateLLMProfileMapsBadRequest(t *testing.T) {
-	app := &fakeAdminApp{activateErr: errors.New("OPENAI_API_KEY environment variable not set")}
-	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
-
-	req := httptest.NewRequest(http.MethodPost, "/api/llm-profiles/default/activate", nil)
-	req.SetPathValue("id", "default")
-	rec := httptest.NewRecorder()
-	handler.HandleActivateLLMProfile(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
-	}
-	if app.lastActivate != "default" {
-		t.Fatalf("lastActivate = %q, want default", app.lastActivate)
-	}
-}
-
 func TestHandleCreatePersonaFallsBackToNameAsKey(t *testing.T) {
 	app := &fakeAdminApp{}
 	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -402,37 +306,6 @@ func TestHandleCreatePersonaFallsBackToNameAsKey(t *testing.T) {
 	}
 	if app.lastPersona == nil || app.lastPersona.Name != "default" {
 		t.Fatalf("lastPersona = %#v, want name default", app.lastPersona)
-	}
-}
-
-func TestHandleActivatePersona(t *testing.T) {
-	app := &fakeAdminApp{}
-	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
-
-	req := httptest.NewRequest(http.MethodPost, "/api/personas/default/activate", nil)
-	req.SetPathValue("name", "default")
-	rec := httptest.NewRecorder()
-	handler.HandleActivatePersona(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	if app.lastPersonaActivate != "default" {
-		t.Fatalf("lastPersonaActivate = %q, want default", app.lastPersonaActivate)
-	}
-}
-
-func TestHandleActivatePersonaMapsNotFound(t *testing.T) {
-	app := &fakeAdminApp{activatePersonaErr: apperrors.ErrPersonaNotFound}
-	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
-
-	req := httptest.NewRequest(http.MethodPost, "/api/personas/missing/activate", nil)
-	req.SetPathValue("name", "missing")
-	rec := httptest.NewRecorder()
-	handler.HandleActivatePersona(rec, req)
-
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 }
 

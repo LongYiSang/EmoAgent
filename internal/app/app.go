@@ -2,14 +2,14 @@ package app
 
 import (
 	"context"
-	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,7 +19,6 @@ import (
 	"github.com/longyisang/emoagent/internal/apperrors"
 	"github.com/longyisang/emoagent/internal/chat"
 	"github.com/longyisang/emoagent/internal/config"
-	contextutil "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/logger"
 	"github.com/longyisang/emoagent/internal/protocol"
@@ -34,30 +33,50 @@ import (
 const personaWatchInterval = 5 * time.Second
 
 var (
-	ErrLLMProfileExists             = apperrors.ErrLLMProfileExists
-	ErrLLMProfileNotFound           = apperrors.ErrLLMProfileNotFound
-	ErrCannotDeleteActiveLLMProfile = apperrors.ErrCannotDeleteActiveLLMProfile
-	ErrCannotDeleteLastLLMProfile   = apperrors.ErrCannotDeleteLastLLMProfile
-	ErrPersonaExists                = apperrors.ErrPersonaExists
-	ErrPersonaNotFound              = apperrors.ErrPersonaNotFound
-	ErrCannotDeleteDefault          = apperrors.ErrCannotDeleteDefault
-	ErrSessionNotFound              = apperrors.ErrSessionNotFound
+	ErrLLMProviderExists             = apperrors.ErrLLMProviderExists
+	ErrLLMProviderNotFound           = apperrors.ErrLLMProviderNotFound
+	ErrLLMProviderInUse              = apperrors.ErrLLMProviderInUse
+	ErrAgentConfigExists             = apperrors.ErrAgentConfigExists
+	ErrAgentConfigNotFound           = apperrors.ErrAgentConfigNotFound
+	ErrCannotDeleteActiveAgentConfig = apperrors.ErrCannotDeleteActiveAgentConfig
+	ErrCannotDeleteLastAgentConfig   = apperrors.ErrCannotDeleteLastAgentConfig
+	ErrPersonaExists                 = apperrors.ErrPersonaExists
+	ErrPersonaNotFound               = apperrors.ErrPersonaNotFound
+	ErrCannotDeleteDefault           = apperrors.ErrCannotDeleteDefault
+	ErrSessionNotFound               = apperrors.ErrSessionNotFound
 )
 
 // App is the top-level application container.
 type App struct {
-	Config           *config.Config
-	DB               *storage.DB
-	LLM              llm.Client
-	Logger           *slog.Logger
-	Personas         map[string]*config.Persona
-	ActiveLLMProfile *config.LLMProfile
-	engine           *chat.Engine
-	toolRegistry     *tool.Registry
-	approvalService  *work.ApprovalService
-	environment      runtimeenv.Facts
-	mu               sync.RWMutex
-	cancel           context.CancelFunc
+	Config             *config.Config
+	DB                 *storage.DB
+	LLM                llm.Client
+	Logger             *slog.Logger
+	Personas           map[string]*config.Persona
+	ActiveAgentRuntime *ActiveAgentRuntime
+	engine             *chat.Engine
+	toolRegistry       *tool.Registry
+	approvalService    *work.ApprovalService
+	environment        runtimeenv.Facts
+	mu                 sync.RWMutex
+	cancel             context.CancelFunc
+}
+
+type ActiveAgentRuntime struct {
+	ID             string
+	PersonaKey     string
+	EmotionMain    ModelRuntime
+	EmotionSummary ModelRuntime
+	WorkMain       ModelRuntime
+	WorkSummary    ModelRuntime
+	Context        config.ContextConfig
+}
+
+type ModelRuntime struct {
+	Provider config.LLMProvider
+	Model    string
+	Params   llm.RequestParams
+	Client   llm.Client
 }
 
 // New creates an uninitialized App.
@@ -88,13 +107,6 @@ func (a *App) Init(ctx context.Context, configPath string) error {
 		a.Logger.Warn("runtime config overrides failed", "error", err)
 	}
 
-	if err := a.bootstrapLLMProfiles(); err != nil {
-		return fmt.Errorf("bootstrap llm profiles: %w", err)
-	}
-	if err := a.loadActiveLLMProfile(); err != nil {
-		return fmt.Errorf("load active llm profile: %w", err)
-	}
-
 	personas, err := config.LoadAllPersonas(cfg.Personas.Dir)
 	if err != nil {
 		a.Logger.Warn("load personas failed", "error", err)
@@ -109,6 +121,13 @@ func (a *App) Init(ctx context.Context, configPath string) error {
 		if err := a.DB.UpsertPersona(key, p.Name, p.Description, p.SystemPrompt, p.Tone, p.Quirks, p.Greeting, p.WorkProgressPhrases); err != nil {
 			a.Logger.Warn("sync persona to db failed", "key", key, "name", p.Name, "error", err)
 		}
+	}
+
+	if err := a.bootstrapAgentConfigs(); err != nil {
+		return fmt.Errorf("bootstrap agent configs: %w", err)
+	}
+	if err := a.loadActiveAgentRuntime(); err != nil {
+		return fmt.Errorf("load active agent config: %w", err)
 	}
 
 	watchCtx, cancel := context.WithCancel(ctx)
@@ -148,26 +167,30 @@ func (a *App) Run(ctx context.Context) error {
 	}
 
 	a.mu.RLock()
-	activeProfile := cloneLLMProfile(a.ActiveLLMProfile)
-	currentClient := a.LLM
+	activeRuntime := cloneActiveAgentRuntime(a.ActiveAgentRuntime)
 	a.mu.RUnlock()
 
-	model := cfg.LLM.Model
-	summaryModel := cfg.LLM.SummaryModel
-	summaryTemperature := effectiveSummaryTemperature(cfg.LLM.SummaryTemperature, activeProfile)
-	summaryMaxTokens := effectiveSummaryMaxTokens(cfg.LLM.SummaryMaxTokens, activeProfile)
-	maxTokens := cfg.LLM.MaxTokens
-	temperature := cfg.LLM.Temperature
-	provider := cfg.LLM.Provider
+	model := ""
+	params := llm.RequestParams{}
+	summaryModel := ""
+	summaryParams := llm.RequestParams{}
+	maxTokens := 0
+	temperature := 0.0
+	provider := ""
+	currentClient := a.LLM
+	summaryClient := a.LLM
 	contextCfg := a.globalContextConfig()
-	if activeProfile != nil {
-		model = activeProfile.Model
-		summaryModel = activeProfile.SummaryModel
-		summaryMaxTokens = effectiveSummaryMaxTokens(cfg.LLM.SummaryMaxTokens, activeProfile)
-		maxTokens = activeProfile.MaxTokens
-		temperature = activeProfile.Temperature
-		provider = activeProfile.Provider
-		contextCfg = a.effectiveContextForProfile(*activeProfile)
+	if activeRuntime != nil {
+		currentClient = activeRuntime.EmotionMain.Client
+		summaryClient = activeRuntime.EmotionSummary.Client
+		model = activeRuntime.EmotionMain.Model
+		params = cloneRequestParams(activeRuntime.EmotionMain.Params)
+		summaryModel = activeRuntime.EmotionSummary.Model
+		summaryParams = cloneRequestParams(activeRuntime.EmotionSummary.Params)
+		maxTokens = params.MaxTokens
+		temperature = derefFloat64(params.Temperature, 0)
+		provider = toolProviderName(activeRuntime.EmotionMain.Provider.Protocol)
+		contextCfg = activeRuntime.Context
 	}
 
 	if a.toolRegistry == nil {
@@ -190,9 +213,8 @@ func (a *App) Run(ctx context.Context) error {
 	var pendingRegistry *work.PendingRegistry
 	var approvalService *work.ApprovalService
 	if _, ok := a.toolRegistry.GetSpec("delegate_to_work"); !ok {
-		workLLM, workProfile, err := a.buildWorkClient()
-		if err != nil {
-			a.Logger.Warn("work runtime disabled", "error", err)
+		if activeRuntime == nil || activeRuntime.WorkMain.Client == nil {
+			a.Logger.Warn("work runtime disabled", "error", "active agent config is not configured")
 		} else {
 			approvalService = work.NewApprovalService(a.DB.SqlDB(), a.Logger)
 			pendingRegistry = work.NewPendingRegistry(a.DB.SqlDB(), approvalService, a.Logger, work.PendingRegistryConfig{
@@ -223,30 +245,9 @@ func (a *App) Run(ctx context.Context) error {
 				}
 			}()
 
-			decider := work.NewLLMRuntimeDecider(workLLM, workProfile.Model)
-			workSummaryModel := resolveWorkSummaryModel(workProfile)
-			workRuntime := work.NewRuntime(work.RuntimeConfig{
-				LLM:                      workLLM,
-				SummaryClient:            workLLM,
-				SummaryModel:             workSummaryModel,
-				Provider:                 workProfile.Provider,
-				Model:                    workProfile.Model,
-				MaxTokens:                workProfile.MaxTokens,
-				Temperature:              workProfile.Temperature,
-				MaxToolRounds:            cfg.Work.MaxToolRounds,
-				MaxInputTokens:           cfg.Work.MaxInputTokens,
-				CompressSoftRatio:        cfg.Work.CompressSoftRatio,
-				CompressKeepRounds:       cfg.Work.CompressKeepRounds,
-				ToolSnipSoftTokens:       cfg.Work.ToolSnipSoftTokens,
-				ToolSnipHardTokens:       cfg.Work.ToolSnipHardTokens,
-				Registry:                 a.toolRegistry,
-				Dispatcher:               dispatcher,
-				Logger:                   a.Logger,
-				Decider:                  decider,
-				MaxEscalations:           cfg.Work.MaxEscalationsPerTask,
-				PendingSnapshotMaxTokens: cfg.Work.PendingSnapshotMaxTokens,
-				EnvironmentFacts:         a.environment,
-			})
+			runtimeFactory := func() (*work.Runtime, error) {
+				return a.newWorkRuntime(dispatcher)
+			}
 			if _, ok := a.toolRegistry.GetSpec("finish_task"); !ok {
 				a.toolRegistry.Register(work.NewFinishTaskTool(), work.FinishTaskPlaceholderHandler)
 			}
@@ -254,26 +255,29 @@ func (a *App) Run(ctx context.Context) error {
 				a.toolRegistry.Register(work.NewRequestDecisionTool(), work.RequestDecisionPlaceholderHandler)
 			}
 			if _, ok := a.toolRegistry.GetSpec("resume_work"); !ok {
-				resumeSpec, resumeHandler := work.NewResumeTool(workRuntime, pendingRegistry, cfg.Work.JournalDir, a.Logger)
+				resumeSpec, resumeHandler := work.NewResumeToolWithFactory(runtimeFactory, pendingRegistry, cfg.Work.JournalDir, a.Logger)
 				a.toolRegistry.Register(resumeSpec, resumeHandler)
 			}
 			if _, ok := a.toolRegistry.GetSpec("list_pending_decisions"); !ok {
 				spec, handler := work.NewListDecisionsTool(pendingRegistry)
 				a.toolRegistry.Register(spec, handler)
 			}
-			delegateSpec, delegateHandler := work.NewDelegateTool(workRuntime, pendingRegistry, cfg.Work.JournalDir, a.Logger)
+			delegateSpec, delegateHandler := work.NewDelegateToolWithFactory(runtimeFactory, pendingRegistry, cfg.Work.JournalDir, a.Logger)
 			a.toolRegistry.Register(delegateSpec, delegateHandler)
 		}
 	}
 
 	a.engine = chat.NewEngine(chat.EngineConfig{
 		LLM:                currentClient,
+		SummaryLLM:         summaryClient,
 		DB:                 a.DB,
 		Logger:             a.Logger,
 		Model:              model,
+		Params:             params,
 		SummaryModel:       summaryModel,
-		SummaryTemperature: summaryTemperature,
-		SummaryMaxTokens:   summaryMaxTokens,
+		SummaryParams:      summaryParams,
+		SummaryTemperature: summaryParams.Temperature,
+		SummaryMaxTokens:   summaryParams.MaxTokens,
 		MaxTokens:          maxTokens,
 		Temperature:        temperature,
 		ContextConfig:      contextCfg,
@@ -327,12 +331,20 @@ func (a *App) Run(ctx context.Context) error {
 }
 
 func registerRoutes(mux *http.ServeMux, api *web.APIHandler, chatHandler http.Handler, staticHandler http.Handler) {
-	mux.HandleFunc("GET /api/llm-profiles", api.HandleListLLMProfiles)
-	mux.HandleFunc("POST /api/llm-profiles", api.HandleCreateLLMProfile)
-	mux.HandleFunc("GET /api/llm-profiles/{id}", api.HandleGetLLMProfile)
-	mux.HandleFunc("PUT /api/llm-profiles/{id}", api.HandleUpdateLLMProfile)
-	mux.HandleFunc("POST /api/llm-profiles/{id}/activate", api.HandleActivateLLMProfile)
-	mux.HandleFunc("DELETE /api/llm-profiles/{id}", api.HandleDeleteLLMProfile)
+	mux.HandleFunc("GET /api/llm-providers", api.HandleListLLMProviders)
+	mux.HandleFunc("POST /api/llm-providers", api.HandleCreateLLMProvider)
+	mux.HandleFunc("GET /api/llm-providers/{id}", api.HandleGetLLMProvider)
+	mux.HandleFunc("PUT /api/llm-providers/{id}", api.HandleUpdateLLMProvider)
+	mux.HandleFunc("DELETE /api/llm-providers/{id}", api.HandleDeleteLLMProvider)
+	mux.HandleFunc("POST /api/llm-providers/{id}/refresh-models", api.HandleRefreshLLMProviderModels)
+	mux.HandleFunc("GET /api/llm-providers/{id}/models", api.HandleGetLLMProviderModels)
+	mux.HandleFunc("GET /api/agent-configs", api.HandleListAgentConfigs)
+	mux.HandleFunc("POST /api/agent-configs", api.HandleCreateAgentConfig)
+	mux.HandleFunc("GET /api/agent-configs/active", api.HandleGetActiveAgentConfig)
+	mux.HandleFunc("GET /api/agent-configs/{id}", api.HandleGetAgentConfig)
+	mux.HandleFunc("PUT /api/agent-configs/{id}", api.HandleUpdateAgentConfig)
+	mux.HandleFunc("DELETE /api/agent-configs/{id}", api.HandleDeleteAgentConfig)
+	mux.HandleFunc("POST /api/agent-configs/{id}/activate", api.HandleActivateAgentConfig)
 	mux.HandleFunc("GET /api/settings/chat", api.HandleGetChatSettings)
 	mux.HandleFunc("PUT /api/settings/chat", api.HandleUpdateChatSettings)
 	mux.HandleFunc("GET /api/personas", api.HandleListPersonas)
@@ -342,7 +354,6 @@ func registerRoutes(mux *http.ServeMux, api *web.APIHandler, chatHandler http.Ha
 	mux.HandleFunc("GET /api/personas/{name}/progress-phrases", api.HandleGetProgressPhrases)
 	mux.HandleFunc("PUT /api/personas/{name}/progress-phrases", api.HandleUpdateProgressPhrases)
 	mux.HandleFunc("GET /api/progress-phrases/defaults", api.HandleGetProgressPhrasesDefaults)
-	mux.HandleFunc("POST /api/personas/{name}/activate", api.HandleActivatePersona)
 	mux.HandleFunc("DELETE /api/personas/{name}", api.HandleDeletePersona)
 	mux.HandleFunc("GET /api/sessions", api.HandleListSessions)
 	mux.HandleFunc("GET /api/sessions/latest", api.HandleGetLatestSession)
@@ -377,44 +388,6 @@ func (a *App) applyRuntimeOverrides() error {
 
 	for k, v := range overrides {
 		switch k {
-		case "llm.provider":
-			a.Config.LLM.Provider = v
-		case "llm.base_url":
-			a.Config.LLM.BaseURL = v
-		case "llm.api_key_env":
-			a.Config.LLM.APIKeyEnv = v
-		case "llm.model":
-			a.Config.LLM.Model = v
-		case "llm.summary_model":
-			a.Config.LLM.SummaryModel = v
-		case "llm.summary_temperature":
-			if strings.TrimSpace(v) == "" {
-				a.Config.LLM.SummaryTemperature = nil
-			} else if f, parseErr := strconv.ParseFloat(v, 64); parseErr == nil {
-				a.Config.LLM.SummaryTemperature = &f
-			} else {
-				a.Logger.Warn("invalid runtime override", "key", "llm.summary_temperature", "value", v, "error", parseErr)
-			}
-		case "llm.summary_max_tokens":
-			if n, parseErr := strconv.Atoi(v); parseErr == nil {
-				a.Config.LLM.SummaryMaxTokens = n
-			} else {
-				a.Logger.Warn("invalid runtime override", "key", "llm.summary_max_tokens", "value", v, "error", parseErr)
-			}
-		case "llm.temperature":
-			if f, parseErr := strconv.ParseFloat(v, 64); parseErr == nil {
-				a.Config.LLM.Temperature = f
-			} else {
-				a.Logger.Warn("invalid runtime override", "key", "llm.temperature", "value", v, "error", parseErr)
-			}
-		case "llm.max_tokens":
-			if n, parseErr := strconv.Atoi(v); parseErr == nil {
-				a.Config.LLM.MaxTokens = n
-			} else {
-				a.Logger.Warn("invalid runtime override", "key", "llm.max_tokens", "value", v, "error", parseErr)
-			}
-		case "personas.default":
-			a.Config.Personas.Default = v
 		case "chat.realtime_streaming":
 			enabled, parseErr := strconv.ParseBool(v)
 			if parseErr == nil {
@@ -437,151 +410,193 @@ func (a *App) applyRuntimeOverrides() error {
 	return nil
 }
 
-func (a *App) bootstrapLLMProfiles() error {
-	profiles, err := a.DB.ListLLMProfiles()
+func (a *App) bootstrapAgentConfigs() error {
+	providers, err := a.DB.ListLLMProviders()
 	if err != nil {
 		return err
 	}
-	if len(profiles) > 0 {
+	agents, err := a.DB.ListAgentConfigs()
+	if err != nil {
+		return err
+	}
+	if len(providers) > 0 || len(agents) > 0 {
+		if _, found, err := a.DB.GetActiveAgentConfig(); err != nil {
+			return err
+		} else if !found && len(agents) > 0 {
+			return a.DB.SetActiveAgentConfig(agents[0].ID)
+		}
 		return nil
 	}
 
-	seed := config.LLMProfile{
-		Name:               "default",
-		Provider:           a.Config.LLM.Provider,
-		BaseURL:            a.Config.LLM.BaseURL,
-		APIKeyEnv:          a.Config.LLM.APIKeyEnv,
-		Model:              a.Config.LLM.Model,
-		SummaryModel:       a.Config.LLM.SummaryModel,
-		SummaryTemperature: cloneFloat64Ptr(a.Config.LLM.SummaryTemperature),
-		SummaryMaxTokens:   a.Config.LLM.SummaryMaxTokens,
-		MaxTokens:          a.Config.LLM.MaxTokens,
-		Temperature:        a.Config.LLM.Temperature,
+	if len(a.Config.LLMProviders) == 0 || len(a.Config.AgentConfigs) == 0 {
+		return fmt.Errorf("active agent config is not configured: config.yaml must define llm_providers and agent_configs")
 	}
-	if err := validateLLMProfile(seed); err != nil {
-		return err
+	for _, provider := range a.Config.LLMProviders {
+		if err := provider.Validate(); err != nil {
+			return err
+		}
+		if err := a.DB.UpsertLLMProvider(provider); err != nil {
+			return err
+		}
 	}
-	if _, err := seed.ResolveContextConfig(a.globalContextConfig()); err != nil {
-		return err
+	for _, agent := range a.Config.AgentConfigs {
+		if err := agent.Validate(); err != nil {
+			return err
+		}
+		if err := a.DB.UpsertAgentConfig(agent); err != nil {
+			return err
+		}
 	}
-	if err := a.DB.UpsertLLMProfile(seed); err != nil {
-		return err
+	activeID := strings.TrimSpace(a.Config.Agent.ActiveConfig)
+	if activeID == "" {
+		activeID = a.Config.AgentConfigs[0].ID
 	}
-	return nil
+	return a.DB.SetActiveAgentConfig(activeID)
 }
 
-func (a *App) loadActiveLLMProfile() error {
-	profiles, err := a.ListLLMProfiles()
+func (a *App) loadActiveAgentRuntime() error {
+	activeID, found, err := a.DB.GetActiveAgentConfig()
 	if err != nil {
 		return err
 	}
-	if len(profiles) == 0 {
-		return nil
-	}
-
-	activeID, found, err := a.DB.GetRuntimeConfig("llm.active_profile")
-	if err != nil {
-		return err
-	}
-
-	var active *config.LLMProfile
-	if found {
-		for i := range profiles {
-			if profiles[i].Name == activeID {
-				active = &profiles[i]
-				break
-			}
-		}
-	}
-	if active == nil {
-		active = cloneLLMProfile(&profiles[0])
-		if active != nil {
-			if err := a.DB.SetRuntimeConfig("llm.active_profile", active.Name); err != nil {
-				return err
-			}
-		}
-	}
-	if active == nil {
-		return nil
-	}
-
-	a.mu.Lock()
-	a.ActiveLLMProfile = cloneLLMProfile(active)
-	a.syncConfigLLMFromProfileLocked(*active)
-	a.mu.Unlock()
-
-	client, err := a.buildClientForProfile(*active)
-	if err != nil {
-		a.Logger.Warn("active llm profile is not currently usable", "profile_name", active.Name, "error", err)
+	if !found || strings.TrimSpace(activeID) == "" {
 		a.mu.Lock()
+		a.ActiveAgentRuntime = nil
 		a.LLM = nil
 		a.mu.Unlock()
 		return nil
 	}
-
+	runtime, err := a.buildAgentRuntime(activeID, false)
+	if err != nil {
+		a.Logger.Warn("active agent config is not currently usable", "agent_config", activeID, "error", err)
+		a.mu.Lock()
+		a.ActiveAgentRuntime = nil
+		a.LLM = nil
+		a.mu.Unlock()
+		return nil
+	}
 	a.mu.Lock()
-	a.LLM = client
+	a.ActiveAgentRuntime = cloneActiveAgentRuntime(runtime)
+	a.LLM = runtime.EmotionMain.Client
 	a.mu.Unlock()
-	a.Logger.Info("active llm profile loaded", "profile_name", active.Name, "provider", active.Provider, "model", active.Model)
 	return nil
 }
 
-func (a *App) resolveWorkProfile() (*config.LLMProfile, error) {
-	if a == nil || a.Config == nil {
-		return nil, fmt.Errorf("app config is not initialized")
-	}
-	if a.DB == nil {
-		return nil, fmt.Errorf("database is not initialized")
-	}
-
-	name := a.Config.Work.Profile
-	if name == "" {
-		name = "default"
-	}
-
-	record, err := a.DB.GetLLMProfile(context.Background(), name)
+func (a *App) buildAgentRuntime(id string, requireClient bool) (*ActiveAgentRuntime, error) {
+	agent, err := a.DB.GetAgentConfig(context.Background(), id)
 	if err != nil {
 		return nil, err
 	}
-	if record != nil {
-		profile := llmProfileFromRecord(*record)
-		return &profile, nil
+	if agent == nil {
+		return nil, ErrAgentConfigNotFound
+	}
+	if _, exists := a.Personas[agent.PersonaKey]; !exists {
+		return nil, fmt.Errorf("active agent config persona not found")
+	}
+	contextCfg, err := agent.ResolveContextConfig(a.globalContextConfig())
+	if err != nil {
+		return nil, err
 	}
 
-	for _, profile := range a.Config.LLMProfiles {
-		if profile.Name != name {
-			continue
-		}
-		if err := validateLLMProfile(profile); err != nil {
-			return nil, err
-		}
-		if err := a.DB.UpsertLLMProfile(profile); err != nil {
-			return nil, err
-		}
-		seeded := profile
-		return &seeded, nil
+	emotionMain, err := a.modelRuntime(agent.Emotion.Main, requireClient)
+	if err != nil {
+		return nil, fmt.Errorf("emotion.main: %w", err)
+	}
+	emotionSummary, err := a.modelRuntime(agent.Emotion.Summary, requireClient)
+	if err != nil {
+		return nil, fmt.Errorf("emotion.summary: %w", err)
+	}
+	workMain, err := a.modelRuntime(agent.Work.Main, requireClient)
+	if err != nil {
+		return nil, fmt.Errorf("work.main: %w", err)
+	}
+	workSummary, err := a.modelRuntime(agent.Work.Summary, requireClient)
+	if err != nil {
+		return nil, fmt.Errorf("work.summary: %w", err)
 	}
 
-	return nil, fmt.Errorf("work profile %q not found in db or config.llm_profiles", name)
+	return &ActiveAgentRuntime{
+		ID:             agent.ID,
+		PersonaKey:     agent.PersonaKey,
+		EmotionMain:    emotionMain,
+		EmotionSummary: emotionSummary,
+		WorkMain:       workMain,
+		WorkSummary:    workSummary,
+		Context:        contextCfg,
+	}, nil
 }
 
-func (a *App) buildWorkClient() (llm.Client, config.LLMProfile, error) {
-	profile, err := a.resolveWorkProfile()
+func (a *App) modelRuntime(binding config.ModelBinding, requireClient bool) (ModelRuntime, error) {
+	record, err := a.DB.GetLLMProvider(context.Background(), binding.ProviderID)
 	if err != nil {
-		return nil, config.LLMProfile{}, err
+		return ModelRuntime{}, err
 	}
-	client, err := a.buildClientForProfile(*profile)
+	if record == nil {
+		return ModelRuntime{}, fmt.Errorf("provider %q not found", binding.ProviderID)
+	}
+	provider := record.LLMProvider
+	if !provider.Enabled {
+		return ModelRuntime{}, fmt.Errorf("provider %q is disabled", binding.ProviderID)
+	}
+	if strings.TrimSpace(binding.Model) == "" {
+		return ModelRuntime{}, fmt.Errorf("model is required")
+	}
+	client, err := a.buildClientForProvider(provider)
 	if err != nil {
-		return nil, config.LLMProfile{}, err
+		if requireClient {
+			return ModelRuntime{}, err
+		}
+		return ModelRuntime{Provider: provider, Model: binding.Model, Params: cloneRequestParams(binding.Params)}, nil
 	}
-	return client, *profile, nil
+	return ModelRuntime{
+		Provider: provider,
+		Model:    binding.Model,
+		Params:   cloneRequestParams(binding.Params),
+		Client:   client,
+	}, nil
 }
 
-func resolveWorkSummaryModel(profile config.LLMProfile) string {
-	if strings.TrimSpace(profile.SummaryModel) != "" {
-		return profile.SummaryModel
+func (a *App) buildClientForProvider(provider config.LLMProvider) (llm.Client, error) {
+	return llm.NewClient(llm.ProviderConfig{
+		ID:        provider.ID,
+		Protocol:  provider.Protocol,
+		BaseURL:   provider.BaseURL,
+		APIKeyEnv: provider.APIKeyEnv,
+	}, a.Logger)
+}
+
+func (a *App) newWorkRuntime(dispatcher *tool.Dispatcher) (*work.Runtime, error) {
+	a.mu.RLock()
+	active := cloneActiveAgentRuntime(a.ActiveAgentRuntime)
+	a.mu.RUnlock()
+	if active == nil || active.WorkMain.Client == nil {
+		return nil, fmt.Errorf("active agent config is not configured")
 	}
-	return profile.Model
+	decider := work.NewLLMRuntimeDecider(active.WorkMain.Client, active.WorkMain.Model)
+	return work.NewRuntime(work.RuntimeConfig{
+		LLM:                      active.WorkMain.Client,
+		SummaryClient:            active.WorkSummary.Client,
+		SummaryModel:             active.WorkSummary.Model,
+		SummaryParams:            cloneRequestParams(active.WorkSummary.Params),
+		Provider:                 toolProviderName(active.WorkMain.Provider.Protocol),
+		Model:                    active.WorkMain.Model,
+		Params:                   cloneRequestParams(active.WorkMain.Params),
+		MaxTokens:                active.WorkMain.Params.MaxTokens,
+		Temperature:              derefFloat64(active.WorkMain.Params.Temperature, 0),
+		MaxToolRounds:            a.Config.Work.MaxToolRounds,
+		MaxInputTokens:           a.Config.Work.MaxInputTokens,
+		CompressSoftRatio:        a.Config.Work.CompressSoftRatio,
+		CompressKeepRounds:       a.Config.Work.CompressKeepRounds,
+		ToolSnipSoftTokens:       a.Config.Work.ToolSnipSoftTokens,
+		ToolSnipHardTokens:       a.Config.Work.ToolSnipHardTokens,
+		Registry:                 a.toolRegistry,
+		Dispatcher:               dispatcher,
+		Logger:                   a.Logger,
+		Decider:                  decider,
+		MaxEscalations:           a.Config.Work.MaxEscalationsPerTask,
+		PendingSnapshotMaxTokens: a.Config.Work.PendingSnapshotMaxTokens,
+		EnvironmentFacts:         a.environment,
+	}), nil
 }
 
 // GetPersona returns a persona by key.
@@ -606,7 +621,10 @@ func (a *App) ListPersonas() map[string]*config.Persona {
 func (a *App) GetDefaultPersonaName() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return a.Config.Personas.Default
+	if a.ActiveAgentRuntime != nil {
+		return a.ActiveAgentRuntime.PersonaKey
+	}
+	return ""
 }
 
 func (a *App) GetChatSettings() config.ChatConfig {
@@ -741,7 +759,7 @@ func (a *App) DeletePersona(key string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if key == a.Config.Personas.Default {
+	if a.ActiveAgentRuntime != nil && key == a.ActiveAgentRuntime.PersonaKey {
 		return ErrCannotDeleteDefault
 	}
 	_, exists := a.Personas[key]
@@ -755,21 +773,6 @@ func (a *App) DeletePersona(key string) error {
 		return fmt.Errorf("delete persona from db: %w", err)
 	}
 	delete(a.Personas, key)
-	return nil
-}
-
-// ActivatePersona switches the default persona used by new chat sessions.
-func (a *App) ActivatePersona(key string) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if _, exists := a.Personas[key]; !exists {
-		return ErrPersonaNotFound
-	}
-	if err := a.DB.SetRuntimeConfig("personas.default", key); err != nil {
-		return err
-	}
-	a.Config.Personas.Default = key
 	return nil
 }
 
@@ -818,212 +821,221 @@ func (a *App) ListSessionApprovals(ctx context.Context, sessionID string) ([]pro
 	return a.approvalService.ListSessionApprovals(sessionID, nil), nil
 }
 
-// ListLLMProfiles returns all stored LLM profiles sorted by name.
-func (a *App) ListLLMProfiles() ([]config.LLMProfile, error) {
-	records, err := a.DB.ListLLMProfiles()
+func (a *App) ListLLMProviders() ([]config.LLMProvider, error) {
+	records, err := a.DB.ListLLMProviders()
 	if err != nil {
 		return nil, err
 	}
-
-	profiles := make([]config.LLMProfile, 0, len(records))
+	providers := make([]config.LLMProvider, 0, len(records))
 	for _, record := range records {
-		profiles = append(profiles, llmProfileFromRecord(record))
+		providers = append(providers, record.LLMProvider)
 	}
-	sort.Slice(profiles, func(i, j int) bool { return profiles[i].Name < profiles[j].Name })
-	return profiles, nil
+	return providers, nil
 }
 
-// GetLLMProfile fetches one LLM profile by id.
-func (a *App) GetLLMProfile(id string) (*config.LLMProfile, error) {
-	record, err := a.DB.GetLLMProfile(context.Background(), id)
+func (a *App) GetLLMProvider(id string) (*config.LLMProvider, error) {
+	record, err := a.DB.GetLLMProvider(context.Background(), id)
 	if err != nil {
 		return nil, err
 	}
 	if record == nil {
-		return nil, ErrLLMProfileNotFound
+		return nil, ErrLLMProviderNotFound
 	}
-	profile := llmProfileFromRecord(*record)
-	return &profile, nil
+	provider := record.LLMProvider
+	return &provider, nil
 }
 
-// GetActiveLLMProfile returns a copy of the currently active LLM profile.
-func (a *App) GetActiveLLMProfile() (*config.LLMProfile, bool) {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	if a.ActiveLLMProfile == nil {
-		return nil, false
-	}
-	return cloneLLMProfile(a.ActiveLLMProfile), true
-}
-
-// CreateLLMProfile creates a new LLM profile.
-func (a *App) CreateLLMProfile(profile config.LLMProfile) error {
-	if err := validateLLMProfile(profile); err != nil {
+func (a *App) CreateLLMProvider(provider config.LLMProvider) error {
+	if err := provider.Validate(); err != nil {
 		return err
 	}
-	if _, err := profile.ResolveContextConfig(a.globalContextConfig()); err != nil {
-		return err
-	}
-
-	existing, err := a.DB.GetLLMProfile(context.Background(), profile.Name)
+	existing, err := a.DB.GetLLMProvider(context.Background(), provider.ID)
 	if err != nil {
 		return err
 	}
 	if existing != nil {
-		return ErrLLMProfileExists
+		return ErrLLMProviderExists
 	}
-
-	return a.DB.UpsertLLMProfile(profile)
+	return a.DB.UpsertLLMProvider(provider)
 }
 
-// UpdateLLMProfile updates an existing LLM profile.
-func (a *App) UpdateLLMProfile(id string, profile config.LLMProfile) error {
-	profile.Name = id
-	if err := validateLLMProfile(profile); err != nil {
+func (a *App) UpdateLLMProvider(id string, provider config.LLMProvider) error {
+	provider.ID = id
+	if err := provider.Validate(); err != nil {
 		return err
 	}
-	if _, err := profile.ResolveContextConfig(a.globalContextConfig()); err != nil {
-		return err
-	}
-
-	currentRecord, err := a.DB.GetLLMProfile(context.Background(), id)
+	existing, err := a.DB.GetLLMProvider(context.Background(), id)
 	if err != nil {
 		return err
 	}
-	if currentRecord == nil {
-		return ErrLLMProfileNotFound
+	if existing == nil {
+		return ErrLLMProviderNotFound
 	}
-	current := llmProfileFromRecord(*currentRecord)
-
-	active, activeOK := a.GetActiveLLMProfile()
-	isActive := activeOK && active.Name == id
-	a.mu.RLock()
-	hasClient := a.LLM != nil
-	a.mu.RUnlock()
-
-	var newClient llm.Client
-	needRebuild := isActive && (!hasClient || current.Provider != profile.Provider || current.BaseURL != profile.BaseURL || current.APIKeyEnv != profile.APIKeyEnv)
-	if needRebuild {
-		newClient, err = a.buildClientForProfile(profile)
-		if err != nil {
-			return err
-		}
-	}
-
-	if err := a.DB.UpsertLLMProfile(profile); err != nil {
-		return err
-	}
-
-	if isActive {
-		a.mu.Lock()
-		a.ActiveLLMProfile = cloneLLMProfile(&profile)
-		if needRebuild {
-			a.LLM = newClient
-		}
-		a.syncConfigLLMFromProfileLocked(profile)
-		engine := a.engine
-		a.mu.Unlock()
-
-		if engine != nil {
-			engine.UpdateConfig(newClient, profile.Provider, profile.Model, profile.SummaryModel, effectiveSummaryTemperature(a.Config.LLM.SummaryTemperature, &profile), effectiveSummaryMaxTokens(a.Config.LLM.SummaryMaxTokens, &profile), profile.MaxTokens, profile.Temperature, a.effectiveContextForProfile(profile))
-		}
-	}
-
-	return nil
+	return a.DB.UpsertLLMProvider(provider)
 }
 
-// ActivateLLMProfile switches the active profile and hot-swaps the chat engine.
-func (a *App) ActivateLLMProfile(id string) error {
-	profile, err := a.GetLLMProfile(id)
-	if err != nil {
-		return err
+func (a *App) DeleteLLMProvider(id string) error {
+	err := a.DB.DeleteLLMProvider(id)
+	if errors.Is(err, storage.ErrProviderInUse) {
+		return ErrLLMProviderInUse
 	}
-
-	client, err := a.buildClientForProfile(*profile)
-	if err != nil {
-		return err
-	}
-	if err := a.DB.SetRuntimeConfig("llm.active_profile", id); err != nil {
-		return err
-	}
-
-	a.mu.Lock()
-	a.ActiveLLMProfile = cloneLLMProfile(profile)
-	a.LLM = client
-	a.syncConfigLLMFromProfileLocked(*profile)
-	engine := a.engine
-	a.mu.Unlock()
-
-	if engine != nil {
-		engine.UpdateConfig(client, profile.Provider, profile.Model, profile.SummaryModel, effectiveSummaryTemperature(a.Config.LLM.SummaryTemperature, profile), effectiveSummaryMaxTokens(a.Config.LLM.SummaryMaxTokens, profile), profile.MaxTokens, profile.Temperature, a.effectiveContextForProfile(*profile))
-	}
-	return nil
+	return err
 }
 
-// DeleteLLMProfile removes a profile that is not active.
-func (a *App) DeleteLLMProfile(id string) error {
-	active, activeOK := a.GetActiveLLMProfile()
-	if activeOK && active.Name == id {
-		return ErrCannotDeleteActiveLLMProfile
-	}
-
-	profiles, err := a.ListLLMProfiles()
+func (a *App) RefreshLLMProviderModels(id string) ([]llm.ModelInfo, error) {
+	provider, err := a.GetLLMProvider(id)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if len(profiles) <= 1 {
-		return ErrCannotDeleteLastLLMProfile
+	if provider.ModelDiscovery == "manual" || provider.ModelDiscovery == "" {
+		return []llm.ModelInfo{}, nil
 	}
-
-	record, err := a.DB.GetLLMProfile(context.Background(), id)
+	models, err := llm.DiscoverModels(context.Background(), llm.ProviderConfig{
+		ID:        provider.ID,
+		Protocol:  provider.Protocol,
+		BaseURL:   provider.BaseURL,
+		APIKeyEnv: provider.APIKeyEnv,
+	})
 	if err != nil {
-		return err
+		return nil, err
+	}
+	payload, err := json.Marshal(models)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.DB.UpdateProviderModelsCache(id, string(payload), time.Now().UTC().Format(time.RFC3339)); err != nil {
+		return nil, err
+	}
+	return models, nil
+}
+
+func (a *App) GetLLMProviderModels(id string) ([]llm.ModelInfo, error) {
+	record, err := a.DB.GetLLMProvider(context.Background(), id)
+	if err != nil {
+		return nil, err
 	}
 	if record == nil {
-		return ErrLLMProfileNotFound
+		return nil, ErrLLMProviderNotFound
 	}
-
-	return a.DB.DeleteLLMProfile(id)
+	var models []llm.ModelInfo
+	if strings.TrimSpace(record.ModelsCacheJSON) == "" {
+		return []llm.ModelInfo{}, nil
+	}
+	if err := json.Unmarshal([]byte(record.ModelsCacheJSON), &models); err != nil {
+		return nil, err
+	}
+	return models, nil
 }
 
-func (a *App) buildClientForProfile(profile config.LLMProfile) (llm.Client, error) {
-	cfg := config.LLMConfig{
-		Provider:           profile.Provider,
-		BaseURL:            profile.BaseURL,
-		APIKeyEnv:          profile.APIKeyEnv,
-		Model:              profile.Model,
-		SummaryModel:       profile.SummaryModel,
-		SummaryTemperature: cloneFloat64Ptr(profile.SummaryTemperature),
-		SummaryMaxTokens:   profile.SummaryMaxTokens,
-		MaxTokens:          profile.MaxTokens,
-		Temperature:        profile.Temperature,
-	}
-	return llm.NewClient(cfg, a.Logger)
+func (a *App) ListAgentConfigs() ([]config.AgentConfig, error) {
+	return a.DB.ListAgentConfigs()
 }
 
-func (a *App) syncConfigLLMFromProfileLocked(profile config.LLMProfile) {
-	if a.Config == nil {
-		return
-	}
-	a.Config.LLM.Provider = profile.Provider
-	a.Config.LLM.BaseURL = profile.BaseURL
-	a.Config.LLM.APIKeyEnv = profile.APIKeyEnv
-	a.Config.LLM.Model = profile.Model
-	a.Config.LLM.SummaryModel = profile.SummaryModel
-	a.Config.LLM.MaxTokens = profile.MaxTokens
-	a.Config.LLM.Temperature = profile.Temperature
-}
-
-func (a *App) effectiveContextForProfile(profile config.LLMProfile) config.ContextConfig {
-	base := a.globalContextConfig()
-	effective, err := profile.ResolveContextConfig(base)
+func (a *App) GetAgentConfig(id string) (*config.AgentConfig, error) {
+	agent, err := a.DB.GetAgentConfig(context.Background(), id)
 	if err != nil {
-		if a.Logger != nil {
-			a.Logger.Warn("resolve context config for profile failed", "profile", profile.Name, "error", err)
-		}
-		return base
+		return nil, err
 	}
-	return effective
+	if agent == nil {
+		return nil, ErrAgentConfigNotFound
+	}
+	return agent, nil
+}
+
+func (a *App) GetActiveAgentConfig() (*config.AgentConfig, bool, error) {
+	activeID, found, err := a.DB.GetActiveAgentConfig()
+	if err != nil || !found {
+		return nil, false, err
+	}
+	agent, err := a.DB.GetAgentConfig(context.Background(), activeID)
+	if err != nil {
+		return nil, false, err
+	}
+	return agent, agent != nil, nil
+}
+
+func (a *App) CreateAgentConfig(agent config.AgentConfig) error {
+	if err := agent.Validate(); err != nil {
+		return err
+	}
+	if _, err := agent.ResolveContextConfig(a.globalContextConfig()); err != nil {
+		return err
+	}
+	existing, err := a.DB.GetAgentConfig(context.Background(), agent.ID)
+	if err != nil {
+		return err
+	}
+	if existing != nil {
+		return ErrAgentConfigExists
+	}
+	return a.DB.UpsertAgentConfig(agent)
+}
+
+func (a *App) UpdateAgentConfig(id string, agent config.AgentConfig) error {
+	agent.ID = id
+	if err := agent.Validate(); err != nil {
+		return err
+	}
+	if _, err := agent.ResolveContextConfig(a.globalContextConfig()); err != nil {
+		return err
+	}
+	existing, err := a.DB.GetAgentConfig(context.Background(), id)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return ErrAgentConfigNotFound
+	}
+	if err := a.DB.UpsertAgentConfig(agent); err != nil {
+		return err
+	}
+	active, ok, err := a.DB.GetActiveAgentConfig()
+	if err != nil {
+		return err
+	}
+	if ok && active == id {
+		return a.ActivateAgentConfig(id)
+	}
+	return nil
+}
+
+func (a *App) DeleteAgentConfig(id string) error {
+	err := a.DB.DeleteAgentConfig(id)
+	if errors.Is(err, storage.ErrCannotDeleteActiveAgentConfig) {
+		return ErrCannotDeleteActiveAgentConfig
+	}
+	if errors.Is(err, storage.ErrCannotDeleteLastAgentConfig) {
+		return ErrCannotDeleteLastAgentConfig
+	}
+	return err
+}
+
+func (a *App) ActivateAgentConfig(id string) error {
+	runtime, err := a.buildAgentRuntime(id, true)
+	if err != nil {
+		return err
+	}
+	if err := a.DB.SetActiveAgentConfig(id); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.ActiveAgentRuntime = cloneActiveAgentRuntime(runtime)
+	a.LLM = runtime.EmotionMain.Client
+	engine := a.engine
+	a.mu.Unlock()
+	if engine != nil {
+		engine.UpdateAgentRuntime(
+			runtime.EmotionMain.Client,
+			runtime.EmotionSummary.Client,
+			toolProviderName(runtime.EmotionMain.Provider.Protocol),
+			runtime.EmotionMain.Model,
+			runtime.EmotionMain.Params,
+			runtime.EmotionSummary.Model,
+			runtime.EmotionSummary.Params,
+			runtime.Context,
+		)
+	}
+	return nil
 }
 
 func (a *App) globalContextConfig() config.ContextConfig {
@@ -1035,92 +1047,67 @@ func (a *App) globalContextConfig() config.ContextConfig {
 	return config.DefaultConfig().Context
 }
 
-func validateLLMProfile(profile config.LLMProfile) error {
-	return profile.Validate()
-}
-
-func llmProfileFromRecord(record storage.LLMProfileRecord) config.LLMProfile {
-	return config.LLMProfile{
-		Name:                record.Name,
-		Provider:            record.Provider,
-		BaseURL:             record.BaseURL,
-		APIKeyEnv:           record.APIKeyEnv,
-		Model:               record.Model,
-		SummaryModel:        record.SummaryModel,
-		SummaryTemperature:  nullableFloatPtr(record.SummaryTemperature),
-		SummaryMaxTokens:    nullableIntValue(record.SummaryMaxTokens),
-		MaxTokens:           record.MaxTokens,
-		Temperature:         record.Temperature,
-		InputBudgetTokens:   nullableIntPtr(record.InputBudgetTokens),
-		SoftCompactRatio:    nullableFloatPtr(record.SoftCompactRatio),
-		HardCompactRatio:    nullableFloatPtr(record.HardCompactRatio),
-		ReserveOutputTokens: nullableIntPtr(record.ReserveOutputTokens),
-	}
-}
-
-func cloneLLMProfile(profile *config.LLMProfile) *config.LLMProfile {
-	if profile == nil {
+func cloneActiveAgentRuntime(runtime *ActiveAgentRuntime) *ActiveAgentRuntime {
+	if runtime == nil {
 		return nil
 	}
-	cp := *profile
-	if profile.SummaryTemperature != nil {
-		value := *profile.SummaryTemperature
-		cp.SummaryTemperature = &value
-	}
-	if profile.InputBudgetTokens != nil {
-		value := *profile.InputBudgetTokens
-		cp.InputBudgetTokens = &value
-	}
-	if profile.SoftCompactRatio != nil {
-		value := *profile.SoftCompactRatio
-		cp.SoftCompactRatio = &value
-	}
-	if profile.HardCompactRatio != nil {
-		value := *profile.HardCompactRatio
-		cp.HardCompactRatio = &value
-	}
-	if profile.ReserveOutputTokens != nil {
-		value := *profile.ReserveOutputTokens
-		cp.ReserveOutputTokens = &value
-	}
+	cp := *runtime
+	cp.EmotionMain = cloneModelRuntime(runtime.EmotionMain)
+	cp.EmotionSummary = cloneModelRuntime(runtime.EmotionSummary)
+	cp.WorkMain = cloneModelRuntime(runtime.WorkMain)
+	cp.WorkSummary = cloneModelRuntime(runtime.WorkSummary)
 	return &cp
 }
 
-func nullableIntPtr(value sql.NullInt64) *int {
-	if !value.Valid {
+func cloneModelRuntime(runtime ModelRuntime) ModelRuntime {
+	runtime.Params = cloneRequestParams(runtime.Params)
+	return runtime
+}
+
+func cloneRequestParams(params llm.RequestParams) llm.RequestParams {
+	cp := params
+	cp.Temperature = cloneFloat64Ptr(params.Temperature)
+	cp.TopP = cloneFloat64Ptr(params.TopP)
+	cp.PresencePenalty = cloneFloat64Ptr(params.PresencePenalty)
+	cp.FrequencyPenalty = cloneFloat64Ptr(params.FrequencyPenalty)
+	cp.Stream = cloneBoolPtr(params.Stream)
+	if params.Thinking != nil {
+		thinking := *params.Thinking
+		if params.Thinking.BudgetTokens != nil {
+			budget := *params.Thinking.BudgetTokens
+			thinking.BudgetTokens = &budget
+		}
+		cp.Thinking = &thinking
+	}
+	if params.Extra != nil {
+		cp.Extra = make(map[string]any, len(params.Extra))
+		for key, value := range params.Extra {
+			cp.Extra[key] = value
+		}
+	}
+	return cp
+}
+
+func cloneBoolPtr(value *bool) *bool {
+	if value == nil {
 		return nil
 	}
-	v := int(value.Int64)
+	v := *value
 	return &v
 }
 
-func nullableFloatPtr(value sql.NullFloat64) *float64 {
-	if !value.Valid {
-		return nil
+func derefFloat64(value *float64, fallback float64) float64 {
+	if value == nil {
+		return fallback
 	}
-	v := value.Float64
-	return &v
+	return *value
 }
 
-func effectiveSummaryTemperature(global *float64, profile *config.LLMProfile) *float64 {
-	if profile != nil && profile.SummaryTemperature != nil {
-		return cloneFloat64Ptr(profile.SummaryTemperature)
+func toolProviderName(protocol string) string {
+	if protocol == "anthropic" {
+		return "anthropic"
 	}
-	if global != nil {
-		return cloneFloat64Ptr(global)
-	}
-	value := contextutil.DefaultSummaryTemperature()
-	return &value
-}
-
-func effectiveSummaryMaxTokens(global int, profile *config.LLMProfile) int {
-	if profile != nil && profile.SummaryMaxTokens > 0 {
-		return profile.SummaryMaxTokens
-	}
-	if global > 0 {
-		return global
-	}
-	return contextutil.DefaultSummaryMaxTokens()
+	return "openai"
 }
 
 func cloneFloat64Ptr(value *float64) *float64 {
@@ -1129,13 +1116,6 @@ func cloneFloat64Ptr(value *float64) *float64 {
 	}
 	v := *value
 	return &v
-}
-
-func nullableIntValue(value sql.NullInt64) int {
-	if !value.Valid {
-		return 0
-	}
-	return int(value.Int64)
 }
 
 func clonePersona(p *config.Persona) *config.Persona {

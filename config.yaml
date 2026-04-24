@@ -4,24 +4,6 @@ server:
   host: "127.0.0.1"
   port: 8080
 
-llm:
-
-  # Anthropic example:
-  # provider: "anthropic"
-  # base_url: "https://api.anthropic.com"
-  # model: "claude-sonnet-4-20250514"
-  # max_completion_tokens TODO部分模型需要-暂未实现
-  # thinking TODO部分模型可选
-
-  provider: "openai"
-  base_url: "https://api.moonshot.cn"
-  model: "kimi-k2.6"
-  summary_model: "kimi-k2.6"
-  summary_max_tokens: 4096
-  max_tokens: 8192
-  temperature: 1
-  api_key_env: "OPENAI_API_KEY"
-
 chat:
   realtime_streaming: false
 
@@ -34,41 +16,68 @@ context:
   tool_result_soft_tokens: 1000
   tool_result_hard_tokens: 3000
 
+llm_providers:
+  - id: "moonshot"
+    name: "Moonshot"
+    protocol: "openai_compatible"
+    base_url: "https://api.moonshot.cn"
+    api_key_env: "OPENAI_API_KEY"
+    model_discovery: "openai_models"
+    enabled: true
+  - id: "anthropic"
+    name: "Anthropic"
+    protocol: "anthropic"
+    base_url: "https://api.anthropic.com"
+    api_key_env: "ANTHROPIC_API_KEY"
+    model_discovery: "anthropic_models"
+    enabled: false
+
+agent_configs:
+  - id: "default"
+    name: "Default"
+    persona_key: "default"
+    emotion:
+      main:
+        provider_id: "moonshot"
+        model: "kimi-k2.6"
+        params:
+          max_tokens: 8192
+          temperature: 1
+          stream: true
+      summary:
+        provider_id: "moonshot"
+        model: "kimi-k2.6"
+        params:
+          max_tokens: 4096
+          temperature: 0.1
+          stream: false
+    work:
+      main:
+        provider_id: "moonshot"
+        model: "kimi-k2.6"
+        params:
+          max_tokens: 4096
+          temperature: 0.3
+      summary:
+        provider_id: "moonshot"
+        model: "kimi-k2.6"
+        params:
+          max_tokens: 2048
+          temperature: 0.1
+          stream: false
+    context_overrides: {}
+
+agent:
+  active_config: "default"
+
 work:
-  profile: "work"
   max_tool_rounds: 24
   max_input_tokens: 100000
-  # Context compression (prevents token budget exhaustion in long tasks)
   compress_soft_ratio: 0.7
   compress_keep_rounds: 2
   tool_snip_soft_tokens: 500
   tool_snip_hard_tokens: 2000
   journal_dir: "./logs/work"
-
-llm_profiles:
-  - name: "default"
-    provider: "openai"
-    base_url: "https://api.openai.com"
-    model: "gpt-4o"
-    summary_model: "gpt-4o-mini"
-    summary_max_tokens: 4096
-    max_tokens: 4096
-    temperature: 0.7
-    api_key_env: "OPENAI_API_KEY"
-  - name: "analysis"
-    provider: "anthropic"
-    base_url: "https://api.anthropic.com"
-    model: "claude-sonnet-4-20250514"
-    max_tokens: 4096
-    temperature: 0.3
-    api_key_env: "ANTHROPIC_API_KEY"
-  - name: "work"
-    provider: "openai"
-    base_url: "https://api.deepseek.com"
-    model: "deepseek-reasoner"
-    max_tokens: 4096
-    temperature: 0.3
-    api_key_env: "OPENAI_API_KEY_2"
 
 db:
   path: "./data/emo.db"
@@ -79,7 +88,6 @@ log:
 
 personas:
   dir: "./personas"
-  default: "default"
 
 websearch:
   enabled: true

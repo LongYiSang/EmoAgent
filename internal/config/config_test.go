@@ -13,17 +13,11 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Server.Port != 8080 {
 		t.Errorf("default port = %d, want 8080", cfg.Server.Port)
 	}
-	if cfg.LLM.Provider != "openai" {
-		t.Errorf("default provider = %q, want openai", cfg.LLM.Provider)
+	if len(cfg.LLMProviders) != 0 {
+		t.Errorf("default llm_providers length = %d, want 0", len(cfg.LLMProviders))
 	}
-	if cfg.LLM.APIKeyEnv != "" {
-		t.Errorf("default llm.api_key_env = %q, want empty", cfg.LLM.APIKeyEnv)
-	}
-	if cfg.LLM.SummaryMaxTokens != 4096 {
-		t.Errorf("default llm.summary_max_tokens = %d, want 4096", cfg.LLM.SummaryMaxTokens)
-	}
-	if len(cfg.LLMProfiles) != 0 {
-		t.Errorf("default llm_profiles length = %d, want 0", len(cfg.LLMProfiles))
+	if len(cfg.AgentConfigs) != 0 {
+		t.Errorf("default agent_configs length = %d, want 0", len(cfg.AgentConfigs))
 	}
 	if cfg.Chat.RealtimeStreaming {
 		t.Error("default chat.realtime_streaming = true, want false")
@@ -33,9 +27,6 @@ func TestDefaultConfig(t *testing.T) {
 	}
 	if cfg.Context.KeepRecentUserTurns <= 0 {
 		t.Errorf("default context.keep_recent_user_turns = %d, want > 0", cfg.Context.KeepRecentUserTurns)
-	}
-	if cfg.Work.Profile != "default" {
-		t.Errorf("default work.profile = %q, want default", cfg.Work.Profile)
 	}
 	if cfg.Work.MaxToolRounds != 15 {
 		t.Errorf("default work.max_tool_rounds = %d, want 15", cfg.Work.MaxToolRounds)
@@ -76,12 +67,6 @@ func TestLoadValidYAML(t *testing.T) {
 	os.WriteFile(path, []byte(`
 server:
   port: 9090
-llm:
-  provider: anthropic
-  model: claude-sonnet-4-20250514
-  summary_temperature: 0.2
-  summary_max_tokens: 3072
-  api_key_env: ANTHROPIC_API_KEY
 chat:
   realtime_streaming: true
 context:
@@ -92,19 +77,49 @@ context:
   keep_recent_user_turns: 4
   tool_result_soft_tokens: 500
   tool_result_hard_tokens: 1500
-llm_profiles:
-  - name: default
-    provider: openai
-    base_url: https://api.openai.com
-    model: gpt-4o
-    summary_model: gpt-4o-mini
-    summary_temperature: 0.1
-    summary_max_tokens: 2048
-    max_tokens: 2048
-    temperature: 0.3
-    api_key_env: OPENAI_API_KEY
-    input_budget_tokens: 12000
-    reserve_output_tokens: 1024
+llm_providers:
+  - id: moonshot
+    name: Moonshot
+    protocol: openai_compatible
+    base_url: https://api.moonshot.cn
+    api_key_env: MOONSHOT_API_KEY
+    model_discovery: openai_models
+    enabled: true
+agent_configs:
+  - id: default
+    name: Default
+    persona_key: default
+    emotion:
+      main:
+        provider_id: moonshot
+        model: kimi-k2.6
+        params:
+          max_tokens: 8192
+          temperature: 1
+          stream: true
+      summary:
+        provider_id: moonshot
+        model: kimi-k2.6
+        params:
+          max_tokens: 4096
+          temperature: 0.1
+          stream: false
+    work:
+      main:
+        provider_id: moonshot
+        model: kimi-k2.6
+        params:
+          max_tokens: 4096
+      summary:
+        provider_id: moonshot
+        model: kimi-k2.6
+        params:
+          max_tokens: 2048
+    context_overrides:
+      input_budget_tokens: 12000
+      reserve_output_tokens: 1024
+agent:
+  active_config: default
 `), 0o644)
 
 	cfg, err := Load(path)
@@ -113,18 +128,6 @@ llm_profiles:
 	}
 	if cfg.Server.Port != 9090 {
 		t.Errorf("port = %d, want 9090", cfg.Server.Port)
-	}
-	if cfg.LLM.Provider != "anthropic" {
-		t.Errorf("provider = %q, want anthropic", cfg.LLM.Provider)
-	}
-	if cfg.LLM.APIKeyEnv != "ANTHROPIC_API_KEY" {
-		t.Errorf("llm.api_key_env = %q, want ANTHROPIC_API_KEY", cfg.LLM.APIKeyEnv)
-	}
-	if cfg.LLM.SummaryTemperature == nil || *cfg.LLM.SummaryTemperature != 0.2 {
-		t.Fatalf("llm.summary_temperature = %#v, want 0.2", cfg.LLM.SummaryTemperature)
-	}
-	if cfg.LLM.SummaryMaxTokens != 3072 {
-		t.Fatalf("llm.summary_max_tokens = %d, want 3072", cfg.LLM.SummaryMaxTokens)
 	}
 	if !cfg.Chat.RealtimeStreaming {
 		t.Fatal("chat.realtime_streaming = false, want true")
@@ -135,26 +138,17 @@ llm_profiles:
 	if cfg.Context.KeepRecentUserTurns != 4 {
 		t.Errorf("context.keep_recent_user_turns = %d, want 4", cfg.Context.KeepRecentUserTurns)
 	}
-	if len(cfg.LLMProfiles) != 1 {
-		t.Fatalf("llm_profiles length = %d, want 1", len(cfg.LLMProfiles))
+	if len(cfg.LLMProviders) != 1 || cfg.LLMProviders[0].ID != "moonshot" {
+		t.Fatalf("LLMProviders = %#v, want moonshot", cfg.LLMProviders)
 	}
-	profile := cfg.LLMProfiles[0]
-	if profile.Name != "default" || profile.APIKeyEnv != "OPENAI_API_KEY" || profile.MaxTokens != 2048 {
-		t.Fatalf("llm_profiles[0] = %#v", profile)
+	if len(cfg.AgentConfigs) != 1 {
+		t.Fatalf("len(AgentConfigs) = %d, want 1", len(cfg.AgentConfigs))
 	}
-	if profile.SummaryTemperature == nil || *profile.SummaryTemperature != 0.1 {
-		t.Fatalf("llm_profiles[0].summary_temperature = %#v, want 0.1", profile.SummaryTemperature)
+	agent := cfg.AgentConfigs[0]
+	if agent.Emotion.Main.Params.Temperature == nil || *agent.Emotion.Main.Params.Temperature != 1 {
+		t.Fatalf("emotion.main.temperature = %#v, want 1", agent.Emotion.Main.Params.Temperature)
 	}
-	if profile.SummaryMaxTokens != 2048 {
-		t.Fatalf("llm_profiles[0].summary_max_tokens = %d, want 2048", profile.SummaryMaxTokens)
-	}
-	if profile.InputBudgetTokens == nil || *profile.InputBudgetTokens != 12000 {
-		t.Fatalf("llm_profiles[0].input_budget_tokens = %#v, want 12000", profile.InputBudgetTokens)
-	}
-	if profile.ReserveOutputTokens == nil || *profile.ReserveOutputTokens != 1024 {
-		t.Fatalf("llm_profiles[0].reserve_output_tokens = %#v, want 1024", profile.ReserveOutputTokens)
-	}
-	effective, err := profile.ResolveContextConfig(cfg.Context)
+	effective, err := agent.ResolveContextConfig(cfg.Context)
 	if err != nil {
 		t.Fatalf("ResolveContextConfig: %v", err)
 	}
@@ -167,12 +161,12 @@ llm_profiles:
 	if effective.KeepRecentUserTurns != cfg.Context.KeepRecentUserTurns {
 		t.Fatalf("effective.keep_recent_user_turns = %d, want global %d", effective.KeepRecentUserTurns, cfg.Context.KeepRecentUserTurns)
 	}
+	if cfg.Agent.ActiveConfig != "default" {
+		t.Fatalf("agent.active_config = %q, want default", cfg.Agent.ActiveConfig)
+	}
 	// Default should still apply for unset fields.
 	if cfg.DB.Path != "./data/emo.db" {
 		t.Errorf("db.path = %q, want default", cfg.DB.Path)
-	}
-	if cfg.Work.Profile != "default" {
-		t.Errorf("work.profile = %q, want default", cfg.Work.Profile)
 	}
 	if cfg.Work.MaxToolRounds != 15 {
 		t.Errorf("work.max_tool_rounds = %d, want 15", cfg.Work.MaxToolRounds)
@@ -182,6 +176,97 @@ llm_profiles:
 	}
 	if cfg.Work.JournalDir != "./logs/work" {
 		t.Errorf("work.journal_dir = %q, want ./logs/work", cfg.Work.JournalDir)
+	}
+}
+
+func TestLoadAgentProviderConfigYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+server:
+  port: 9090
+llm_providers:
+  - id: moonshot
+    name: Moonshot
+    protocol: openai_compatible
+    base_url: https://api.moonshot.cn
+    api_key_env: MOONSHOT_API_KEY
+    model_discovery: openai_models
+    enabled: true
+  - id: anthropic-main
+    name: Anthropic
+    protocol: anthropic
+    base_url: https://api.anthropic.com
+    api_key_env: ANTHROPIC_API_KEY
+    model_discovery: anthropic_models
+    enabled: false
+agent_configs:
+  - id: default
+    name: Default
+    persona_key: default
+    emotion:
+      main:
+        provider_id: moonshot
+        model: kimi-k2.6
+        params:
+          max_tokens: 8192
+          temperature: 1
+          stream: true
+      summary:
+        provider_id: moonshot
+        model: kimi-k2.6
+        params:
+          max_tokens: 4096
+          temperature: 0.1
+          stream: false
+    work:
+      main:
+        provider_id: anthropic-main
+        model: claude-sonnet
+        params:
+          max_tokens: 4096
+          thinking:
+            mode: adaptive
+            effort: medium
+      summary:
+        provider_id: moonshot
+        model: kimi-k2.6
+        params:
+          max_tokens: 2048
+          extra:
+            response_format:
+              type: json_object
+    context_overrides:
+      input_budget_tokens: 12000
+agent:
+  active_config: default
+`), 0o644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.LLMProviders) != 2 {
+		t.Fatalf("len(LLMProviders) = %d, want 2", len(cfg.LLMProviders))
+	}
+	if got := cfg.LLMProviders[0].Protocol; got != "openai_compatible" {
+		t.Fatalf("provider protocol = %q, want openai_compatible", got)
+	}
+	if len(cfg.AgentConfigs) != 1 {
+		t.Fatalf("len(AgentConfigs) = %d, want 1", len(cfg.AgentConfigs))
+	}
+	agent := cfg.AgentConfigs[0]
+	if agent.PersonaKey != "default" {
+		t.Fatalf("persona_key = %q, want default", agent.PersonaKey)
+	}
+	if agent.Emotion.Main.Params.Temperature == nil || *agent.Emotion.Main.Params.Temperature != 1 {
+		t.Fatalf("emotion main temperature = %#v, want 1", agent.Emotion.Main.Params.Temperature)
+	}
+	if agent.Work.Main.Params.Thinking == nil || agent.Work.Main.Params.Thinking.Mode != "adaptive" {
+		t.Fatalf("work main thinking = %#v, want adaptive", agent.Work.Main.Params.Thinking)
+	}
+	if got := cfg.Agent.ActiveConfig; got != "default" {
+		t.Fatalf("agent.active_config = %q, want default", got)
 	}
 }
 
@@ -247,64 +332,39 @@ func TestValidateRejectsInvalidContextBudget(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsInvalidProfileBudgetOverrides(t *testing.T) {
+func TestValidateRejectsInvalidAgentContextOverrides(t *testing.T) {
 	cfg := DefaultConfig()
-	zero := 0
-	cfg.LLMProfiles = []LLMProfile{{
-		Name:              "default",
-		Provider:          "openai",
-		BaseURL:           "https://api.openai.com",
-		Model:             "gpt-4o-mini",
-		MaxTokens:         1024,
-		Temperature:       0.7,
-		InputBudgetTokens: &zero,
+	cfg.LLMProviders = []LLMProvider{{
+		ID:             "moonshot",
+		Name:           "Moonshot",
+		Protocol:       "openai_compatible",
+		BaseURL:        "https://api.moonshot.cn",
+		APIKeyEnv:      "MOONSHOT_API_KEY",
+		ModelDiscovery: "manual",
+		Enabled:        true,
 	}}
+	cfg.AgentConfigs = []AgentConfig{validAgentConfig()}
+	cfg.AgentConfigs[0].ContextOverrides = map[string]any{"input_budget_tokens": 0}
 	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected validation error for invalid profile input_budget_tokens override")
+		t.Fatal("expected validation error for invalid agent input_budget_tokens override")
 	}
 }
 
 func TestValidateRejectsInvalidSummaryTemperature(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.LLM.SummaryTemperature = floatPtr(2.5)
+	cfg.AgentConfigs = []AgentConfig{validAgentConfig()}
+	cfg.AgentConfigs[0].Emotion.Summary.Params.Temperature = floatPtr(2.5)
 	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected validation error for invalid llm.summary_temperature")
-	}
-
-	cfg = DefaultConfig()
-	cfg.LLMProfiles = []LLMProfile{{
-		Name:               "default",
-		Provider:           "openai",
-		BaseURL:            "https://api.openai.com",
-		Model:              "gpt-4o-mini",
-		MaxTokens:          1024,
-		Temperature:        0.7,
-		SummaryTemperature: floatPtr(-0.1),
-	}}
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected validation error for invalid profile summary_temperature")
+		t.Fatal("expected validation error for invalid agent summary temperature")
 	}
 }
 
 func TestValidateRejectsInvalidSummaryMaxTokens(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.LLM.SummaryMaxTokens = -1
+	cfg.AgentConfigs = []AgentConfig{validAgentConfig()}
+	cfg.AgentConfigs[0].Emotion.Summary.Params.MaxTokens = -1
 	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected validation error for invalid llm.summary_max_tokens")
-	}
-
-	cfg = DefaultConfig()
-	cfg.LLMProfiles = []LLMProfile{{
-		Name:             "default",
-		Provider:         "openai",
-		BaseURL:          "https://api.openai.com",
-		Model:            "gpt-4o-mini",
-		MaxTokens:        1024,
-		Temperature:      0.7,
-		SummaryMaxTokens: -1,
-	}}
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected validation error for invalid profile summary_max_tokens")
+		t.Fatal("expected validation error for invalid agent summary max_tokens")
 	}
 }
 
@@ -388,6 +448,22 @@ func TestConfigValidateRejectsInvalidWorkCompression(t *testing.T) {
 				t.Fatalf("error = %q, want substring %q", err.Error(), tt.want)
 			}
 		})
+	}
+}
+
+func validAgentConfig() AgentConfig {
+	return AgentConfig{
+		ID:         "default",
+		Name:       "Default",
+		PersonaKey: "default",
+		Emotion: AgentModelGroup{
+			Main:    ModelBinding{ProviderID: "moonshot", Model: "kimi-k2.6"},
+			Summary: ModelBinding{ProviderID: "moonshot", Model: "kimi-k2.6"},
+		},
+		Work: AgentModelGroup{
+			Main:    ModelBinding{ProviderID: "moonshot", Model: "kimi-k2.6"},
+			Summary: ModelBinding{ProviderID: "moonshot", Model: "kimi-k2.6"},
+		},
 	}
 }
 

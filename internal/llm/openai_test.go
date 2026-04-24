@@ -61,6 +61,80 @@ func TestOpenAIChat_TextOnly(t *testing.T) {
 	}
 }
 
+func TestOpenAIChat_MapsRequestParamsAndOmitsNilTemperature(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"chatcmpl-params","model":"gpt-test","choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	client := newTestOpenAIClient(server.URL)
+	topP := 0.8
+	_, err := client.Chat(context.Background(), ChatRequest{
+		Model:    "gpt-test",
+		Messages: []Message{{Role: RoleUser, Content: "Hi"}},
+		Params: RequestParams{
+			MaxTokens:       128,
+			TopP:            &topP,
+			ReasoningEffort: "medium",
+			Extra: map[string]any{
+				"temperature":      1.5,
+				"max_tokens":       999,
+				"custom_parameter": "kept",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if _, exists := payload["temperature"]; exists {
+		t.Fatalf("temperature was sent for nil RequestParams.Temperature: %#v", payload["temperature"])
+	}
+	if got := payload["max_tokens"]; got != float64(128) {
+		t.Fatalf("max_tokens = %#v, want 128", got)
+	}
+	if got := payload["top_p"]; got != 0.8 {
+		t.Fatalf("top_p = %#v, want 0.8", got)
+	}
+	if got := payload["reasoning_effort"]; got != "medium" {
+		t.Fatalf("reasoning_effort = %#v, want medium", got)
+	}
+	if got := payload["custom_parameter"]; got != "kept" {
+		t.Fatalf("custom_parameter = %#v, want kept", got)
+	}
+}
+
+func TestDiscoverModelsOpenAICompatible(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Fatalf("path = %s, want /v1/models", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer test-key" {
+			t.Fatalf("authorization header = %q", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"data":[{"id":"gpt-a"},{"id":"gpt-b"}]}`)
+	}))
+	defer server.Close()
+	t.Setenv("TEST_OPENAI_MODELS_KEY", "test-key")
+
+	models, err := DiscoverModels(context.Background(), ProviderConfig{
+		Protocol:  "openai_compatible",
+		BaseURL:   server.URL,
+		APIKeyEnv: "TEST_OPENAI_MODELS_KEY",
+	})
+	if err != nil {
+		t.Fatalf("DiscoverModels: %v", err)
+	}
+	if len(models) != 2 || models[0].ID != "gpt-a" || models[1].ID != "gpt-b" {
+		t.Fatalf("models = %#v", models)
+	}
+}
+
 func TestOpenAIChat_ToolUse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Verify tools in request.

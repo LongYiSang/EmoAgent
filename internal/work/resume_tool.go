@@ -34,6 +34,10 @@ var resumeToolSchema = json.RawMessage(`{
 
 // NewResumeTool builds the Emotion-facing resume_work tool.
 func NewResumeTool(runtime *Runtime, pending *PendingRegistry, journalDir string, logger *slog.Logger) (tool.Spec, tool.Handler) {
+	return NewResumeToolWithFactory(func() (*Runtime, error) { return runtime, nil }, pending, journalDir, logger)
+}
+
+func NewResumeToolWithFactory(runtimeFactory func() (*Runtime, error), pending *PendingRegistry, journalDir string, logger *slog.Logger) (tool.Spec, tool.Handler) {
 	spec := tool.Spec{
 		Name:        "resume_work",
 		Description: resumeToolDescription,
@@ -72,6 +76,13 @@ func NewResumeTool(runtime *Runtime, pending *PendingRegistry, journalDir string
 				"final_state": claim.FinalState,
 			})
 			return output, nil
+		}
+		runtime, err := runtimeFactory()
+		if err != nil {
+			return nil, fmt.Errorf("resume_work: %w", err)
+		}
+		if runtime == nil {
+			return nil, fmt.Errorf("resume_work: work runtime is not configured")
 		}
 
 		resp := protocol.DecisionResponse{

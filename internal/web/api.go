@@ -12,6 +12,7 @@ import (
 
 	"github.com/longyisang/emoagent/internal/apperrors"
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/progress"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/storage"
@@ -19,22 +20,27 @@ import (
 
 // AdminApp exposes the management operations needed by the admin API.
 type AdminApp interface {
-	ListLLMProfiles() ([]config.LLMProfile, error)
-	GetLLMProfile(id string) (*config.LLMProfile, error)
-	GetActiveLLMProfile() (*config.LLMProfile, bool)
-	CreateLLMProfile(profile config.LLMProfile) error
-	UpdateLLMProfile(id string, profile config.LLMProfile) error
-	ActivateLLMProfile(id string) error
-	DeleteLLMProfile(id string) error
+	ListLLMProviders() ([]config.LLMProvider, error)
+	GetLLMProvider(id string) (*config.LLMProvider, error)
+	CreateLLMProvider(provider config.LLMProvider) error
+	UpdateLLMProvider(id string, provider config.LLMProvider) error
+	DeleteLLMProvider(id string) error
+	RefreshLLMProviderModels(id string) ([]llm.ModelInfo, error)
+	GetLLMProviderModels(id string) ([]llm.ModelInfo, error)
+	ListAgentConfigs() ([]config.AgentConfig, error)
+	GetAgentConfig(id string) (*config.AgentConfig, error)
+	GetActiveAgentConfig() (*config.AgentConfig, bool, error)
+	CreateAgentConfig(agent config.AgentConfig) error
+	UpdateAgentConfig(id string, agent config.AgentConfig) error
+	ActivateAgentConfig(id string) error
+	DeleteAgentConfig(id string) error
 	ListPersonas() map[string]*config.Persona
 	GetPersona(name string) (*config.Persona, bool)
 	CreatePersona(key string, p *config.Persona) error
 	UpdatePersona(key string, p *config.Persona) error
 	DeletePersona(key string) error
-	ActivatePersona(key string) error
 	GetProgressPhrases(key string) (map[string][]string, error)
 	UpdateProgressPhrases(key string, phrases map[string][]string) error
-	GetDefaultPersonaName() string
 	ListSessions(ctx context.Context, persona string, limit int) ([]storage.SessionSummary, error)
 	GetLatestSession(ctx context.Context, persona string) (*storage.SessionSummary, error)
 	GetSessionDetail(ctx context.Context, id string) (*storage.SessionRecord, []storage.MessageRecord, error)
@@ -49,27 +55,17 @@ type APIHandler struct {
 	logger *slog.Logger
 }
 
-type llmProfileResponse struct {
-	ID                  string   `json:"id"`
-	Name                string   `json:"name"`
-	Provider            string   `json:"provider"`
-	BaseURL             string   `json:"base_url"`
-	APIKeyEnv           string   `json:"api_key_env"`
-	Model               string   `json:"model"`
-	SummaryModel        string   `json:"summary_model"`
-	SummaryTemperature  *float64 `json:"summary_temperature"`
-	SummaryMaxTokens    int      `json:"summary_max_tokens"`
-	MaxTokens           int      `json:"max_tokens"`
-	Temperature         float64  `json:"temperature"`
-	InputBudgetTokens   *int     `json:"input_budget_tokens"`
-	SoftCompactRatio    *float64 `json:"soft_compact_ratio"`
-	HardCompactRatio    *float64 `json:"hard_compact_ratio"`
-	ReserveOutputTokens *int     `json:"reserve_output_tokens"`
+type llmProvidersResponse struct {
+	Providers []config.LLMProvider `json:"providers"`
 }
 
-type llmProfilesResponse struct {
+type agentConfigsResponse struct {
 	ActiveID string               `json:"active_id"`
-	Profiles []llmProfileResponse `json:"profiles"`
+	Configs  []config.AgentConfig `json:"configs"`
+}
+
+type providerModelsResponse struct {
+	Models []llm.ModelInfo `json:"models"`
 }
 
 type personaSummary struct {
@@ -80,7 +76,6 @@ type personaSummary struct {
 }
 
 type personasResponse struct {
-	Default  string           `json:"default"`
 	Personas []personaSummary `json:"personas"`
 }
 
@@ -101,24 +96,6 @@ type personaDetailResponse struct {
 	Quirks              []string            `json:"quirks"`
 	Greeting            string              `json:"greeting"`
 	WorkProgressPhrases map[string][]string `json:"work_progress_phrases"`
-}
-
-type llmProfileRequest struct {
-	ID                  string   `json:"id"`
-	Name                string   `json:"name"`
-	Provider            string   `json:"provider"`
-	BaseURL             string   `json:"base_url"`
-	APIKeyEnv           string   `json:"api_key_env"`
-	Model               string   `json:"model"`
-	SummaryModel        string   `json:"summary_model"`
-	SummaryTemperature  *float64 `json:"summary_temperature"`
-	SummaryMaxTokens    int      `json:"summary_max_tokens"`
-	MaxTokens           int      `json:"max_tokens"`
-	Temperature         float64  `json:"temperature"`
-	InputBudgetTokens   *int     `json:"input_budget_tokens"`
-	SoftCompactRatio    *float64 `json:"soft_compact_ratio"`
-	HardCompactRatio    *float64 `json:"hard_compact_ratio"`
-	ReserveOutputTokens *int     `json:"reserve_output_tokens"`
 }
 
 type personaRequest struct {
@@ -144,112 +121,150 @@ func NewAPIHandler(app AdminApp, logger *slog.Logger) *APIHandler {
 	return &APIHandler{app: app, logger: logger}
 }
 
-func (h *APIHandler) HandleListLLMProfiles(w http.ResponseWriter, r *http.Request) {
-	profiles, err := h.app.ListLLMProfiles()
+func (h *APIHandler) HandleListLLMProviders(w http.ResponseWriter, r *http.Request) {
+	providers, err := h.app.ListLLMProviders()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list llm profiles")
+		writeError(w, http.StatusInternalServerError, "failed to list llm providers")
 		return
 	}
-
-	activeID := ""
-	if active, ok := h.app.GetActiveLLMProfile(); ok && active != nil {
-		activeID = active.Name
-	}
-
-	items := make([]llmProfileResponse, 0, len(profiles))
-	for _, profile := range profiles {
-		items = append(items, toLLMProfileResponse(profile))
-	}
-
-	writeJSON(w, http.StatusOK, llmProfilesResponse{
-		ActiveID: activeID,
-		Profiles: items,
-	})
+	writeJSON(w, http.StatusOK, llmProvidersResponse{Providers: providers})
 }
 
-func (h *APIHandler) HandleGetLLMProfile(w http.ResponseWriter, r *http.Request) {
-	profile, err := h.app.GetLLMProfile(r.PathValue("id"))
+func (h *APIHandler) HandleGetLLMProvider(w http.ResponseWriter, r *http.Request) {
+	provider, err := h.app.GetLLMProvider(r.PathValue("id"))
 	if err != nil {
-		h.writeLLMProfileError(w, err)
+		h.writeLLMProviderError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toLLMProfileResponse(*profile))
+	writeJSON(w, http.StatusOK, provider)
 }
 
-func (h *APIHandler) HandleCreateLLMProfile(w http.ResponseWriter, r *http.Request) {
-	var req llmProfileRequest
-	if err := readJSON(r, &req); err != nil {
+func (h *APIHandler) HandleCreateLLMProvider(w http.ResponseWriter, r *http.Request) {
+	var provider config.LLMProvider
+	if err := readJSON(r, &provider); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-
-	profile := config.LLMProfile{
-		Name:                firstNonEmpty(strings.TrimSpace(req.ID), strings.TrimSpace(req.Name)),
-		Provider:            strings.TrimSpace(req.Provider),
-		BaseURL:             strings.TrimSpace(req.BaseURL),
-		APIKeyEnv:           strings.TrimSpace(req.APIKeyEnv),
-		Model:               strings.TrimSpace(req.Model),
-		SummaryModel:        strings.TrimSpace(req.SummaryModel),
-		SummaryTemperature:  req.SummaryTemperature,
-		SummaryMaxTokens:    req.SummaryMaxTokens,
-		MaxTokens:           req.MaxTokens,
-		Temperature:         req.Temperature,
-		InputBudgetTokens:   req.InputBudgetTokens,
-		SoftCompactRatio:    req.SoftCompactRatio,
-		HardCompactRatio:    req.HardCompactRatio,
-		ReserveOutputTokens: req.ReserveOutputTokens,
-	}
-
-	if err := h.app.CreateLLMProfile(profile); err != nil {
-		h.writeLLMProfileError(w, err)
+	normalizeProvider(&provider)
+	if err := h.app.CreateLLMProvider(provider); err != nil {
+		h.writeLLMProviderError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]bool{"ok": true})
 }
 
-func (h *APIHandler) HandleUpdateLLMProfile(w http.ResponseWriter, r *http.Request) {
-	var req llmProfileRequest
-	if err := readJSON(r, &req); err != nil {
+func (h *APIHandler) HandleUpdateLLMProvider(w http.ResponseWriter, r *http.Request) {
+	var provider config.LLMProvider
+	if err := readJSON(r, &provider); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-
-	id := r.PathValue("id")
-	profile := config.LLMProfile{
-		Name:                id,
-		Provider:            strings.TrimSpace(req.Provider),
-		BaseURL:             strings.TrimSpace(req.BaseURL),
-		APIKeyEnv:           strings.TrimSpace(req.APIKeyEnv),
-		Model:               strings.TrimSpace(req.Model),
-		SummaryModel:        strings.TrimSpace(req.SummaryModel),
-		SummaryTemperature:  req.SummaryTemperature,
-		SummaryMaxTokens:    req.SummaryMaxTokens,
-		MaxTokens:           req.MaxTokens,
-		Temperature:         req.Temperature,
-		InputBudgetTokens:   req.InputBudgetTokens,
-		SoftCompactRatio:    req.SoftCompactRatio,
-		HardCompactRatio:    req.HardCompactRatio,
-		ReserveOutputTokens: req.ReserveOutputTokens,
-	}
-
-	if err := h.app.UpdateLLMProfile(id, profile); err != nil {
-		h.writeLLMProfileError(w, err)
+	normalizeProvider(&provider)
+	if err := h.app.UpdateLLMProvider(r.PathValue("id"), provider); err != nil {
+		h.writeLLMProviderError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func (h *APIHandler) HandleActivateLLMProfile(w http.ResponseWriter, r *http.Request) {
-	if err := h.app.ActivateLLMProfile(r.PathValue("id")); err != nil {
-		h.writeLLMProfileError(w, err)
+func (h *APIHandler) HandleDeleteLLMProvider(w http.ResponseWriter, r *http.Request) {
+	if err := h.app.DeleteLLMProvider(r.PathValue("id")); err != nil {
+		h.writeLLMProviderError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func (h *APIHandler) HandleDeleteLLMProfile(w http.ResponseWriter, r *http.Request) {
-	if err := h.app.DeleteLLMProfile(r.PathValue("id")); err != nil {
-		h.writeLLMProfileError(w, err)
+func (h *APIHandler) HandleRefreshLLMProviderModels(w http.ResponseWriter, r *http.Request) {
+	models, err := h.app.RefreshLLMProviderModels(r.PathValue("id"))
+	if err != nil {
+		h.writeLLMProviderError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, providerModelsResponse{Models: models})
+}
+
+func (h *APIHandler) HandleGetLLMProviderModels(w http.ResponseWriter, r *http.Request) {
+	models, err := h.app.GetLLMProviderModels(r.PathValue("id"))
+	if err != nil {
+		h.writeLLMProviderError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, providerModelsResponse{Models: models})
+}
+
+func (h *APIHandler) HandleListAgentConfigs(w http.ResponseWriter, r *http.Request) {
+	configs, err := h.app.ListAgentConfigs()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list agent configs")
+		return
+	}
+	activeID := ""
+	if active, ok, err := h.app.GetActiveAgentConfig(); err == nil && ok && active != nil {
+		activeID = active.ID
+	}
+	writeJSON(w, http.StatusOK, agentConfigsResponse{ActiveID: activeID, Configs: configs})
+}
+
+func (h *APIHandler) HandleGetActiveAgentConfig(w http.ResponseWriter, r *http.Request) {
+	active, ok, err := h.app.GetActiveAgentConfig()
+	if err != nil {
+		h.writeAgentConfigError(w, err)
+		return
+	}
+	if !ok || active == nil {
+		writeError(w, http.StatusNotFound, "agent config not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, active)
+}
+
+func (h *APIHandler) HandleGetAgentConfig(w http.ResponseWriter, r *http.Request) {
+	agent, err := h.app.GetAgentConfig(r.PathValue("id"))
+	if err != nil {
+		h.writeAgentConfigError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, agent)
+}
+
+func (h *APIHandler) HandleCreateAgentConfig(w http.ResponseWriter, r *http.Request) {
+	var agent config.AgentConfig
+	if err := readJSON(r, &agent); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if err := h.app.CreateAgentConfig(agent); err != nil {
+		h.writeAgentConfigError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]bool{"ok": true})
+}
+
+func (h *APIHandler) HandleUpdateAgentConfig(w http.ResponseWriter, r *http.Request) {
+	var agent config.AgentConfig
+	if err := readJSON(r, &agent); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if err := h.app.UpdateAgentConfig(r.PathValue("id"), agent); err != nil {
+		h.writeAgentConfigError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (h *APIHandler) HandleActivateAgentConfig(w http.ResponseWriter, r *http.Request) {
+	if err := h.app.ActivateAgentConfig(r.PathValue("id")); err != nil {
+		h.writeAgentConfigError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (h *APIHandler) HandleDeleteAgentConfig(w http.ResponseWriter, r *http.Request) {
+	if err := h.app.DeleteAgentConfig(r.PathValue("id")); err != nil {
+		h.writeAgentConfigError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -292,7 +307,6 @@ func (h *APIHandler) HandleListPersonas(w http.ResponseWriter, r *http.Request) 
 	sort.Slice(result, func(i, j int) bool { return result[i].Key < result[j].Key })
 
 	writeJSON(w, http.StatusOK, personasResponse{
-		Default:  h.app.GetDefaultPersonaName(),
 		Personas: result,
 	})
 }
@@ -372,14 +386,6 @@ func (h *APIHandler) HandleUpdatePersona(w http.ResponseWriter, r *http.Request)
 
 func (h *APIHandler) HandleDeletePersona(w http.ResponseWriter, r *http.Request) {
 	if err := h.app.DeletePersona(r.PathValue("name")); err != nil {
-		h.writePersonaError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-}
-
-func (h *APIHandler) HandleActivatePersona(w http.ResponseWriter, r *http.Request) {
-	if err := h.app.ActivatePersona(r.PathValue("name")); err != nil {
 		h.writePersonaError(w, err)
 		return
 	}
@@ -481,18 +487,33 @@ func (h *APIHandler) HandleListSessionApprovals(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, map[string]any{"approvals": approvals})
 }
 
-func (h *APIHandler) writeLLMProfileError(w http.ResponseWriter, err error) {
+func (h *APIHandler) writeLLMProviderError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, apperrors.ErrLLMProfileExists):
+	case errors.Is(err, apperrors.ErrLLMProviderExists):
 		writeError(w, http.StatusConflict, err.Error())
-	case errors.Is(err, apperrors.ErrLLMProfileNotFound):
+	case errors.Is(err, apperrors.ErrLLMProviderNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, apperrors.ErrCannotDeleteActiveLLMProfile),
-		errors.Is(err, apperrors.ErrCannotDeleteLastLLMProfile),
-		isLLMProfileValidationError(err):
+	case errors.Is(err, apperrors.ErrLLMProviderInUse),
+		isLLMProviderValidationError(err):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
-		h.logger.Error("llm profile internal error", "error", err)
+		h.logger.Error("llm provider internal error", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+	}
+}
+
+func (h *APIHandler) writeAgentConfigError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, apperrors.ErrAgentConfigExists):
+		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, apperrors.ErrAgentConfigNotFound):
+		writeError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, apperrors.ErrCannotDeleteActiveAgentConfig),
+		errors.Is(err, apperrors.ErrCannotDeleteLastAgentConfig),
+		isAgentConfigValidationError(err):
+		writeError(w, http.StatusBadRequest, err.Error())
+	default:
+		h.logger.Error("agent config internal error", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
 	}
 }
@@ -522,40 +543,38 @@ func (h *APIHandler) writeSessionError(w http.ResponseWriter, err error) {
 	}
 }
 
-func isLLMProfileValidationError(err error) bool {
+func isLLMProviderValidationError(err error) bool {
 	if err == nil {
 		return false
 	}
-
 	message := err.Error()
 	switch {
 	case strings.HasSuffix(message, " environment variable not set"):
 		return true
-	case strings.HasPrefix(message, "unsupported provider:"):
+	case message == "id is required",
+		message == "name is required",
+		message == "base_url is required",
+		message == "api_key_env is required":
 		return true
-	case message == "name is required":
+	case strings.HasPrefix(message, "unsupported protocol:"),
+		strings.HasPrefix(message, "unsupported model_discovery:"):
 		return true
-	case message == "base_url is required":
-		return true
-	case message == "model is required":
-		return true
-	case message == "max_tokens must be greater than 0":
-		return true
-	case message == "temperature must be between 0 and 2":
-		return true
-	case message == "summary_temperature must be between 0 and 2":
-		return true
-	case message == "summary_max_tokens must be >= 0":
-		return true
-	case message == "input_budget_tokens must be > 0":
-		return true
-	case message == "reserve_output_tokens must be > 0":
-		return true
-	case message == "soft_compact_ratio must be between 0 and 1":
-		return true
-	case message == "hard_compact_ratio must be between 0 and 1":
-		return true
-	case message == "soft_compact_ratio must be < hard_compact_ratio":
+	default:
+		return false
+	}
+}
+
+func isAgentConfigValidationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	switch {
+	case strings.Contains(message, "provider_id is required"),
+		strings.Contains(message, "model is required"),
+		strings.Contains(message, "persona_key is required"),
+		strings.Contains(message, "params.max_tokens must be >= 0"),
+		strings.Contains(message, "unsupported key"):
 		return true
 	default:
 		return false
@@ -618,6 +637,21 @@ func normalizeProgressPhrases(phrases map[string][]string) map[string][]string {
 	return out
 }
 
+func normalizeProvider(provider *config.LLMProvider) {
+	if provider == nil {
+		return
+	}
+	provider.ID = strings.TrimSpace(provider.ID)
+	provider.Name = strings.TrimSpace(provider.Name)
+	provider.Protocol = strings.TrimSpace(provider.Protocol)
+	provider.BaseURL = strings.TrimRight(strings.TrimSpace(provider.BaseURL), "/")
+	provider.APIKeyEnv = strings.TrimSpace(provider.APIKeyEnv)
+	provider.ModelDiscovery = strings.TrimSpace(provider.ModelDiscovery)
+	if provider.ModelDiscovery == "" {
+		provider.ModelDiscovery = "manual"
+	}
+}
+
 func cloneProgressPhrases(src map[string][]string) map[string][]string {
 	if src == nil {
 		return map[string][]string{}
@@ -627,34 +661,6 @@ func cloneProgressPhrases(src map[string][]string) map[string][]string {
 		dst[key] = append([]string(nil), values...)
 	}
 	return dst
-}
-
-func toLLMProfileResponse(profile config.LLMProfile) llmProfileResponse {
-	return llmProfileResponse{
-		ID:                  profile.Name,
-		Name:                profile.Name,
-		Provider:            profile.Provider,
-		BaseURL:             profile.BaseURL,
-		APIKeyEnv:           profile.APIKeyEnv,
-		Model:               profile.Model,
-		SummaryModel:        profile.SummaryModel,
-		SummaryTemperature:  cloneFloat64Ptr(profile.SummaryTemperature),
-		SummaryMaxTokens:    profile.SummaryMaxTokens,
-		MaxTokens:           profile.MaxTokens,
-		Temperature:         profile.Temperature,
-		InputBudgetTokens:   profile.InputBudgetTokens,
-		SoftCompactRatio:    profile.SoftCompactRatio,
-		HardCompactRatio:    profile.HardCompactRatio,
-		ReserveOutputTokens: profile.ReserveOutputTokens,
-	}
-}
-
-func cloneFloat64Ptr(value *float64) *float64 {
-	if value == nil {
-		return nil
-	}
-	v := *value
-	return &v
 }
 
 func firstNonEmpty(values ...string) string {

@@ -35,6 +35,33 @@ type ToolDef struct {
 	InputSchema json.RawMessage `json:"input_schema"`
 }
 
+// ProviderConfig contains the connection settings needed to build an LLM client.
+type ProviderConfig struct {
+	ID        string
+	Protocol  string
+	BaseURL   string
+	APIKeyEnv string
+}
+
+// RequestParams is the provider-agnostic set of generation parameters.
+type RequestParams struct {
+	MaxTokens        int             `yaml:"max_tokens,omitempty" json:"max_tokens,omitempty"`
+	Temperature      *float64        `yaml:"temperature,omitempty" json:"temperature,omitempty"`
+	TopP             *float64        `yaml:"top_p,omitempty" json:"top_p,omitempty"`
+	PresencePenalty  *float64        `yaml:"presence_penalty,omitempty" json:"presence_penalty,omitempty"`
+	FrequencyPenalty *float64        `yaml:"frequency_penalty,omitempty" json:"frequency_penalty,omitempty"`
+	ReasoningEffort  string          `yaml:"reasoning_effort,omitempty" json:"reasoning_effort,omitempty"`
+	Thinking         *ThinkingConfig `yaml:"thinking,omitempty" json:"thinking,omitempty"`
+	Stream           *bool           `yaml:"stream,omitempty" json:"stream,omitempty"`
+	Extra            map[string]any  `yaml:"extra,omitempty" json:"extra,omitempty"`
+}
+
+type ThinkingConfig struct {
+	Mode         string `yaml:"mode,omitempty" json:"mode,omitempty"`
+	BudgetTokens *int   `yaml:"budget_tokens,omitempty" json:"budget_tokens,omitempty"`
+	Effort       string `yaml:"effort,omitempty" json:"effort,omitempty"`
+}
+
 // Message is a single message in a conversation.
 //
 // When ContentBlocks is non-empty, it represents the full structured content
@@ -55,13 +82,14 @@ type Message struct {
 
 // ChatRequest is a unified request to any LLM provider.
 type ChatRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	System      string    `json:"system,omitempty"`
-	MaxTokens   int       `json:"max_tokens"`
-	Temperature float64   `json:"temperature"`
-	Stream      bool      `json:"stream"`
-	Tools       []ToolDef `json:"tools,omitempty"`
+	Model       string        `json:"model"`
+	Messages    []Message     `json:"messages"`
+	System      string        `json:"system,omitempty"`
+	Params      RequestParams `json:"params,omitempty"`
+	MaxTokens   int           `json:"max_tokens"`
+	Temperature float64       `json:"temperature"`
+	Stream      bool          `json:"stream"`
+	Tools       []ToolDef     `json:"tools,omitempty"`
 }
 
 // ChatResponse is a unified response from any LLM provider.

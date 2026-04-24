@@ -8,58 +8,78 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/longyisang/emoagent/internal/apperrors"
 	"github.com/longyisang/emoagent/internal/chat"
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/storage"
-	"github.com/longyisang/emoagent/internal/tool"
-	"github.com/longyisang/emoagent/internal/tool/builtin"
 	"github.com/longyisang/emoagent/internal/web"
 )
 
 type routeTestAdminApp struct {
-	profiles            []config.LLMProfile
-	active              *config.LLMProfile
-	lastActive          string
-	defaultKey          string
-	lastPersonaActivate string
+	providers    []config.LLMProvider
+	agentConfigs []config.AgentConfig
+	activeAgent  *config.AgentConfig
+	lastActive   string
 }
 
-func (a *routeTestAdminApp) ListLLMProfiles() ([]config.LLMProfile, error) {
-	return append([]config.LLMProfile(nil), a.profiles...), nil
+func (a *routeTestAdminApp) ListLLMProviders() ([]config.LLMProvider, error) {
+	return append([]config.LLMProvider(nil), a.providers...), nil
 }
-
-func (a *routeTestAdminApp) GetLLMProfile(id string) (*config.LLMProfile, error) {
-	for i := range a.profiles {
-		if a.profiles[i].Name == id {
-			cp := a.profiles[i]
+func (a *routeTestAdminApp) GetLLMProvider(id string) (*config.LLMProvider, error) {
+	for i := range a.providers {
+		if a.providers[i].ID == id {
+			cp := a.providers[i]
 			return &cp, nil
 		}
 	}
-	return nil, ErrLLMProfileNotFound
+	return nil, ErrLLMProviderNotFound
 }
-
-func (a *routeTestAdminApp) GetActiveLLMProfile() (*config.LLMProfile, bool) {
-	if a.active == nil {
-		return nil, false
-	}
-	cp := *a.active
-	return &cp, true
-}
-
-func (a *routeTestAdminApp) CreateLLMProfile(profile config.LLMProfile) error { return nil }
-func (a *routeTestAdminApp) UpdateLLMProfile(id string, profile config.LLMProfile) error {
+func (a *routeTestAdminApp) CreateLLMProvider(provider config.LLMProvider) error { return nil }
+func (a *routeTestAdminApp) UpdateLLMProvider(id string, provider config.LLMProvider) error {
 	return nil
 }
-func (a *routeTestAdminApp) ActivateLLMProfile(id string) error {
+func (a *routeTestAdminApp) DeleteLLMProvider(id string) error { return nil }
+func (a *routeTestAdminApp) RefreshLLMProviderModels(id string) ([]llm.ModelInfo, error) {
+	return []llm.ModelInfo{}, nil
+}
+func (a *routeTestAdminApp) GetLLMProviderModels(id string) ([]llm.ModelInfo, error) {
+	return []llm.ModelInfo{}, nil
+}
+func (a *routeTestAdminApp) ListAgentConfigs() ([]config.AgentConfig, error) {
+	return append([]config.AgentConfig(nil), a.agentConfigs...), nil
+}
+func (a *routeTestAdminApp) GetAgentConfig(id string) (*config.AgentConfig, error) {
+	for i := range a.agentConfigs {
+		if a.agentConfigs[i].ID == id {
+			cp := a.agentConfigs[i]
+			return &cp, nil
+		}
+	}
+	return nil, ErrAgentConfigNotFound
+}
+func (a *routeTestAdminApp) GetActiveAgentConfig() (*config.AgentConfig, bool, error) {
+	if a.activeAgent == nil {
+		return nil, false, nil
+	}
+	cp := *a.activeAgent
+	return &cp, true, nil
+}
+func (a *routeTestAdminApp) CreateAgentConfig(agent config.AgentConfig) error { return nil }
+func (a *routeTestAdminApp) UpdateAgentConfig(id string, agent config.AgentConfig) error {
+	return nil
+}
+func (a *routeTestAdminApp) ActivateAgentConfig(id string) error {
 	a.lastActive = id
 	return nil
 }
-func (a *routeTestAdminApp) DeleteLLMProfile(id string) error { return nil }
+func (a *routeTestAdminApp) DeleteAgentConfig(id string) error { return nil }
 func (a *routeTestAdminApp) ListPersonas() map[string]*config.Persona {
 	return map[string]*config.Persona{}
 }
@@ -73,11 +93,6 @@ func (a *routeTestAdminApp) GetProgressPhrases(key string) (map[string][]string,
 	return map[string][]string{}, nil
 }
 func (a *routeTestAdminApp) UpdateProgressPhrases(key string, phrases map[string][]string) error {
-	return nil
-}
-func (a *routeTestAdminApp) ActivatePersona(key string) error {
-	a.lastPersonaActivate = key
-	a.defaultKey = key
 	return nil
 }
 func (a *routeTestAdminApp) ListSessions(ctx context.Context, persona string, limit int) ([]storage.SessionSummary, error) {
@@ -101,13 +116,6 @@ func (a *routeTestAdminApp) GetChatSettings() config.ChatConfig {
 func (a *routeTestAdminApp) UpdateChatSettings(settings config.ChatConfig) error {
 	return nil
 }
-func (a *routeTestAdminApp) GetDefaultPersonaName() string {
-	if a.defaultKey == "" {
-		return "default"
-	}
-	return a.defaultKey
-}
-
 func TestRunAllowsStartupWithoutLLM(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -115,7 +123,6 @@ func TestRunAllowsStartupWithoutLLM(t *testing.T) {
 	a := &App{
 		Config: &config.Config{
 			Server: config.ServerConfig{Host: "127.0.0.1", Port: 0},
-			LLM:    config.LLMConfig{Model: "test-model", MaxTokens: 64, Temperature: 0.3},
 		},
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
@@ -125,11 +132,56 @@ func TestRunAllowsStartupWithoutLLM(t *testing.T) {
 	}
 }
 
+func TestInitRejectsOldLLMProfileOnlyConfigWhenDBIsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	dbPath := filepath.Join(dir, "emo.db")
+	personaDir := filepath.Join(dir, "personas")
+	if err := os.MkdirAll(personaDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(personaDir, "default.yaml"), []byte("name: Default\nsystem_prompt: test\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile persona: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte(`
+server:
+  host: "127.0.0.1"
+  port: 8081
+llm:
+  provider: openai
+  base_url: https://api.openai.com
+  model: gpt-4o
+  max_tokens: 128
+  temperature: 0.7
+llm_profiles:
+  - name: default
+    provider: openai
+    base_url: https://api.openai.com
+    model: gpt-4o
+    max_tokens: 128
+    temperature: 0.7
+db:
+  path: "`+filepath.ToSlash(dbPath)+`"
+personas:
+  dir: "`+filepath.ToSlash(personaDir)+`"
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile config: %v", err)
+	}
+
+	a := New()
+	err := a.Init(context.Background(), configPath)
+	if err == nil {
+		t.Fatal("Init succeeded with legacy llm_profiles-only config, want error")
+	}
+	if !strings.Contains(err.Error(), "llm_providers and agent_configs") {
+		t.Fatalf("Init error = %v, want missing new seed message", err)
+	}
+	_ = a.Shutdown()
+}
+
 func TestGetDefaultPersonaName(t *testing.T) {
 	a := &App{
-		Config: &config.Config{
-			Personas: config.PersonasConfig{Default: "default"},
-		},
+		ActiveAgentRuntime: &ActiveAgentRuntime{PersonaKey: "default"},
 	}
 
 	if got := a.GetDefaultPersonaName(); got != "default" {
@@ -137,27 +189,31 @@ func TestGetDefaultPersonaName(t *testing.T) {
 	}
 }
 
-func TestGetActiveLLMProfileReturnsCopy(t *testing.T) {
+func TestActiveAgentRuntimeCloneKeepsRequestParamsIsolated(t *testing.T) {
+	temp := 0.2
 	a := &App{
-		ActiveLLMProfile: &config.LLMProfile{Name: "default", Model: "gpt-4o"},
+		ActiveAgentRuntime: &ActiveAgentRuntime{
+			PersonaKey: "default",
+			EmotionMain: ModelRuntime{
+				Model:  "gpt-4o",
+				Params: llm.RequestParams{Temperature: &temp},
+			},
+		},
 	}
 
-	profile, ok := a.GetActiveLLMProfile()
-	if !ok {
-		t.Fatal("GetActiveLLMProfile returned ok=false")
-	}
-	profile.Model = "changed"
+	cp := cloneActiveAgentRuntime(a.ActiveAgentRuntime)
+	*cp.EmotionMain.Params.Temperature = 0.9
 
-	if a.ActiveLLMProfile.Model != "gpt-4o" {
-		t.Fatalf("ActiveLLMProfile mutated through copy, got %q", a.ActiveLLMProfile.Model)
+	if *a.ActiveAgentRuntime.EmotionMain.Params.Temperature != 0.2 {
+		t.Fatalf("ActiveAgentRuntime params mutated through copy, got %v", *a.ActiveAgentRuntime.EmotionMain.Params.Temperature)
 	}
 }
 
-func TestRegisterRoutesLLMProfileDispatch(t *testing.T) {
+func TestRegisterRoutesAgentConfigDispatch(t *testing.T) {
 	adminApp := &routeTestAdminApp{
-		profiles:   []config.LLMProfile{{Name: "default", Provider: "openai", Model: "gpt-4o"}},
-		active:     &config.LLMProfile{Name: "default", Provider: "openai", Model: "gpt-4o"},
-		defaultKey: "default",
+		providers:    []config.LLMProvider{{ID: "moonshot", Name: "Moonshot", Protocol: "openai_compatible", BaseURL: "https://api.moonshot.cn", APIKeyEnv: "MOONSHOT_API_KEY", ModelDiscovery: "manual", Enabled: true}},
+		agentConfigs: []config.AgentConfig{{ID: "default", Name: "Default", PersonaKey: "default"}},
+		activeAgent:  &config.AgentConfig{ID: "default", Name: "Default", PersonaKey: "default"},
 	}
 	api := web.NewAPIHandler(adminApp, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	mux := http.NewServeMux()
@@ -171,8 +227,29 @@ func TestRegisterRoutesLLMProfileDispatch(t *testing.T) {
 		http.NotFoundHandler(),
 	)
 
-	t.Run("list profiles", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/llm-profiles", nil)
+	t.Run("list providers", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/llm-providers", nil)
+		rec := httptest.NewRecorder()
+
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+
+		var resp struct {
+			Providers []config.LLMProvider `json:"providers"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		if len(resp.Providers) != 1 || resp.Providers[0].ID != "moonshot" {
+			t.Fatalf("providers = %#v, want moonshot", resp.Providers)
+		}
+	})
+
+	t.Run("list agent configs", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/agent-configs", nil)
 		rec := httptest.NewRecorder()
 
 		mux.ServeHTTP(rec, req)
@@ -192,29 +269,8 @@ func TestRegisterRoutesLLMProfileDispatch(t *testing.T) {
 		}
 	})
 
-	t.Run("get profile detail", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/llm-profiles/default", nil)
-		rec := httptest.NewRecorder()
-
-		mux.ServeHTTP(rec, req)
-
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d, want 200", rec.Code)
-		}
-
-		var resp struct {
-			ID string `json:"id"`
-		}
-		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-			t.Fatalf("Decode: %v", err)
-		}
-		if resp.ID != "default" {
-			t.Fatalf("id = %q, want default", resp.ID)
-		}
-	})
-
-	t.Run("activate does not collide with detail route", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/api/llm-profiles/default/activate", nil)
+	t.Run("agent activate route dispatches", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/agent-configs/default/activate", nil)
 		rec := httptest.NewRecorder()
 
 		mux.ServeHTTP(rec, req)
@@ -227,10 +283,10 @@ func TestRegisterRoutesLLMProfileDispatch(t *testing.T) {
 		}
 	})
 
-	t.Run("activate path with wrong method does not hit activate handler", func(t *testing.T) {
+	t.Run("agent activate path with wrong method does not hit activate handler", func(t *testing.T) {
 		adminApp.lastActive = ""
 
-		req := httptest.NewRequest(http.MethodGet, "/api/llm-profiles/default/activate", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/agent-configs/default/activate", nil)
 		rec := httptest.NewRecorder()
 
 		mux.ServeHTTP(rec, req)
@@ -243,8 +299,8 @@ func TestRegisterRoutesLLMProfileDispatch(t *testing.T) {
 		}
 	})
 
-	t.Run("trailing slash does not hit list route", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/llm-profiles/", nil)
+	t.Run("old llm profile routes return 404", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/llm-profiles", nil)
 		rec := httptest.NewRecorder()
 
 		mux.ServeHTTP(rec, req)
@@ -254,117 +310,16 @@ func TestRegisterRoutesLLMProfileDispatch(t *testing.T) {
 		}
 	})
 
-	t.Run("activate persona route dispatches correctly", func(t *testing.T) {
+	t.Run("persona activate route returns 404", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/api/personas/default/activate", nil)
 		rec := httptest.NewRecorder()
 
 		mux.ServeHTTP(rec, req)
 
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d, want 200", rec.Code)
-		}
-		if adminApp.lastPersonaActivate != "default" {
-			t.Fatalf("lastPersonaActivate = %q, want default", adminApp.lastPersonaActivate)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", rec.Code)
 		}
 	})
-}
-
-func TestUpdateLLMProfileRebuildsClientWhenActiveClientIsNil(t *testing.T) {
-	t.Setenv("TEST_OPENAI_API_KEY", "test-key")
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	if err := db.UpsertLLMProfile(config.LLMProfile{
-		Name:         "default",
-		Provider:     "openai",
-		BaseURL:      "https://api.openai.com",
-		Model:        "gpt-4o-mini",
-		SummaryModel: "",
-		MaxTokens:    128,
-		Temperature:  0.2,
-		APIKeyEnv:    "TEST_OPENAI_API_KEY",
-	}); err != nil {
-		t.Fatalf("UpsertLLMProfile: %v", err)
-	}
-
-	a := &App{
-		Config: &config.Config{
-			LLM: config.LLMConfig{
-				Provider:    "openai",
-				BaseURL:     "https://api.openai.com",
-				Model:       "gpt-4o-mini",
-				MaxTokens:   128,
-				Temperature: 0.2,
-				APIKeyEnv:   "TEST_OPENAI_API_KEY",
-			},
-		},
-		DB:               db,
-		Logger:           logger,
-		ActiveLLMProfile: &config.LLMProfile{Name: "default", Provider: "openai", BaseURL: "https://api.openai.com", Model: "gpt-4o-mini", MaxTokens: 128, Temperature: 0.2, APIKeyEnv: "TEST_OPENAI_API_KEY", InputBudgetTokens: intPtr(9000), ReserveOutputTokens: intPtr(512)},
-		engine:           chat.NewEngine(chat.EngineConfig{DB: db, Logger: logger, Model: "gpt-4o-mini", MaxTokens: 128, Temperature: 0.2}),
-	}
-
-	err = a.UpdateLLMProfile("default", config.LLMProfile{
-		Provider:    "openai",
-		BaseURL:     "https://api.openai.com",
-		Model:       "gpt-4.1-mini",
-		MaxTokens:   256,
-		Temperature: 0.4,
-		APIKeyEnv:   "TEST_OPENAI_API_KEY",
-	})
-	if err != nil {
-		t.Fatalf("UpdateLLMProfile: %v", err)
-	}
-	if a.LLM == nil {
-		t.Fatal("UpdateLLMProfile did not rebuild missing active client")
-	}
-	if a.ActiveLLMProfile == nil || a.ActiveLLMProfile.Model != "gpt-4.1-mini" {
-		t.Fatalf("ActiveLLMProfile = %#v, want updated model", a.ActiveLLMProfile)
-	}
-}
-
-func TestActivatePersonaUpdatesRuntimeDefault(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	a := &App{
-		Config: &config.Config{
-			Personas: config.PersonasConfig{Default: "default"},
-		},
-		DB:     db,
-		Logger: logger,
-		Personas: map[string]*config.Persona{
-			"default": {Name: "Emo"},
-			"tami":    {Name: "Tami"},
-		},
-	}
-
-	if err := a.ActivatePersona("tami"); err != nil {
-		t.Fatalf("ActivatePersona: %v", err)
-	}
-	if got := a.GetDefaultPersonaName(); got != "tami" {
-		t.Fatalf("GetDefaultPersonaName = %q, want tami", got)
-	}
-
-	value, found, err := db.GetRuntimeConfig("personas.default")
-	if err != nil {
-		t.Fatalf("GetRuntimeConfig: %v", err)
-	}
-	if !found {
-		t.Fatal("personas.default not persisted")
-	}
-	if value != "tami" {
-		t.Fatalf("personas.default = %q, want tami", value)
-	}
 }
 
 func TestUpdateChatSettingsPersistsRuntimeOverrideAndHotUpdatesEngine(t *testing.T) {
@@ -408,6 +363,83 @@ func TestUpdateChatSettingsPersistsRuntimeOverrideAndHotUpdatesEngine(t *testing
 	}
 }
 
+func TestActivateAgentConfigBuildsRuntimeAndHotUpdatesEngine(t *testing.T) {
+	t.Setenv("TEST_AGENT_API_KEY", "test-key")
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	provider := config.LLMProvider{
+		ID:             "moonshot",
+		Name:           "Moonshot",
+		Protocol:       "openai_compatible",
+		BaseURL:        "https://api.moonshot.cn",
+		APIKeyEnv:      "TEST_AGENT_API_KEY",
+		ModelDiscovery: "manual",
+		Enabled:        true,
+	}
+	if err := db.UpsertLLMProvider(provider); err != nil {
+		t.Fatalf("UpsertLLMProvider: %v", err)
+	}
+	temp := 0.2
+	summaryTemp := 0.05
+	streamMain := true
+	streamSummary := false
+	agent := config.AgentConfig{
+		ID:         "default",
+		Name:       "Default",
+		PersonaKey: "default",
+		Emotion: config.AgentModelGroup{
+			Main:    config.ModelBinding{ProviderID: "moonshot", Model: "emotion-main", Params: llm.RequestParams{MaxTokens: 111, Temperature: &temp, Stream: &streamMain}},
+			Summary: config.ModelBinding{ProviderID: "moonshot", Model: "emotion-summary", Params: llm.RequestParams{MaxTokens: 222, Temperature: &summaryTemp, Stream: &streamSummary}},
+		},
+		Work: config.AgentModelGroup{
+			Main:    config.ModelBinding{ProviderID: "moonshot", Model: "work-main", Params: llm.RequestParams{MaxTokens: 333, Temperature: &temp, Stream: &streamMain}},
+			Summary: config.ModelBinding{ProviderID: "moonshot", Model: "work-summary", Params: llm.RequestParams{MaxTokens: 444, Temperature: &summaryTemp, Stream: &streamSummary}},
+		},
+		ContextOverrides: map[string]any{"input_budget_tokens": float64(9000)},
+	}
+	if err := db.UpsertAgentConfig(agent); err != nil {
+		t.Fatalf("UpsertAgentConfig: %v", err)
+	}
+
+	engine := chat.NewEngine(chat.EngineConfig{DB: db, Logger: logger, Model: "old", MaxTokens: 1, Temperature: 1})
+	a := &App{
+		Config:   config.DefaultConfig(),
+		DB:       db,
+		Logger:   logger,
+		engine:   engine,
+		Personas: map[string]*config.Persona{"default": {Name: "Default"}},
+	}
+
+	if err := a.ActivateAgentConfig("default"); err != nil {
+		t.Fatalf("ActivateAgentConfig: %v", err)
+	}
+	if got := a.GetDefaultPersonaName(); got != "default" {
+		t.Fatalf("GetDefaultPersonaName = %q, want default", got)
+	}
+	if a.ActiveAgentRuntime == nil || a.ActiveAgentRuntime.WorkSummary.Model != "work-summary" {
+		t.Fatalf("ActiveAgentRuntime = %#v", a.ActiveAgentRuntime)
+	}
+	runtimeCfg := engine.RuntimeConfig()
+	if runtimeCfg.Model != "emotion-main" || runtimeCfg.SummaryModel != "emotion-summary" {
+		t.Fatalf("engine runtime = %#v, want emotion main/summary", runtimeCfg)
+	}
+	if runtimeCfg.Params.MaxTokens != 111 {
+		t.Fatalf("main max tokens = %d, want 111", runtimeCfg.Params.MaxTokens)
+	}
+	if runtimeCfg.SummaryParams.Temperature == nil || *runtimeCfg.SummaryParams.Temperature != 0.05 {
+		t.Fatalf("summary temperature = %#v, want 0.05", runtimeCfg.SummaryParams.Temperature)
+	}
+	if runtimeCfg.ContextConfig.InputBudgetTokens != 9000 {
+		t.Fatalf("context input budget = %d, want 9000", runtimeCfg.ContextConfig.InputBudgetTokens)
+	}
+}
+
 func TestCreatePersonaStoresByKeyInDB(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
@@ -418,7 +450,7 @@ func TestCreatePersonaStoresByKeyInDB(t *testing.T) {
 
 	a := &App{
 		Config: &config.Config{
-			Personas: config.PersonasConfig{Dir: t.TempDir(), Default: "default"},
+			Personas: config.PersonasConfig{Dir: t.TempDir()},
 		},
 		DB:       db,
 		Logger:   logger,
@@ -462,7 +494,7 @@ func TestUpdatePersonaKeepsStableDBKeyWhenDisplayNameChanges(t *testing.T) {
 
 	a := &App{
 		Config: &config.Config{
-			Personas: config.PersonasConfig{Dir: personaDir, Default: "default"},
+			Personas: config.PersonasConfig{Dir: personaDir},
 		},
 		DB:     db,
 		Logger: logger,
@@ -548,7 +580,7 @@ func TestUpdateProgressPhrasesPersistsToFileDBAndMemory(t *testing.T) {
 
 	a := &App{
 		Config: &config.Config{
-			Personas: config.PersonasConfig{Dir: personaDir, Default: "default"},
+			Personas: config.PersonasConfig{Dir: personaDir},
 		},
 		DB:     db,
 		Logger: logger,
@@ -653,591 +685,3 @@ func TestGetSessionDetailReturnsMessages(t *testing.T) {
 		t.Fatalf("messages = %#v, want [hello hi]", messages)
 	}
 }
-
-func TestRunPassesSummaryModelAndContextConfigToEngine(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	a := &App{
-		Config: &config.Config{
-			Server: config.ServerConfig{Host: "127.0.0.1", Port: 0},
-			LLM: config.LLMConfig{
-				Model:              "primary-model",
-				SummaryModel:       "summary-model",
-				SummaryTemperature: floatPtr(0.25),
-				SummaryMaxTokens:   2048,
-				MaxTokens:          64,
-				Temperature:        0.3,
-			},
-			Context: config.ContextConfig{
-				InputBudgetTokens:    111,
-				SoftCompactRatio:     0.60,
-				HardCompactRatio:     0.80,
-				ReserveOutputTokens:  22,
-				KeepRecentUserTurns:  3,
-				ToolResultSoftTokens: 44,
-				ToolResultHardTokens: 55,
-			},
-		},
-		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
-		ActiveLLMProfile: &config.LLMProfile{Name: "active", Provider: "openai", Model: "profile-model", SummaryModel: "profile-summary", SummaryTemperature: floatPtr(0.05), SummaryMaxTokens: 3072, MaxTokens: 128, Temperature: 0.1, InputBudgetTokens: intPtr(9000), ReserveOutputTokens: intPtr(512)},
-	}
-
-	if err := a.Run(ctx); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if a.engine == nil {
-		t.Fatal("engine was not initialized")
-	}
-
-	runtimeCfg := a.engine.RuntimeConfig()
-	if runtimeCfg.Model != "profile-model" {
-		t.Fatalf("runtime model = %q, want profile-model", runtimeCfg.Model)
-	}
-	if runtimeCfg.SummaryModel != "profile-summary" {
-		t.Fatalf("runtime summary model = %q, want profile-summary", runtimeCfg.SummaryModel)
-	}
-	if runtimeCfg.SummaryTemperature == nil || *runtimeCfg.SummaryTemperature != 0.05 {
-		t.Fatalf("runtime summary temperature = %#v, want 0.05", runtimeCfg.SummaryTemperature)
-	}
-	if runtimeCfg.SummaryMaxTokens != 3072 {
-		t.Fatalf("runtime summary max tokens = %d, want 3072", runtimeCfg.SummaryMaxTokens)
-	}
-	if runtimeCfg.ContextConfig.KeepRecentUserTurns != 3 {
-		t.Fatalf("runtime keep recent = %d, want 3", runtimeCfg.ContextConfig.KeepRecentUserTurns)
-	}
-	if runtimeCfg.ContextConfig.InputBudgetTokens != 9000 {
-		t.Fatalf("runtime input budget = %d, want 9000", runtimeCfg.ContextConfig.InputBudgetTokens)
-	}
-	if runtimeCfg.ContextConfig.ReserveOutputTokens != 512 {
-		t.Fatalf("runtime reserve output = %d, want 512", runtimeCfg.ContextConfig.ReserveOutputTokens)
-	}
-	if runtimeCfg.ContextConfig.SoftCompactRatio != 0.60 {
-		t.Fatalf("runtime soft ratio = %v, want 0.60", runtimeCfg.ContextConfig.SoftCompactRatio)
-	}
-}
-
-func TestRunFallsBackToGlobalOrDefaultSummaryTemperature(t *testing.T) {
-	t.Run("inherit global summary temperature when profile unset", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-
-		a := &App{
-			Config: &config.Config{
-				Server: config.ServerConfig{Host: "127.0.0.1", Port: 0},
-				LLM: config.LLMConfig{
-					Model:              "primary-model",
-					SummaryTemperature: floatPtr(0.2),
-					MaxTokens:          64,
-					Temperature:        0.3,
-				},
-			},
-			Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
-			ActiveLLMProfile: &config.LLMProfile{Name: "active", Provider: "openai", Model: "profile-model", MaxTokens: 128, Temperature: 0.1},
-		}
-
-		if err := a.Run(ctx); err != nil {
-			t.Fatalf("Run: %v", err)
-		}
-
-		runtimeCfg := a.engine.RuntimeConfig()
-		if runtimeCfg.SummaryTemperature == nil || *runtimeCfg.SummaryTemperature != 0.2 {
-			t.Fatalf("runtime summary temperature = %#v, want inherited 0.2", runtimeCfg.SummaryTemperature)
-		}
-	})
-
-	t.Run("default summary temperature when unset everywhere", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-
-		a := &App{
-			Config: &config.Config{
-				Server: config.ServerConfig{Host: "127.0.0.1", Port: 0},
-				LLM: config.LLMConfig{
-					Model:       "primary-model",
-					MaxTokens:   64,
-					Temperature: 0.3,
-				},
-			},
-			Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
-			ActiveLLMProfile: &config.LLMProfile{Name: "active", Provider: "openai", Model: "profile-model", MaxTokens: 128, Temperature: 0.1},
-		}
-
-		if err := a.Run(ctx); err != nil {
-			t.Fatalf("Run: %v", err)
-		}
-
-		runtimeCfg := a.engine.RuntimeConfig()
-		if runtimeCfg.SummaryTemperature == nil || *runtimeCfg.SummaryTemperature != 0.1 {
-			t.Fatalf("runtime summary temperature = %#v, want default 0.1", runtimeCfg.SummaryTemperature)
-		}
-	})
-}
-
-func TestRunFallsBackToGlobalOrDefaultSummaryMaxTokens(t *testing.T) {
-	t.Run("inherit global summary max tokens when profile unset", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-
-		a := &App{
-			Config: &config.Config{
-				Server: config.ServerConfig{Host: "127.0.0.1", Port: 0},
-				LLM: config.LLMConfig{
-					Model:            "primary-model",
-					SummaryMaxTokens: 8192,
-					MaxTokens:        64,
-					Temperature:      0.3,
-				},
-			},
-			Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
-			ActiveLLMProfile: &config.LLMProfile{Name: "active", Provider: "openai", Model: "profile-model", MaxTokens: 128, Temperature: 0.1},
-		}
-
-		if err := a.Run(ctx); err != nil {
-			t.Fatalf("Run: %v", err)
-		}
-
-		runtimeCfg := a.engine.RuntimeConfig()
-		if runtimeCfg.SummaryMaxTokens != 8192 {
-			t.Fatalf("runtime summary max tokens = %d, want inherited 8192", runtimeCfg.SummaryMaxTokens)
-		}
-	})
-
-	t.Run("default summary max tokens when unset everywhere", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-
-		a := &App{
-			Config: &config.Config{
-				Server: config.ServerConfig{Host: "127.0.0.1", Port: 0},
-				LLM: config.LLMConfig{
-					Model:       "primary-model",
-					MaxTokens:   64,
-					Temperature: 0.3,
-				},
-			},
-			Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
-			ActiveLLMProfile: &config.LLMProfile{Name: "active", Provider: "openai", Model: "profile-model", MaxTokens: 128, Temperature: 0.1},
-		}
-
-		if err := a.Run(ctx); err != nil {
-			t.Fatalf("Run: %v", err)
-		}
-
-		runtimeCfg := a.engine.RuntimeConfig()
-		if runtimeCfg.SummaryMaxTokens != 4096 {
-			t.Fatalf("runtime summary max tokens = %d, want default 4096", runtimeCfg.SummaryMaxTokens)
-		}
-	})
-}
-
-func TestUpdateLLMProfilePassesSummaryModelAndContextConfigToEngine(t *testing.T) {
-	t.Setenv("TEST_OPENAI_API_KEY", "test-key")
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	if err := db.UpsertLLMProfile(config.LLMProfile{
-		Name:               "default",
-		Provider:           "openai",
-		BaseURL:            "https://api.openai.com",
-		Model:              "gpt-4o-mini",
-		SummaryModel:       "",
-		SummaryTemperature: floatPtr(0.18),
-		SummaryMaxTokens:   2048,
-		MaxTokens:          128,
-		Temperature:        0.2,
-		APIKeyEnv:          "TEST_OPENAI_API_KEY",
-	}); err != nil {
-		t.Fatalf("UpsertLLMProfile: %v", err)
-	}
-
-	a := &App{
-		Config: &config.Config{
-			LLM: config.LLMConfig{
-				Provider:           "openai",
-				BaseURL:            "https://api.openai.com",
-				Model:              "gpt-4o-mini",
-				SummaryTemperature: floatPtr(0.16),
-				SummaryMaxTokens:   4096,
-				MaxTokens:          128,
-				Temperature:        0.2,
-				APIKeyEnv:          "TEST_OPENAI_API_KEY",
-			},
-			Context: config.ContextConfig{
-				InputBudgetTokens:    999,
-				SoftCompactRatio:     0.65,
-				HardCompactRatio:     0.85,
-				ReserveOutputTokens:  100,
-				KeepRecentUserTurns:  7,
-				ToolResultSoftTokens: 88,
-				ToolResultHardTokens: 99,
-			},
-		},
-		DB:               db,
-		Logger:           logger,
-		ActiveLLMProfile: &config.LLMProfile{Name: "default", Provider: "openai", BaseURL: "https://api.openai.com", Model: "gpt-4o-mini", SummaryTemperature: floatPtr(0.18), SummaryMaxTokens: 2048, MaxTokens: 128, Temperature: 0.2, APIKeyEnv: "TEST_OPENAI_API_KEY", ReserveOutputTokens: intPtr(4096)},
-		engine:           chat.NewEngine(chat.EngineConfig{DB: db, Logger: logger, Model: "gpt-4o-mini", MaxTokens: 128, Temperature: 0.2, ContextConfig: config.DefaultConfig().Context}),
-	}
-
-	err = a.UpdateLLMProfile("default", config.LLMProfile{
-		Provider:           "openai",
-		BaseURL:            "https://api.openai.com",
-		Model:              "gpt-4.1-mini",
-		SummaryModel:       "gpt-4.1-nano",
-		SummaryTemperature: floatPtr(0.12),
-		SummaryMaxTokens:   3072,
-		MaxTokens:          256,
-		Temperature:        0.4,
-		APIKeyEnv:          "TEST_OPENAI_API_KEY",
-	})
-	if err != nil {
-		t.Fatalf("UpdateLLMProfile: %v", err)
-	}
-
-	runtimeCfg := a.engine.RuntimeConfig()
-	if runtimeCfg.SummaryModel != "gpt-4.1-nano" {
-		t.Fatalf("runtime summary model = %q, want gpt-4.1-nano", runtimeCfg.SummaryModel)
-	}
-	if runtimeCfg.SummaryTemperature == nil || *runtimeCfg.SummaryTemperature != 0.12 {
-		t.Fatalf("runtime summary temperature = %#v, want 0.12", runtimeCfg.SummaryTemperature)
-	}
-	if runtimeCfg.SummaryMaxTokens != 3072 {
-		t.Fatalf("runtime summary max tokens = %d, want 3072", runtimeCfg.SummaryMaxTokens)
-	}
-	if runtimeCfg.ContextConfig.KeepRecentUserTurns != 7 {
-		t.Fatalf("runtime keep recent = %d, want 7", runtimeCfg.ContextConfig.KeepRecentUserTurns)
-	}
-	if runtimeCfg.ContextConfig.InputBudgetTokens != 999 {
-		t.Fatalf("runtime input budget = %d, want 999", runtimeCfg.ContextConfig.InputBudgetTokens)
-	}
-	if runtimeCfg.ContextConfig.ReserveOutputTokens != 100 {
-		t.Fatalf("runtime reserve output = %d, want 100", runtimeCfg.ContextConfig.ReserveOutputTokens)
-	}
-}
-
-func TestActivateLLMProfilePassesSummaryModelAndContextConfigToEngine(t *testing.T) {
-	t.Setenv("TEST_OPENAI_API_KEY", "test-key")
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	if err := db.UpsertLLMProfile(config.LLMProfile{
-		Name:               "default",
-		Provider:           "openai",
-		BaseURL:            "https://api.openai.com",
-		Model:              "gpt-4o-mini",
-		SummaryModel:       "gpt-4o-mini",
-		SummaryTemperature: floatPtr(0.2),
-		SummaryMaxTokens:   2048,
-		MaxTokens:          128,
-		Temperature:        0.2,
-		APIKeyEnv:          "TEST_OPENAI_API_KEY",
-	}); err != nil {
-		t.Fatalf("UpsertLLMProfile(default): %v", err)
-	}
-	if err := db.UpsertLLMProfile(config.LLMProfile{
-		Name:                "alt",
-		Provider:            "openai",
-		BaseURL:             "https://api.openai.com",
-		Model:               "gpt-4.1-mini",
-		SummaryModel:        "gpt-4.1-nano",
-		SummaryTemperature:  floatPtr(0.07),
-		SummaryMaxTokens:    3072,
-		MaxTokens:           256,
-		Temperature:         0.1,
-		APIKeyEnv:           "TEST_OPENAI_API_KEY",
-		InputBudgetTokens:   intPtr(8888),
-		SoftCompactRatio:    floatPtr(0.72),
-		ReserveOutputTokens: intPtr(512),
-	}); err != nil {
-		t.Fatalf("UpsertLLMProfile(alt): %v", err)
-	}
-
-	a := &App{
-		Config: &config.Config{
-			Context: config.ContextConfig{
-				InputBudgetTokens:    321,
-				SoftCompactRatio:     0.66,
-				HardCompactRatio:     0.88,
-				ReserveOutputTokens:  123,
-				KeepRecentUserTurns:  5,
-				ToolResultSoftTokens: 77,
-				ToolResultHardTokens: 111,
-			},
-		},
-		DB:               db,
-		Logger:           logger,
-		ActiveLLMProfile: &config.LLMProfile{Name: "default", Provider: "openai", BaseURL: "https://api.openai.com", Model: "gpt-4o-mini", SummaryModel: "gpt-4o-mini", SummaryTemperature: floatPtr(0.2), SummaryMaxTokens: 2048, MaxTokens: 128, Temperature: 0.2, APIKeyEnv: "TEST_OPENAI_API_KEY"},
-		engine:           chat.NewEngine(chat.EngineConfig{DB: db, Logger: logger, Model: "gpt-4o-mini", MaxTokens: 128, Temperature: 0.2, ContextConfig: config.DefaultConfig().Context}),
-	}
-
-	if err := a.ActivateLLMProfile("alt"); err != nil {
-		t.Fatalf("ActivateLLMProfile: %v", err)
-	}
-
-	runtimeCfg := a.engine.RuntimeConfig()
-	if runtimeCfg.Model != "gpt-4.1-mini" {
-		t.Fatalf("runtime model = %q, want gpt-4.1-mini", runtimeCfg.Model)
-	}
-	if runtimeCfg.SummaryModel != "gpt-4.1-nano" {
-		t.Fatalf("runtime summary model = %q, want gpt-4.1-nano", runtimeCfg.SummaryModel)
-	}
-	if runtimeCfg.SummaryTemperature == nil || *runtimeCfg.SummaryTemperature != 0.07 {
-		t.Fatalf("runtime summary temperature = %#v, want 0.07", runtimeCfg.SummaryTemperature)
-	}
-	if runtimeCfg.SummaryMaxTokens != 3072 {
-		t.Fatalf("runtime summary max tokens = %d, want 3072", runtimeCfg.SummaryMaxTokens)
-	}
-	if runtimeCfg.ContextConfig.KeepRecentUserTurns != 5 {
-		t.Fatalf("runtime keep recent = %d, want 5", runtimeCfg.ContextConfig.KeepRecentUserTurns)
-	}
-	if runtimeCfg.ContextConfig.InputBudgetTokens != 8888 {
-		t.Fatalf("runtime input budget = %d, want 8888", runtimeCfg.ContextConfig.InputBudgetTokens)
-	}
-	if runtimeCfg.ContextConfig.SoftCompactRatio != 0.72 {
-		t.Fatalf("runtime soft ratio = %v, want 0.72", runtimeCfg.ContextConfig.SoftCompactRatio)
-	}
-	if runtimeCfg.ContextConfig.HardCompactRatio != 0.88 {
-		t.Fatalf("runtime hard ratio = %v, want 0.88", runtimeCfg.ContextConfig.HardCompactRatio)
-	}
-	if runtimeCfg.ContextConfig.ReserveOutputTokens != 512 {
-		t.Fatalf("runtime reserve output = %d, want 512", runtimeCfg.ContextConfig.ReserveOutputTokens)
-	}
-}
-
-func TestResolveWorkProfilePrefersDB(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	if err := db.UpsertLLMProfile(config.LLMProfile{
-		Name:         "analysis",
-		Provider:     "openai",
-		BaseURL:      "https://api.openai.com",
-		Model:        "db-model",
-		SummaryModel: "db-summary",
-		MaxTokens:    2048,
-		Temperature:  0.2,
-		APIKeyEnv:    "TEST_OPENAI_API_KEY",
-	}); err != nil {
-		t.Fatalf("UpsertLLMProfile: %v", err)
-	}
-
-	a := &App{
-		Config: &config.Config{
-			Work: config.WorkConfig{Profile: "analysis"},
-			LLMProfiles: []config.LLMProfile{{
-				Name:         "analysis",
-				Provider:     "openai",
-				BaseURL:      "https://api.openai.com",
-				Model:        "config-model",
-				SummaryModel: "config-summary",
-				MaxTokens:    1024,
-				Temperature:  0.7,
-				APIKeyEnv:    "TEST_OPENAI_API_KEY",
-			}},
-		},
-		DB:     db,
-		Logger: logger,
-	}
-
-	profile, err := a.resolveWorkProfile()
-	if err != nil {
-		t.Fatalf("resolveWorkProfile: %v", err)
-	}
-	if profile.Model != "db-model" {
-		t.Fatalf("model = %q, want db-model", profile.Model)
-	}
-	if profile.SummaryModel != "db-summary" {
-		t.Fatalf("summary model = %q, want db-summary", profile.SummaryModel)
-	}
-}
-
-func TestResolveWorkSummaryModelFallsBackToWorkPrimaryModel(t *testing.T) {
-	profile := config.LLMProfile{
-		Model:        "work-main",
-		SummaryModel: "",
-	}
-	if got := resolveWorkSummaryModel(profile); got != "work-main" {
-		t.Fatalf("resolveWorkSummaryModel() = %q, want work-main", got)
-	}
-
-	profile.SummaryModel = "work-summary"
-	if got := resolveWorkSummaryModel(profile); got != "work-summary" {
-		t.Fatalf("resolveWorkSummaryModel() = %q, want work-summary", got)
-	}
-}
-
-func TestResolveWorkProfileSeedsFromConfigWhenDBMissing(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	a := &App{
-		Config: &config.Config{
-			Work: config.WorkConfig{Profile: "analysis"},
-			LLMProfiles: []config.LLMProfile{{
-				Name:         "analysis",
-				Provider:     "openai",
-				BaseURL:      "https://api.openai.com",
-				Model:        "config-model",
-				SummaryModel: "config-summary",
-				MaxTokens:    1024,
-				Temperature:  0.7,
-				APIKeyEnv:    "TEST_OPENAI_API_KEY",
-			}},
-		},
-		DB:     db,
-		Logger: logger,
-	}
-
-	profile, err := a.resolveWorkProfile()
-	if err != nil {
-		t.Fatalf("resolveWorkProfile: %v", err)
-	}
-	if profile.Model != "config-model" {
-		t.Fatalf("model = %q, want config-model", profile.Model)
-	}
-
-	record, err := db.GetLLMProfile(context.Background(), "analysis")
-	if err != nil {
-		t.Fatalf("GetLLMProfile: %v", err)
-	}
-	if record == nil {
-		t.Fatal("expected seeded profile in db")
-	}
-	if record.Model != "config-model" {
-		t.Fatalf("seeded model = %q, want config-model", record.Model)
-	}
-}
-
-func TestResolveWorkProfileMissingReturnsError(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	a := &App{
-		Config: &config.Config{
-			Work: config.WorkConfig{Profile: "missing"},
-		},
-		DB:     db,
-		Logger: logger,
-	}
-
-	_, err = a.resolveWorkProfile()
-	if err == nil {
-		t.Fatal("expected error for missing work profile")
-	}
-}
-
-func TestRunAllowsStartupWhenWorkProfileUnavailable(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	cfg := config.DefaultConfig()
-	cfg.Server = config.ServerConfig{Host: "127.0.0.1", Port: 0}
-	cfg.Work.Profile = "missing"
-
-	registry := tool.NewRegistry()
-	builtin.RegisterAll(registry, cfg, t.TempDir(), logger)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	a := &App{
-		Config:       cfg,
-		DB:           db,
-		Logger:       logger,
-		toolRegistry: registry,
-	}
-
-	if err := a.Run(ctx); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if _, ok := a.toolRegistry.GetSpec("delegate_to_work"); ok {
-		t.Fatal("delegate_to_work should not be registered when work profile is unavailable")
-	}
-}
-
-func TestRunRegistersDelegateToolWhenWorkProfileUsable(t *testing.T) {
-	t.Setenv("TEST_OPENAI_API_KEY", "test-key")
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	if err := db.UpsertLLMProfile(config.LLMProfile{
-		Name:         "analysis",
-		Provider:     "openai",
-		BaseURL:      "https://api.openai.com",
-		Model:        "gpt-4o-mini",
-		SummaryModel: "gpt-4o-mini",
-		MaxTokens:    128,
-		Temperature:  0.2,
-		APIKeyEnv:    "TEST_OPENAI_API_KEY",
-	}); err != nil {
-		t.Fatalf("UpsertLLMProfile: %v", err)
-	}
-
-	cfg := config.DefaultConfig()
-	cfg.Server = config.ServerConfig{Host: "127.0.0.1", Port: 0}
-	cfg.Work.Profile = "analysis"
-
-	registry := tool.NewRegistry()
-	builtin.RegisterAll(registry, cfg, t.TempDir(), logger)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	a := &App{
-		Config:       cfg,
-		DB:           db,
-		Logger:       logger,
-		toolRegistry: registry,
-	}
-
-	if err := a.Run(ctx); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if _, ok := a.toolRegistry.GetSpec("delegate_to_work"); !ok {
-		t.Fatal("delegate_to_work should be registered when work profile is usable")
-	}
-	if _, ok := a.toolRegistry.GetSpec("request_decision"); !ok {
-		t.Fatal("request_decision should be registered when work profile is usable")
-	}
-	if _, ok := a.toolRegistry.GetSpec("finish_task"); !ok {
-		t.Fatal("finish_task should be registered when work profile is usable")
-	}
-	if _, ok := a.toolRegistry.GetSpec("list_pending_decisions"); !ok {
-		t.Fatal("list_pending_decisions should be registered when work profile is usable")
-	}
-}
-
-func intPtr(v int) *int { return &v }
-
-func floatPtr(v float64) *float64 { return &v }

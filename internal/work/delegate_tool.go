@@ -42,6 +42,10 @@ var delegateToolSchema = json.RawMessage(`{
 // NewDelegateTool builds the Emotion-facing delegate_to_work tool without
 // wiring it into the app-level registry.
 func NewDelegateTool(runtime *Runtime, pending *PendingRegistry, journalDir string, logger *slog.Logger) (tool.Spec, tool.Handler) {
+	return NewDelegateToolWithFactory(func() (*Runtime, error) { return runtime, nil }, pending, journalDir, logger)
+}
+
+func NewDelegateToolWithFactory(runtimeFactory func() (*Runtime, error), pending *PendingRegistry, journalDir string, logger *slog.Logger) (tool.Spec, tool.Handler) {
 	spec := tool.Spec{
 		Name:        "delegate_to_work",
 		Description: delegateToolDescription,
@@ -57,6 +61,13 @@ func NewDelegateTool(runtime *Runtime, pending *PendingRegistry, journalDir stri
 		}
 		if err := ValidateAndComplete(&brief); err != nil {
 			return nil, fmt.Errorf("delegate_to_work: %w", err)
+		}
+		runtime, err := runtimeFactory()
+		if err != nil {
+			return nil, fmt.Errorf("delegate_to_work: %w", err)
+		}
+		if runtime == nil {
+			return nil, fmt.Errorf("delegate_to_work: work runtime is not configured")
 		}
 
 		journal, err := Open(journalDir, brief.TaskID, time.Now().UTC(), logger)

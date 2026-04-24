@@ -11,8 +11,6 @@ import (
 	"os"
 	"sort"
 	"time"
-
-	"github.com/longyisang/emoagent/internal/config"
 )
 
 // Client is the interface for LLM providers.
@@ -21,14 +19,14 @@ type Client interface {
 	ChatStream(ctx context.Context, req ChatRequest, cb StreamCallback) (*ChatResponse, error)
 }
 
-// NewClient creates a Client based on the provider in config.
-func NewClient(cfg config.LLMConfig, logger *slog.Logger) (Client, error) {
+// NewClient creates a Client based on provider connection settings.
+func NewClient(cfg ProviderConfig, logger *slog.Logger) (Client, error) {
 	apiKeyEnv := cfg.APIKeyEnv
 	if apiKeyEnv == "" {
-		apiKeyEnv = defaultAPIKeyEnv(cfg.Provider)
+		apiKeyEnv = defaultAPIKeyEnv(cfg.Protocol)
 	}
 	if apiKeyEnv == "" {
-		return nil, fmt.Errorf("unsupported LLM provider: %s", cfg.Provider)
+		return nil, fmt.Errorf("unsupported LLM provider: %s", cfg.Protocol)
 	}
 
 	apiKey := os.Getenv(apiKeyEnv)
@@ -36,8 +34,8 @@ func NewClient(cfg config.LLMConfig, logger *slog.Logger) (Client, error) {
 		return nil, fmt.Errorf("%s environment variable not set", apiKeyEnv)
 	}
 
-	switch cfg.Provider {
-	case "openai":
+	switch cfg.Protocol {
+	case "openai", "openai_compatible":
 		return &openaiClient{
 			baseURL:    cfg.BaseURL,
 			apiKey:     apiKey,
@@ -52,13 +50,13 @@ func NewClient(cfg config.LLMConfig, logger *slog.Logger) (Client, error) {
 			logger:     logger,
 		}, nil
 	default:
-		return nil, fmt.Errorf("unsupported LLM provider: %s", cfg.Provider)
+		return nil, fmt.Errorf("unsupported LLM provider: %s", cfg.Protocol)
 	}
 }
 
 func defaultAPIKeyEnv(provider string) string {
 	switch provider {
-	case "openai":
+	case "openai", "openai_compatible":
 		return "OPENAI_API_KEY"
 	case "anthropic":
 		return "ANTHROPIC_API_KEY"
@@ -246,16 +244,7 @@ func (c *openaiClient) toolCallsToContentBlocks(calls []openaiToolCall) []Conten
 }
 
 func (c *openaiClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
-	oReq := openaiRequest{
-		Model:       req.Model,
-		Messages:    c.toMessages(req),
-		MaxTokens:   req.MaxTokens,
-		Temperature: req.Temperature,
-		Stream:      false,
-		Tools:       c.convertTools(req.Tools),
-	}
-
-	body, err := json.Marshal(oReq)
+	body, err := json.Marshal(c.openaiPayload(req, false))
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
@@ -324,21 +313,13 @@ func (c *openaiClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse
 }
 
 func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb StreamCallback) (*ChatResponse, error) {
-	oReq := openaiRequest{
-		Model:       req.Model,
-		Messages:    c.toMessages(req),
-		MaxTokens:   req.MaxTokens,
-		Temperature: req.Temperature,
-		Stream:      true,
-		Tools:       c.convertTools(req.Tools),
-	}
-
-	body, err := json.Marshal(oReq)
+	payload := c.openaiPayload(req, true)
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	c.logger.Debug("llm http request", "model", oReq.Model, "messages_count", len(oReq.Messages))
+	c.logger.Debug("llm http request", "model", req.Model, "messages_count", len(req.Messages))
 
 	// Use a client without timeout for streaming — context handles cancellation.
 	streamClient := &http.Client{}
@@ -483,4 +464,74 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 	chatResp.Content = accumulated
 	chatResp.ReasoningContent = accumulatedReasoning
 	return &chatResp, nil
+}
+
+func (c *openaiClient) openaiPayload(req ChatRequest, stream bool) map[string]any {
+	params := effectiveRequestParams(req)
+	payload := sanitizedExtra(params.Extra, map[string]struct{}{
+		"model": {}, "messages": {}, "max_tokens": {}, "temperature": {}, "top_p": {},
+		"presence_penalty": {}, "frequency_penalty": {}, "reasoning_effort": {}, "stream": {}, "tools": {},
+	})
+	payload["model"] = req.Model
+	payload["messages"] = c.toMessages(req)
+	if params.MaxTokens > 0 {
+		payload["max_tokens"] = params.MaxTokens
+	}
+	if params.Temperature != nil {
+		payload["temperature"] = *params.Temperature
+	}
+	if params.TopP != nil {
+		payload["top_p"] = *params.TopP
+	}
+	if params.PresencePenalty != nil {
+		payload["presence_penalty"] = *params.PresencePenalty
+	}
+	if params.FrequencyPenalty != nil {
+		payload["frequency_penalty"] = *params.FrequencyPenalty
+	}
+	if params.ReasoningEffort != "" {
+		payload["reasoning_effort"] = params.ReasoningEffort
+	}
+	if stream {
+		payload["stream"] = true
+	}
+	if tools := c.convertTools(req.Tools); len(tools) > 0 {
+		payload["tools"] = tools
+	}
+	return payload
+}
+
+func effectiveRequestParams(req ChatRequest) RequestParams {
+	if hasRequestParams(req.Params) {
+		return req.Params
+	}
+	params := RequestParams{
+		MaxTokens: req.MaxTokens,
+		Stream:    &req.Stream,
+	}
+	params.Temperature = &req.Temperature
+	return params
+}
+
+func hasRequestParams(params RequestParams) bool {
+	return params.MaxTokens != 0 ||
+		params.Temperature != nil ||
+		params.TopP != nil ||
+		params.PresencePenalty != nil ||
+		params.FrequencyPenalty != nil ||
+		params.ReasoningEffort != "" ||
+		params.Thinking != nil ||
+		params.Stream != nil ||
+		len(params.Extra) > 0
+}
+
+func sanitizedExtra(extra map[string]any, blocked map[string]struct{}) map[string]any {
+	payload := make(map[string]any, len(extra))
+	for key, value := range extra {
+		if _, skip := blocked[key]; skip {
+			continue
+		}
+		payload[key] = value
+	}
+	return payload
 }

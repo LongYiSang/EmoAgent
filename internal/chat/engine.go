@@ -27,10 +27,13 @@ var errApprovalPending = errors.New("approval pending")
 // EngineConfig defines the dependencies for Engine.
 type EngineConfig struct {
 	LLM                llm.Client
+	SummaryLLM         llm.Client
 	DB                 *storage.DB
 	Logger             *slog.Logger
 	Model              string
+	Params             llm.RequestParams
 	SummaryModel       string
+	SummaryParams      llm.RequestParams
 	SummaryTemperature *float64
 	SummaryMaxTokens   int
 	MaxTokens          int
@@ -49,7 +52,9 @@ type EngineConfig struct {
 type RuntimeConfig struct {
 	Provider           string
 	Model              string
+	Params             llm.RequestParams
 	SummaryModel       string
+	SummaryParams      llm.RequestParams
 	SummaryTemperature *float64
 	SummaryMaxTokens   int
 	MaxTokens          int
@@ -62,10 +67,13 @@ type RuntimeConfig struct {
 type Engine struct {
 	mu                 sync.RWMutex
 	llm                llm.Client
+	summaryLLM         llm.Client
 	db                 *storage.DB
 	logger             *slog.Logger
 	model              string
+	params             llm.RequestParams
 	summaryModel       string
+	summaryParams      llm.RequestParams
 	summaryTemperature *float64
 	summaryMaxTokens   int
 	maxTokens          int
@@ -87,14 +95,37 @@ func (e *Engine) UpdateConfig(client llm.Client, provider, model, summaryModel s
 
 	if client != nil {
 		e.llm = client
+		e.summaryLLM = client
 	}
 	e.provider = provider
 	e.model = model
+	e.params = requestParamsFromLegacy(maxTokens, temperature, true)
 	e.summaryModel = summaryModel
 	e.summaryTemperature = cloneFloat64Ptr(summaryTemperature)
 	e.summaryMaxTokens = summaryMaxTokens
+	e.summaryParams = summaryParamsFromLegacy(summaryMaxTokens, summaryTemperature)
 	e.maxTokens = maxTokens
 	e.temperature = temperature
+	if err := contextCfg.Validate(); err == nil {
+		e.contextCfg = contextCfg
+	}
+}
+
+func (e *Engine) UpdateAgentRuntime(mainClient, summaryClient llm.Client, provider, model string, params llm.RequestParams, summaryModel string, summaryParams llm.RequestParams, contextCfg config.ContextConfig) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if mainClient != nil {
+		e.llm = mainClient
+	}
+	if summaryClient != nil {
+		e.summaryLLM = summaryClient
+	}
+	e.provider = provider
+	e.model = model
+	e.params = cloneRequestParams(params)
+	e.summaryModel = summaryModel
+	e.summaryParams = cloneRequestParams(summaryParams)
 	if err := contextCfg.Validate(); err == nil {
 		e.contextCfg = contextCfg
 	}
@@ -116,10 +147,13 @@ func NewEngine(cfg EngineConfig) *Engine {
 
 	return &Engine{
 		llm:                cfg.LLM,
+		summaryLLM:         firstClient(cfg.SummaryLLM, cfg.LLM),
 		db:                 cfg.DB,
 		logger:             cfg.Logger,
 		model:              cfg.Model,
+		params:             effectiveConfigParams(cfg.Params, cfg.MaxTokens, cfg.Temperature, true),
 		summaryModel:       cfg.SummaryModel,
+		summaryParams:      effectiveSummaryConfigParams(cfg.SummaryParams, cfg.SummaryMaxTokens, cfg.SummaryTemperature),
 		summaryTemperature: cloneFloat64Ptr(cfg.SummaryTemperature),
 		summaryMaxTokens:   cfg.SummaryMaxTokens,
 		maxTokens:          cfg.MaxTokens,
@@ -143,7 +177,9 @@ func (e *Engine) RuntimeConfig() RuntimeConfig {
 	return RuntimeConfig{
 		Provider:           e.provider,
 		Model:              e.model,
+		Params:             cloneRequestParams(e.params),
 		SummaryModel:       e.summaryModel,
+		SummaryParams:      cloneRequestParams(e.summaryParams),
 		SummaryTemperature: cloneFloat64Ptr(e.summaryTemperature),
 		SummaryMaxTokens:   e.summaryMaxTokens,
 		MaxTokens:          e.maxTokens,
@@ -210,8 +246,11 @@ type turnOptions struct {
 func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config.Persona, cb func(delta string), opts turnOptions) (string, error) {
 	e.mu.RLock()
 	client := e.llm
+	summaryClient := e.summaryLLM
 	model := e.model
+	params := cloneRequestParams(e.params)
 	summaryModel := e.summaryModel
+	summaryParams := cloneRequestParams(e.summaryParams)
 	summaryTemperature := cloneFloat64Ptr(e.summaryTemperature)
 	summaryMaxTokens := e.summaryMaxTokens
 	maxTokens := e.maxTokens
@@ -228,6 +267,9 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 
 	if client == nil {
 		return "", errors.New("chat engine LLM client is not configured")
+	}
+	if summaryClient == nil {
+		summaryClient = client
 	}
 	if e.db == nil {
 		return "", errors.New("chat engine database is not configured")
@@ -277,7 +319,10 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	}
 
 	summaryCtx, cancelSummary := context.WithTimeout(ctx, 8*time.Second)
-	if nextState, report, updateErr := contextutil.UpdateRunningSummary(summaryCtx, client, effectiveSummaryModel(model, summaryModel), summaryMaxTokens, summaryTemperature, persona, history, state, contextCfg); updateErr != nil {
+	if !hasRequestParams(summaryParams) {
+		summaryParams = summaryParamsFromLegacy(summaryMaxTokens, summaryTemperature)
+	}
+	if nextState, report, updateErr := contextutil.UpdateRunningSummaryWithParams(summaryCtx, summaryClient, effectiveSummaryModel(model, summaryModel), summaryParams, persona, history, state, contextCfg); updateErr != nil {
 		cancelSummary()
 		if nextState != nil {
 			state = nextState
@@ -335,10 +380,17 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 		Model:       model,
 		Messages:    messages,
 		System:      assembled.System,
+		Params:      effectiveConfigParams(params, maxTokens, temperature, true),
 		MaxTokens:   maxTokens,
 		Temperature: temperature,
 		Stream:      true,
 		Tools:       tools,
+	}
+	if req.Params.MaxTokens > 0 {
+		req.MaxTokens = req.Params.MaxTokens
+	}
+	if req.Params.Temperature != nil {
+		req.Temperature = *req.Params.Temperature
 	}
 	e.logger.Info("llm request",
 		"session", sessionID,
@@ -682,6 +734,89 @@ func effectiveSummaryModel(model, summaryModel string) string {
 		return summaryModel
 	}
 	return model
+}
+
+func firstClient(primary, fallback llm.Client) llm.Client {
+	if primary != nil {
+		return primary
+	}
+	return fallback
+}
+
+func effectiveConfigParams(params llm.RequestParams, maxTokens int, temperature float64, stream bool) llm.RequestParams {
+	if hasRequestParams(params) {
+		return cloneRequestParams(params)
+	}
+	return requestParamsFromLegacy(maxTokens, temperature, stream)
+}
+
+func effectiveSummaryConfigParams(params llm.RequestParams, maxTokens int, temperature *float64) llm.RequestParams {
+	if hasRequestParams(params) {
+		return cloneRequestParams(params)
+	}
+	return summaryParamsFromLegacy(maxTokens, temperature)
+}
+
+func requestParamsFromLegacy(maxTokens int, temperature float64, stream bool) llm.RequestParams {
+	return llm.RequestParams{
+		MaxTokens:   maxTokens,
+		Temperature: &temperature,
+		Stream:      &stream,
+	}
+}
+
+func summaryParamsFromLegacy(maxTokens int, temperature *float64) llm.RequestParams {
+	params := llm.RequestParams{MaxTokens: maxTokens}
+	if temperature != nil {
+		params.Temperature = cloneFloat64Ptr(temperature)
+	}
+	stream := false
+	params.Stream = &stream
+	return params
+}
+
+func hasRequestParams(params llm.RequestParams) bool {
+	return params.MaxTokens != 0 ||
+		params.Temperature != nil ||
+		params.TopP != nil ||
+		params.PresencePenalty != nil ||
+		params.FrequencyPenalty != nil ||
+		params.ReasoningEffort != "" ||
+		params.Thinking != nil ||
+		params.Stream != nil ||
+		len(params.Extra) > 0
+}
+
+func cloneRequestParams(params llm.RequestParams) llm.RequestParams {
+	cp := params
+	cp.Temperature = cloneFloat64Ptr(params.Temperature)
+	cp.TopP = cloneFloat64Ptr(params.TopP)
+	cp.PresencePenalty = cloneFloat64Ptr(params.PresencePenalty)
+	cp.FrequencyPenalty = cloneFloat64Ptr(params.FrequencyPenalty)
+	cp.Stream = cloneBoolPtr(params.Stream)
+	if params.Thinking != nil {
+		thinking := *params.Thinking
+		if params.Thinking.BudgetTokens != nil {
+			budget := *params.Thinking.BudgetTokens
+			thinking.BudgetTokens = &budget
+		}
+		cp.Thinking = &thinking
+	}
+	if params.Extra != nil {
+		cp.Extra = make(map[string]any, len(params.Extra))
+		for key, value := range params.Extra {
+			cp.Extra[key] = value
+		}
+	}
+	return cp
+}
+
+func cloneBoolPtr(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	v := *value
+	return &v
 }
 
 func cloneFloat64Ptr(value *float64) *float64 {

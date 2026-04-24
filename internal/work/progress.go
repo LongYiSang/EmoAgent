@@ -44,6 +44,10 @@ Do not emit prose, markdown, or explanations outside the JSON object.
 `)
 
 func buildProgressSummaryRequest(model string, current WorkProgress, delta []llm.Message) (llm.ChatRequest, error) {
+	return buildProgressSummaryRequestWithParams(model, llm.RequestParams{}, current, delta)
+}
+
+func buildProgressSummaryRequestWithParams(model string, params llm.RequestParams, current WorkProgress, delta []llm.Message) (llm.ChatRequest, error) {
 	currentPayload, err := json.Marshal(struct {
 		WorkProgress WorkProgress `json:"work_progress"`
 	}{
@@ -95,11 +99,22 @@ func buildProgressSummaryRequest(model string, current WorkProgress, delta []llm
 		return llm.ChatRequest{}, fmt.Errorf("marshal progress delta: %w", err)
 	}
 
+	if params.MaxTokens <= 0 {
+		params.MaxTokens = progressSummaryMaxTokens
+	}
+	if params.Temperature == nil {
+		temp := progressTemperature
+		params.Temperature = &temp
+	}
+	stream := false
+	params.Stream = &stream
+
 	return llm.ChatRequest{
 		Model:       model,
 		System:      workProgressSystemPrompt,
-		MaxTokens:   progressSummaryMaxTokens,
-		Temperature: progressTemperature,
+		Params:      params,
+		MaxTokens:   params.MaxTokens,
+		Temperature: *params.Temperature,
 		Stream:      false,
 		Messages: []llm.Message{
 			{Role: llm.RoleUser, Content: string(currentPayload)},

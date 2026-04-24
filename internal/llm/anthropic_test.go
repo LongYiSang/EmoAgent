@@ -68,6 +68,95 @@ func TestAnthropicChat_TextOnly(t *testing.T) {
 	}
 }
 
+func TestAnthropicChat_MapsThinkingParamsAndExtra(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(anthropicResponse{
+			ID:    "msg_params",
+			Model: "claude-test",
+			Content: []anthropicContentBlock{
+				{Type: "text", Text: "ok"},
+			},
+			StopReason: "end_turn",
+		})
+	}))
+	defer server.Close()
+
+	client := newTestAnthropicClient(server.URL)
+	temp := 0.2
+	budget := 1024
+	_, err := client.Chat(context.Background(), ChatRequest{
+		Model:    "claude-test",
+		Messages: []Message{{Role: RoleUser, Content: "Hi"}},
+		Params: RequestParams{
+			MaxTokens:   256,
+			Temperature: &temp,
+			Thinking:    &ThinkingConfig{Mode: "manual", BudgetTokens: &budget},
+			Extra: map[string]any{
+				"max_tokens":       999,
+				"metadata":         map[string]any{"user_id": "u1"},
+				"presence_penalty": 1,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if got := payload["max_tokens"]; got != float64(256) {
+		t.Fatalf("max_tokens = %#v, want 256", got)
+	}
+	if got := payload["temperature"]; got != 0.2 {
+		t.Fatalf("temperature = %#v, want 0.2", got)
+	}
+	thinking, ok := payload["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("thinking = %#v, want object", payload["thinking"])
+	}
+	if thinking["type"] != "enabled" || thinking["budget_tokens"] != float64(1024) {
+		t.Fatalf("thinking = %#v, want enabled budget 1024", thinking)
+	}
+	if _, exists := payload["presence_penalty"]; exists {
+		t.Fatalf("unsupported presence_penalty should not be sent for Anthropic")
+	}
+	if _, exists := payload["metadata"]; !exists {
+		t.Fatalf("metadata extra was not preserved")
+	}
+}
+
+func TestDiscoverModelsAnthropic(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Fatalf("path = %s, want /v1/models", r.URL.Path)
+		}
+		if r.Header.Get("x-api-key") != "test-key" {
+			t.Fatalf("x-api-key header = %q", r.Header.Get("x-api-key"))
+		}
+		if r.Header.Get("anthropic-version") == "" {
+			t.Fatalf("anthropic-version header missing")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"data":[{"id":"claude-a"},{"id":"claude-b"}]}`)
+	}))
+	defer server.Close()
+	t.Setenv("TEST_ANTHROPIC_MODELS_KEY", "test-key")
+
+	models, err := DiscoverModels(context.Background(), ProviderConfig{
+		Protocol:  "anthropic",
+		BaseURL:   server.URL,
+		APIKeyEnv: "TEST_ANTHROPIC_MODELS_KEY",
+	})
+	if err != nil {
+		t.Fatalf("DiscoverModels: %v", err)
+	}
+	if len(models) != 2 || models[0].ID != "claude-a" || models[1].ID != "claude-b" {
+		t.Fatalf("models = %#v", models)
+	}
+}
+
 func TestAnthropicChat_ToolUse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Verify tools are sent in request.

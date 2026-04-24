@@ -89,6 +89,23 @@ func UpdateRunningSummary(
 	state *ContextState,
 	cfg config.ContextConfig,
 ) (*ContextState, SummaryUpdateReport, error) {
+	params := llm.RequestParams{
+		MaxTokens:   resolveSummaryMaxTokens(summaryMaxTokens),
+		Temperature: cloneFloat64Ptr(summaryTemperature),
+	}
+	return UpdateRunningSummaryWithParams(ctx, client, model, params, persona, history, state, cfg)
+}
+
+func UpdateRunningSummaryWithParams(
+	ctx context.Context,
+	client llm.Client,
+	model string,
+	params llm.RequestParams,
+	persona *config.Persona,
+	history []storage.MessageRecord,
+	state *ContextState,
+	cfg config.ContextConfig,
+) (*ContextState, SummaryUpdateReport, error) {
 	report := SummaryUpdateReport{SummaryModel: model}
 	if client == nil {
 		return nil, report, fmt.Errorf("summary client is required")
@@ -125,7 +142,7 @@ func UpdateRunningSummary(
 	report.Attempted = true
 	report.DeltaCount = len(delta)
 
-	req, err := buildSummaryRequest(model, summaryMaxTokens, summaryTemperature, persona, current.RunningSummary, delta)
+	req, err := buildSummaryRequestWithParams(model, params, persona, current.RunningSummary, delta)
 	if err != nil {
 		markSummaryFailure(&current, err, now, defaultSummaryFailureCooldown)
 		copyFailureStateToReport(&report, current)
@@ -231,6 +248,13 @@ func mergeProtectedItems(existing []string, incoming []string) []string {
 }
 
 func buildSummaryRequest(model string, summaryMaxTokens int, summaryTemperature *float64, persona *config.Persona, current RunningSummary, delta []storage.MessageRecord) (llm.ChatRequest, error) {
+	return buildSummaryRequestWithParams(model, llm.RequestParams{
+		MaxTokens:   resolveSummaryMaxTokens(summaryMaxTokens),
+		Temperature: cloneFloat64Ptr(summaryTemperature),
+	}, persona, current, delta)
+}
+
+func buildSummaryRequestWithParams(model string, params llm.RequestParams, persona *config.Persona, current RunningSummary, delta []storage.MessageRecord) (llm.ChatRequest, error) {
 	currentPayload, err := json.Marshal(struct {
 		RunningSummary RunningSummary `json:"running_summary"`
 	}{
@@ -264,11 +288,21 @@ func buildSummaryRequest(model string, summaryMaxTokens int, summaryTemperature 
 		return llm.ChatRequest{}, fmt.Errorf("marshal summary delta history: %w", err)
 	}
 
+	if params.MaxTokens <= 0 {
+		params.MaxTokens = defaultSummaryMaxTokens
+	}
+	if params.Temperature == nil {
+		value := defaultSummaryTemperature
+		params.Temperature = &value
+	}
+	stream := false
+	params.Stream = &stream
 	return llm.ChatRequest{
 		Model:       model,
 		System:      summarySystemPrompt,
-		MaxTokens:   resolveSummaryMaxTokens(summaryMaxTokens),
-		Temperature: resolveSummaryTemperature(summaryTemperature),
+		Params:      params,
+		MaxTokens:   params.MaxTokens,
+		Temperature: *params.Temperature,
 		Stream:      false,
 		Messages: []llm.Message{
 			{Role: llm.RoleUser, Content: string(currentPayload)},
@@ -297,6 +331,14 @@ func resolveSummaryTemperature(summaryTemperature *float64) float64 {
 		return *summaryTemperature
 	}
 	return defaultSummaryTemperature
+}
+
+func cloneFloat64Ptr(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	v := *value
+	return &v
 }
 
 func parseRunningSummaryResponse(resp *llm.ChatResponse) (RunningSummary, error) {

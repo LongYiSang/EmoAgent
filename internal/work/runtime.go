@@ -29,8 +29,10 @@ type RuntimeConfig struct {
 	LLM                      llm.Client
 	SummaryClient            llm.Client
 	SummaryModel             string
+	SummaryParams            llm.RequestParams
 	Provider                 string
 	Model                    string
+	Params                   llm.RequestParams
 	MaxTokens                int
 	Temperature              float64
 	MaxToolRounds            int
@@ -170,8 +172,8 @@ func (r *Runtime) runLoop(
 		}
 		preCompressTokens := estimateMessagesTokens(messages) + contextutil.EstimateTokens(system)
 		if r.cfg.SummaryClient != nil && r.cfg.CompressSoftRatio > 0 {
-			compressed, newProgress, err := compressWorkContext(
-				ctx, r.cfg.SummaryClient, r.cfg.SummaryModel,
+			compressed, newProgress, err := compressWorkContextWithParams(
+				ctx, r.cfg.SummaryClient, r.cfg.SummaryModel, r.cfg.SummaryParams,
 				messages, workProgress, system,
 				r.cfg.MaxInputTokens, r.cfg.CompressSoftRatio,
 				r.cfg.CompressKeepRounds,
@@ -215,12 +217,14 @@ func (r *Runtime) runLoop(
 				go heartbeatTicker(hbCtx, progressCB, round, brief.TaskID, progressHeartbeatInterval)
 			}
 
+			params := effectiveRuntimeParams(r.cfg.Params, r.cfg.MaxTokens, r.cfg.Temperature)
 			resp, err := r.cfg.LLM.ChatStream(ctx, llm.ChatRequest{
 				Model:       r.cfg.Model,
 				Messages:    messages,
 				System:      system,
-				MaxTokens:   r.cfg.MaxTokens,
-				Temperature: r.cfg.Temperature,
+				Params:      params,
+				MaxTokens:   params.MaxTokens,
+				Temperature: derefFloat(params.Temperature, r.cfg.Temperature),
 				Stream:      false,
 				Tools:       tools,
 			}, func(llm.StreamEvent) {})
@@ -890,4 +894,35 @@ func estimateMessagesTokens(messages []llm.Message) int {
 		}
 	}
 	return total
+}
+
+func effectiveRuntimeParams(params llm.RequestParams, maxTokens int, temperature float64) llm.RequestParams {
+	if hasRuntimeParams(params) {
+		return params
+	}
+	stream := false
+	return llm.RequestParams{
+		MaxTokens:   maxTokens,
+		Temperature: &temperature,
+		Stream:      &stream,
+	}
+}
+
+func hasRuntimeParams(params llm.RequestParams) bool {
+	return params.MaxTokens != 0 ||
+		params.Temperature != nil ||
+		params.TopP != nil ||
+		params.PresencePenalty != nil ||
+		params.FrequencyPenalty != nil ||
+		params.ReasoningEffort != "" ||
+		params.Thinking != nil ||
+		params.Stream != nil ||
+		len(params.Extra) > 0
+}
+
+func derefFloat(value *float64, fallback float64) float64 {
+	if value == nil {
+		return fallback
+	}
+	return *value
 }

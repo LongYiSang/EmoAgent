@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/llm"
 )
 
 func testDB(t *testing.T) *DB {
@@ -29,7 +31,7 @@ func TestOpenAndMigrate(t *testing.T) {
 	db := testDB(t)
 
 	// Verify tables exist by querying them.
-	tables := []string{"sessions", "messages", "personas", "config_runtime", "llm_profiles", "schema_version", "pending_decisions", "archived_decisions"}
+	tables := []string{"sessions", "messages", "personas", "config_runtime", "llm_providers", "agent_configs", "schema_version", "pending_decisions", "archived_decisions"}
 	for _, table := range tables {
 		var name string
 		err := db.SqlDB().QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&name)
@@ -237,6 +239,101 @@ func TestRuntimeConfig(t *testing.T) {
 	}
 }
 
+func TestAgentConfigMigrationDropsProfilesAndRuntimeKeys(t *testing.T) {
+	db := testDB(t)
+
+	tables := []string{"llm_providers", "agent_configs"}
+	for _, table := range tables {
+		var name string
+		err := db.SqlDB().QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&name)
+		if err != nil {
+			t.Fatalf("expected table %s: %v", table, err)
+		}
+	}
+	var oldCount int
+	if err := db.SqlDB().QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='llm_profiles'").Scan(&oldCount); err != nil {
+		t.Fatalf("count old table: %v", err)
+	}
+	if oldCount != 0 {
+		t.Fatalf("llm_profiles table exists after migration")
+	}
+}
+
+func TestProviderAndAgentConfigCRUD(t *testing.T) {
+	db := testDB(t)
+
+	provider := config.LLMProvider{
+		ID:             "moonshot",
+		Name:           "Moonshot",
+		Protocol:       "openai_compatible",
+		BaseURL:        "https://api.moonshot.cn",
+		APIKeyEnv:      "MOONSHOT_API_KEY",
+		ModelDiscovery: "openai_models",
+		Enabled:        true,
+	}
+	if err := db.UpsertLLMProvider(provider); err != nil {
+		t.Fatalf("UpsertLLMProvider: %v", err)
+	}
+	providers, err := db.ListLLMProviders()
+	if err != nil {
+		t.Fatalf("ListLLMProviders: %v", err)
+	}
+	if len(providers) != 1 || providers[0].ID != "moonshot" {
+		t.Fatalf("providers = %#v, want moonshot", providers)
+	}
+
+	temperature := 0.1
+	stream := false
+	agent := config.AgentConfig{
+		ID:         "default",
+		Name:       "Default",
+		PersonaKey: "default",
+		Emotion: config.AgentModelGroup{
+			Main:    config.ModelBinding{ProviderID: "moonshot", Model: "kimi-k2.6", Params: llmParams(8192, nil, nil)},
+			Summary: config.ModelBinding{ProviderID: "moonshot", Model: "kimi-k2.6", Params: llmParams(4096, &temperature, &stream)},
+		},
+		Work: config.AgentModelGroup{
+			Main:    config.ModelBinding{ProviderID: "moonshot", Model: "kimi-k2.6", Params: llmParams(4096, nil, nil)},
+			Summary: config.ModelBinding{ProviderID: "moonshot", Model: "kimi-k2.6", Params: llmParams(2048, &temperature, &stream)},
+		},
+		ContextOverrides: map[string]any{"input_budget_tokens": float64(12000)},
+	}
+	if err := db.UpsertAgentConfig(agent); err != nil {
+		t.Fatalf("UpsertAgentConfig: %v", err)
+	}
+	if err := db.SetActiveAgentConfig("default"); err != nil {
+		t.Fatalf("SetActiveAgentConfig: %v", err)
+	}
+	active, found, err := db.GetActiveAgentConfig()
+	if err != nil {
+		t.Fatalf("GetActiveAgentConfig: %v", err)
+	}
+	if !found || active != "default" {
+		t.Fatalf("active = %q/%v, want default/true", active, found)
+	}
+	got, err := db.GetAgentConfig(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("GetAgentConfig: %v", err)
+	}
+	if got == nil || got.Emotion.Summary.Params.Temperature == nil || *got.Emotion.Summary.Params.Temperature != 0.1 {
+		t.Fatalf("agent config round trip = %#v", got)
+	}
+	if err := db.DeleteLLMProvider("moonshot"); !errors.Is(err, ErrProviderInUse) {
+		t.Fatalf("DeleteLLMProvider referenced error = %v, want ErrProviderInUse", err)
+	}
+	if err := db.DeleteAgentConfig("default"); !errors.Is(err, ErrCannotDeleteActiveAgentConfig) {
+		t.Fatalf("DeleteAgentConfig active error = %v, want ErrCannotDeleteActiveAgentConfig", err)
+	}
+}
+
+func llmParams(maxTokens int, temperature *float64, stream *bool) llm.RequestParams {
+	return llm.RequestParams{
+		MaxTokens:   maxTokens,
+		Temperature: temperature,
+		Stream:      stream,
+	}
+}
+
 func TestUpsertPersona(t *testing.T) {
 	db := testDB(t)
 
@@ -318,145 +415,6 @@ func TestUpsertPersonaWorkProgressPhrasesRoundTrip(t *testing.T) {
 		t.Fatalf("decoded = %#v, want read_file phrase", decoded)
 	}
 }
-
-func TestLLMProfileCRUD(t *testing.T) {
-	db := testDB(t)
-	ctx := context.Background()
-
-	if got, err := db.GetLLMProfile(ctx, "default"); err != nil {
-		t.Fatalf("GetLLMProfile missing: %v", err)
-	} else if got != nil {
-		t.Fatalf("GetLLMProfile missing = %#v, want nil", got)
-	}
-
-	if err := db.UpsertLLMProfile(config.LLMProfile{
-		Name:               "default",
-		Provider:           "openai",
-		BaseURL:            "https://api.openai.com",
-		Model:              "gpt-4o",
-		SummaryModel:       "gpt-4o-mini",
-		SummaryTemperature: floatPtr(0.15),
-		SummaryMaxTokens:   3072,
-		MaxTokens:          4096,
-		Temperature:        0.7,
-		APIKeyEnv:          "OPENAI_API_KEY",
-	}); err != nil {
-		t.Fatalf("UpsertLLMProfile: %v", err)
-	}
-
-	profile, err := db.GetLLMProfile(ctx, "default")
-	if err != nil {
-		t.Fatalf("GetLLMProfile: %v", err)
-	}
-	if profile == nil {
-		t.Fatal("GetLLMProfile returned nil")
-	}
-	if profile.Name != "default" || profile.APIKeyEnv != "OPENAI_API_KEY" {
-		t.Fatalf("GetLLMProfile = %#v, want name default and APIKeyEnv OPENAI_API_KEY", profile)
-	}
-	if !profile.SummaryTemperature.Valid || profile.SummaryTemperature.Float64 != 0.15 {
-		t.Fatalf("SummaryTemperature = %#v, want 0.15", profile.SummaryTemperature)
-	}
-	if !profile.SummaryMaxTokens.Valid || int(profile.SummaryMaxTokens.Int64) != 3072 {
-		t.Fatalf("SummaryMaxTokens = %#v, want 3072", profile.SummaryMaxTokens)
-	}
-
-	profiles, err := db.ListLLMProfiles()
-	if err != nil {
-		t.Fatalf("ListLLMProfiles: %v", err)
-	}
-	if len(profiles) != 1 || profiles[0].Name != "default" {
-		t.Fatalf("ListLLMProfiles = %v, want [default]", profiles)
-	}
-
-	if err := db.UpsertLLMProfile(config.LLMProfile{
-		Name:             "default",
-		Provider:         "openai",
-		BaseURL:          "https://api.openai.com",
-		Model:            "gpt-4o",
-		SummaryModel:     "gpt-4.1",
-		SummaryMaxTokens: 0,
-		MaxTokens:        2048,
-		Temperature:      0.2,
-		APIKeyEnv:        "MOONSHOT_API_KEY",
-	}); err != nil {
-		t.Fatalf("UpsertLLMProfile update: %v", err)
-	}
-
-	profile, err = db.GetLLMProfile(ctx, "default")
-	if err != nil {
-		t.Fatalf("GetLLMProfile after update: %v", err)
-	}
-	if profile == nil || profile.SummaryModel != "gpt-4.1" || profile.MaxTokens != 2048 || profile.Temperature != 0.2 || profile.APIKeyEnv != "MOONSHOT_API_KEY" {
-		t.Fatalf("updated profile = %#v", profile)
-	}
-	if profile.SummaryTemperature.Valid {
-		t.Fatalf("SummaryTemperature = %#v, want NULL after clearing", profile.SummaryTemperature)
-	}
-	if profile.SummaryMaxTokens.Valid {
-		t.Fatalf("SummaryMaxTokens = %#v, want NULL after clearing", profile.SummaryMaxTokens)
-	}
-
-	if err := db.DeleteLLMProfile("default"); err != nil {
-		t.Fatalf("DeleteLLMProfile: %v", err)
-	}
-
-	profile, err = db.GetLLMProfile(ctx, "default")
-	if err != nil {
-		t.Fatalf("GetLLMProfile after delete: %v", err)
-	}
-	if profile != nil {
-		t.Fatalf("GetLLMProfile after delete = %#v, want nil", profile)
-	}
-}
-
-func TestLLMProfileBudgetOverridesRoundTrip(t *testing.T) {
-	db := testDB(t)
-	ctx := context.Background()
-
-	inputBudget := 12000
-	softRatio := 0.65
-	hardRatio := 0.88
-	reserve := 2048
-	if err := db.UpsertLLMProfile(config.LLMProfile{
-		Name:                "profile-with-overrides",
-		Provider:            "openai",
-		BaseURL:             "https://api.openai.com",
-		Model:               "gpt-4o",
-		SummaryModel:        "gpt-4o-mini",
-		MaxTokens:           4096,
-		Temperature:         0.7,
-		APIKeyEnv:           "OPENAI_API_KEY",
-		InputBudgetTokens:   &inputBudget,
-		SoftCompactRatio:    &softRatio,
-		HardCompactRatio:    &hardRatio,
-		ReserveOutputTokens: &reserve,
-	}); err != nil {
-		t.Fatalf("UpsertLLMProfile: %v", err)
-	}
-
-	record, err := db.GetLLMProfile(ctx, "profile-with-overrides")
-	if err != nil {
-		t.Fatalf("GetLLMProfile: %v", err)
-	}
-	if record == nil {
-		t.Fatal("GetLLMProfile returned nil")
-	}
-	if !record.InputBudgetTokens.Valid || int(record.InputBudgetTokens.Int64) != 12000 {
-		t.Fatalf("InputBudgetTokens = %#v, want 12000", record.InputBudgetTokens)
-	}
-	if !record.SoftCompactRatio.Valid || record.SoftCompactRatio.Float64 != 0.65 {
-		t.Fatalf("SoftCompactRatio = %#v, want 0.65", record.SoftCompactRatio)
-	}
-	if !record.HardCompactRatio.Valid || record.HardCompactRatio.Float64 != 0.88 {
-		t.Fatalf("HardCompactRatio = %#v, want 0.88", record.HardCompactRatio)
-	}
-	if !record.ReserveOutputTokens.Valid || int(record.ReserveOutputTokens.Int64) != 2048 {
-		t.Fatalf("ReserveOutputTokens = %#v, want 2048", record.ReserveOutputTokens)
-	}
-}
-
-func floatPtr(v float64) *float64 { return &v }
 
 func TestAddMessageWithMetadataStoresVisibleMessageMetadata(t *testing.T) {
 	db := testDB(t)

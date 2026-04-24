@@ -5,22 +5,58 @@ import (
 	"os"
 	"time"
 
+	"github.com/longyisang/emoagent/internal/llm"
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	Server      ServerConfig    `yaml:"server"`
-	LLM         LLMConfig       `yaml:"llm"`
-	Chat        ChatConfig      `yaml:"chat"`
-	Context     ContextConfig   `yaml:"context"`
-	Work        WorkConfig      `yaml:"work"`
-	LLMProfiles []LLMProfile    `yaml:"llm_profiles"`
-	DB          DBConfig        `yaml:"db"`
-	Log         LogConfig       `yaml:"log"`
-	Personas    PersonasConfig  `yaml:"personas"`
-	WebSearch   WebSearchConfig `yaml:"websearch"`
-	WebFetch    WebFetchConfig  `yaml:"webfetch"`
-	Bash        BashConfig      `yaml:"bash"`
+	Server       ServerConfig       `yaml:"server"`
+	Chat         ChatConfig         `yaml:"chat"`
+	Context      ContextConfig      `yaml:"context"`
+	Work         WorkConfig         `yaml:"work"`
+	LLMProviders []LLMProvider      `yaml:"llm_providers"`
+	AgentConfigs []AgentConfig      `yaml:"agent_configs"`
+	Agent        AgentRuntimeConfig `yaml:"agent"`
+	DB           DBConfig           `yaml:"db"`
+	Log          LogConfig          `yaml:"log"`
+	Personas     PersonasConfig     `yaml:"personas"`
+	WebSearch    WebSearchConfig    `yaml:"websearch"`
+	WebFetch     WebFetchConfig     `yaml:"webfetch"`
+	Bash         BashConfig         `yaml:"bash"`
+}
+
+type LLMProvider struct {
+	ID             string `yaml:"id" json:"id"`
+	Name           string `yaml:"name" json:"name"`
+	Protocol       string `yaml:"protocol" json:"protocol"`
+	BaseURL        string `yaml:"base_url" json:"base_url"`
+	APIKeyEnv      string `yaml:"api_key_env" json:"api_key_env"`
+	ModelDiscovery string `yaml:"model_discovery" json:"model_discovery"`
+	Enabled        bool   `yaml:"enabled" json:"enabled"`
+}
+
+type AgentRuntimeConfig struct {
+	ActiveConfig string `yaml:"active_config" json:"active_config"`
+}
+
+type AgentConfig struct {
+	ID               string          `yaml:"id" json:"id"`
+	Name             string          `yaml:"name" json:"name"`
+	PersonaKey       string          `yaml:"persona_key" json:"persona_key"`
+	Emotion          AgentModelGroup `yaml:"emotion" json:"emotion"`
+	Work             AgentModelGroup `yaml:"work" json:"work"`
+	ContextOverrides map[string]any  `yaml:"context_overrides" json:"context_overrides"`
+}
+
+type AgentModelGroup struct {
+	Main    ModelBinding `yaml:"main" json:"main"`
+	Summary ModelBinding `yaml:"summary" json:"summary"`
+}
+
+type ModelBinding struct {
+	ProviderID string            `yaml:"provider_id" json:"provider_id"`
+	Model      string            `yaml:"model" json:"model"`
+	Params     llm.RequestParams `yaml:"params" json:"params"`
 }
 
 type WebFetchConfig struct {
@@ -67,37 +103,8 @@ type ServerConfig struct {
 	Port int    `yaml:"port"`
 }
 
-type LLMConfig struct {
-	Provider           string   `yaml:"provider"`
-	BaseURL            string   `yaml:"base_url"`
-	Model              string   `yaml:"model"`
-	SummaryModel       string   `yaml:"summary_model"`
-	SummaryTemperature *float64 `yaml:"summary_temperature"`
-	SummaryMaxTokens   int      `yaml:"summary_max_tokens"`
-	MaxTokens          int      `yaml:"max_tokens"`
-	Temperature        float64  `yaml:"temperature"`
-	APIKeyEnv          string   `yaml:"api_key_env"`
-}
-
 type ChatConfig struct {
 	RealtimeStreaming bool `yaml:"realtime_streaming" json:"realtime_streaming"`
-}
-
-type LLMProfile struct {
-	Name                string   `yaml:"name" json:"name"`
-	Provider            string   `yaml:"provider" json:"provider"`
-	BaseURL             string   `yaml:"base_url" json:"base_url"`
-	Model               string   `yaml:"model" json:"model"`
-	SummaryModel        string   `yaml:"summary_model" json:"summary_model"`
-	SummaryTemperature  *float64 `yaml:"summary_temperature,omitempty" json:"summary_temperature,omitempty"`
-	SummaryMaxTokens    int      `yaml:"summary_max_tokens,omitempty" json:"summary_max_tokens,omitempty"`
-	MaxTokens           int      `yaml:"max_tokens" json:"max_tokens"`
-	Temperature         float64  `yaml:"temperature" json:"temperature"`
-	APIKeyEnv           string   `yaml:"api_key_env" json:"api_key_env"`
-	InputBudgetTokens   *int     `yaml:"input_budget_tokens,omitempty" json:"input_budget_tokens,omitempty"`
-	SoftCompactRatio    *float64 `yaml:"soft_compact_ratio,omitempty" json:"soft_compact_ratio,omitempty"`
-	HardCompactRatio    *float64 `yaml:"hard_compact_ratio,omitempty" json:"hard_compact_ratio,omitempty"`
-	ReserveOutputTokens *int     `yaml:"reserve_output_tokens,omitempty" json:"reserve_output_tokens,omitempty"`
 }
 
 type DBConfig struct {
@@ -110,8 +117,7 @@ type LogConfig struct {
 }
 
 type PersonasConfig struct {
-	Dir     string `yaml:"dir"`
-	Default string `yaml:"default"`
+	Dir string `yaml:"dir"`
 }
 
 type WebSearchConfig struct {
@@ -134,7 +140,6 @@ type ContextConfig struct {
 }
 
 type WorkConfig struct {
-	Profile                  string        `yaml:"profile"`
 	MaxToolRounds            int           `yaml:"max_tool_rounds"`
 	MaxInputTokens           int           `yaml:"max_input_tokens"`
 	CompressSoftRatio        float64       `yaml:"compress_soft_ratio"`
@@ -153,9 +158,6 @@ type WorkConfig struct {
 }
 
 func (w *WorkConfig) ApplyDefaults() {
-	if w.Profile == "" {
-		w.Profile = "default"
-	}
 	if w.MaxToolRounds == 0 {
 		w.MaxToolRounds = 15
 	}
@@ -214,14 +216,6 @@ func DefaultConfig() *Config {
 			Host: "127.0.0.1",
 			Port: 8080,
 		},
-		LLM: LLMConfig{
-			Provider:         "openai",
-			BaseURL:          "https://api.openai.com",
-			Model:            "gpt-4o",
-			SummaryMaxTokens: 4096,
-			MaxTokens:        4096,
-			Temperature:      0.7,
-		},
 		Chat: ChatConfig{
 			RealtimeStreaming: false,
 		},
@@ -235,7 +229,6 @@ func DefaultConfig() *Config {
 			ToolResultHardTokens: 3000,
 		},
 		Work: WorkConfig{
-			Profile:                  "default",
 			MaxToolRounds:            15,
 			MaxInputTokens:           100000,
 			CompressSoftRatio:        0.7,
@@ -252,7 +245,6 @@ func DefaultConfig() *Config {
 			DeciderCleanupInterval:   5 * time.Minute,
 			PendingSnapshotMaxTokens: 60000,
 		},
-		LLMProfiles: []LLMProfile{},
 		DB: DBConfig{
 			Path: "./data/emo.db",
 		},
@@ -261,8 +253,7 @@ func DefaultConfig() *Config {
 			Format: "text",
 		},
 		Personas: PersonasConfig{
-			Dir:     "./personas",
-			Default: "default",
+			Dir: "./personas",
 		},
 		WebSearch: WebSearchConfig{
 			Enabled:    false,
@@ -318,24 +309,20 @@ func (c *Config) Validate() error {
 	if c.Server.Port < 1 || c.Server.Port > 65535 {
 		return fmt.Errorf("server.port must be 1-65535, got %d", c.Server.Port)
 	}
-	if c.LLM.Provider == "" {
-		return fmt.Errorf("llm.provider is required")
-	}
-	if c.LLM.Model == "" {
-		return fmt.Errorf("llm.model is required")
-	}
-	if err := validateOptionalTemperature("llm.summary_temperature", c.LLM.SummaryTemperature); err != nil {
-		return err
-	}
-	if c.LLM.SummaryMaxTokens < 0 {
-		return fmt.Errorf("llm.summary_max_tokens must be >= 0")
-	}
 	if err := c.Context.Validate(); err != nil {
 		return fmt.Errorf("context: %w", err)
 	}
-	for i, profile := range c.LLMProfiles {
-		if err := profile.ValidateAgainst(c.Context); err != nil {
-			return fmt.Errorf("llm_profiles[%d]: %w", i, err)
+	for i, provider := range c.LLMProviders {
+		if err := provider.Validate(); err != nil {
+			return fmt.Errorf("llm_providers[%d]: %w", i, err)
+		}
+	}
+	for i, agent := range c.AgentConfigs {
+		if err := agent.Validate(); err != nil {
+			return fmt.Errorf("agent_configs[%d]: %w", i, err)
+		}
+		if _, err := agent.ResolveContextConfig(c.Context); err != nil {
+			return fmt.Errorf("agent_configs[%d].context_overrides: %w", i, err)
 		}
 	}
 	if c.WebSearch.Enabled {
@@ -376,62 +363,104 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// Validate checks that required fields are set.
-func (p LLMProfile) Validate() error {
+func (p LLMProvider) Validate() error {
+	if p.ID == "" {
+		return fmt.Errorf("id is required")
+	}
 	if p.Name == "" {
 		return fmt.Errorf("name is required")
 	}
-	switch p.Provider {
-	case "openai", "anthropic":
+	switch p.Protocol {
+	case "openai_compatible", "anthropic":
 	default:
-		return fmt.Errorf("unsupported provider: %s", p.Provider)
+		return fmt.Errorf("unsupported protocol: %s", p.Protocol)
 	}
 	if p.BaseURL == "" {
 		return fmt.Errorf("base_url is required")
 	}
-	if p.Model == "" {
+	if p.APIKeyEnv == "" {
+		return fmt.Errorf("api_key_env is required")
+	}
+	switch p.ModelDiscovery {
+	case "", "manual", "openai_models", "anthropic_models":
+	default:
+		return fmt.Errorf("unsupported model_discovery: %s", p.ModelDiscovery)
+	}
+	return nil
+}
+
+func (a AgentConfig) Validate() error {
+	if a.ID == "" {
+		return fmt.Errorf("id is required")
+	}
+	if a.Name == "" {
+		return fmt.Errorf("name is required")
+	}
+	if a.PersonaKey == "" {
+		return fmt.Errorf("persona_key is required")
+	}
+	if err := a.Emotion.Main.Validate(); err != nil {
+		return fmt.Errorf("emotion.main: %w", err)
+	}
+	if err := a.Emotion.Summary.Validate(); err != nil {
+		return fmt.Errorf("emotion.summary: %w", err)
+	}
+	if err := a.Work.Main.Validate(); err != nil {
+		return fmt.Errorf("work.main: %w", err)
+	}
+	if err := a.Work.Summary.Validate(); err != nil {
+		return fmt.Errorf("work.summary: %w", err)
+	}
+	return nil
+}
+
+func (b ModelBinding) Validate() error {
+	if b.ProviderID == "" {
+		return fmt.Errorf("provider_id is required")
+	}
+	if b.Model == "" {
 		return fmt.Errorf("model is required")
 	}
-	if p.MaxTokens <= 0 {
-		return fmt.Errorf("max_tokens must be greater than 0")
+	if b.Params.MaxTokens < 0 {
+		return fmt.Errorf("params.max_tokens must be >= 0")
 	}
-	if p.Temperature < 0 || p.Temperature > 2 {
-		return fmt.Errorf("temperature must be between 0 and 2")
-	}
-	if err := validateOptionalTemperature("summary_temperature", p.SummaryTemperature); err != nil {
-		return err
-	}
-	if p.SummaryMaxTokens < 0 {
-		return fmt.Errorf("summary_max_tokens must be >= 0")
-	}
-	return nil
-}
-
-// ValidateAgainst checks that the profile is valid and resolves cleanly against the provided base context.
-func (p LLMProfile) ValidateAgainst(base ContextConfig) error {
-	if err := p.Validate(); err != nil {
-		return err
-	}
-	if _, err := p.ResolveContextConfig(base); err != nil {
+	if err := validateOptionalTemperature("params.temperature", b.Params.Temperature); err != nil {
 		return err
 	}
 	return nil
 }
 
-// ResolveContextConfig applies the profile's optional context budget overrides to the provided base config.
-func (p LLMProfile) ResolveContextConfig(base ContextConfig) (ContextConfig, error) {
+func (a AgentConfig) ResolveContextConfig(base ContextConfig) (ContextConfig, error) {
 	effective := base
-	if p.InputBudgetTokens != nil {
-		effective.InputBudgetTokens = *p.InputBudgetTokens
-	}
-	if p.SoftCompactRatio != nil {
-		effective.SoftCompactRatio = *p.SoftCompactRatio
-	}
-	if p.HardCompactRatio != nil {
-		effective.HardCompactRatio = *p.HardCompactRatio
-	}
-	if p.ReserveOutputTokens != nil {
-		effective.ReserveOutputTokens = *p.ReserveOutputTokens
+	for key, raw := range a.ContextOverrides {
+		switch key {
+		case "input_budget_tokens":
+			v, ok := numberAsInt(raw)
+			if !ok {
+				return ContextConfig{}, fmt.Errorf("%s must be a number", key)
+			}
+			effective.InputBudgetTokens = v
+		case "soft_compact_ratio":
+			v, ok := numberAsFloat(raw)
+			if !ok {
+				return ContextConfig{}, fmt.Errorf("%s must be a number", key)
+			}
+			effective.SoftCompactRatio = v
+		case "hard_compact_ratio":
+			v, ok := numberAsFloat(raw)
+			if !ok {
+				return ContextConfig{}, fmt.Errorf("%s must be a number", key)
+			}
+			effective.HardCompactRatio = v
+		case "reserve_output_tokens":
+			v, ok := numberAsInt(raw)
+			if !ok {
+				return ContextConfig{}, fmt.Errorf("%s must be a number", key)
+			}
+			effective.ReserveOutputTokens = v
+		default:
+			return ContextConfig{}, fmt.Errorf("unsupported key %q", key)
+		}
 	}
 	if err := effective.Validate(); err != nil {
 		return ContextConfig{}, err
@@ -447,6 +476,43 @@ func validateOptionalTemperature(name string, value *float64) error {
 		return fmt.Errorf("%s must be between 0 and 2", name)
 	}
 	return nil
+}
+
+func numberAsInt(value any) (int, bool) {
+	switch typed := value.(type) {
+	case int:
+		return typed, true
+	case int64:
+		return int(typed), true
+	case float64:
+		if typed != float64(int(typed)) {
+			return 0, false
+		}
+		return int(typed), true
+	case float32:
+		f := float64(typed)
+		if f != float64(int(f)) {
+			return 0, false
+		}
+		return int(f), true
+	default:
+		return 0, false
+	}
+}
+
+func numberAsFloat(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case int:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case float64:
+		return typed, true
+	case float32:
+		return float64(typed), true
+	default:
+		return 0, false
+	}
 }
 
 func (c ContextConfig) Validate() error {

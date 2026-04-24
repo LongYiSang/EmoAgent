@@ -61,6 +61,21 @@ func compressWorkContext(
 	softRatio float64,
 	keepRounds int,
 ) ([]llm.Message, WorkProgress, error) {
+	return compressWorkContextWithParams(ctx, summaryClient, summaryModel, llm.RequestParams{}, messages, currentProgress, systemPrompt, maxInputTokens, softRatio, keepRounds)
+}
+
+func compressWorkContextWithParams(
+	ctx context.Context,
+	summaryClient llm.Client,
+	summaryModel string,
+	summaryParams llm.RequestParams,
+	messages []llm.Message,
+	currentProgress WorkProgress,
+	systemPrompt string,
+	maxInputTokens int,
+	softRatio float64,
+	keepRounds int,
+) ([]llm.Message, WorkProgress, error) {
 	totalTokens := estimateMessagesTokens(messages) + contextutil.EstimateTokens(systemPrompt)
 	softLimit := int(float64(maxInputTokens) * softRatio)
 
@@ -85,7 +100,7 @@ func compressWorkContext(
 		return messages, currentProgress, nil
 	}
 
-	req, err := buildProgressSummaryRequest(summaryModel, currentProgress, delta)
+	req, err := buildProgressSummaryRequestWithParams(summaryModel, summaryParams, currentProgress, delta)
 	if err != nil {
 		return messages, currentProgress, fmt.Errorf("build progress summary request: %w", err)
 	}

@@ -52,24 +52,18 @@ type MessageRecord struct {
 	Metadata  string
 }
 
-// LLMProfileRecord is the DB representation of an LLM profile.
-type LLMProfileRecord struct {
-	Name                string
-	Provider            string
-	BaseURL             string
-	Model               string
-	SummaryModel        string
-	SummaryTemperature  sql.NullFloat64
-	SummaryMaxTokens    sql.NullInt64
-	MaxTokens           int
-	Temperature         float64
-	APIKeyEnv           string
-	InputBudgetTokens   sql.NullInt64
-	SoftCompactRatio    sql.NullFloat64
-	HardCompactRatio    sql.NullFloat64
-	ReserveOutputTokens sql.NullInt64
-	CreatedAt           string
-	UpdatedAt           string
+var (
+	ErrProviderInUse                 = errors.New("llm provider is referenced by an agent config")
+	ErrCannotDeleteActiveAgentConfig = errors.New("cannot delete the active agent config")
+	ErrCannotDeleteLastAgentConfig   = errors.New("cannot delete the last agent config")
+)
+
+type LLMProviderRecord struct {
+	config.LLMProvider
+	ModelsCacheJSON      string
+	ModelsCacheUpdatedAt sql.NullString
+	CreatedAt            string
+	UpdatedAt            string
 }
 
 // Open creates or opens a SQLite database, sets pragmas, and runs migrations.
@@ -156,74 +150,69 @@ func (d *DB) GetAllRuntimeConfig() (map[string]string, error) {
 	return m, rows.Err()
 }
 
-// UpsertLLMProfile inserts or updates an LLM profile in the database.
-func (d *DB) UpsertLLMProfile(profile config.LLMProfile) error {
-	inputBudgetTokens, softCompactRatio, hardCompactRatio, reserveOutputTokens, err := profileBudgetArgs(profile)
-	if err != nil {
-		return err
-	}
-	_, execErr := d.db.Exec(`
-		INSERT INTO llm_profiles (
-			name, provider, base_url, model, summary_model, summary_temperature, summary_max_tokens, max_tokens, temperature, api_key_env,
-			input_budget_tokens, soft_compact_ratio, hard_compact_ratio, reserve_output_tokens,
-			created_at, updated_at
-		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-		ON CONFLICT(name) DO UPDATE SET
-			provider = excluded.provider,
-			base_url = excluded.base_url,
-			model = excluded.model,
-			summary_model = excluded.summary_model,
-			summary_temperature = excluded.summary_temperature,
-			summary_max_tokens = excluded.summary_max_tokens,
-			max_tokens = excluded.max_tokens,
-			temperature = excluded.temperature,
-			api_key_env = excluded.api_key_env,
-			input_budget_tokens = excluded.input_budget_tokens,
-			soft_compact_ratio = excluded.soft_compact_ratio,
-			hard_compact_ratio = excluded.hard_compact_ratio,
-			reserve_output_tokens = excluded.reserve_output_tokens,
-			updated_at = datetime('now')
-	`, profile.Name, profile.Provider, profile.BaseURL, profile.Model, profile.SummaryModel, nullableFloat(profile.SummaryTemperature), nullablePositiveInt(profile.SummaryMaxTokens), profile.MaxTokens, profile.Temperature, profile.APIKeyEnv, inputBudgetTokens, softCompactRatio, hardCompactRatio, reserveOutputTokens)
-	return execErr
+func (d *DB) SetActiveAgentConfig(id string) error {
+	return d.SetRuntimeConfig("agent.active_config", id)
 }
 
-// GetLLMProfile returns a profile by name, or nil when it does not exist.
-func (d *DB) GetLLMProfile(ctx context.Context, name string) (*LLMProfileRecord, error) {
-	row := d.db.QueryRowContext(ctx, `
-		SELECT name, provider, base_url, model, COALESCE(summary_model, ''), summary_temperature, summary_max_tokens, max_tokens, temperature, COALESCE(api_key_env, ''),
-		       input_budget_tokens, soft_compact_ratio, hard_compact_ratio, reserve_output_tokens, created_at, updated_at
-		FROM llm_profiles
-		WHERE name = ?
-	`, name)
+func (d *DB) GetActiveAgentConfig() (string, bool, error) {
+	return d.GetRuntimeConfig("agent.active_config")
+}
 
-	var record LLMProfileRecord
-	if err := row.Scan(&record.Name, &record.Provider, &record.BaseURL, &record.Model, &record.SummaryModel, &record.SummaryTemperature, &record.SummaryMaxTokens, &record.MaxTokens, &record.Temperature, &record.APIKeyEnv, &record.InputBudgetTokens, &record.SoftCompactRatio, &record.HardCompactRatio, &record.ReserveOutputTokens, &record.CreatedAt, &record.UpdatedAt); err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
-		}
+func (d *DB) UpsertLLMProvider(provider config.LLMProvider) error {
+	discovery := provider.ModelDiscovery
+	if discovery == "" {
+		discovery = "manual"
+	}
+	_, err := d.db.Exec(`
+		INSERT INTO llm_providers (
+			id, name, protocol, base_url, api_key_env, model_discovery, enabled, updated_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+		ON CONFLICT(id) DO UPDATE SET
+			name = excluded.name,
+			protocol = excluded.protocol,
+			base_url = excluded.base_url,
+			api_key_env = excluded.api_key_env,
+			model_discovery = excluded.model_discovery,
+			enabled = excluded.enabled,
+			updated_at = datetime('now')
+	`, provider.ID, provider.Name, provider.Protocol, provider.BaseURL, provider.APIKeyEnv, discovery, boolInt(provider.Enabled))
+	return err
+}
+
+func (d *DB) GetLLMProvider(ctx context.Context, id string) (*LLMProviderRecord, error) {
+	row := d.db.QueryRowContext(ctx, `
+		SELECT id, name, protocol, base_url, api_key_env, model_discovery, enabled,
+		       models_cache_json, models_cache_updated_at, created_at, updated_at
+		FROM llm_providers
+		WHERE id = ?
+	`, id)
+	record, err := scanLLMProvider(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
 		return nil, err
 	}
 	return &record, nil
 }
 
-// ListLLMProfiles returns all LLM profiles ordered by name.
-func (d *DB) ListLLMProfiles() ([]LLMProfileRecord, error) {
+func (d *DB) ListLLMProviders() ([]LLMProviderRecord, error) {
 	rows, err := d.db.Query(`
-		SELECT name, provider, base_url, model, COALESCE(summary_model, ''), summary_temperature, summary_max_tokens, max_tokens, temperature, COALESCE(api_key_env, ''),
-		       input_budget_tokens, soft_compact_ratio, hard_compact_ratio, reserve_output_tokens, created_at, updated_at
-		FROM llm_profiles
-		ORDER BY name
+		SELECT id, name, protocol, base_url, api_key_env, model_discovery, enabled,
+		       models_cache_json, models_cache_updated_at, created_at, updated_at
+		FROM llm_providers
+		ORDER BY id
 	`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var records []LLMProfileRecord
+	var records []LLMProviderRecord
 	for rows.Next() {
-		var record LLMProfileRecord
-		if err := rows.Scan(&record.Name, &record.Provider, &record.BaseURL, &record.Model, &record.SummaryModel, &record.SummaryTemperature, &record.SummaryMaxTokens, &record.MaxTokens, &record.Temperature, &record.APIKeyEnv, &record.InputBudgetTokens, &record.SoftCompactRatio, &record.HardCompactRatio, &record.ReserveOutputTokens, &record.CreatedAt, &record.UpdatedAt); err != nil {
+		record, err := scanLLMProvider(rows)
+		if err != nil {
 			return nil, err
 		}
 		records = append(records, record)
@@ -231,9 +220,137 @@ func (d *DB) ListLLMProfiles() ([]LLMProfileRecord, error) {
 	return records, rows.Err()
 }
 
-// DeleteLLMProfile deletes a profile by name.
-func (d *DB) DeleteLLMProfile(name string) error {
-	_, err := d.db.Exec("DELETE FROM llm_profiles WHERE name = ?", name)
+func (d *DB) DeleteLLMProvider(id string) error {
+	var refs int
+	if err := d.db.QueryRow(`
+		SELECT COUNT(*) FROM agent_configs
+		WHERE emotion_main_provider_id = ?
+		   OR emotion_summary_provider_id = ?
+		   OR work_main_provider_id = ?
+		   OR work_summary_provider_id = ?
+	`, id, id, id, id).Scan(&refs); err != nil {
+		return err
+	}
+	if refs > 0 {
+		return ErrProviderInUse
+	}
+	_, err := d.db.Exec("DELETE FROM llm_providers WHERE id = ?", id)
+	return err
+}
+
+func (d *DB) UpdateProviderModelsCache(id, modelsJSON, updatedAt string) error {
+	_, err := d.db.Exec(`
+		UPDATE llm_providers
+		SET models_cache_json = ?, models_cache_updated_at = ?, updated_at = datetime('now')
+		WHERE id = ?
+	`, modelsJSON, updatedAt, id)
+	return err
+}
+
+func (d *DB) UpsertAgentConfig(agent config.AgentConfig) error {
+	emotionMainParams, err := encodeJSONObject(agent.Emotion.Main.Params)
+	if err != nil {
+		return fmt.Errorf("emotion.main.params: %w", err)
+	}
+	emotionSummaryParams, err := encodeJSONObject(agent.Emotion.Summary.Params)
+	if err != nil {
+		return fmt.Errorf("emotion.summary.params: %w", err)
+	}
+	workMainParams, err := encodeJSONObject(agent.Work.Main.Params)
+	if err != nil {
+		return fmt.Errorf("work.main.params: %w", err)
+	}
+	workSummaryParams, err := encodeJSONObject(agent.Work.Summary.Params)
+	if err != nil {
+		return fmt.Errorf("work.summary.params: %w", err)
+	}
+	contextOverrides, err := encodeJSONObject(agent.ContextOverrides)
+	if err != nil {
+		return fmt.Errorf("context_overrides: %w", err)
+	}
+
+	_, err = d.db.Exec(`
+		INSERT INTO agent_configs (
+			id, name, persona_key,
+			emotion_main_provider_id, emotion_main_model, emotion_main_params_json,
+			emotion_summary_provider_id, emotion_summary_model, emotion_summary_params_json,
+			work_main_provider_id, work_main_model, work_main_params_json,
+			work_summary_provider_id, work_summary_model, work_summary_params_json,
+			context_overrides_json, updated_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+		ON CONFLICT(id) DO UPDATE SET
+			name = excluded.name,
+			persona_key = excluded.persona_key,
+			emotion_main_provider_id = excluded.emotion_main_provider_id,
+			emotion_main_model = excluded.emotion_main_model,
+			emotion_main_params_json = excluded.emotion_main_params_json,
+			emotion_summary_provider_id = excluded.emotion_summary_provider_id,
+			emotion_summary_model = excluded.emotion_summary_model,
+			emotion_summary_params_json = excluded.emotion_summary_params_json,
+			work_main_provider_id = excluded.work_main_provider_id,
+			work_main_model = excluded.work_main_model,
+			work_main_params_json = excluded.work_main_params_json,
+			work_summary_provider_id = excluded.work_summary_provider_id,
+			work_summary_model = excluded.work_summary_model,
+			work_summary_params_json = excluded.work_summary_params_json,
+			context_overrides_json = excluded.context_overrides_json,
+			updated_at = datetime('now')
+	`, agent.ID, agent.Name, agent.PersonaKey,
+		agent.Emotion.Main.ProviderID, agent.Emotion.Main.Model, emotionMainParams,
+		agent.Emotion.Summary.ProviderID, agent.Emotion.Summary.Model, emotionSummaryParams,
+		agent.Work.Main.ProviderID, agent.Work.Main.Model, workMainParams,
+		agent.Work.Summary.ProviderID, agent.Work.Summary.Model, workSummaryParams,
+		contextOverrides)
+	return err
+}
+
+func (d *DB) GetAgentConfig(ctx context.Context, id string) (*config.AgentConfig, error) {
+	row := d.db.QueryRowContext(ctx, agentConfigSelectSQL()+" WHERE id = ?", id)
+	agent, err := scanAgentConfig(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &agent, nil
+}
+
+func (d *DB) ListAgentConfigs() ([]config.AgentConfig, error) {
+	rows, err := d.db.Query(agentConfigSelectSQL() + " ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var agents []config.AgentConfig
+	for rows.Next() {
+		agent, err := scanAgentConfig(rows)
+		if err != nil {
+			return nil, err
+		}
+		agents = append(agents, agent)
+	}
+	return agents, rows.Err()
+}
+
+func (d *DB) DeleteAgentConfig(id string) error {
+	active, found, err := d.GetActiveAgentConfig()
+	if err != nil {
+		return err
+	}
+	if found && active == id {
+		return ErrCannotDeleteActiveAgentConfig
+	}
+	var count int
+	if err := d.db.QueryRow("SELECT COUNT(*) FROM agent_configs").Scan(&count); err != nil {
+		return err
+	}
+	if count <= 1 {
+		return ErrCannotDeleteLastAgentConfig
+	}
+	_, err = d.db.Exec("DELETE FROM agent_configs WHERE id = ?", id)
 	return err
 }
 
@@ -579,42 +696,115 @@ func encodeMetadata(metadata any) (string, error) {
 	}
 }
 
-func profileBudgetArgs(profile config.LLMProfile) (any, any, any, any, error) {
-	if profile.InputBudgetTokens != nil && *profile.InputBudgetTokens <= 0 {
-		return nil, nil, nil, nil, fmt.Errorf("input_budget_tokens must be > 0")
-	}
-	if profile.SoftCompactRatio != nil && (*profile.SoftCompactRatio <= 0 || *profile.SoftCompactRatio >= 1) {
-		return nil, nil, nil, nil, fmt.Errorf("soft_compact_ratio must be between 0 and 1")
-	}
-	if profile.HardCompactRatio != nil && (*profile.HardCompactRatio <= 0 || *profile.HardCompactRatio >= 1) {
-		return nil, nil, nil, nil, fmt.Errorf("hard_compact_ratio must be between 0 and 1")
-	}
-	if profile.ReserveOutputTokens != nil && *profile.ReserveOutputTokens <= 0 {
-		return nil, nil, nil, nil, fmt.Errorf("reserve_output_tokens must be > 0")
-	}
-	if profile.SoftCompactRatio != nil && profile.HardCompactRatio != nil && *profile.SoftCompactRatio >= *profile.HardCompactRatio {
-		return nil, nil, nil, nil, fmt.Errorf("soft_compact_ratio must be < hard_compact_ratio")
-	}
-	return nullableInt(profile.InputBudgetTokens), nullableFloat(profile.SoftCompactRatio), nullableFloat(profile.HardCompactRatio), nullableInt(profile.ReserveOutputTokens), nil
+type scanner interface {
+	Scan(dest ...any) error
 }
 
-func nullableInt(value *int) any {
+func scanLLMProvider(row scanner) (LLMProviderRecord, error) {
+	var record LLMProviderRecord
+	var enabled int
+	if err := row.Scan(
+		&record.ID,
+		&record.Name,
+		&record.Protocol,
+		&record.BaseURL,
+		&record.APIKeyEnv,
+		&record.ModelDiscovery,
+		&enabled,
+		&record.ModelsCacheJSON,
+		&record.ModelsCacheUpdatedAt,
+		&record.CreatedAt,
+		&record.UpdatedAt,
+	); err != nil {
+		return LLMProviderRecord{}, err
+	}
+	record.Enabled = enabled != 0
+	return record, nil
+}
+
+func agentConfigSelectSQL() string {
+	return `
+		SELECT id, name, persona_key,
+		       emotion_main_provider_id, emotion_main_model, emotion_main_params_json,
+		       emotion_summary_provider_id, emotion_summary_model, emotion_summary_params_json,
+		       work_main_provider_id, work_main_model, work_main_params_json,
+		       work_summary_provider_id, work_summary_model, work_summary_params_json,
+		       context_overrides_json
+		FROM agent_configs`
+}
+
+func scanAgentConfig(row scanner) (config.AgentConfig, error) {
+	var agent config.AgentConfig
+	var emotionMainParams, emotionSummaryParams, workMainParams, workSummaryParams, contextOverrides string
+	if err := row.Scan(
+		&agent.ID,
+		&agent.Name,
+		&agent.PersonaKey,
+		&agent.Emotion.Main.ProviderID,
+		&agent.Emotion.Main.Model,
+		&emotionMainParams,
+		&agent.Emotion.Summary.ProviderID,
+		&agent.Emotion.Summary.Model,
+		&emotionSummaryParams,
+		&agent.Work.Main.ProviderID,
+		&agent.Work.Main.Model,
+		&workMainParams,
+		&agent.Work.Summary.ProviderID,
+		&agent.Work.Summary.Model,
+		&workSummaryParams,
+		&contextOverrides,
+	); err != nil {
+		return config.AgentConfig{}, err
+	}
+	if err := decodeJSONObject(emotionMainParams, &agent.Emotion.Main.Params); err != nil {
+		return config.AgentConfig{}, fmt.Errorf("emotion_main_params_json: %w", err)
+	}
+	if err := decodeJSONObject(emotionSummaryParams, &agent.Emotion.Summary.Params); err != nil {
+		return config.AgentConfig{}, fmt.Errorf("emotion_summary_params_json: %w", err)
+	}
+	if err := decodeJSONObject(workMainParams, &agent.Work.Main.Params); err != nil {
+		return config.AgentConfig{}, fmt.Errorf("work_main_params_json: %w", err)
+	}
+	if err := decodeJSONObject(workSummaryParams, &agent.Work.Summary.Params); err != nil {
+		return config.AgentConfig{}, fmt.Errorf("work_summary_params_json: %w", err)
+	}
+	if err := decodeJSONObject(contextOverrides, &agent.ContextOverrides); err != nil {
+		return config.AgentConfig{}, fmt.Errorf("context_overrides_json: %w", err)
+	}
+	if agent.ContextOverrides == nil {
+		agent.ContextOverrides = map[string]any{}
+	}
+	return agent, nil
+}
+
+func encodeJSONObject(value any) (string, error) {
 	if value == nil {
-		return nil
+		return "{}", nil
 	}
-	return *value
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	if !json.Valid(payload) || len(payload) == 0 || payload[0] != '{' {
+		return "", fmt.Errorf("must be a JSON object")
+	}
+	return string(payload), nil
 }
 
-func nullablePositiveInt(value int) any {
-	if value <= 0 {
-		return nil
+func decodeJSONObject(raw string, target any) error {
+	if raw == "" {
+		raw = "{}"
 	}
-	return value
+	var probe map[string]any
+	if err := json.Unmarshal([]byte(raw), &probe); err != nil {
+		return err
+	}
+	return json.Unmarshal([]byte(raw), target)
 }
 
-func nullableFloat(value *float64) any {
-	if value == nil {
-		return nil
+func boolInt(value bool) int {
+	if value {
+		return 1
 	}
-	return *value
+	return 0
 }

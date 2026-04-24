@@ -211,6 +211,51 @@ CREATE INDEX IF NOT EXISTS idx_approval_requests_expires_at
 		Version: 10,
 		SQL:     `ALTER TABLE llm_profiles ADD COLUMN summary_max_tokens INTEGER;`,
 	},
+	{
+		Version: 11,
+		SQL: `
+DROP TABLE IF EXISTS llm_profiles;
+
+DELETE FROM config_runtime
+WHERE key LIKE 'llm.%'
+   OR key = 'personas.default';
+
+CREATE TABLE IF NOT EXISTS llm_providers (
+    id                      TEXT PRIMARY KEY,
+    name                    TEXT NOT NULL,
+    protocol                TEXT NOT NULL,
+    base_url                TEXT NOT NULL,
+    api_key_env             TEXT NOT NULL,
+    model_discovery         TEXT NOT NULL DEFAULT 'manual',
+    enabled                 INTEGER NOT NULL DEFAULT 1,
+    models_cache_json       TEXT NOT NULL DEFAULT '[]',
+    models_cache_updated_at TEXT,
+    created_at              TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS agent_configs (
+    id                          TEXT PRIMARY KEY,
+    name                        TEXT NOT NULL,
+    persona_key                 TEXT NOT NULL,
+    emotion_main_provider_id    TEXT NOT NULL REFERENCES llm_providers(id),
+    emotion_main_model          TEXT NOT NULL,
+    emotion_main_params_json    TEXT NOT NULL DEFAULT '{}',
+    emotion_summary_provider_id TEXT NOT NULL REFERENCES llm_providers(id),
+    emotion_summary_model       TEXT NOT NULL,
+    emotion_summary_params_json TEXT NOT NULL DEFAULT '{}',
+    work_main_provider_id       TEXT NOT NULL REFERENCES llm_providers(id),
+    work_main_model             TEXT NOT NULL,
+    work_main_params_json       TEXT NOT NULL DEFAULT '{}',
+    work_summary_provider_id    TEXT NOT NULL REFERENCES llm_providers(id),
+    work_summary_model          TEXT NOT NULL,
+    work_summary_params_json    TEXT NOT NULL DEFAULT '{}',
+    context_overrides_json      TEXT NOT NULL DEFAULT '{}',
+    created_at                  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at                  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.
