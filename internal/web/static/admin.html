@@ -1,298 +1,588 @@
-<!doctype html>
-<html lang="zh-CN">
-<head>
+<!DOCTYPE html><html data-src-ver="7ba05179" lang="zh-CN" data-immersive-translate-page-theme="light"><head>
+
+
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>EmoAgent Admin</title>
+  <link rel="stylesheet" href="shared.css">
   <style>
-    :root {
-      color-scheme: light;
-      --bg: #f7f3ed;
-      --panel: #fffdf8;
-      --panel-2: #f1ede6;
-      --ink: #242128;
-      --muted: #736b78;
-      --line: rgba(36, 33, 40, .12);
-      --accent: #c86145;
-      --accent-2: #2f7257;
-      --danger: #a93f3a;
-      --shadow: 0 18px 45px rgba(42, 35, 31, .08);
-      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      --sans: Inter, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-    }
-    * { box-sizing: border-box; }
-    html, body { height: 100%; margin: 0; }
-    body {
-      font-family: var(--sans);
-      color: var(--ink);
+    /* ── Admin Layout ── */
+    .admin-main {
+      display: grid; grid-template-rows: auto 1fr;
+      min-height: 0; overflow: hidden;
       background:
-        linear-gradient(135deg, rgba(200, 97, 69, .12), transparent 35%),
-        linear-gradient(225deg, rgba(47, 114, 87, .12), transparent 32%),
-        var(--bg);
+        radial-gradient(800px 400px at 80% -10%, rgba(255,181,194,.06), transparent 55%),
+        radial-gradient(600px 400px at 0% 110%, rgba(212,194,240,.08), transparent 55%),
+        var(--surface);
     }
-    button, input, textarea, select { font: inherit; color: inherit; }
-    button { cursor: pointer; }
-    .shell { min-height: 100%; display: grid; grid-template-rows: auto 1fr; }
-    .top {
-      display: flex; align-items: center; gap: 18px; padding: 16px 22px;
-      border-bottom: 1px solid var(--line); background: rgba(255, 253, 248, .86);
+
+    /* ── Top Bar ── */
+    .admin-top {
+      padding: 16px 28px;
+      border-bottom: 1px solid var(--hair);
+      background: rgba(255,253,251,.75);
       backdrop-filter: blur(18px);
+      display: flex; align-items: center; gap: 18px;
+      flex-shrink: 0;
     }
-    .brand { min-width: 220px; }
-    .brand h1 { margin: 0; font-size: 18px; font-weight: 800; }
-    .brand .sub { margin-top: 3px; color: var(--muted); font-size: 12px; }
-    .tabs { display: flex; gap: 6px; padding: 4px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+    .admin-brand h1 {
+      margin: 0; font-size: 17px; font-weight: 800; letter-spacing: -.02em;
+    }
+    .admin-brand .sub {
+      margin-top: 2px; color: var(--muted); font-size: 11px; font-weight: 500;
+    }
+    .tabs {
+      display: flex; gap: 4px; padding: 4px;
+      border: 1px solid var(--hair); border-radius: 14px;
+      background: #fff;
+    }
     .tab {
-      border: 0; background: transparent; border-radius: 9px; padding: 8px 13px;
-      font-weight: 750; font-size: 13px; color: var(--muted);
+      border: 0; background: transparent; border-radius: 10px;
+      padding: 8px 16px; font-weight: 700; font-size: 13px;
+      color: var(--muted); transition: all .2s var(--ease-out);
+      position: relative;
     }
-    .tab.active { background: var(--ink); color: #fff; }
-    .status { margin-left: auto; display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; }
-    .link { color: inherit; text-decoration: none; border: 1px solid var(--line); border-radius: 999px; padding: 7px 12px; background: var(--panel); }
-    .page { min-height: 0; display: grid; grid-template-columns: 360px 1fr; }
+    .tab:hover { color: var(--ink-2); }
+    .tab.active {
+      background: var(--ink); color: #fff;
+      box-shadow: 0 2px 8px rgba(42,34,48,.15);
+    }
+    .admin-status { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+
+    /* ── Content Area ── */
+    .admin-body {
+      min-height: 0; overflow: hidden;
+      position: relative;
+    }
+    .admin-page {
+      position: absolute; inset: 0;
+      display: grid; grid-template-columns: 320px 1fr;
+      opacity: 0; pointer-events: none;
+      transition: opacity .22s var(--ease-out), transform .22s var(--ease-out);
+      transform: translateY(6px);
+    }
+    .admin-page.active {
+      opacity: 1; pointer-events: auto;
+      transform: translateY(0);
+    }
+
+    /* ── List Pane ── */
     .list-pane {
-      min-height: 0; overflow: auto; padding: 18px; border-right: 1px solid var(--line);
-      background: rgba(255, 253, 248, .48);
+      min-height: 0; overflow-y: auto; padding: 18px;
+      border-right: 1px solid var(--hair);
+      background: rgba(255,253,251,.5);
+      display: flex; flex-direction: column; gap: 10px;
     }
-    .detail-pane { min-height: 0; overflow: auto; padding: 22px; }
-    .pane-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin-bottom: 12px; }
-    .pane-head h2 { margin: 0; font-size: 16px; }
-    .hint { color: var(--muted); font-size: 12px; margin-top: 3px; }
-    .search { width: 100%; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--panel); margin-bottom: 12px; }
-    .actions { display: flex; gap: 8px; margin-bottom: 14px; }
-    .btn {
-      border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px;
-      background: var(--panel); font-weight: 750; font-size: 13px;
+    .pane-head { display: flex; justify-content: space-between; align-items: flex-start; }
+    .pane-head h2 { margin: 0; font-size: 15px; font-weight: 800; }
+    .hint { color: var(--muted); font-size: 11px; margin-top: 2px; font-weight: 500; }
+    .search {
+      border: 1px solid var(--hair); border-radius: 12px; padding: 10px 12px;
+      background: #fff; font-size: 13px;
+      transition: border-color .15s, box-shadow .15s;
     }
-    .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-    .btn.good { background: var(--accent-2); border-color: var(--accent-2); color: #fff; }
-    .btn.danger { background: transparent; border-color: rgba(169, 63, 58, .35); color: var(--danger); }
-    .btn:disabled { opacity: .45; cursor: not-allowed; }
-    .items { display: grid; gap: 8px; }
+    .search:focus { border-color: var(--peach); box-shadow: 0 0 0 3px rgba(245,185,159,.12); }
+    .actions { display: flex; gap: 6px; }
+    .items { display: grid; gap: 6px; }
     .item {
-      width: 100%; text-align: left; border: 1px solid var(--line); border-radius: 12px;
-      background: var(--panel); padding: 12px; transition: transform .12s ease, border-color .12s ease;
+      width: 100%; text-align: left;
+      border: 1px solid var(--hair); border-radius: var(--r-sm);
+      background: #fff; padding: 12px 14px;
+      transition: all .18s var(--ease-out);
+      cursor: pointer;
     }
-    .item:hover { transform: translateY(-1px); border-color: rgba(200, 97, 69, .55); }
-    .item.active { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(200, 97, 69, .1); }
-    .item-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 800; }
-    .item-meta { margin-top: 5px; color: var(--muted); font-size: 12px; line-height: 1.45; word-break: break-word; }
-    .badge { display: inline-flex; border-radius: 999px; padding: 2px 7px; font-size: 11px; font-weight: 800; background: var(--panel-2); color: var(--muted); }
-    .badge.ok { color: var(--accent-2); background: rgba(47, 114, 87, .12); }
-    .badge.warn { color: var(--accent); background: rgba(200, 97, 69, .12); }
-    .section { max-width: 1120px; }
+    .item:hover {
+      transform: translateY(-1px);
+      border-color: rgba(255,181,194,.4);
+      box-shadow: var(--shadow-sm);
+    }
+    .item.active {
+      border-color: var(--peach);
+      background: var(--peach-soft);
+      box-shadow: 0 0 0 2px rgba(245,185,159,.12);
+    }
+    .item-title {
+      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      font-weight: 700; font-size: 13.5px;
+    }
+    .item-meta {
+      margin-top: 4px; color: var(--muted); font-size: 11.5px;
+      line-height: 1.4; word-break: break-word;
+      font-family: var(--font-data);
+    }
+
+    /* ── Detail Pane ── */
+    .detail-pane { min-height: 0; overflow-y: auto; padding: 24px; }
+    .section { max-width: 960px; }
+
+    /* ── Hero Card ── */
     .hero {
-      display: flex; justify-content: space-between; gap: 16px; align-items: flex-start;
-      padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); box-shadow: var(--shadow);
-      margin-bottom: 14px;
+      display: flex; justify-content: space-between; gap: 16px; align-items: center;
+      padding: 18px 20px; border-radius: var(--r-lg);
+      background: #fff; border: 1px solid var(--hair);
+      box-shadow: var(--shadow-md);
+      margin-bottom: 18px;
     }
-    .hero h2 { margin: 0; font-size: 22px; }
-    .hero .meta { margin-top: 6px; color: var(--muted); font-size: 13px; }
-    form { display: grid; gap: 14px; }
-    fieldset { border: 1px solid var(--line); border-radius: 14px; padding: 15px; background: rgba(255, 253, 248, .72); }
-    legend { padding: 0 7px; font-size: 13px; font-weight: 850; }
+    .hero h2 { margin: 0; font-size: 20px; font-weight: 800; letter-spacing: -.02em; }
+    .hero .meta { margin-top: 4px; color: var(--muted); font-size: 12px; font-family: var(--font-data); }
+    .hero-actions { display: flex; gap: 8px; flex-shrink: 0; }
+
+    /* ── Fieldset ── */
+    form { display: grid; gap: 16px; }
+    fieldset {
+      border: 1px solid var(--hair); border-radius: var(--r-lg);
+      padding: 16px; background: rgba(255,255,255,.7);
+      transition: box-shadow .2s;
+    }
+    fieldset:focus-within { box-shadow: 0 0 0 2px rgba(245,185,159,.1); }
+    legend {
+      padding: 0 8px; font-size: 12px; font-weight: 800;
+      text-transform: uppercase; letter-spacing: .08em; color: var(--ink-2);
+    }
     .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
     .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-    .field { display: grid; gap: 6px; min-width: 0; }
-    label { color: var(--muted); font-size: 12px; font-weight: 750; }
-    input, select, textarea {
-      width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 9px 10px;
-      background: var(--panel); outline: none;
-    }
-    textarea { min-height: 96px; resize: vertical; font-family: var(--mono); font-size: 12px; line-height: 1.45; }
-    input[readonly] { background: var(--panel-2); color: var(--muted); }
-    .mono { font-family: var(--mono); }
-    .checkline { display: flex; align-items: center; gap: 8px; min-height: 38px; }
-    .checkline input { width: auto; }
     .form-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-    .slot-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-    .slot { border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: var(--panel); display: grid; gap: 10px; }
-    .slot h3 { margin: 0; font-size: 14px; }
-    .models { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
-    .model-pill { border: 1px solid var(--line); border-radius: 999px; padding: 4px 8px; font-family: var(--mono); font-size: 11px; background: var(--panel); }
-    [hidden] { display: none !important; }
+
+    /* ── Model Slots (Agent Configs) ── */
+    .slot-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .slot {
+      border: 1px solid var(--hair); border-radius: var(--r-md);
+      background: #fff; overflow: hidden;
+      transition: box-shadow .2s var(--ease-out), border-color .2s;
+    }
+    .slot:hover { border-color: rgba(207,195,232,.4); }
+    .slot:focus-within { border-color: var(--lavender); box-shadow: 0 0 0 2px rgba(207,195,232,.15); }
+    .slot-head {
+      padding: 12px 14px; display: flex; align-items: center; justify-content: space-between;
+      background: linear-gradient(180deg, rgba(240,232,255,.3), transparent);
+      border-bottom: 1px solid var(--hair);
+    }
+    .slot-head h3 { margin: 0; font-size: 13px; font-weight: 800; color: var(--lavender-ink); }
+    .slot-core { padding: 12px 14px; display: grid; gap: 10px; }
+    .slot-advanced-toggle {
+      width: 100%; border: 0; background: transparent;
+      padding: 8px 14px; display: flex; align-items: center; gap: 6px;
+      font-size: 11.5px; font-weight: 700; color: var(--muted);
+      text-transform: uppercase; letter-spacing: .06em;
+      border-top: 1px solid var(--hair);
+      transition: all .15s var(--ease-out);
+    }
+    .slot-advanced-toggle:hover { color: var(--lavender-ink); background: rgba(239,233,248,.15); }
+    .slot-advanced-toggle .caret {
+      transition: transform .2s var(--ease-out); font-size: 10px;
+    }
+    .slot-advanced-toggle.open .caret { transform: rotate(180deg); }
+    .slot-advanced {
+      max-height: 0; overflow: hidden; opacity: 0;
+      transition: max-height .3s var(--ease-out), opacity .2s, padding .3s;
+      padding: 0 14px;
+    }
+    .slot-advanced.open {
+      max-height: 600px; opacity: 1;
+      padding: 12px 14px;
+      border-top: 1px solid var(--hair);
+    }
+
+    /* ── Model Pills ── */
+    .models { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 6px; }
+    .model-pill {
+      border: 1px solid var(--hair); border-radius: var(--r-pill);
+      padding: 4px 10px; font-family: var(--font-mono); font-size: 11px;
+      background: #fff; color: var(--ink-2);
+      transition: all .15s var(--ease-out);
+    }
+    .model-pill:hover { border-color: var(--peach); background: var(--peach-soft); }
+
+    /* ── Bubble Wall (Quirks) ── */
+    .bubble-wall {
+      display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start;
+      padding: 12px; min-height: 60px;
+      border: 1.5px dashed var(--hair);
+      border-radius: 14px;
+      background: linear-gradient(135deg, #FFF4F6, #F8F0FF);
+    }
+    .bubble {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 6px 10px 6px 13px; border-radius: 999px;
+      font-size: 13px; font-weight: 600; background: #fff;
+      box-shadow: 0 2px 8px rgba(42,34,48,.07);
+      animation: bubble-in .2s var(--ease-bounce) both;
+    }
+    @keyframes bubble-in {
+      from { opacity: 0; transform: scale(.8); }
+      to   { opacity: 1; transform: scale(1); }
+    }
+    .bubble[data-color="0"] { color: var(--peach-ink);    border: 1.5px solid var(--peach); }
+    .bubble[data-color="1"] { color: var(--lavender-ink); border: 1.5px solid var(--lavender); }
+    .bubble[data-color="2"] { color: var(--mint-ink);     border: 1.5px solid #A8D8C0; }
+    .bubble[data-color="3"] { color: var(--butter-ink);   border: 1.5px solid #F0D89A; }
+    .bubble[data-color="4"] { color: var(--sky-ink);      border: 1.5px solid var(--sky); }
+    .bubble-x {
+      width: 15px; height: 15px; border-radius: 50%;
+      display: grid; place-items: center; font-size: 9px; font-weight: 700;
+      cursor: pointer; opacity: 0;
+      transition: opacity .15s var(--ease-out);
+      background: rgba(212,99,122,.12); color: var(--peach-ink);
+      flex-shrink: 0;
+    }
+    .bubble:hover .bubble-x { opacity: 1; }
+    .bubble-add {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 6px 13px; border-radius: 999px;
+      font-size: 12px; font-weight: 600; color: var(--muted);
+      border: 1.5px dashed rgba(61,43,58,.14);
+      background: rgba(255,255,255,.6); cursor: pointer;
+      transition: all .15s var(--ease-out);
+    }
+    .bubble-add:hover { color: var(--ink-2); border-color: rgba(61,43,58,.25); }
+    .bubble-input-wrap {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 0 4px 0 12px; border-radius: 999px;
+      border: 1.5px solid var(--peach); background: var(--peach-soft);
+      box-shadow: 0 0 0 3px rgba(255,181,194,.18);
+      height: 32px;
+    }
+    .bubble-input-wrap input {
+      border: 0; background: transparent; outline: none;
+      font-size: 13px; font-weight: 600; color: var(--peach-ink);
+      width: 100px; padding: 0; font-family: var(--font-ui);
+    }
+    .bubble-confirm {
+      width: 22px; height: 22px; border-radius: 50%; border: 0;
+      background: var(--peach-ink); display: grid; place-items: center;
+      font-size: 11px; color: #fff; cursor: pointer; flex-shrink: 0;
+    }
+
+    /* ── Responsive ── */
     @media (max-width: 980px) {
-      .top { align-items: flex-start; flex-wrap: wrap; }
-      .status { width: 100%; margin-left: 0; }
-      .page { grid-template-columns: 1fr; }
-      .list-pane { border-right: 0; border-bottom: 1px solid var(--line); max-height: 42vh; }
+      .admin-top { flex-wrap: wrap; gap: 12px; }
+      .admin-status { width: 100%; margin-left: 0; }
+      .admin-page { grid-template-columns: 1fr; }
+      .list-pane { border-right: 0; border-bottom: 1px solid var(--hair); max-height: 40vh; }
       .grid, .grid.three, .slot-grid { grid-template-columns: 1fr; }
-      .hero { flex-direction: column; }
+      .hero { flex-direction: column; align-items: flex-start; }
     }
   </style>
-</head>
-<body>
-<div class="shell">
-  <header class="top">
-    <div class="brand">
-      <h1>EmoAgent Admin</h1>
-      <div class="sub">Providers / Agent Configs / Personas</div>
+<style data-id="immersive-translate-input-injected-css"></style></head>
+<body data-cc-id="cc-1" style="cursor: crosshair; background-color: rgb(255, 255, 255);">
+<div class="app-shell">
+  <!-- Rail -->
+  <aside class="rail">
+    <a class="rail-logo" href="/">E</a>
+    <a class="rail-btn" href="/" title="Chat">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path></svg>
+      <span class="rail-tooltip">Chat</span>
+    </a>
+    <a class="rail-btn active" href="/admin.html" title="Admin">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+      <span class="rail-tooltip">Admin</span>
+    </a>
+    <div class="rail-spacer"></div>
+    <div class="rail-avatar">U</div>
+  </aside>
+
+  <!-- Admin Main -->
+  <div class="admin-main">
+    <header class="admin-top">
+      <div class="admin-brand">
+        <h1>Admin</h1>
+        <div class="sub">Providers · Configs · Personas</div>
+      </div>
+      <nav class="tabs" aria-label="Admin sections">
+        <button class="tab active" data-tab="providers">Providers</button>
+        <button class="tab" data-tab="agents">Agent Configs</button>
+        <button class="tab" data-tab="personas">Personas</button>
+      </nav>
+      <div class="admin-status">
+        <div class="status-chip"><span class="dot"></span><span id="status">Unexpected non-whitespace character after JSON at position 4 (line 1 column 5)</span></div>
+      </div>
+    </header>
+
+    <div class="admin-body">
+      <!-- Providers -->
+      <div class="admin-page active" id="tab-providers">
+        <aside class="list-pane">
+          <div class="pane-head"><div><h2>Providers</h2><div class="hint" id="provider-count">0 providers</div></div></div>
+          <input class="search" id="provider-search" placeholder="Search providers...">
+          <div class="actions">
+            <button class="btn primary" id="new-provider">+ New</button>
+            <button class="btn ghost" id="reload-providers">Reload</button>
+          </div>
+          <div class="items stagger" id="provider-list"><div class="hint" style="padding:8px">No providers</div></div>
+        </aside>
+        <section class="detail-pane">
+          <div class="section anim-up">
+            <div class="hero">
+              <div>
+                <h2 id="provider-title">New Provider</h2>
+                <div class="meta" id="provider-meta">openai_compatible / manual</div>
+              </div>
+              <div class="hero-actions">
+                <button class="btn ghost" id="refresh-models" type="button" disabled="">Refresh Models</button>
+              </div>
+            </div>
+            <form id="provider-form">
+              <fieldset>
+                <legend>Provider</legend>
+                <div class="grid">
+                  <div class="field"><label for="p-id">ID</label><input class="mono" id="p-id" autocomplete="off"></div>
+                  <div class="field"><label for="p-name">Name</label><input id="p-name" autocomplete="off"></div>
+                  <div class="field"><label for="p-protocol">Protocol</label><select id="p-protocol"><option value="openai_compatible">openai_compatible</option><option value="anthropic">anthropic</option></select></div>
+                  <div class="field"><label for="p-discovery">Model Discovery</label><select id="p-discovery"><option value="manual">manual</option><option value="openai_models">openai_models</option><option value="anthropic_models">anthropic_models</option></select></div>
+                  <div class="field"><label for="p-base-url">Base URL</label><input class="mono" id="p-base-url" autocomplete="off"></div>
+                  <div class="field"><label for="p-api-key-env">API Key Env</label><input class="mono" id="p-api-key-env" autocomplete="off"></div>
+                  <label class="checkline"><input type="checkbox" id="p-enabled"> Enabled</label>
+                </div>
+              </fieldset>
+              <div class="form-actions">
+                <button class="btn primary" id="save-provider" type="submit">Save Provider</button>
+                <button class="btn danger" id="delete-provider" type="button" disabled="">Delete</button>
+              </div>
+            </form>
+            <div class="models" id="provider-models"></div>
+          </div>
+        </section>
+      </div>
+
+      <!-- Agent Configs -->
+      <div class="admin-page" id="tab-agents">
+        <aside class="list-pane">
+          <div class="pane-head"><div><h2>Agent Configs</h2><div class="hint" id="agent-count">0 configs · active: none</div></div></div>
+          <input class="search" id="agent-search" placeholder="Search configs...">
+          <div class="actions">
+            <button class="btn primary" id="new-agent">+ New</button>
+            <button class="btn ghost" id="reload-agents">Reload</button>
+          </div>
+          <div class="items stagger" id="agent-list"><div class="hint" style="padding:8px">No agent configs</div></div>
+        </aside>
+        <section class="detail-pane">
+          <div class="section anim-up">
+            <div class="hero">
+              <div>
+                <h2 id="agent-title">New Config</h2>
+                <div class="meta" id="agent-meta">Active: none</div>
+              </div>
+              <div class="hero-actions">
+                <button class="btn good" id="activate-agent" type="button" disabled="">✦ Activate</button>
+              </div>
+            </div>
+            <form id="agent-form">
+              <fieldset>
+                <legend>Identity</legend>
+                <div class="grid three">
+                  <div class="field"><label for="a-id">ID</label><input class="mono" id="a-id" autocomplete="off"></div>
+                  <div class="field"><label for="a-name">Name</label><input id="a-name" autocomplete="off"></div>
+                  <div class="field"><label for="a-persona">Persona</label><select id="a-persona"></select></div>
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend>Model Bindings</legend>
+                <datalist id="model-options"></datalist>
+                <div class="slot-grid" id="slot-grid">
+      <div class="slot" data-slot="emotion-main">
+        <div class="slot-head">
+          <h3>💬 Emotion Main</h3>
+        </div>
+        <div class="slot-core">
+          <div class="grid">
+            <div class="field"><label for="emotion-main-provider">Provider</label><select id="emotion-main-provider"></select></div>
+            <div class="field"><label for="emotion-main-model">Model</label><input id="emotion-main-model" list="model-options" autocomplete="off"></div>
+          </div>
+          <div class="grid">
+            <div class="field"><label for="emotion-main-max">Max Tokens</label><input id="emotion-main-max" type="number" min="0" placeholder="inherit"></div>
+            <div class="field"><label for="emotion-main-temp">Temperature</label><input id="emotion-main-temp" type="number" min="0" max="2" step="0.01" placeholder="omit"></div>
+          </div>
+        </div>
+        <button class="slot-advanced-toggle" type="button" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')">
+          <span class="caret">▼</span> Advanced Parameters
+        </button>
+        <div class="slot-advanced">
+          <div class="grid">
+            <div class="field"><label for="emotion-main-stream">Stream</label><select id="emotion-main-stream"><option value="">inherit</option><option value="true">true</option><option value="false">false</option></select></div>
+            <div class="field"><label for="emotion-main-top-p">Top P</label><input id="emotion-main-top-p" type="number" min="0" max="1" step="0.01" placeholder="omit"></div>
+            <div class="field"><label for="emotion-main-presence">Presence Penalty</label><input id="emotion-main-presence" type="number" step="0.01" placeholder="omit"></div>
+            <div class="field"><label for="emotion-main-frequency">Frequency Penalty</label><input id="emotion-main-frequency" type="number" step="0.01" placeholder="omit"></div>
+            <div class="field"><label for="emotion-main-reasoning">Reasoning Effort</label><input id="emotion-main-reasoning" autocomplete="off" placeholder="omit"></div>
+            <div class="field"><label for="emotion-main-thinking-mode">Thinking Mode</label><input id="emotion-main-thinking-mode" autocomplete="off" placeholder="omit"></div>
+            <div class="field"><label for="emotion-main-thinking-budget">Thinking Budget</label><input id="emotion-main-thinking-budget" type="number" min="0" placeholder="omit"></div>
+            <div class="field"><label for="emotion-main-thinking-effort">Thinking Effort</label><input id="emotion-main-thinking-effort" autocomplete="off" placeholder="omit"></div>
+          </div>
+          <div class="field" style="margin-top:10px"><label for="emotion-main-extra">Extra JSON</label><textarea id="emotion-main-extra" placeholder="{}"></textarea></div>
+        </div>
+      </div>
+    
+      <div class="slot" data-slot="emotion-summary">
+        <div class="slot-head">
+          <h3>📝 Emotion Summary</h3>
+        </div>
+        <div class="slot-core">
+          <div class="grid">
+            <div class="field"><label for="emotion-summary-provider">Provider</label><select id="emotion-summary-provider"></select></div>
+            <div class="field"><label for="emotion-summary-model">Model</label><input id="emotion-summary-model" list="model-options" autocomplete="off"></div>
+          </div>
+          <div class="grid">
+            <div class="field"><label for="emotion-summary-max">Max Tokens</label><input id="emotion-summary-max" type="number" min="0" placeholder="inherit"></div>
+            <div class="field"><label for="emotion-summary-temp">Temperature</label><input id="emotion-summary-temp" type="number" min="0" max="2" step="0.01" placeholder="omit"></div>
+          </div>
+        </div>
+        <button class="slot-advanced-toggle" type="button" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')">
+          <span class="caret">▼</span> Advanced Parameters
+        </button>
+        <div class="slot-advanced">
+          <div class="grid">
+            <div class="field"><label for="emotion-summary-stream">Stream</label><select id="emotion-summary-stream"><option value="">inherit</option><option value="true">true</option><option value="false">false</option></select></div>
+            <div class="field"><label for="emotion-summary-top-p">Top P</label><input id="emotion-summary-top-p" type="number" min="0" max="1" step="0.01" placeholder="omit"></div>
+            <div class="field"><label for="emotion-summary-presence">Presence Penalty</label><input id="emotion-summary-presence" type="number" step="0.01" placeholder="omit"></div>
+            <div class="field"><label for="emotion-summary-frequency">Frequency Penalty</label><input id="emotion-summary-frequency" type="number" step="0.01" placeholder="omit"></div>
+            <div class="field"><label for="emotion-summary-reasoning">Reasoning Effort</label><input id="emotion-summary-reasoning" autocomplete="off" placeholder="omit"></div>
+            <div class="field"><label for="emotion-summary-thinking-mode">Thinking Mode</label><input id="emotion-summary-thinking-mode" autocomplete="off" placeholder="omit"></div>
+            <div class="field"><label for="emotion-summary-thinking-budget">Thinking Budget</label><input id="emotion-summary-thinking-budget" type="number" min="0" placeholder="omit"></div>
+            <div class="field"><label for="emotion-summary-thinking-effort">Thinking Effort</label><input id="emotion-summary-thinking-effort" autocomplete="off" placeholder="omit"></div>
+          </div>
+          <div class="field" style="margin-top:10px"><label for="emotion-summary-extra">Extra JSON</label><textarea id="emotion-summary-extra" placeholder="{}"></textarea></div>
+        </div>
+      </div>
+    
+      <div class="slot" data-slot="work-main">
+        <div class="slot-head">
+          <h3>⚙️ Work Main</h3>
+        </div>
+        <div class="slot-core">
+          <div class="grid">
+            <div class="field"><label for="work-main-provider">Provider</label><select id="work-main-provider"></select></div>
+            <div class="field"><label for="work-main-model">Model</label><input id="work-main-model" list="model-options" autocomplete="off"></div>
+          </div>
+          <div class="grid">
+            <div class="field"><label for="work-main-max">Max Tokens</label><input id="work-main-max" type="number" min="0" placeholder="inherit"></div>
+            <div class="field"><label for="work-main-temp">Temperature</label><input id="work-main-temp" type="number" min="0" max="2" step="0.01" placeholder="omit"></div>
+          </div>
+        </div>
+        <button class="slot-advanced-toggle" type="button" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')">
+          <span class="caret">▼</span> Advanced Parameters
+        </button>
+        <div class="slot-advanced">
+          <div class="grid">
+            <div class="field"><label for="work-main-stream">Stream</label><select id="work-main-stream"><option value="">inherit</option><option value="true">true</option><option value="false">false</option></select></div>
+            <div class="field"><label for="work-main-top-p">Top P</label><input id="work-main-top-p" type="number" min="0" max="1" step="0.01" placeholder="omit"></div>
+            <div class="field"><label for="work-main-presence">Presence Penalty</label><input id="work-main-presence" type="number" step="0.01" placeholder="omit"></div>
+            <div class="field"><label for="work-main-frequency">Frequency Penalty</label><input id="work-main-frequency" type="number" step="0.01" placeholder="omit"></div>
+            <div class="field"><label for="work-main-reasoning">Reasoning Effort</label><input id="work-main-reasoning" autocomplete="off" placeholder="omit"></div>
+            <div class="field"><label for="work-main-thinking-mode">Thinking Mode</label><input id="work-main-thinking-mode" autocomplete="off" placeholder="omit"></div>
+            <div class="field"><label for="work-main-thinking-budget">Thinking Budget</label><input id="work-main-thinking-budget" type="number" min="0" placeholder="omit"></div>
+            <div class="field"><label for="work-main-thinking-effort">Thinking Effort</label><input id="work-main-thinking-effort" autocomplete="off" placeholder="omit"></div>
+          </div>
+          <div class="field" style="margin-top:10px"><label for="work-main-extra">Extra JSON</label><textarea id="work-main-extra" placeholder="{}"></textarea></div>
+        </div>
+      </div>
+    
+      <div class="slot" data-slot="work-summary">
+        <div class="slot-head">
+          <h3>📋 Work Summary</h3>
+        </div>
+        <div class="slot-core">
+          <div class="grid">
+            <div class="field"><label for="work-summary-provider">Provider</label><select id="work-summary-provider"></select></div>
+            <div class="field"><label for="work-summary-model">Model</label><input id="work-summary-model" list="model-options" autocomplete="off"></div>
+          </div>
+          <div class="grid">
+            <div class="field"><label for="work-summary-max">Max Tokens</label><input id="work-summary-max" type="number" min="0" placeholder="inherit"></div>
+            <div class="field"><label for="work-summary-temp">Temperature</label><input id="work-summary-temp" type="number" min="0" max="2" step="0.01" placeholder="omit"></div>
+          </div>
+        </div>
+        <button class="slot-advanced-toggle" type="button" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')">
+          <span class="caret">▼</span> Advanced Parameters
+        </button>
+        <div class="slot-advanced">
+          <div class="grid">
+            <div class="field"><label for="work-summary-stream">Stream</label><select id="work-summary-stream"><option value="">inherit</option><option value="true">true</option><option value="false">false</option></select></div>
+            <div class="field"><label for="work-summary-top-p">Top P</label><input id="work-summary-top-p" type="number" min="0" max="1" step="0.01" placeholder="omit"></div>
+            <div class="field"><label for="work-summary-presence">Presence Penalty</label><input id="work-summary-presence" type="number" step="0.01" placeholder="omit"></div>
+            <div class="field"><label for="work-summary-frequency">Frequency Penalty</label><input id="work-summary-frequency" type="number" step="0.01" placeholder="omit"></div>
+            <div class="field"><label for="work-summary-reasoning">Reasoning Effort</label><input id="work-summary-reasoning" autocomplete="off" placeholder="omit"></div>
+            <div class="field"><label for="work-summary-thinking-mode">Thinking Mode</label><input id="work-summary-thinking-mode" autocomplete="off" placeholder="omit"></div>
+            <div class="field"><label for="work-summary-thinking-budget">Thinking Budget</label><input id="work-summary-thinking-budget" type="number" min="0" placeholder="omit"></div>
+            <div class="field"><label for="work-summary-thinking-effort">Thinking Effort</label><input id="work-summary-thinking-effort" autocomplete="off" placeholder="omit"></div>
+          </div>
+          <div class="field" style="margin-top:10px"><label for="work-summary-extra">Extra JSON</label><textarea id="work-summary-extra" placeholder="{}"></textarea></div>
+        </div>
+      </div>
     </div>
-    <nav class="tabs" aria-label="Admin sections">
-      <button class="tab active" data-tab="providers">Providers</button>
-      <button class="tab" data-tab="agents">Agent Configs</button>
-      <button class="tab" data-tab="personas">Personas</button>
-    </nav>
-    <div class="status">
-      <span id="status">Ready</span>
-      <a class="link" href="/">Chat</a>
+              </fieldset>
+              <fieldset>
+                <legend>Context Overrides</legend>
+                <div class="grid">
+                  <div class="field"><label for="ctx-input-budget">Input Budget Tokens</label><input id="ctx-input-budget" type="number" min="1" placeholder="inherit"></div>
+                  <div class="field"><label for="ctx-reserve-output">Reserve Output Tokens</label><input id="ctx-reserve-output" type="number" min="1" placeholder="inherit"></div>
+                  <div class="field"><label for="ctx-soft-ratio">Soft Compact Ratio</label><input id="ctx-soft-ratio" type="number" min="0" max="1" step="0.01" placeholder="inherit"></div>
+                  <div class="field"><label for="ctx-hard-ratio">Hard Compact Ratio</label><input id="ctx-hard-ratio" type="number" min="0" max="1" step="0.01" placeholder="inherit"></div>
+                </div>
+              </fieldset>
+              <div class="form-actions">
+                <button class="btn primary" id="save-agent" type="submit">Save Config</button>
+                <button class="btn danger" id="delete-agent" type="button" disabled="">Delete</button>
+              </div>
+            </form>
+          </div>
+        </section>
+      </div>
+
+      <!-- Personas -->
+      <div class="admin-page" id="tab-personas">
+        <aside class="list-pane">
+          <div class="pane-head"><div><h2>Personas</h2><div class="hint" id="persona-count">0 personas · active: none</div></div></div>
+          <input class="search" id="persona-search" placeholder="Search personas...">
+          <div class="actions">
+            <button class="btn primary" id="new-persona">+ New</button>
+            <button class="btn ghost" id="reload-personas">Reload</button>
+          </div>
+          <div class="items stagger" id="persona-list"><div class="hint" style="padding:8px">No personas</div></div>
+        </aside>
+        <section class="detail-pane">
+          <div class="section anim-up">
+            <div class="hero">
+              <div>
+                <h2 id="persona-title">New Persona</h2>
+                <div class="meta" id="persona-meta">Persona files are keyed by ID</div>
+              </div>
+            </div>
+            <form id="persona-form">
+              <fieldset>
+                <legend>Persona</legend>
+                <div class="grid">
+                  <div class="field"><label for="persona-key">Key</label><input class="mono" id="persona-key" autocomplete="off"></div>
+                  <div class="field"><label for="persona-name">Name</label><input id="persona-name" autocomplete="off"></div>
+                  <div class="field"><label>Tone</label><div id="persona-tone" class="bubble-wall"></div></div>
+                  <div class="field"><label for="persona-description">Description</label><input id="persona-description" autocomplete="off"></div>
+                </div>
+                <div class="grid" style="margin-top:12px">
+                  <div class="field"><label for="persona-greeting">Greeting</label><textarea id="persona-greeting"></textarea></div>
+                  <div class="field"><label>Quirks</label><div id="persona-quirks" class="bubble-wall"></div></div>
+                </div>
+                <div class="field" style="margin-top:12px"><label for="persona-system">System Prompt</label><textarea id="persona-system" style="min-height:160px"></textarea></div>
+                <div class="field" style="margin-top:12px"><label for="persona-progress">Work Progress Phrases JSON</label><textarea id="persona-progress" placeholder="{}"></textarea></div>
+              </fieldset>
+              <div class="form-actions">
+                <button class="btn primary" id="save-persona" type="submit">Save Persona</button>
+                <button class="btn danger" id="delete-persona" type="button" disabled="">Delete</button>
+              </div>
+            </form>
+          </div>
+        </section>
+      </div>
     </div>
-  </header>
-
-  <main class="page" id="tab-providers">
-    <aside class="list-pane">
-      <div class="pane-head">
-        <div><h2>Providers</h2><div class="hint" id="provider-count">0 providers</div></div>
-      </div>
-      <input class="search" id="provider-search" placeholder="Search providers">
-      <div class="actions">
-        <button class="btn primary" id="new-provider">New Provider</button>
-        <button class="btn" id="reload-providers">Reload</button>
-      </div>
-      <div class="items" id="provider-list"></div>
-    </aside>
-    <section class="detail-pane">
-      <div class="section">
-        <div class="hero">
-          <div>
-            <h2 id="provider-title">New Provider</h2>
-            <div class="meta" id="provider-meta">openai_compatible / manual</div>
-          </div>
-          <div class="form-actions">
-            <button class="btn" id="refresh-models" type="button">Refresh Models</button>
-          </div>
-        </div>
-        <form id="provider-form">
-          <fieldset>
-            <legend>Provider</legend>
-            <div class="grid">
-              <div class="field"><label for="p-id">ID</label><input class="mono" id="p-id" autocomplete="off"></div>
-              <div class="field"><label for="p-name">Name</label><input id="p-name" autocomplete="off"></div>
-              <div class="field"><label for="p-protocol">Protocol</label><select id="p-protocol"><option value="openai_compatible">openai_compatible</option><option value="anthropic">anthropic</option></select></div>
-              <div class="field"><label for="p-discovery">Model Discovery</label><select id="p-discovery"><option value="manual">manual</option><option value="openai_models">openai_models</option><option value="anthropic_models">anthropic_models</option></select></div>
-              <div class="field"><label for="p-base-url">Base URL</label><input class="mono" id="p-base-url" autocomplete="off"></div>
-              <div class="field"><label for="p-api-key-env">API Key Env</label><input class="mono" id="p-api-key-env" autocomplete="off"></div>
-              <label class="checkline"><input type="checkbox" id="p-enabled"> Enabled</label>
-            </div>
-          </fieldset>
-          <div class="form-actions">
-            <button class="btn primary" id="save-provider" type="submit">Save Provider</button>
-            <button class="btn danger" id="delete-provider" type="button">Delete</button>
-          </div>
-        </form>
-        <div class="models" id="provider-models"></div>
-      </div>
-    </section>
-  </main>
-
-  <main class="page" id="tab-agents" hidden>
-    <aside class="list-pane">
-      <div class="pane-head">
-        <div><h2>Agent Configs</h2><div class="hint" id="agent-count">0 configs</div></div>
-      </div>
-      <input class="search" id="agent-search" placeholder="Search configs">
-      <div class="actions">
-        <button class="btn primary" id="new-agent">New Config</button>
-        <button class="btn" id="reload-agents">Reload</button>
-      </div>
-      <div class="items" id="agent-list"></div>
-    </aside>
-    <section class="detail-pane">
-      <div class="section">
-        <div class="hero">
-          <div>
-            <h2 id="agent-title">New Config</h2>
-            <div class="meta" id="agent-meta">No active config loaded</div>
-          </div>
-          <button class="btn good" id="activate-agent" type="button">Activate</button>
-        </div>
-        <form id="agent-form">
-          <fieldset>
-            <legend>Identity</legend>
-            <div class="grid three">
-              <div class="field"><label for="a-id">ID</label><input class="mono" id="a-id" autocomplete="off"></div>
-              <div class="field"><label for="a-name">Name</label><input id="a-name" autocomplete="off"></div>
-              <div class="field"><label for="a-persona">Persona</label><select id="a-persona"></select></div>
-            </div>
-          </fieldset>
-          <fieldset>
-            <legend>Model Bindings</legend>
-            <datalist id="model-options"></datalist>
-            <div class="slot-grid" id="slot-grid"></div>
-          </fieldset>
-          <fieldset>
-            <legend>Context Overrides</legend>
-            <div class="grid">
-              <div class="field"><label for="ctx-input-budget">Input Budget Tokens</label><input id="ctx-input-budget" type="number" min="1" placeholder="inherit"></div>
-              <div class="field"><label for="ctx-reserve-output">Reserve Output Tokens</label><input id="ctx-reserve-output" type="number" min="1" placeholder="inherit"></div>
-              <div class="field"><label for="ctx-soft-ratio">Soft Compact Ratio</label><input id="ctx-soft-ratio" type="number" min="0" max="1" step="0.01" placeholder="inherit"></div>
-              <div class="field"><label for="ctx-hard-ratio">Hard Compact Ratio</label><input id="ctx-hard-ratio" type="number" min="0" max="1" step="0.01" placeholder="inherit"></div>
-            </div>
-          </fieldset>
-          <div class="form-actions">
-            <button class="btn primary" id="save-agent" type="submit">Save Config</button>
-            <button class="btn danger" id="delete-agent" type="button">Delete</button>
-          </div>
-        </form>
-      </div>
-    </section>
-  </main>
-
-  <main class="page" id="tab-personas" hidden>
-    <aside class="list-pane">
-      <div class="pane-head">
-        <div><h2>Personas</h2><div class="hint" id="persona-count">0 personas</div></div>
-      </div>
-      <input class="search" id="persona-search" placeholder="Search personas">
-      <div class="actions">
-        <button class="btn primary" id="new-persona">New Persona</button>
-        <button class="btn" id="reload-personas">Reload</button>
-      </div>
-      <div class="items" id="persona-list"></div>
-    </aside>
-    <section class="detail-pane">
-      <div class="section">
-        <div class="hero">
-          <div>
-            <h2 id="persona-title">New Persona</h2>
-            <div class="meta" id="persona-meta">Persona files are keyed by ID</div>
-          </div>
-        </div>
-        <form id="persona-form">
-          <fieldset>
-            <legend>Persona</legend>
-            <div class="grid">
-              <div class="field"><label for="persona-key">Key</label><input class="mono" id="persona-key" autocomplete="off"></div>
-              <div class="field"><label for="persona-name">Name</label><input id="persona-name" autocomplete="off"></div>
-              <div class="field"><label for="persona-tone">Tone</label><input id="persona-tone" autocomplete="off"></div>
-              <div class="field"><label for="persona-description">Description</label><input id="persona-description" autocomplete="off"></div>
-            </div>
-            <div class="grid">
-              <div class="field"><label for="persona-greeting">Greeting</label><textarea id="persona-greeting"></textarea></div>
-              <div class="field"><label for="persona-quirks">Quirks</label><textarea id="persona-quirks" placeholder="one per line"></textarea></div>
-            </div>
-            <div class="field"><label for="persona-system">System Prompt</label><textarea id="persona-system" style="min-height:180px"></textarea></div>
-            <div class="field"><label for="persona-progress">Work Progress Phrases JSON</label><textarea id="persona-progress" placeholder="{}"></textarea></div>
-          </fieldset>
-          <div class="form-actions">
-            <button class="btn primary" id="save-persona" type="submit">Save Persona</button>
-            <button class="btn danger" id="delete-persona" type="button">Delete</button>
-          </div>
-        </form>
-      </div>
-    </section>
-  </main>
+  </div>
 </div>
 
 <script>
 (() => {
   const $ = id => document.getElementById(id);
   const tabs = Array.from(document.querySelectorAll('.tab'));
+  const pages = Array.from(document.querySelectorAll('.admin-page'));
   const slotDefs = [
-    ['emotion-main', 'Emotion main'],
-    ['emotion-summary', 'Emotion summary'],
-    ['work-main', 'Work main'],
-    ['work-summary', 'Work summary'],
+    ['emotion-main', 'Emotion Main', '💬'],
+    ['emotion-summary', 'Emotion Summary', '📝'],
+    ['work-main', 'Work Main', '⚙️'],
+    ['work-summary', 'Work Summary', '📋'],
   ];
   const state = {
     providers: [],
@@ -307,31 +597,14 @@
   };
 
   function status(text) { $('status').textContent = text; }
-  function esc(value) {
-    return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+  function esc(v) {
+    return String(v ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
   }
-  function text(value) { return String(value ?? '').trim(); }
-  function numberOrUndefined(value) {
-    const raw = text(value);
-    if (!raw) return undefined;
-    const n = Number(raw);
-    return Number.isFinite(n) ? n : undefined;
-  }
-  function intOrUndefined(value) {
-    const n = numberOrUndefined(value);
-    return n === undefined ? undefined : Math.trunc(n);
-  }
-  function boolOrUndefined(value) {
-    if (value === 'true') return true;
-    if (value === 'false') return false;
-    return undefined;
-  }
-  function cleanObject(obj) {
-    for (const key of Object.keys(obj)) {
-      if (obj[key] === undefined || obj[key] === '' || obj[key] === null) delete obj[key];
-    }
-    return obj;
-  }
+  function text(v) { return String(v ?? '').trim(); }
+  function numberOrUndefined(v) { const r = text(v); if (!r) return undefined; const n = Number(r); return Number.isFinite(n) ? n : undefined; }
+  function intOrUndefined(v) { const n = numberOrUndefined(v); return n === undefined ? undefined : Math.trunc(n); }
+  function boolOrUndefined(v) { if (v === 'true') return true; if (v === 'false') return false; return undefined; }
+  function cleanObject(o) { for (const k of Object.keys(o)) { if (o[k] === undefined || o[k] === '' || o[k] === null) delete o[k]; } return o; }
   async function request(url, options = {}) {
     const init = {...options};
     if (init.body && typeof init.body !== 'string') {
@@ -345,13 +618,16 @@
     return data;
   }
 
+  // ── Tab Switching ──
   function switchTab(name) {
     tabs.forEach(btn => btn.classList.toggle('active', btn.dataset.tab === name));
-    $('tab-providers').hidden = name !== 'providers';
-    $('tab-agents').hidden = name !== 'agents';
-    $('tab-personas').hidden = name !== 'personas';
+    pages.forEach(p => {
+      const isTarget = p.id === `tab-${name}`;
+      p.classList.toggle('active', isTarget);
+    });
   }
 
+  // ── Provider helpers ──
   function providerOptions(selected) {
     return state.providers.map(p => `<option value="${esc(p.id)}"${p.id === selected ? ' selected' : ''}>${esc(p.name || p.id)}</option>`).join('');
   }
@@ -362,54 +638,66 @@
     const [group, name] = slot.split('-');
     return agent?.[group]?.[name] || {};
   }
-  function paramsOf(binding) { return binding?.params || {}; }
+  function paramsOf(b) { return b?.params || {}; }
 
+  // ── Slot Fields with Collapsible Advanced ──
   function createSlotFields() {
-    $('slot-grid').innerHTML = slotDefs.map(([id, label]) => `
+    $('slot-grid').innerHTML = slotDefs.map(([id, label, icon]) => `
       <div class="slot" data-slot="${id}">
-        <h3>${esc(label)}</h3>
-        <div class="grid">
-          <div class="field"><label for="${id}-provider">Provider</label><select id="${id}-provider">${providerOptions('')}</select></div>
-          <div class="field"><label for="${id}-model">Model</label><input id="${id}-model" list="model-options" autocomplete="off"></div>
-          <div class="field"><label for="${id}-max">Max Tokens</label><input id="${id}-max" type="number" min="0" placeholder="inherit"></div>
-          <div class="field"><label for="${id}-temp">Temperature</label><input id="${id}-temp" type="number" min="0" max="2" step="0.01" placeholder="omit"></div>
-          <div class="field"><label for="${id}-stream">Stream</label><select id="${id}-stream"><option value="">inherit</option><option value="true">true</option><option value="false">false</option></select></div>
-          <div class="field"><label for="${id}-top-p">Top P</label><input id="${id}-top-p" type="number" min="0" max="1" step="0.01" placeholder="omit"></div>
-          <div class="field"><label for="${id}-presence">Presence Penalty</label><input id="${id}-presence" type="number" step="0.01" placeholder="omit"></div>
-          <div class="field"><label for="${id}-frequency">Frequency Penalty</label><input id="${id}-frequency" type="number" step="0.01" placeholder="omit"></div>
-          <div class="field"><label for="${id}-reasoning">Reasoning Effort</label><input id="${id}-reasoning" autocomplete="off" placeholder="omit"></div>
-          <div class="field"><label for="${id}-thinking-mode">Thinking Mode</label><input id="${id}-thinking-mode" autocomplete="off" placeholder="omit"></div>
-          <div class="field"><label for="${id}-thinking-budget">Thinking Budget</label><input id="${id}-thinking-budget" type="number" min="0" placeholder="omit"></div>
-          <div class="field"><label for="${id}-thinking-effort">Thinking Effort</label><input id="${id}-thinking-effort" autocomplete="off" placeholder="omit"></div>
+        <div class="slot-head">
+          <h3>${icon} ${esc(label)}</h3>
         </div>
-        <div class="field"><label for="${id}-extra">Extra JSON</label><textarea id="${id}-extra" placeholder="{}"></textarea></div>
+        <div class="slot-core">
+          <div class="grid">
+            <div class="field"><label for="${id}-provider">Provider</label><select id="${id}-provider">${providerOptions('')}</select></div>
+            <div class="field"><label for="${id}-model">Model</label><input id="${id}-model" list="model-options" autocomplete="off"></div>
+          </div>
+          <div class="grid">
+            <div class="field"><label for="${id}-max">Max Tokens</label><input id="${id}-max" type="number" min="0" placeholder="inherit"></div>
+            <div class="field"><label for="${id}-temp">Temperature</label><input id="${id}-temp" type="number" min="0" max="2" step="0.01" placeholder="omit"></div>
+          </div>
+        </div>
+        <button class="slot-advanced-toggle" type="button" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')">
+          <span class="caret">▼</span> Advanced Parameters
+        </button>
+        <div class="slot-advanced">
+          <div class="grid">
+            <div class="field"><label for="${id}-stream">Stream</label><select id="${id}-stream"><option value="">inherit</option><option value="true">true</option><option value="false">false</option></select></div>
+            <div class="field"><label for="${id}-top-p">Top P</label><input id="${id}-top-p" type="number" min="0" max="1" step="0.01" placeholder="omit"></div>
+            <div class="field"><label for="${id}-presence">Presence Penalty</label><input id="${id}-presence" type="number" step="0.01" placeholder="omit"></div>
+            <div class="field"><label for="${id}-frequency">Frequency Penalty</label><input id="${id}-frequency" type="number" step="0.01" placeholder="omit"></div>
+            <div class="field"><label for="${id}-reasoning">Reasoning Effort</label><input id="${id}-reasoning" autocomplete="off" placeholder="omit"></div>
+            <div class="field"><label for="${id}-thinking-mode">Thinking Mode</label><input id="${id}-thinking-mode" autocomplete="off" placeholder="omit"></div>
+            <div class="field"><label for="${id}-thinking-budget">Thinking Budget</label><input id="${id}-thinking-budget" type="number" min="0" placeholder="omit"></div>
+            <div class="field"><label for="${id}-thinking-effort">Thinking Effort</label><input id="${id}-thinking-effort" autocomplete="off" placeholder="omit"></div>
+          </div>
+          <div class="field" style="margin-top:10px"><label for="${id}-extra">Extra JSON</label><textarea id="${id}-extra" placeholder="{}"></textarea></div>
+        </div>
       </div>
     `).join('');
   }
 
+  // ── Provider CRUD ──
   function renderProviderList() {
     const q = text($('provider-search').value).toLowerCase();
     const items = state.providers.filter(p => `${p.id} ${p.name} ${p.protocol} ${p.base_url}`.toLowerCase().includes(q));
     $('provider-count').textContent = `${state.providers.length} provider${state.providers.length === 1 ? '' : 's'}`;
-    $('provider-list').innerHTML = items.length ? items.map(p => `
+    const list = $('provider-list');
+    list.innerHTML = items.length ? items.map(p => `
       <button class="item ${p.id === state.selectedProvider ? 'active' : ''}" data-id="${esc(p.id)}">
         <div class="item-title"><span>${esc(p.name || p.id)}</span><span class="badge ${p.enabled ? 'ok' : 'warn'}">${p.enabled ? 'enabled' : 'disabled'}</span></div>
-        <div class="item-meta">${esc(p.id)} / ${esc(p.protocol)}<br>${esc(p.base_url)}</div>
+        <div class="item-meta">${esc(p.id)} · ${esc(p.protocol)}</div>
       </button>
-    `).join('') : '<div class="hint">No providers</div>';
-    $('provider-list').querySelectorAll('.item').forEach(btn => btn.addEventListener('click', () => selectProvider(btn.dataset.id)));
+    `).join('') : '<div class="hint" style="padding:8px">No providers</div>';
+    list.querySelectorAll('.item').forEach(btn => btn.addEventListener('click', () => selectProvider(btn.dataset.id)));
   }
 
   function clearProvider() {
     state.selectedProvider = '';
-    $('p-id').readOnly = false;
-    $('p-id').value = '';
-    $('p-name').value = '';
-    $('p-protocol').value = 'openai_compatible';
-    $('p-discovery').value = 'manual';
-    $('p-base-url').value = '';
-    $('p-api-key-env').value = '';
-    $('p-enabled').checked = true;
+    $('p-id').readOnly = false; $('p-id').value = '';
+    $('p-name').value = ''; $('p-protocol').value = 'openai_compatible';
+    $('p-discovery').value = 'manual'; $('p-base-url').value = '';
+    $('p-api-key-env').value = ''; $('p-enabled').checked = true;
     $('provider-title').textContent = 'New Provider';
     $('provider-meta').textContent = 'openai_compatible / manual';
     $('provider-models').innerHTML = '';
@@ -417,14 +705,13 @@
     $('refresh-models').disabled = true;
     renderProviderList();
   }
+
   async function selectProvider(id) {
     const p = state.providers.find(item => item.id === id);
     if (!p) return;
     state.selectedProvider = id;
-    $('p-id').readOnly = true;
-    $('p-id').value = p.id || '';
-    $('p-name').value = p.name || '';
-    $('p-protocol').value = p.protocol || 'openai_compatible';
+    $('p-id').readOnly = true; $('p-id').value = p.id || '';
+    $('p-name').value = p.name || ''; $('p-protocol').value = p.protocol || 'openai_compatible';
     $('p-discovery').value = p.model_discovery || 'manual';
     $('p-base-url').value = p.base_url || '';
     $('p-api-key-env').value = p.api_key_env || '';
@@ -436,83 +723,67 @@
     renderProviderList();
     await loadProviderModels(id);
   }
+
   function providerPayload() {
-    return {
-      id: text($('p-id').value),
-      name: text($('p-name').value),
-      protocol: text($('p-protocol').value),
-      base_url: text($('p-base-url').value),
-      api_key_env: text($('p-api-key-env').value),
-      model_discovery: text($('p-discovery').value) || 'manual',
-      enabled: $('p-enabled').checked,
-    };
+    return { id: text($('p-id').value), name: text($('p-name').value), protocol: text($('p-protocol').value),
+      base_url: text($('p-base-url').value), api_key_env: text($('p-api-key-env').value),
+      model_discovery: text($('p-discovery').value) || 'manual', enabled: $('p-enabled').checked };
   }
+
   async function loadProviders() {
-    status('Loading providers...');
-    const data = await request('/api/llm-providers');
-    state.providers = data.providers || [];
-    renderProviderList();
-    createSlotFields();
+    status('Loading providers...'); const data = await request('/api/llm-providers');
+    state.providers = data.providers || []; renderProviderList(); createSlotFields();
     hydrateAgentForm(state.agents.find(a => a.id === state.selectedAgent) || null);
     if (state.selectedProvider && state.providers.some(p => p.id === state.selectedProvider)) await selectProvider(state.selectedProvider);
     else if (state.providers.length) await selectProvider(state.providers[0].id);
-    else clearProvider();
-    status('Ready');
+    else clearProvider(); status('Ready');
   }
+
   async function loadProviderModels(id) {
     if (!id) return;
     const data = await request(`/api/llm-providers/${encodeURIComponent(id)}/models`);
     state.providerModels[id] = data.models || [];
-    renderModels(id);
-    renderModelOptions();
+    renderModels(id); renderModelOptions();
   }
   function renderModels(id) {
     const models = state.providerModels[id] || [];
     $('provider-models').innerHTML = models.length ? models.map(m => `<span class="model-pill">${esc(m.id || m.name || '')}</span>`).join('') : '<span class="hint">No cached models</span>';
   }
   function renderModelOptions() {
-    const seen = new Set();
-    const options = [];
+    const seen = new Set(); const options = [];
     for (const models of Object.values(state.providerModels)) {
       for (const model of models) {
         const id = model.id || model.name || '';
-        if (id && !seen.has(id)) {
-          seen.add(id);
-          options.push(`<option value="${esc(id)}"></option>`);
-        }
+        if (id && !seen.has(id)) { seen.add(id); options.push(`<option value="${esc(id)}"></option>`); }
       }
     }
     $('model-options').innerHTML = options.join('');
   }
 
+  // ── Agent CRUD ──
   function renderAgentList() {
     const q = text($('agent-search').value).toLowerCase();
     const items = state.agents.filter(a => `${a.id} ${a.name} ${a.persona_key}`.toLowerCase().includes(q));
-    $('agent-count').textContent = `${state.agents.length} config${state.agents.length === 1 ? '' : 's'} / active: ${state.activeAgentID || 'none'}`;
-    $('agent-list').innerHTML = items.length ? items.map(a => `
+    $('agent-count').textContent = `${state.agents.length} config${state.agents.length === 1 ? '' : 's'} · active: ${state.activeAgentID || 'none'}`;
+    const list = $('agent-list');
+    list.innerHTML = items.length ? items.map(a => `
       <button class="item ${a.id === state.selectedAgent ? 'active' : ''}" data-id="${esc(a.id)}">
         <div class="item-title"><span>${esc(a.name || a.id)}</span><span class="badge ${a.id === state.activeAgentID ? 'ok' : ''}">${a.id === state.activeAgentID ? 'active' : 'idle'}</span></div>
-        <div class="item-meta">${esc(a.id)} / persona ${esc(a.persona_key || '')}<br>${esc(bindingOf(a, 'emotion-main').model || '')}</div>
+        <div class="item-meta">${esc(a.id)} · ${esc(a.persona_key || '')}</div>
       </button>
-    `).join('') : '<div class="hint">No agent configs</div>';
-    $('agent-list').querySelectorAll('.item').forEach(btn => btn.addEventListener('click', () => selectAgent(btn.dataset.id)));
+    `).join('') : '<div class="hint" style="padding:8px">No agent configs</div>';
+    list.querySelectorAll('.item').forEach(btn => btn.addEventListener('click', () => selectAgent(btn.dataset.id)));
   }
+
   function clearAgent() {
-    state.selectedAgent = '';
-    $('a-id').readOnly = false;
-    $('a-id').value = '';
-    $('a-name').value = '';
-    $('a-persona').innerHTML = personaOptions('');
-    $('ctx-input-budget').value = '';
-    $('ctx-reserve-output').value = '';
-    $('ctx-soft-ratio').value = '';
-    $('ctx-hard-ratio').value = '';
-    createSlotFields();
-    for (const [id] of slotDefs) fillBinding(id, {});
+    state.selectedAgent = ''; $('a-id').readOnly = false; $('a-id').value = '';
+    $('a-name').value = ''; $('a-persona').innerHTML = personaOptions('');
+    $('ctx-input-budget').value = ''; $('ctx-reserve-output').value = '';
+    $('ctx-soft-ratio').value = ''; $('ctx-hard-ratio').value = '';
+    createSlotFields(); for (const [id] of slotDefs) fillBinding(id, {});
     $('agent-title').textContent = 'New Config';
     $('agent-meta').textContent = `Active: ${state.activeAgentID || 'none'}`;
-    $('delete-agent').disabled = true;
-    $('activate-agent').disabled = true;
+    $('delete-agent').disabled = true; $('activate-agent').disabled = true;
     renderAgentList();
   }
   function fillBinding(slot, binding) {
@@ -535,10 +806,8 @@
   function hydrateAgentForm(agent) {
     $('a-persona').innerHTML = personaOptions(agent?.persona_key || '');
     if (!agent) return;
-    $('a-id').readOnly = true;
-    $('a-id').value = agent.id || '';
-    $('a-name').value = agent.name || '';
-    $('a-persona').value = agent.persona_key || '';
+    $('a-id').readOnly = true; $('a-id').value = agent.id || '';
+    $('a-name').value = agent.name || ''; $('a-persona').value = agent.persona_key || '';
     const ctx = agent.context_overrides || {};
     $('ctx-input-budget').value = ctx.input_budget_tokens ?? '';
     $('ctx-reserve-output').value = ctx.reserve_output_tokens ?? '';
@@ -549,10 +818,9 @@
   async function selectAgent(id) {
     const agent = state.agents.find(item => item.id === id);
     if (!agent) return;
-    state.selectedAgent = id;
-    hydrateAgentForm(agent);
+    state.selectedAgent = id; hydrateAgentForm(agent);
     $('agent-title').textContent = agent.name || agent.id || 'Agent Config';
-    $('agent-meta').textContent = `${agent.id} / persona ${agent.persona_key || ''}`;
+    $('agent-meta').textContent = `${agent.id} · persona ${agent.persona_key || ''}`;
     $('delete-agent').disabled = false;
     $('activate-agent').disabled = agent.id === state.activeAgentID;
     renderAgentList();
@@ -579,11 +847,7 @@
       if (!extra || Array.isArray(extra) || typeof extra !== 'object') throw new Error(`${slot} extra must be a JSON object`);
       params.extra = extra;
     }
-    return cleanObject({
-      provider_id: text($(`${slot}-provider`).value),
-      model: text($(`${slot}-model`).value),
-      params,
-    });
+    return cleanObject({ provider_id: text($(`${slot}-provider`).value), model: text($(`${slot}-model`).value), params });
   }
   function agentPayload() {
     const ctx = cleanObject({
@@ -592,93 +856,141 @@
       soft_compact_ratio: numberOrUndefined($('ctx-soft-ratio').value),
       hard_compact_ratio: numberOrUndefined($('ctx-hard-ratio').value),
     });
-    return {
-      id: text($('a-id').value),
-      name: text($('a-name').value),
-      persona_key: text($('a-persona').value),
-      emotion: {main: bindingPayload('emotion-main'), summary: bindingPayload('emotion-summary')},
-      work: {main: bindingPayload('work-main'), summary: bindingPayload('work-summary')},
-      context_overrides: ctx,
-    };
+    return { id: text($('a-id').value), name: text($('a-name').value), persona_key: text($('a-persona').value),
+      emotion: { main: bindingPayload('emotion-main'), summary: bindingPayload('emotion-summary') },
+      work: { main: bindingPayload('work-main'), summary: bindingPayload('work-summary') },
+      context_overrides: ctx };
   }
   async function loadAgents() {
     status('Loading agent configs...');
     const data = await request('/api/agent-configs');
-    state.agents = data.configs || [];
-    state.activeAgentID = data.active_id || '';
+    state.agents = data.configs || []; state.activeAgentID = data.active_id || '';
     state.activeAgent = state.agents.find(a => a.id === state.activeAgentID) || null;
     renderAgentList();
     if (state.selectedAgent && state.agents.some(a => a.id === state.selectedAgent)) selectAgent(state.selectedAgent);
     else if (state.activeAgentID) selectAgent(state.activeAgentID);
     else if (state.agents.length) selectAgent(state.agents[0].id);
     else clearAgent();
-    renderPersonaList();
-    status('Ready');
+    renderPersonaList(); status('Ready');
   }
 
+  // ── Bubble Wall helpers ──
+  function makeBubble(txt, idx) {
+    const el = document.createElement('span');
+    el.className = 'bubble';
+    el.dataset.color = idx % 5;
+    el.dataset.text = txt;
+    el.appendChild(document.createTextNode(txt));
+    const x = document.createElement('span');
+    x.className = 'bubble-x';
+    x.textContent = '×';
+    x.addEventListener('click', e => {
+      e.stopPropagation();
+      el.style.transition = 'transform .2s var(--ease-out), opacity .2s';
+      el.style.transform = 'scale(0)'; el.style.opacity = '0';
+      setTimeout(() => el.remove(), 200);
+    });
+    el.appendChild(x);
+    return el;
+  }
+  function makeAddBtn() {
+    const btn = document.createElement('span');
+    btn.className = 'bubble-add';
+    btn.textContent = '＋ 添加';
+    btn.addEventListener('click', () => openBubbleInput(btn));
+    return btn;
+  }
+  function openBubbleInput(addBtn) {
+    const wall = addBtn.closest('.bubble-wall');
+    const wrap = document.createElement('span');
+    wrap.className = 'bubble-input-wrap';
+    const inp = document.createElement('input');
+    inp.placeholder = '输入 tag…';
+    const confirmBtn = document.createElement('button');
+    confirmBtn.type = 'button';
+    confirmBtn.className = 'bubble-confirm';
+    confirmBtn.textContent = '✓';
+    wrap.appendChild(inp); wrap.appendChild(confirmBtn);
+    addBtn.replaceWith(wrap);
+    inp.focus();
+    function commit() {
+      const val = inp.value.trim();
+      if (val) {
+        const idx = wall.querySelectorAll('.bubble').length;
+        wrap.replaceWith(makeBubble(val, idx));
+        wall.appendChild(makeAddBtn());
+      } else {
+        wrap.replaceWith(makeAddBtn());
+      }
+    }
+    confirmBtn.addEventListener('click', commit);
+    inp.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); commit(); }
+      if (e.key === 'Escape') { wrap.replaceWith(makeAddBtn()); }
+    });
+  }
+  function renderQuirks(quirks) {
+    const wall = $('persona-quirks');
+    wall.innerHTML = '';
+    quirks.forEach((q, i) => wall.appendChild(makeBubble(q, i)));
+    wall.appendChild(makeAddBtn());
+  }
+
+  function renderTone(toneStr) {
+    const tags = toneStr ? toneStr.split(',').map(s => s.trim()).filter(Boolean) : [];
+    const wall = $('persona-tone');
+    wall.innerHTML = '';
+    tags.forEach((t, i) => wall.appendChild(makeBubble(t, i)));
+    wall.appendChild(makeAddBtn());
+  }
+
+  // ── Persona CRUD ──
   function renderPersonaList() {
     const activePersona = state.activeAgent?.persona_key || '';
     const q = text($('persona-search').value).toLowerCase();
     const items = state.personas.filter(p => `${p.key} ${p.name} ${p.description}`.toLowerCase().includes(q));
-    $('persona-count').textContent = `${state.personas.length} persona${state.personas.length === 1 ? '' : 's'} / active: ${activePersona || 'none'}`;
-    $('persona-list').innerHTML = items.length ? items.map(p => `
+    $('persona-count').textContent = `${state.personas.length} persona${state.personas.length === 1 ? '' : 's'} · active: ${activePersona || 'none'}`;
+    const list = $('persona-list');
+    list.innerHTML = items.length ? items.map(p => `
       <button class="item ${p.key === state.selectedPersona ? 'active' : ''}" data-key="${esc(p.key)}">
         <div class="item-title"><span>${esc(p.name || p.key)}</span><span class="badge ${p.key === activePersona ? 'ok' : ''}">${p.key === activePersona ? 'active' : 'persona'}</span></div>
-        <div class="item-meta">${esc(p.key)}<br>${esc(p.description || p.tone || '')}</div>
+        <div class="item-meta">${esc(p.key)} · ${esc(p.description || p.tone || '')}</div>
       </button>
-    `).join('') : '<div class="hint">No personas</div>';
-    $('persona-list').querySelectorAll('.item').forEach(btn => btn.addEventListener('click', () => selectPersona(btn.dataset.key)));
+    `).join('') : '<div class="hint" style="padding:8px">No personas</div>';
+    list.querySelectorAll('.item').forEach(btn => btn.addEventListener('click', () => selectPersona(btn.dataset.key)));
   }
   function clearPersona() {
-    state.selectedPersona = '';
-    $('persona-key').readOnly = false;
-    $('persona-key').value = '';
-    $('persona-name').value = '';
-    $('persona-tone').value = '';
-    $('persona-description').value = '';
-    $('persona-greeting').value = '';
-    $('persona-quirks').value = '';
-    $('persona-system').value = '';
-    $('persona-progress').value = '{}';
+    state.selectedPersona = ''; $('persona-key').readOnly = false; $('persona-key').value = '';
+    $('persona-name').value = ''; renderTone(''); $('persona-description').value = '';
+    $('persona-greeting').value = ''; renderQuirks([]);
+    $('persona-system').value = ''; $('persona-progress').value = '{}';
     $('persona-title').textContent = 'New Persona';
     $('persona-meta').textContent = 'Persona files are keyed by ID';
-    $('delete-persona').disabled = true;
-    renderPersonaList();
+    $('delete-persona').disabled = true; renderPersonaList();
   }
   async function selectPersona(key) {
-    if (!key) return;
-    status('Loading persona...');
+    if (!key) return; status('Loading persona...');
     const p = await request(`/api/personas/${encodeURIComponent(key)}`);
     state.selectedPersona = key;
-    $('persona-key').readOnly = true;
-    $('persona-key').value = p.key || key;
-    $('persona-name').value = p.name || '';
-    $('persona-tone').value = p.tone || '';
+    $('persona-key').readOnly = true; $('persona-key').value = p.key || key;
+    $('persona-name').value = p.name || ''; renderTone(p.tone || '');
     $('persona-description').value = p.description || '';
     $('persona-greeting').value = p.greeting || '';
-    $('persona-quirks').value = (p.quirks || []).join('\n');
+    renderQuirks(p.quirks || []);
     $('persona-system').value = p.system_prompt || '';
     $('persona-progress').value = JSON.stringify(p.work_progress_phrases || {}, null, 2);
     $('persona-title').textContent = p.name || key;
     $('persona-meta').textContent = key;
-    $('delete-persona').disabled = false;
-    renderPersonaList();
-    status('Ready');
+    $('delete-persona').disabled = false; renderPersonaList(); status('Ready');
   }
   function personaPayload() {
     const progressRaw = text($('persona-progress').value) || '{}';
     const progress = JSON.parse(progressRaw);
     if (!progress || Array.isArray(progress) || typeof progress !== 'object') throw new Error('Work progress phrases must be a JSON object');
-    return {
-      key: text($('persona-key').value),
-      name: text($('persona-name').value),
-      tone: text($('persona-tone').value),
-      description: text($('persona-description').value),
-      greeting: $('persona-greeting').value,
-      quirks: $('persona-quirks').value.split(/\r?\n/).map(text).filter(Boolean),
-      system_prompt: $('persona-system').value,
-      work_progress_phrases: progress,
-    };
+    return { key: text($('persona-key').value), name: text($('persona-name').value),
+      tone: Array.from($('persona-tone').querySelectorAll('.bubble')).map(b => b.dataset.text).join(','), description: text($('persona-description').value),
+      greeting: $('persona-greeting').value, quirks: Array.from($('persona-quirks').querySelectorAll('.bubble')).map(b => b.dataset.text).filter(Boolean),
+      system_prompt: $('persona-system').value, work_progress_phrases: progress };
   }
   async function loadPersonas() {
     status('Loading personas...');
@@ -688,10 +1000,10 @@
     renderPersonaList();
     if (state.selectedPersona && state.personas.some(p => p.key === state.selectedPersona)) await selectPersona(state.selectedPersona);
     else if (state.personas.length) await selectPersona(state.personas[0].key);
-    else clearPersona();
-    status('Ready');
+    else clearPersona(); status('Ready');
   }
 
+  // ── Event Listeners ──
   tabs.forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
   $('provider-search').addEventListener('input', renderProviderList);
   $('agent-search').addEventListener('input', renderAgentList);
@@ -702,101 +1014,67 @@
   $('reload-providers').addEventListener('click', () => loadProviders().catch(showError));
   $('reload-agents').addEventListener('click', () => loadAgents().catch(showError));
   $('reload-personas').addEventListener('click', () => loadPersonas().catch(showError));
-  $('provider-form').addEventListener('submit', async event => {
-    event.preventDefault();
-    try {
-      const payload = providerPayload();
-      const editing = !!state.selectedProvider;
+
+  $('provider-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    try { const payload = providerPayload(); const editing = !!state.selectedProvider;
       await request(editing ? `/api/llm-providers/${encodeURIComponent(state.selectedProvider)}` : '/api/llm-providers', {method: editing ? 'PUT' : 'POST', body: payload});
-      state.selectedProvider = payload.id;
-      await loadProviders();
-      status('Provider saved');
+      state.selectedProvider = payload.id; await loadProviders(); status('Provider saved');
     } catch (error) { showError(error); }
   });
   $('delete-provider').addEventListener('click', async () => {
     if (!state.selectedProvider || !confirm(`Delete provider "${state.selectedProvider}"?`)) return;
-    try {
-      await request(`/api/llm-providers/${encodeURIComponent(state.selectedProvider)}`, {method:'DELETE'});
-      state.selectedProvider = '';
-      await loadProviders();
-      status('Provider deleted');
+    try { await request(`/api/llm-providers/${encodeURIComponent(state.selectedProvider)}`, {method:'DELETE'});
+      state.selectedProvider = ''; await loadProviders(); status('Provider deleted');
     } catch (error) { showError(error); }
   });
   $('refresh-models').addEventListener('click', async () => {
     if (!state.selectedProvider) return;
-    try {
-      status('Refreshing models...');
+    try { status('Refreshing models...');
       const data = await request(`/api/llm-providers/${encodeURIComponent(state.selectedProvider)}/refresh-models`, {method:'POST'});
       state.providerModels[state.selectedProvider] = data.models || [];
-      renderModels(state.selectedProvider);
-      renderModelOptions();
-      status('Models refreshed');
+      renderModels(state.selectedProvider); renderModelOptions(); status('Models refreshed');
     } catch (error) { showError(error); }
   });
-  $('agent-form').addEventListener('submit', async event => {
-    event.preventDefault();
-    try {
-      const payload = agentPayload();
-      const editing = !!state.selectedAgent;
+  $('agent-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    try { const payload = agentPayload(); const editing = !!state.selectedAgent;
       await request(editing ? `/api/agent-configs/${encodeURIComponent(state.selectedAgent)}` : '/api/agent-configs', {method: editing ? 'PUT' : 'POST', body: payload});
-      state.selectedAgent = payload.id;
-      await loadAgents();
-      status('Agent config saved');
+      state.selectedAgent = payload.id; await loadAgents(); status('Agent config saved');
     } catch (error) { showError(error); }
   });
   $('activate-agent').addEventListener('click', async () => {
     if (!state.selectedAgent) return;
-    try {
-      await request(`/api/agent-configs/${encodeURIComponent(state.selectedAgent)}/activate`, {method:'POST'});
-      await loadAgents();
-      status('Agent config activated');
+    try { await request(`/api/agent-configs/${encodeURIComponent(state.selectedAgent)}/activate`, {method:'POST'});
+      await loadAgents(); status('Agent config activated');
     } catch (error) { showError(error); }
   });
   $('delete-agent').addEventListener('click', async () => {
     if (!state.selectedAgent || !confirm(`Delete agent config "${state.selectedAgent}"?`)) return;
-    try {
-      await request(`/api/agent-configs/${encodeURIComponent(state.selectedAgent)}`, {method:'DELETE'});
-      state.selectedAgent = '';
-      await loadAgents();
-      status('Agent config deleted');
+    try { await request(`/api/agent-configs/${encodeURIComponent(state.selectedAgent)}`, {method:'DELETE'});
+      state.selectedAgent = ''; await loadAgents(); status('Agent config deleted');
     } catch (error) { showError(error); }
   });
-  $('persona-form').addEventListener('submit', async event => {
-    event.preventDefault();
-    try {
-      const payload = personaPayload();
-      const editing = !!state.selectedPersona;
+  $('persona-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    try { const payload = personaPayload(); const editing = !!state.selectedPersona;
       await request(editing ? `/api/personas/${encodeURIComponent(state.selectedPersona)}` : '/api/personas', {method: editing ? 'PUT' : 'POST', body: payload});
-      state.selectedPersona = payload.key;
-      await loadPersonas();
-      status('Persona saved');
+      state.selectedPersona = payload.key; await loadPersonas(); status('Persona saved');
     } catch (error) { showError(error); }
   });
   $('delete-persona').addEventListener('click', async () => {
     if (!state.selectedPersona || !confirm(`Delete persona "${state.selectedPersona}"?`)) return;
-    try {
-      await request(`/api/personas/${encodeURIComponent(state.selectedPersona)}`, {method:'DELETE'});
-      state.selectedPersona = '';
-      await loadPersonas();
-      status('Persona deleted');
+    try { await request(`/api/personas/${encodeURIComponent(state.selectedPersona)}`, {method:'DELETE'});
+      state.selectedPersona = ''; await loadPersonas(); status('Persona deleted');
     } catch (error) { showError(error); }
   });
 
-  function showError(error) {
-    console.error(error);
-    status(error.message || String(error));
-  }
-  async function init() {
-    createSlotFields();
-    clearProvider();
-    clearAgent();
-    clearPersona();
-    await loadProviders();
-    await loadPersonas();
-    await loadAgents();
-  }
+  function showError(error) { console.error(error); status(error.message || String(error)); }
+  async function init() { createSlotFields(); clearProvider(); clearAgent(); clearPersona();
+    await loadProviders(); await loadPersonas(); await loadAgents(); }
   init().catch(showError);
 })();
 </script>
-</body>
-</html>
+
+
+</body></html>
