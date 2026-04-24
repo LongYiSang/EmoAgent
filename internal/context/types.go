@@ -31,6 +31,24 @@ type CompactReport struct {
 	UsedToolDigest      bool
 }
 
+// SummaryUpdateReport captures one attempted or skipped running-summary update.
+type SummaryUpdateReport struct {
+	Attempted          bool
+	Skipped            bool
+	SkipReason         string
+	SummaryModel       string
+	DeltaCount         int
+	CoveredUntilBefore string
+	CoveredUntilAfter  string
+	DurationMS         int64
+	StopReason         string
+	RawStopReason      string
+	ContentLength      int
+	ReasoningLength    int
+	FailureCount       int
+	RetryAfter         string
+}
+
 // ContextState is the persisted session-level context metadata stored in sessions.metadata.
 type ContextState struct {
 	ContextVersion               int            `json:"context_version"`
@@ -38,6 +56,10 @@ type ContextState struct {
 	RunningSummary               RunningSummary `json:"running_summary"`
 	SummaryCoveredUntilMessageID string         `json:"summary_covered_until_message_id"`
 	SummaryUpdatedAt             string         `json:"summary_updated_at"`
+	SummaryFailedAt              string         `json:"summary_failed_at,omitempty"`
+	SummaryRetryAfter            string         `json:"summary_retry_after,omitempty"`
+	SummaryFailureCount          int            `json:"summary_failure_count,omitempty"`
+	SummaryLastError             string         `json:"summary_last_error,omitempty"`
 	LastCompactReason            string         `json:"last_compact_reason"`
 	LastInputEstimate            int            `json:"last_input_estimate"`
 	KeepRecentUserTurns          int            `json:"keep_recent_user_turns"`

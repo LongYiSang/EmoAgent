@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	summaryMaxTokens          = 1024
-	defaultSummaryTemperature = 0.1
+	defaultSummaryMaxTokens       = 4096
+	defaultSummaryTemperature     = 0.1
+	defaultSummaryFailureCooldown = 2 * time.Minute
 )
 
 var summarySystemPrompt = strings.TrimSpace(`
@@ -81,51 +82,80 @@ func UpdateRunningSummary(
 	ctx context.Context,
 	client llm.Client,
 	model string,
+	summaryMaxTokens int,
 	summaryTemperature *float64,
 	persona *config.Persona,
 	history []storage.MessageRecord,
 	state *ContextState,
 	cfg config.ContextConfig,
-) (*ContextState, error) {
+) (*ContextState, SummaryUpdateReport, error) {
+	report := SummaryUpdateReport{SummaryModel: model}
 	if client == nil {
-		return nil, fmt.Errorf("summary client is required")
+		return nil, report, fmt.Errorf("summary client is required")
 	}
 	if persona == nil {
-		return nil, fmt.Errorf("persona is required")
+		return nil, report, fmt.Errorf("persona is required")
 	}
 	if err := cfg.Validate(); err != nil {
-		return nil, err
+		return nil, report, err
 	}
 
 	current := defaultContextState(cfg)
 	if state != nil {
 		current = normalizeContextState(*state, cfg)
 	}
+	now := time.Now().UTC()
+	report.CoveredUntilBefore = current.SummaryCoveredUntilMessageID
+	report.CoveredUntilAfter = current.SummaryCoveredUntilMessageID
+	report.FailureCount = current.SummaryFailureCount
+	report.RetryAfter = current.SummaryRetryAfter
+
+	if !shouldAttemptSummary(&current, now) {
+		report.Skipped = true
+		report.SkipReason = "summary_retry_cooldown"
+		return &current, report, nil
+	}
 
 	delta, lastCoveredID := summaryDelta(history, current.SummaryCoveredUntilMessageID, cfg.KeepRecentUserTurns)
 	if len(delta) == 0 {
-		return &current, nil
+		report.Skipped = true
+		report.SkipReason = "no_summary_delta"
+		return &current, report, nil
 	}
+	report.Attempted = true
+	report.DeltaCount = len(delta)
 
-	req, err := buildSummaryRequest(model, summaryTemperature, persona, current.RunningSummary, delta)
+	req, err := buildSummaryRequest(model, summaryMaxTokens, summaryTemperature, persona, current.RunningSummary, delta)
 	if err != nil {
-		return nil, err
+		markSummaryFailure(&current, err, now, defaultSummaryFailureCooldown)
+		copyFailureStateToReport(&report, current)
+		return &current, report, err
 	}
+	start := time.Now()
 	resp, err := client.Chat(ctx, req)
+	report.DurationMS = time.Since(start).Milliseconds()
+	copyResponseStatsToReport(&report, resp)
 	if err != nil {
-		return nil, err
+		markSummaryFailure(&current, err, time.Now().UTC(), defaultSummaryFailureCooldown)
+		copyFailureStateToReport(&report, current)
+		return &current, report, err
 	}
 
 	nextSummary, err := parseRunningSummaryResponse(resp)
 	if err != nil {
-		return nil, err
+		markSummaryFailure(&current, err, time.Now().UTC(), defaultSummaryFailureCooldown)
+		copyFailureStateToReport(&report, current)
+		return &current, report, err
 	}
 
 	current.RunningSummary = mergeRunningSummary(current.RunningSummary, nextSummary)
 	current.SummaryCoveredUntilMessageID = lastCoveredID
 	current.SummaryUpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	current.KeepRecentUserTurns = cfg.KeepRecentUserTurns
-	return &current, nil
+	markSummarySuccess(&current, time.Now().UTC())
+	report.CoveredUntilAfter = current.SummaryCoveredUntilMessageID
+	copyFailureStateToReport(&report, current)
+	return &current, report, nil
 }
 
 func defaultContextState(cfg config.ContextConfig) ContextState {
@@ -147,6 +177,9 @@ func normalizeContextState(state ContextState, cfg config.ContextConfig) Context
 	state.RunningSummary = normalizeRunningSummary(state.RunningSummary)
 	if state.KeepRecentUserTurns <= 0 {
 		state.KeepRecentUserTurns = cfg.KeepRecentUserTurns
+	}
+	if state.SummaryFailureCount < 0 {
+		state.SummaryFailureCount = 0
 	}
 	return state
 }
@@ -197,7 +230,7 @@ func mergeProtectedItems(existing []string, incoming []string) []string {
 	return merged
 }
 
-func buildSummaryRequest(model string, summaryTemperature *float64, persona *config.Persona, current RunningSummary, delta []storage.MessageRecord) (llm.ChatRequest, error) {
+func buildSummaryRequest(model string, summaryMaxTokens int, summaryTemperature *float64, persona *config.Persona, current RunningSummary, delta []storage.MessageRecord) (llm.ChatRequest, error) {
 	currentPayload, err := json.Marshal(struct {
 		RunningSummary RunningSummary `json:"running_summary"`
 	}{
@@ -234,7 +267,7 @@ func buildSummaryRequest(model string, summaryTemperature *float64, persona *con
 	return llm.ChatRequest{
 		Model:       model,
 		System:      summarySystemPrompt,
-		MaxTokens:   summaryMaxTokens,
+		MaxTokens:   resolveSummaryMaxTokens(summaryMaxTokens),
 		Temperature: resolveSummaryTemperature(summaryTemperature),
 		Stream:      false,
 		Messages: []llm.Message{
@@ -244,8 +277,19 @@ func buildSummaryRequest(model string, summaryTemperature *float64, persona *con
 	}, nil
 }
 
+func DefaultSummaryMaxTokens() int {
+	return defaultSummaryMaxTokens
+}
+
 func DefaultSummaryTemperature() float64 {
 	return defaultSummaryTemperature
+}
+
+func resolveSummaryMaxTokens(summaryMaxTokens int) int {
+	if summaryMaxTokens > 0 {
+		return summaryMaxTokens
+	}
+	return defaultSummaryMaxTokens
 }
 
 func resolveSummaryTemperature(summaryTemperature *float64) float64 {
@@ -259,26 +303,170 @@ func parseRunningSummaryResponse(resp *llm.ChatResponse) (RunningSummary, error)
 	if resp == nil {
 		return RunningSummary{}, fmt.Errorf("summary response is nil")
 	}
-	content := strings.TrimSpace(resp.Content)
-	if content == "" {
-		for _, block := range resp.ContentBlocks {
-			if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
-				content = strings.TrimSpace(block.Text)
-				break
-			}
-		}
-	}
-	if content == "" {
+	candidates := summaryResponseCandidates(resp)
+	if len(candidates) == 0 {
 		return RunningSummary{}, fmt.Errorf("summary response content is empty")
 	}
 
+	for _, candidate := range candidates {
+		content, ok := extractSummaryJSON(candidate)
+		if !ok {
+			continue
+		}
+		var envelope struct {
+			RunningSummary RunningSummary `json:"running_summary"`
+		}
+		if err := json.Unmarshal([]byte(content), &envelope); err != nil {
+			return RunningSummary{}, fmt.Errorf("unmarshal running summary response: %w", err)
+		}
+		return normalizeRunningSummary(envelope.RunningSummary), nil
+	}
+
+	if resp.StopReason == "max_tokens" {
+		return RunningSummary{}, fmt.Errorf("summary response truncated: stop_reason=max_tokens raw_stop_reason=%q", resp.RawStopReason)
+	}
+	return RunningSummary{}, fmt.Errorf("unmarshal running summary response: complete running_summary JSON object not found")
+}
+
+func summaryResponseCandidates(resp *llm.ChatResponse) []string {
+	if resp == nil {
+		return nil
+	}
+	var candidates []string
+	if content := strings.TrimSpace(resp.Content); content != "" {
+		candidates = append(candidates, content)
+	}
+	var blockText strings.Builder
+	for _, block := range resp.ContentBlocks {
+		if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
+			blockText.WriteString(block.Text)
+		}
+	}
+	if content := strings.TrimSpace(blockText.String()); content != "" {
+		candidates = append(candidates, content)
+	}
+	if content := strings.TrimSpace(resp.ReasoningContent); content != "" {
+		candidates = append(candidates, content)
+	}
+	return candidates
+}
+
+func extractSummaryJSON(content string) (string, bool) {
+	trimmed := strings.TrimSpace(content)
+scanObjects:
+	for start := 0; start < len(trimmed); start++ {
+		if trimmed[start] != '{' {
+			continue
+		}
+		depth := 0
+		inString := false
+		escaped := false
+		for i := start; i < len(trimmed); i++ {
+			ch := trimmed[i]
+			if inString {
+				if escaped {
+					escaped = false
+					continue
+				}
+				switch ch {
+				case '\\':
+					escaped = true
+				case '"':
+					inString = false
+				}
+				continue
+			}
+			switch ch {
+			case '"':
+				inString = true
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					candidate := trimmed[start : i+1]
+					if isRunningSummaryEnvelope(candidate) {
+						return candidate, true
+					}
+					continue scanObjects
+				}
+			}
+		}
+	}
+	return "", false
+}
+
+func isRunningSummaryEnvelope(content string) bool {
 	var envelope struct {
-		RunningSummary RunningSummary `json:"running_summary"`
+		RunningSummary json.RawMessage `json:"running_summary"`
 	}
-	if err := json.Unmarshal([]byte(content), &envelope); err != nil {
-		return RunningSummary{}, fmt.Errorf("unmarshal running summary response: %w", err)
+	return json.Unmarshal([]byte(content), &envelope) == nil && len(envelope.RunningSummary) > 0
+}
+
+func shouldAttemptSummary(state *ContextState, now time.Time) bool {
+	if state == nil || strings.TrimSpace(state.SummaryRetryAfter) == "" {
+		return true
 	}
-	return normalizeRunningSummary(envelope.RunningSummary), nil
+	retryAt, err := time.Parse(time.RFC3339, state.SummaryRetryAfter)
+	if err != nil {
+		return true
+	}
+	return !now.Before(retryAt)
+}
+
+func markSummaryFailure(state *ContextState, err error, now time.Time, cooldown time.Duration) {
+	if state == nil {
+		return
+	}
+	state.SummaryFailureCount++
+	state.SummaryFailedAt = now.Format(time.RFC3339)
+	state.SummaryRetryAfter = now.Add(cooldown).Format(time.RFC3339)
+	if err != nil {
+		state.SummaryLastError = truncateSummaryError(err.Error())
+	}
+}
+
+func markSummarySuccess(state *ContextState, _ time.Time) {
+	if state == nil {
+		return
+	}
+	state.SummaryFailedAt = ""
+	state.SummaryRetryAfter = ""
+	state.SummaryFailureCount = 0
+	state.SummaryLastError = ""
+}
+
+func truncateSummaryError(message string) string {
+	const max = 300
+	if len(message) <= max {
+		return message
+	}
+	return message[:max]
+}
+
+func copyResponseStatsToReport(report *SummaryUpdateReport, resp *llm.ChatResponse) {
+	if report == nil || resp == nil {
+		return
+	}
+	report.StopReason = resp.StopReason
+	report.RawStopReason = resp.RawStopReason
+	report.ContentLength = len(resp.Content)
+	if report.ContentLength == 0 {
+		for _, block := range resp.ContentBlocks {
+			if block.Type == "text" {
+				report.ContentLength += len(block.Text)
+			}
+		}
+	}
+	report.ReasoningLength = len(resp.ReasoningContent)
+}
+
+func copyFailureStateToReport(report *SummaryUpdateReport, state ContextState) {
+	if report == nil {
+		return
+	}
+	report.FailureCount = state.SummaryFailureCount
+	report.RetryAfter = state.SummaryRetryAfter
 }
 
 func summaryDelta(history []storage.MessageRecord, coveredUntilID string, keepRecentUserTurns int) ([]storage.MessageRecord, string) {

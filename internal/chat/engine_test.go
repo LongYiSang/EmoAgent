@@ -56,6 +56,28 @@ func (f *fakeLLMClient) ChatStream(_ context.Context, req llm.ChatRequest, cb ll
 	return f.response, f.err
 }
 
+type summaryDeadlineClient struct {
+	hadDeadline bool
+	timeUntil   time.Duration
+}
+
+func (c *summaryDeadlineClient) Chat(ctx context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+	deadline, ok := ctx.Deadline()
+	c.hadDeadline = ok
+	if ok {
+		c.timeUntil = time.Until(deadline)
+	}
+	return nil, context.DeadlineExceeded
+}
+
+func (c *summaryDeadlineClient) ChatStream(_ context.Context, _ llm.ChatRequest, cb llm.StreamCallback) (*llm.ChatResponse, error) {
+	if cb != nil {
+		cb(llm.StreamEvent{Content: "ok"})
+		cb(llm.StreamEvent{Done: true})
+	}
+	return endTurnResponse("ok"), nil
+}
+
 type observingStreamClient struct {
 	deltas     []string
 	response   *llm.ChatResponse
@@ -382,7 +404,7 @@ func TestEngineUpdateConfigAffectsSubsequentMessages(t *testing.T) {
 		t.Fatalf("SendMessage(before): %v", err)
 	}
 
-	engine.UpdateConfig(secondClient, "openai", "model-b", "summary-b", nil, 1024, 0.9, config.ContextConfig{
+	engine.UpdateConfig(secondClient, "openai", "model-b", "summary-b", nil, 3072, 1024, 0.9, config.ContextConfig{
 		InputBudgetTokens:    12000,
 		SoftCompactRatio:     0.70,
 		HardCompactRatio:     0.90,
@@ -407,6 +429,9 @@ func TestEngineUpdateConfigAffectsSubsequentMessages(t *testing.T) {
 	}
 	if engine.summaryModel != "summary-b" {
 		t.Fatalf("summaryModel = %q, want summary-b", engine.summaryModel)
+	}
+	if engine.summaryMaxTokens != 3072 {
+		t.Fatalf("summaryMaxTokens = %d, want 3072", engine.summaryMaxTokens)
 	}
 	if engine.contextCfg.KeepRecentUserTurns != 2 {
 		t.Fatalf("contextCfg.KeepRecentUserTurns = %d, want 2", engine.contextCfg.KeepRecentUserTurns)
@@ -969,6 +994,74 @@ func TestSummaryFailureFallsBackWithoutBlockingChat(t *testing.T) {
 	}
 	if len(fakeLLM.lastRequest.Messages) != 1 || fakeLLM.lastRequest.Messages[0].Content != "latest user" {
 		t.Fatalf("Messages = %#v, want chat to continue with recent turn only", fakeLLM.lastRequest.Messages)
+	}
+}
+
+func TestSummaryFailureCooldownSkipsNextTurn(t *testing.T) {
+	fakeLLM := &fakeLLMClient{
+		chatErr:  errors.New("summary unavailable"),
+		response: endTurnResponse("ok"),
+	}
+	engine, db, _ := newTestEngine(t, fakeLLM)
+	engine.contextCfg.KeepRecentUserTurns = 1
+
+	ctx := context.Background()
+	sessionID, err := engine.StartSession(ctx, "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if err := db.AddMessage(ctx, "old-user", sessionID, "user", "old user"); err != nil {
+		t.Fatalf("AddMessage(old-user): %v", err)
+	}
+	if err := db.AddMessage(ctx, "old-assistant", sessionID, "assistant", "old assistant"); err != nil {
+		t.Fatalf("AddMessage(old-assistant): %v", err)
+	}
+
+	persona := &config.Persona{Name: "default", SystemPrompt: "system"}
+	if _, err := engine.SendMessage(ctx, sessionID, persona, "latest user", nil); err != nil {
+		t.Fatalf("SendMessage(first): %v", err)
+	}
+	if len(fakeLLM.chatRequests) != 1 {
+		t.Fatalf("summary calls after first turn = %d, want 1", len(fakeLLM.chatRequests))
+	}
+	if _, err := engine.SendMessage(ctx, sessionID, persona, "second latest user", nil); err != nil {
+		t.Fatalf("SendMessage(second): %v", err)
+	}
+	if len(fakeLLM.chatRequests) != 1 {
+		t.Fatalf("summary calls after second turn = %d, want still 1 during cooldown", len(fakeLLM.chatRequests))
+	}
+}
+
+func TestSummaryUpdateUsesShortDeadline(t *testing.T) {
+	client := &summaryDeadlineClient{}
+	engine, db, _ := newTestEngine(t, client)
+	engine.contextCfg.KeepRecentUserTurns = 1
+
+	ctx := context.Background()
+	sessionID, err := engine.StartSession(ctx, "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if err := db.AddMessage(ctx, "old-user", sessionID, "user", "old user"); err != nil {
+		t.Fatalf("AddMessage(old-user): %v", err)
+	}
+	if err := db.AddMessage(ctx, "old-assistant", sessionID, "assistant", "old assistant"); err != nil {
+		t.Fatalf("AddMessage(old-assistant): %v", err)
+	}
+
+	persona := &config.Persona{Name: "default", SystemPrompt: "system"}
+	reply, err := engine.SendMessage(ctx, sessionID, persona, "latest user", nil)
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if reply != "ok" {
+		t.Fatalf("reply = %q, want ok", reply)
+	}
+	if !client.hadDeadline {
+		t.Fatal("summary Chat context had no deadline")
+	}
+	if client.timeUntil > 8*time.Second || client.timeUntil < 7*time.Second {
+		t.Fatalf("summary deadline = %v from now, want about 8s", client.timeUntil)
 	}
 }
 

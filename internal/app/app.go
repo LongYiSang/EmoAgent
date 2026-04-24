@@ -155,6 +155,7 @@ func (a *App) Run(ctx context.Context) error {
 	model := cfg.LLM.Model
 	summaryModel := cfg.LLM.SummaryModel
 	summaryTemperature := effectiveSummaryTemperature(cfg.LLM.SummaryTemperature, activeProfile)
+	summaryMaxTokens := effectiveSummaryMaxTokens(cfg.LLM.SummaryMaxTokens, activeProfile)
 	maxTokens := cfg.LLM.MaxTokens
 	temperature := cfg.LLM.Temperature
 	provider := cfg.LLM.Provider
@@ -162,6 +163,7 @@ func (a *App) Run(ctx context.Context) error {
 	if activeProfile != nil {
 		model = activeProfile.Model
 		summaryModel = activeProfile.SummaryModel
+		summaryMaxTokens = effectiveSummaryMaxTokens(cfg.LLM.SummaryMaxTokens, activeProfile)
 		maxTokens = activeProfile.MaxTokens
 		temperature = activeProfile.Temperature
 		provider = activeProfile.Provider
@@ -271,6 +273,7 @@ func (a *App) Run(ctx context.Context) error {
 		Model:              model,
 		SummaryModel:       summaryModel,
 		SummaryTemperature: summaryTemperature,
+		SummaryMaxTokens:   summaryMaxTokens,
 		MaxTokens:          maxTokens,
 		Temperature:        temperature,
 		ContextConfig:      contextCfg,
@@ -392,6 +395,12 @@ func (a *App) applyRuntimeOverrides() error {
 			} else {
 				a.Logger.Warn("invalid runtime override", "key", "llm.summary_temperature", "value", v, "error", parseErr)
 			}
+		case "llm.summary_max_tokens":
+			if n, parseErr := strconv.Atoi(v); parseErr == nil {
+				a.Config.LLM.SummaryMaxTokens = n
+			} else {
+				a.Logger.Warn("invalid runtime override", "key", "llm.summary_max_tokens", "value", v, "error", parseErr)
+			}
 		case "llm.temperature":
 			if f, parseErr := strconv.ParseFloat(v, 64); parseErr == nil {
 				a.Config.LLM.Temperature = f
@@ -445,6 +454,7 @@ func (a *App) bootstrapLLMProfiles() error {
 		Model:              a.Config.LLM.Model,
 		SummaryModel:       a.Config.LLM.SummaryModel,
 		SummaryTemperature: cloneFloat64Ptr(a.Config.LLM.SummaryTemperature),
+		SummaryMaxTokens:   a.Config.LLM.SummaryMaxTokens,
 		MaxTokens:          a.Config.LLM.MaxTokens,
 		Temperature:        a.Config.LLM.Temperature,
 	}
@@ -915,7 +925,7 @@ func (a *App) UpdateLLMProfile(id string, profile config.LLMProfile) error {
 		a.mu.Unlock()
 
 		if engine != nil {
-			engine.UpdateConfig(newClient, profile.Provider, profile.Model, profile.SummaryModel, effectiveSummaryTemperature(a.Config.LLM.SummaryTemperature, &profile), profile.MaxTokens, profile.Temperature, a.effectiveContextForProfile(profile))
+			engine.UpdateConfig(newClient, profile.Provider, profile.Model, profile.SummaryModel, effectiveSummaryTemperature(a.Config.LLM.SummaryTemperature, &profile), effectiveSummaryMaxTokens(a.Config.LLM.SummaryMaxTokens, &profile), profile.MaxTokens, profile.Temperature, a.effectiveContextForProfile(profile))
 		}
 	}
 
@@ -945,7 +955,7 @@ func (a *App) ActivateLLMProfile(id string) error {
 	a.mu.Unlock()
 
 	if engine != nil {
-		engine.UpdateConfig(client, profile.Provider, profile.Model, profile.SummaryModel, effectiveSummaryTemperature(a.Config.LLM.SummaryTemperature, profile), profile.MaxTokens, profile.Temperature, a.effectiveContextForProfile(*profile))
+		engine.UpdateConfig(client, profile.Provider, profile.Model, profile.SummaryModel, effectiveSummaryTemperature(a.Config.LLM.SummaryTemperature, profile), effectiveSummaryMaxTokens(a.Config.LLM.SummaryMaxTokens, profile), profile.MaxTokens, profile.Temperature, a.effectiveContextForProfile(*profile))
 	}
 	return nil
 }
@@ -984,6 +994,7 @@ func (a *App) buildClientForProfile(profile config.LLMProfile) (llm.Client, erro
 		Model:              profile.Model,
 		SummaryModel:       profile.SummaryModel,
 		SummaryTemperature: cloneFloat64Ptr(profile.SummaryTemperature),
+		SummaryMaxTokens:   profile.SummaryMaxTokens,
 		MaxTokens:          profile.MaxTokens,
 		Temperature:        profile.Temperature,
 	}
@@ -1037,6 +1048,7 @@ func llmProfileFromRecord(record storage.LLMProfileRecord) config.LLMProfile {
 		Model:               record.Model,
 		SummaryModel:        record.SummaryModel,
 		SummaryTemperature:  nullableFloatPtr(record.SummaryTemperature),
+		SummaryMaxTokens:    nullableIntValue(record.SummaryMaxTokens),
 		MaxTokens:           record.MaxTokens,
 		Temperature:         record.Temperature,
 		InputBudgetTokens:   nullableIntPtr(record.InputBudgetTokens),
@@ -1101,12 +1113,29 @@ func effectiveSummaryTemperature(global *float64, profile *config.LLMProfile) *f
 	return &value
 }
 
+func effectiveSummaryMaxTokens(global int, profile *config.LLMProfile) int {
+	if profile != nil && profile.SummaryMaxTokens > 0 {
+		return profile.SummaryMaxTokens
+	}
+	if global > 0 {
+		return global
+	}
+	return contextutil.DefaultSummaryMaxTokens()
+}
+
 func cloneFloat64Ptr(value *float64) *float64 {
 	if value == nil {
 		return nil
 	}
 	v := *value
 	return &v
+}
+
+func nullableIntValue(value sql.NullInt64) int {
+	if !value.Valid {
+		return 0
+	}
+	return int(value.Int64)
 }
 
 func clonePersona(p *config.Persona) *config.Persona {

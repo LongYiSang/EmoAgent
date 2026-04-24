@@ -60,6 +60,7 @@ type LLMProfileRecord struct {
 	Model               string
 	SummaryModel        string
 	SummaryTemperature  sql.NullFloat64
+	SummaryMaxTokens    sql.NullInt64
 	MaxTokens           int
 	Temperature         float64
 	APIKeyEnv           string
@@ -163,17 +164,18 @@ func (d *DB) UpsertLLMProfile(profile config.LLMProfile) error {
 	}
 	_, execErr := d.db.Exec(`
 		INSERT INTO llm_profiles (
-			name, provider, base_url, model, summary_model, summary_temperature, max_tokens, temperature, api_key_env,
+			name, provider, base_url, model, summary_model, summary_temperature, summary_max_tokens, max_tokens, temperature, api_key_env,
 			input_budget_tokens, soft_compact_ratio, hard_compact_ratio, reserve_output_tokens,
 			created_at, updated_at
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
 		ON CONFLICT(name) DO UPDATE SET
 			provider = excluded.provider,
 			base_url = excluded.base_url,
 			model = excluded.model,
 			summary_model = excluded.summary_model,
 			summary_temperature = excluded.summary_temperature,
+			summary_max_tokens = excluded.summary_max_tokens,
 			max_tokens = excluded.max_tokens,
 			temperature = excluded.temperature,
 			api_key_env = excluded.api_key_env,
@@ -182,21 +184,21 @@ func (d *DB) UpsertLLMProfile(profile config.LLMProfile) error {
 			hard_compact_ratio = excluded.hard_compact_ratio,
 			reserve_output_tokens = excluded.reserve_output_tokens,
 			updated_at = datetime('now')
-	`, profile.Name, profile.Provider, profile.BaseURL, profile.Model, profile.SummaryModel, nullableFloat(profile.SummaryTemperature), profile.MaxTokens, profile.Temperature, profile.APIKeyEnv, inputBudgetTokens, softCompactRatio, hardCompactRatio, reserveOutputTokens)
+	`, profile.Name, profile.Provider, profile.BaseURL, profile.Model, profile.SummaryModel, nullableFloat(profile.SummaryTemperature), nullablePositiveInt(profile.SummaryMaxTokens), profile.MaxTokens, profile.Temperature, profile.APIKeyEnv, inputBudgetTokens, softCompactRatio, hardCompactRatio, reserveOutputTokens)
 	return execErr
 }
 
 // GetLLMProfile returns a profile by name, or nil when it does not exist.
 func (d *DB) GetLLMProfile(ctx context.Context, name string) (*LLMProfileRecord, error) {
 	row := d.db.QueryRowContext(ctx, `
-		SELECT name, provider, base_url, model, COALESCE(summary_model, ''), summary_temperature, max_tokens, temperature, COALESCE(api_key_env, ''),
+		SELECT name, provider, base_url, model, COALESCE(summary_model, ''), summary_temperature, summary_max_tokens, max_tokens, temperature, COALESCE(api_key_env, ''),
 		       input_budget_tokens, soft_compact_ratio, hard_compact_ratio, reserve_output_tokens, created_at, updated_at
 		FROM llm_profiles
 		WHERE name = ?
 	`, name)
 
 	var record LLMProfileRecord
-	if err := row.Scan(&record.Name, &record.Provider, &record.BaseURL, &record.Model, &record.SummaryModel, &record.SummaryTemperature, &record.MaxTokens, &record.Temperature, &record.APIKeyEnv, &record.InputBudgetTokens, &record.SoftCompactRatio, &record.HardCompactRatio, &record.ReserveOutputTokens, &record.CreatedAt, &record.UpdatedAt); err != nil {
+	if err := row.Scan(&record.Name, &record.Provider, &record.BaseURL, &record.Model, &record.SummaryModel, &record.SummaryTemperature, &record.SummaryMaxTokens, &record.MaxTokens, &record.Temperature, &record.APIKeyEnv, &record.InputBudgetTokens, &record.SoftCompactRatio, &record.HardCompactRatio, &record.ReserveOutputTokens, &record.CreatedAt, &record.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -208,7 +210,7 @@ func (d *DB) GetLLMProfile(ctx context.Context, name string) (*LLMProfileRecord,
 // ListLLMProfiles returns all LLM profiles ordered by name.
 func (d *DB) ListLLMProfiles() ([]LLMProfileRecord, error) {
 	rows, err := d.db.Query(`
-		SELECT name, provider, base_url, model, COALESCE(summary_model, ''), summary_temperature, max_tokens, temperature, COALESCE(api_key_env, ''),
+		SELECT name, provider, base_url, model, COALESCE(summary_model, ''), summary_temperature, summary_max_tokens, max_tokens, temperature, COALESCE(api_key_env, ''),
 		       input_budget_tokens, soft_compact_ratio, hard_compact_ratio, reserve_output_tokens, created_at, updated_at
 		FROM llm_profiles
 		ORDER BY name
@@ -221,7 +223,7 @@ func (d *DB) ListLLMProfiles() ([]LLMProfileRecord, error) {
 	var records []LLMProfileRecord
 	for rows.Next() {
 		var record LLMProfileRecord
-		if err := rows.Scan(&record.Name, &record.Provider, &record.BaseURL, &record.Model, &record.SummaryModel, &record.SummaryTemperature, &record.MaxTokens, &record.Temperature, &record.APIKeyEnv, &record.InputBudgetTokens, &record.SoftCompactRatio, &record.HardCompactRatio, &record.ReserveOutputTokens, &record.CreatedAt, &record.UpdatedAt); err != nil {
+		if err := rows.Scan(&record.Name, &record.Provider, &record.BaseURL, &record.Model, &record.SummaryModel, &record.SummaryTemperature, &record.SummaryMaxTokens, &record.MaxTokens, &record.Temperature, &record.APIKeyEnv, &record.InputBudgetTokens, &record.SoftCompactRatio, &record.HardCompactRatio, &record.ReserveOutputTokens, &record.CreatedAt, &record.UpdatedAt); err != nil {
 			return nil, err
 		}
 		records = append(records, record)
@@ -601,6 +603,13 @@ func nullableInt(value *int) any {
 		return nil
 	}
 	return *value
+}
+
+func nullablePositiveInt(value int) any {
+	if value <= 0 {
+		return nil
+	}
+	return value
 }
 
 func nullableFloat(value *float64) any {

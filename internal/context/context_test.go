@@ -19,13 +19,15 @@ import (
 )
 
 type summaryUpdateClient struct {
-	response *llm.ChatResponse
-	err      error
-	lastReq  llm.ChatRequest
+	response     *llm.ChatResponse
+	err          error
+	lastReq      llm.ChatRequest
+	chatRequests []llm.ChatRequest
 }
 
 func (c *summaryUpdateClient) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 	c.lastReq = req
+	c.chatRequests = append(c.chatRequests, req)
 	return c.response, c.err
 }
 
@@ -558,7 +560,7 @@ func TestRunningSummaryIterativeUpdatePreservesProtectedFields(t *testing.T) {
 		{ID: "m3", Role: "user", Content: "latest user"},
 	}
 
-	next, err := ctxpkg.UpdateRunningSummary(context.Background(), client, "summary-model", nil, &config.Persona{Name: "default", SystemPrompt: "system"}, history, state, config.ContextConfig{
+	next, report, err := ctxpkg.UpdateRunningSummary(context.Background(), client, "summary-model", 2048, nil, &config.Persona{Name: "default", SystemPrompt: "system"}, history, state, config.ContextConfig{
 		InputBudgetTokens:    24000,
 		SoftCompactRatio:     0.75,
 		HardCompactRatio:     0.92,
@@ -569,6 +571,9 @@ func TestRunningSummaryIterativeUpdatePreservesProtectedFields(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("UpdateRunningSummary: %v", err)
+	}
+	if !report.Attempted || report.DeltaCount != 2 {
+		t.Fatalf("SummaryUpdateReport = %#v, want attempted delta_count=2", report)
 	}
 	if len(next.RunningSummary.RelationshipState.PromisesMade) != 1 || next.RunningSummary.RelationshipState.PromisesMade[0] != "follow up tomorrow" {
 		t.Fatalf("PromisesMade = %#v, want preserved existing promise", next.RunningSummary.RelationshipState.PromisesMade)
@@ -581,6 +586,9 @@ func TestRunningSummaryIterativeUpdatePreservesProtectedFields(t *testing.T) {
 	}
 	if client.lastReq.Temperature != 0.1 {
 		t.Fatalf("summary request temperature = %v, want default 0.1", client.lastReq.Temperature)
+	}
+	if client.lastReq.MaxTokens != 2048 {
+		t.Fatalf("summary request max tokens = %d, want configured 2048", client.lastReq.MaxTokens)
 	}
 }
 
@@ -599,7 +607,7 @@ func TestRunningSummaryIterativeUpdateUsesConfiguredSummaryTemperature(t *testin
 		{ID: "m3", Role: "user", Content: "latest user"},
 	}
 
-	_, err := ctxpkg.UpdateRunningSummary(context.Background(), client, "summary-model", &summaryTemperature, &config.Persona{Name: "default", SystemPrompt: "system"}, history, nil, config.ContextConfig{
+	_, _, err := ctxpkg.UpdateRunningSummary(context.Background(), client, "summary-model", 0, &summaryTemperature, &config.Persona{Name: "default", SystemPrompt: "system"}, history, nil, config.ContextConfig{
 		InputBudgetTokens:    24000,
 		SoftCompactRatio:     0.75,
 		HardCompactRatio:     0.92,
@@ -613,6 +621,170 @@ func TestRunningSummaryIterativeUpdateUsesConfiguredSummaryTemperature(t *testin
 	}
 	if client.lastReq.Temperature != summaryTemperature {
 		t.Fatalf("summary request temperature = %v, want %v", client.lastReq.Temperature, summaryTemperature)
+	}
+	if client.lastReq.MaxTokens != 4096 {
+		t.Fatalf("summary request max tokens = %d, want default 4096", client.lastReq.MaxTokens)
+	}
+}
+
+func TestRunningSummaryParsesFencedJSON(t *testing.T) {
+	client := &summaryUpdateClient{
+		response: &llm.ChatResponse{
+			ID:      "summary-1",
+			Model:   "summary-model",
+			Content: "```json\n{\"running_summary\":{\"session_goal\":\"from fenced json\"}}\n```",
+		},
+	}
+	next := runSummaryUpdateForParsing(t, client)
+	if next.RunningSummary.SessionGoal != "from fenced json" {
+		t.Fatalf("SessionGoal = %q, want fenced JSON summary", next.RunningSummary.SessionGoal)
+	}
+}
+
+func TestRunningSummaryParsesEmbeddedJSON(t *testing.T) {
+	client := &summaryUpdateClient{
+		response: &llm.ChatResponse{
+			ID:      "summary-1",
+			Model:   "summary-model",
+			Content: "好的，摘要如下：{\"running_summary\":{\"session_goal\":\"from embedded json\"}}",
+		},
+	}
+	next := runSummaryUpdateForParsing(t, client)
+	if next.RunningSummary.SessionGoal != "from embedded json" {
+		t.Fatalf("SessionGoal = %q, want embedded JSON summary", next.RunningSummary.SessionGoal)
+	}
+}
+
+func TestRunningSummaryParsesEmbeddedJSONAfterNonSummaryObject(t *testing.T) {
+	client := &summaryUpdateClient{
+		response: &llm.ChatResponse{
+			ID:      "summary-1",
+			Model:   "summary-model",
+			Content: "{\"note\":\"not the summary\"}\n{\"running_summary\":{\"session_goal\":\"from second object\"}}",
+		},
+	}
+	next := runSummaryUpdateForParsing(t, client)
+	if next.RunningSummary.SessionGoal != "from second object" {
+		t.Fatalf("SessionGoal = %q, want second JSON object summary", next.RunningSummary.SessionGoal)
+	}
+}
+
+func TestRunningSummaryUsesReasoningContentJSONFallback(t *testing.T) {
+	client := &summaryUpdateClient{
+		response: &llm.ChatResponse{
+			ID:               "summary-1",
+			Model:            "summary-model",
+			ReasoningContent: "{\"running_summary\":{\"session_goal\":\"from reasoning json\"}}",
+		},
+	}
+	next := runSummaryUpdateForParsing(t, client)
+	if next.RunningSummary.SessionGoal != "from reasoning json" {
+		t.Fatalf("SessionGoal = %q, want reasoning JSON fallback summary", next.RunningSummary.SessionGoal)
+	}
+}
+
+func TestRunningSummaryRejectsFreeformReasoningContent(t *testing.T) {
+	client := &summaryUpdateClient{
+		response: &llm.ChatResponse{
+			ID:               "summary-1",
+			Model:            "summary-model",
+			ReasoningContent: "I should summarize this conversation, but this is not JSON.",
+		},
+	}
+	next, _, err := ctxpkg.UpdateRunningSummary(context.Background(), client, "summary-model", 0, nil, &config.Persona{Name: "default", SystemPrompt: "system"}, summaryParsingHistory(), nil, testContextConfig())
+	if err == nil {
+		t.Fatal("UpdateRunningSummary err = nil, want error for freeform reasoning")
+	}
+	if next == nil {
+		t.Fatal("next state is nil, want failure state")
+	}
+	if next.SummaryFailureCount != 1 {
+		t.Fatalf("SummaryFailureCount = %d, want 1", next.SummaryFailureCount)
+	}
+	if next.SummaryRetryAfter == "" {
+		t.Fatal("SummaryRetryAfter is empty, want cooldown timestamp")
+	}
+}
+
+func TestRunningSummaryFailureCooldownSkipsNextAttempt(t *testing.T) {
+	firstClient := &summaryUpdateClient{
+		response: &llm.ChatResponse{ID: "summary-1", Model: "summary-model", Content: "not json"},
+	}
+	state, _, err := ctxpkg.UpdateRunningSummary(context.Background(), firstClient, "summary-model", 0, nil, &config.Persona{Name: "default", SystemPrompt: "system"}, summaryParsingHistory(), nil, testContextConfig())
+	if err == nil {
+		t.Fatal("first UpdateRunningSummary err = nil, want parse failure")
+	}
+	if len(firstClient.chatRequests) != 1 {
+		t.Fatalf("first summary calls = %d, want 1", len(firstClient.chatRequests))
+	}
+
+	secondClient := &summaryUpdateClient{
+		response: &llm.ChatResponse{ID: "summary-2", Model: "summary-model", Content: `{"running_summary":{"session_goal":"should not be used"}}`},
+	}
+	next, report, err := ctxpkg.UpdateRunningSummary(context.Background(), secondClient, "summary-model", 0, nil, &config.Persona{Name: "default", SystemPrompt: "system"}, summaryParsingHistory(), state, testContextConfig())
+	if err != nil {
+		t.Fatalf("second UpdateRunningSummary: %v", err)
+	}
+	if len(secondClient.chatRequests) != 0 {
+		t.Fatalf("second summary calls = %d, want 0 during cooldown", len(secondClient.chatRequests))
+	}
+	if !report.Skipped || report.SkipReason != "summary_retry_cooldown" {
+		t.Fatalf("SummaryUpdateReport = %#v, want cooldown skip", report)
+	}
+	if next.SummaryCoveredUntilMessageID != "" {
+		t.Fatalf("SummaryCoveredUntilMessageID = %q, want unchanged empty coverage", next.SummaryCoveredUntilMessageID)
+	}
+}
+
+func TestRunningSummarySuccessClearsFailureState(t *testing.T) {
+	client := &summaryUpdateClient{
+		response: &llm.ChatResponse{
+			ID:      "summary-1",
+			Model:   "summary-model",
+			Content: `{"running_summary":{"session_goal":"recovered"}}`,
+		},
+	}
+	state := &ctxpkg.ContextState{
+		SummaryFailedAt:     "2026-04-24T00:00:00Z",
+		SummaryRetryAfter:   "2026-04-24T00:02:00Z",
+		SummaryFailureCount: 3,
+		SummaryLastError:    "previous failure",
+	}
+	next, _, err := ctxpkg.UpdateRunningSummary(context.Background(), client, "summary-model", 0, nil, &config.Persona{Name: "default", SystemPrompt: "system"}, summaryParsingHistory(), state, testContextConfig())
+	if err != nil {
+		t.Fatalf("UpdateRunningSummary: %v", err)
+	}
+	if next.SummaryFailureCount != 0 || next.SummaryFailedAt != "" || next.SummaryRetryAfter != "" || next.SummaryLastError != "" {
+		t.Fatalf("failure state was not cleared: %#v", next)
+	}
+}
+
+func runSummaryUpdateForParsing(t *testing.T, client *summaryUpdateClient) *ctxpkg.ContextState {
+	t.Helper()
+	next, _, err := ctxpkg.UpdateRunningSummary(context.Background(), client, "summary-model", 0, nil, &config.Persona{Name: "default", SystemPrompt: "system"}, summaryParsingHistory(), nil, testContextConfig())
+	if err != nil {
+		t.Fatalf("UpdateRunningSummary: %v", err)
+	}
+	return next
+}
+
+func summaryParsingHistory() []storage.MessageRecord {
+	return []storage.MessageRecord{
+		{ID: "m1", Role: "user", Content: "older user"},
+		{ID: "m2", Role: "assistant", Content: "older assistant"},
+		{ID: "m3", Role: "user", Content: "latest user"},
+	}
+}
+
+func testContextConfig() config.ContextConfig {
+	return config.ContextConfig{
+		InputBudgetTokens:    24000,
+		SoftCompactRatio:     0.75,
+		HardCompactRatio:     0.92,
+		ReserveOutputTokens:  4096,
+		KeepRecentUserTurns:  1,
+		ToolResultSoftTokens: 1000,
+		ToolResultHardTokens: 3000,
 	}
 }
 

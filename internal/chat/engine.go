@@ -32,6 +32,7 @@ type EngineConfig struct {
 	Model              string
 	SummaryModel       string
 	SummaryTemperature *float64
+	SummaryMaxTokens   int
 	MaxTokens          int
 	Temperature        float64
 	ContextConfig      config.ContextConfig
@@ -50,6 +51,7 @@ type RuntimeConfig struct {
 	Model              string
 	SummaryModel       string
 	SummaryTemperature *float64
+	SummaryMaxTokens   int
 	MaxTokens          int
 	Temperature        float64
 	ContextConfig      config.ContextConfig
@@ -65,6 +67,7 @@ type Engine struct {
 	model              string
 	summaryModel       string
 	summaryTemperature *float64
+	summaryMaxTokens   int
 	maxTokens          int
 	temperature        float64
 	contextCfg         config.ContextConfig
@@ -78,7 +81,7 @@ type Engine struct {
 }
 
 // UpdateConfig hot-swaps the active LLM client and request parameters for new sends.
-func (e *Engine) UpdateConfig(client llm.Client, provider, model, summaryModel string, summaryTemperature *float64, maxTokens int, temperature float64, contextCfg config.ContextConfig) {
+func (e *Engine) UpdateConfig(client llm.Client, provider, model, summaryModel string, summaryTemperature *float64, summaryMaxTokens int, maxTokens int, temperature float64, contextCfg config.ContextConfig) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -89,6 +92,7 @@ func (e *Engine) UpdateConfig(client llm.Client, provider, model, summaryModel s
 	e.model = model
 	e.summaryModel = summaryModel
 	e.summaryTemperature = cloneFloat64Ptr(summaryTemperature)
+	e.summaryMaxTokens = summaryMaxTokens
 	e.maxTokens = maxTokens
 	e.temperature = temperature
 	if err := contextCfg.Validate(); err == nil {
@@ -117,6 +121,7 @@ func NewEngine(cfg EngineConfig) *Engine {
 		model:              cfg.Model,
 		summaryModel:       cfg.SummaryModel,
 		summaryTemperature: cloneFloat64Ptr(cfg.SummaryTemperature),
+		summaryMaxTokens:   cfg.SummaryMaxTokens,
 		maxTokens:          cfg.MaxTokens,
 		temperature:        cfg.Temperature,
 		contextCfg:         contextCfg,
@@ -140,6 +145,7 @@ func (e *Engine) RuntimeConfig() RuntimeConfig {
 		Model:              e.model,
 		SummaryModel:       e.summaryModel,
 		SummaryTemperature: cloneFloat64Ptr(e.summaryTemperature),
+		SummaryMaxTokens:   e.summaryMaxTokens,
 		MaxTokens:          e.maxTokens,
 		Temperature:        e.temperature,
 		ContextConfig:      e.contextCfg,
@@ -207,6 +213,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	model := e.model
 	summaryModel := e.summaryModel
 	summaryTemperature := cloneFloat64Ptr(e.summaryTemperature)
+	summaryMaxTokens := e.summaryMaxTokens
 	maxTokens := e.maxTokens
 	temperature := e.temperature
 	contextCfg := e.contextCfg
@@ -269,10 +276,21 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 		state = &defaultState
 	}
 
-	if nextState, updateErr := contextutil.UpdateRunningSummary(ctx, client, effectiveSummaryModel(model, summaryModel), summaryTemperature, persona, history, state, contextCfg); updateErr != nil {
-		e.logger.Warn("failed to update running summary", "session", sessionID, "error", updateErr)
+	summaryCtx, cancelSummary := context.WithTimeout(ctx, 8*time.Second)
+	if nextState, report, updateErr := contextutil.UpdateRunningSummary(summaryCtx, client, effectiveSummaryModel(model, summaryModel), summaryMaxTokens, summaryTemperature, persona, history, state, contextCfg); updateErr != nil {
+		cancelSummary()
+		if nextState != nil {
+			state = nextState
+		}
+		logSummaryUpdate(e.logger, slog.LevelWarn, sessionID, report, updateErr)
 	} else {
+		cancelSummary()
 		state = nextState
+		if report.Attempted {
+			logSummaryUpdate(e.logger, slog.LevelInfo, sessionID, report, nil)
+		} else if report.Skipped && report.SkipReason == "summary_retry_cooldown" {
+			logSummaryUpdate(e.logger, slog.LevelDebug, sessionID, report, nil)
+		}
 	}
 
 	var pendingDecisions []protocol.DecisionSummary
@@ -750,6 +768,40 @@ func emitApprovalDiff(emit func(WSMessage), previous map[string]string, current 
 		emit(WSMessage{Type: eventType, Approval: &approvalCopy})
 	}
 	return next, interrupted
+}
+
+func logSummaryUpdate(logger *slog.Logger, level slog.Level, sessionID string, report contextutil.SummaryUpdateReport, err error) {
+	if logger == nil {
+		return
+	}
+	message := "running summary updated"
+	if err != nil {
+		message = "failed to update running summary"
+	} else if report.Skipped {
+		message = "running summary update skipped"
+	}
+	record := slog.NewRecord(time.Now(), level, message, 0)
+	record.AddAttrs(
+		slog.String("session_id", sessionID),
+		slog.String("summary_model", report.SummaryModel),
+		slog.Int("delta_count", report.DeltaCount),
+		slog.String("covered_until_before", report.CoveredUntilBefore),
+		slog.String("covered_until_after", report.CoveredUntilAfter),
+		slog.Int64("duration_ms", report.DurationMS),
+		slog.String("stop_reason", report.StopReason),
+		slog.String("raw_stop_reason", report.RawStopReason),
+		slog.Int("content_len", report.ContentLength),
+		slog.Int("reasoning_len", report.ReasoningLength),
+		slog.Int("failure_count", report.FailureCount),
+		slog.String("retry_after", report.RetryAfter),
+	)
+	if report.SkipReason != "" {
+		record.AddAttrs(slog.String("skip_reason", report.SkipReason))
+	}
+	if err != nil {
+		record.AddAttrs(slog.Any("error", err))
+	}
+	_ = logger.Handler().Handle(context.Background(), record)
 }
 
 func logCompactReport(logger *slog.Logger, level slog.Level, report contextutil.CompactReport, retryAttempt int, errorKind llm.ErrorKind, message string) {

@@ -207,6 +207,10 @@ CREATE INDEX IF NOT EXISTS idx_approval_requests_expires_at
     ON approval_requests(expires_at);
 `,
 	},
+	{
+		Version: 10,
+		SQL:     `ALTER TABLE llm_profiles ADD COLUMN summary_max_tokens INTEGER;`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.

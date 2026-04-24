@@ -58,6 +58,7 @@ type llmProfileResponse struct {
 	Model               string   `json:"model"`
 	SummaryModel        string   `json:"summary_model"`
 	SummaryTemperature  *float64 `json:"summary_temperature"`
+	SummaryMaxTokens    int      `json:"summary_max_tokens"`
 	MaxTokens           int      `json:"max_tokens"`
 	Temperature         float64  `json:"temperature"`
 	InputBudgetTokens   *int     `json:"input_budget_tokens"`
@@ -111,6 +112,7 @@ type llmProfileRequest struct {
 	Model               string   `json:"model"`
 	SummaryModel        string   `json:"summary_model"`
 	SummaryTemperature  *float64 `json:"summary_temperature"`
+	SummaryMaxTokens    int      `json:"summary_max_tokens"`
 	MaxTokens           int      `json:"max_tokens"`
 	Temperature         float64  `json:"temperature"`
 	InputBudgetTokens   *int     `json:"input_budget_tokens"`
@@ -189,6 +191,7 @@ func (h *APIHandler) HandleCreateLLMProfile(w http.ResponseWriter, r *http.Reque
 		Model:               strings.TrimSpace(req.Model),
 		SummaryModel:        strings.TrimSpace(req.SummaryModel),
 		SummaryTemperature:  req.SummaryTemperature,
+		SummaryMaxTokens:    req.SummaryMaxTokens,
 		MaxTokens:           req.MaxTokens,
 		Temperature:         req.Temperature,
 		InputBudgetTokens:   req.InputBudgetTokens,
@@ -220,6 +223,7 @@ func (h *APIHandler) HandleUpdateLLMProfile(w http.ResponseWriter, r *http.Reque
 		Model:               strings.TrimSpace(req.Model),
 		SummaryModel:        strings.TrimSpace(req.SummaryModel),
 		SummaryTemperature:  req.SummaryTemperature,
+		SummaryMaxTokens:    req.SummaryMaxTokens,
 		MaxTokens:           req.MaxTokens,
 		Temperature:         req.Temperature,
 		InputBudgetTokens:   req.InputBudgetTokens,
@@ -541,6 +545,8 @@ func isLLMProfileValidationError(err error) bool {
 		return true
 	case message == "summary_temperature must be between 0 and 2":
 		return true
+	case message == "summary_max_tokens must be >= 0":
+		return true
 	case message == "input_budget_tokens must be > 0":
 		return true
 	case message == "reserve_output_tokens must be > 0":
@@ -633,6 +639,7 @@ func toLLMProfileResponse(profile config.LLMProfile) llmProfileResponse {
 		Model:               profile.Model,
 		SummaryModel:        profile.SummaryModel,
 		SummaryTemperature:  cloneFloat64Ptr(profile.SummaryTemperature),
+		SummaryMaxTokens:    profile.SummaryMaxTokens,
 		MaxTokens:           profile.MaxTokens,
 		Temperature:         profile.Temperature,
 		InputBudgetTokens:   profile.InputBudgetTokens,

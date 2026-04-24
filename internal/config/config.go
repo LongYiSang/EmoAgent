@@ -73,6 +73,7 @@ type LLMConfig struct {
 	Model              string   `yaml:"model"`
 	SummaryModel       string   `yaml:"summary_model"`
 	SummaryTemperature *float64 `yaml:"summary_temperature"`
+	SummaryMaxTokens   int      `yaml:"summary_max_tokens"`
 	MaxTokens          int      `yaml:"max_tokens"`
 	Temperature        float64  `yaml:"temperature"`
 	APIKeyEnv          string   `yaml:"api_key_env"`
@@ -89,6 +90,7 @@ type LLMProfile struct {
 	Model               string   `yaml:"model" json:"model"`
 	SummaryModel        string   `yaml:"summary_model" json:"summary_model"`
 	SummaryTemperature  *float64 `yaml:"summary_temperature,omitempty" json:"summary_temperature,omitempty"`
+	SummaryMaxTokens    int      `yaml:"summary_max_tokens,omitempty" json:"summary_max_tokens,omitempty"`
 	MaxTokens           int      `yaml:"max_tokens" json:"max_tokens"`
 	Temperature         float64  `yaml:"temperature" json:"temperature"`
 	APIKeyEnv           string   `yaml:"api_key_env" json:"api_key_env"`
@@ -213,11 +215,12 @@ func DefaultConfig() *Config {
 			Port: 8080,
 		},
 		LLM: LLMConfig{
-			Provider:    "openai",
-			BaseURL:     "https://api.openai.com",
-			Model:       "gpt-4o",
-			MaxTokens:   4096,
-			Temperature: 0.7,
+			Provider:         "openai",
+			BaseURL:          "https://api.openai.com",
+			Model:            "gpt-4o",
+			SummaryMaxTokens: 4096,
+			MaxTokens:        4096,
+			Temperature:      0.7,
 		},
 		Chat: ChatConfig{
 			RealtimeStreaming: false,
@@ -324,6 +327,9 @@ func (c *Config) Validate() error {
 	if err := validateOptionalTemperature("llm.summary_temperature", c.LLM.SummaryTemperature); err != nil {
 		return err
 	}
+	if c.LLM.SummaryMaxTokens < 0 {
+		return fmt.Errorf("llm.summary_max_tokens must be >= 0")
+	}
 	if err := c.Context.Validate(); err != nil {
 		return fmt.Errorf("context: %w", err)
 	}
@@ -394,6 +400,9 @@ func (p LLMProfile) Validate() error {
 	}
 	if err := validateOptionalTemperature("summary_temperature", p.SummaryTemperature); err != nil {
 		return err
+	}
+	if p.SummaryMaxTokens < 0 {
+		return fmt.Errorf("summary_max_tokens must be >= 0")
 	}
 	return nil
 }

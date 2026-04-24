@@ -336,6 +336,7 @@ func TestLLMProfileCRUD(t *testing.T) {
 		Model:              "gpt-4o",
 		SummaryModel:       "gpt-4o-mini",
 		SummaryTemperature: floatPtr(0.15),
+		SummaryMaxTokens:   3072,
 		MaxTokens:          4096,
 		Temperature:        0.7,
 		APIKeyEnv:          "OPENAI_API_KEY",
@@ -356,6 +357,9 @@ func TestLLMProfileCRUD(t *testing.T) {
 	if !profile.SummaryTemperature.Valid || profile.SummaryTemperature.Float64 != 0.15 {
 		t.Fatalf("SummaryTemperature = %#v, want 0.15", profile.SummaryTemperature)
 	}
+	if !profile.SummaryMaxTokens.Valid || int(profile.SummaryMaxTokens.Int64) != 3072 {
+		t.Fatalf("SummaryMaxTokens = %#v, want 3072", profile.SummaryMaxTokens)
+	}
 
 	profiles, err := db.ListLLMProfiles()
 	if err != nil {
@@ -366,14 +370,15 @@ func TestLLMProfileCRUD(t *testing.T) {
 	}
 
 	if err := db.UpsertLLMProfile(config.LLMProfile{
-		Name:         "default",
-		Provider:     "openai",
-		BaseURL:      "https://api.openai.com",
-		Model:        "gpt-4o",
-		SummaryModel: "gpt-4.1",
-		MaxTokens:    2048,
-		Temperature:  0.2,
-		APIKeyEnv:    "MOONSHOT_API_KEY",
+		Name:             "default",
+		Provider:         "openai",
+		BaseURL:          "https://api.openai.com",
+		Model:            "gpt-4o",
+		SummaryModel:     "gpt-4.1",
+		SummaryMaxTokens: 0,
+		MaxTokens:        2048,
+		Temperature:      0.2,
+		APIKeyEnv:        "MOONSHOT_API_KEY",
 	}); err != nil {
 		t.Fatalf("UpsertLLMProfile update: %v", err)
 	}
@@ -387,6 +392,9 @@ func TestLLMProfileCRUD(t *testing.T) {
 	}
 	if profile.SummaryTemperature.Valid {
 		t.Fatalf("SummaryTemperature = %#v, want NULL after clearing", profile.SummaryTemperature)
+	}
+	if profile.SummaryMaxTokens.Valid {
+		t.Fatalf("SummaryMaxTokens = %#v, want NULL after clearing", profile.SummaryMaxTokens)
 	}
 
 	if err := db.DeleteLLMProfile("default"); err != nil {

@@ -19,6 +19,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.LLM.APIKeyEnv != "" {
 		t.Errorf("default llm.api_key_env = %q, want empty", cfg.LLM.APIKeyEnv)
 	}
+	if cfg.LLM.SummaryMaxTokens != 4096 {
+		t.Errorf("default llm.summary_max_tokens = %d, want 4096", cfg.LLM.SummaryMaxTokens)
+	}
 	if len(cfg.LLMProfiles) != 0 {
 		t.Errorf("default llm_profiles length = %d, want 0", len(cfg.LLMProfiles))
 	}
@@ -77,6 +80,7 @@ llm:
   provider: anthropic
   model: claude-sonnet-4-20250514
   summary_temperature: 0.2
+  summary_max_tokens: 3072
   api_key_env: ANTHROPIC_API_KEY
 chat:
   realtime_streaming: true
@@ -95,6 +99,7 @@ llm_profiles:
     model: gpt-4o
     summary_model: gpt-4o-mini
     summary_temperature: 0.1
+    summary_max_tokens: 2048
     max_tokens: 2048
     temperature: 0.3
     api_key_env: OPENAI_API_KEY
@@ -118,6 +123,9 @@ llm_profiles:
 	if cfg.LLM.SummaryTemperature == nil || *cfg.LLM.SummaryTemperature != 0.2 {
 		t.Fatalf("llm.summary_temperature = %#v, want 0.2", cfg.LLM.SummaryTemperature)
 	}
+	if cfg.LLM.SummaryMaxTokens != 3072 {
+		t.Fatalf("llm.summary_max_tokens = %d, want 3072", cfg.LLM.SummaryMaxTokens)
+	}
 	if !cfg.Chat.RealtimeStreaming {
 		t.Fatal("chat.realtime_streaming = false, want true")
 	}
@@ -136,6 +144,9 @@ llm_profiles:
 	}
 	if profile.SummaryTemperature == nil || *profile.SummaryTemperature != 0.1 {
 		t.Fatalf("llm_profiles[0].summary_temperature = %#v, want 0.1", profile.SummaryTemperature)
+	}
+	if profile.SummaryMaxTokens != 2048 {
+		t.Fatalf("llm_profiles[0].summary_max_tokens = %d, want 2048", profile.SummaryMaxTokens)
 	}
 	if profile.InputBudgetTokens == nil || *profile.InputBudgetTokens != 12000 {
 		t.Fatalf("llm_profiles[0].input_budget_tokens = %#v, want 12000", profile.InputBudgetTokens)
@@ -272,6 +283,28 @@ func TestValidateRejectsInvalidSummaryTemperature(t *testing.T) {
 	}}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error for invalid profile summary_temperature")
+	}
+}
+
+func TestValidateRejectsInvalidSummaryMaxTokens(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.LLM.SummaryMaxTokens = -1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for invalid llm.summary_max_tokens")
+	}
+
+	cfg = DefaultConfig()
+	cfg.LLMProfiles = []LLMProfile{{
+		Name:             "default",
+		Provider:         "openai",
+		BaseURL:          "https://api.openai.com",
+		Model:            "gpt-4o-mini",
+		MaxTokens:        1024,
+		Temperature:      0.7,
+		SummaryMaxTokens: -1,
+	}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for invalid profile summary_max_tokens")
 	}
 }
 

@@ -170,8 +170,8 @@ func floatPtr(v float64) *float64 { return &v }
 
 func TestHandleListLLMProfiles(t *testing.T) {
 	app := &fakeAdminApp{
-		profiles: []config.LLMProfile{{Name: "default", Provider: "openai", SummaryTemperature: floatPtr(0.11)}},
-		active:   &config.LLMProfile{Name: "default", Provider: "openai", SummaryTemperature: floatPtr(0.11)},
+		profiles: []config.LLMProfile{{Name: "default", Provider: "openai", SummaryTemperature: floatPtr(0.11), SummaryMaxTokens: 3072}},
+		active:   &config.LLMProfile{Name: "default", Provider: "openai", SummaryTemperature: floatPtr(0.11), SummaryMaxTokens: 3072},
 	}
 	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
@@ -195,6 +195,9 @@ func TestHandleListLLMProfiles(t *testing.T) {
 	}
 	if resp.Profiles[0].SummaryTemperature == nil || *resp.Profiles[0].SummaryTemperature != 0.11 {
 		t.Fatalf("SummaryTemperature = %#v, want 0.11", resp.Profiles[0].SummaryTemperature)
+	}
+	if resp.Profiles[0].SummaryMaxTokens != 3072 {
+		t.Fatalf("SummaryMaxTokens = %d, want 3072", resp.Profiles[0].SummaryMaxTokens)
 	}
 }
 
@@ -318,6 +321,23 @@ func TestHandleCreateLLMProfileParsesSummaryTemperature(t *testing.T) {
 			t.Fatalf("SummaryTemperature = %#v, want nil", app.lastCreate.SummaryTemperature)
 		}
 	})
+}
+
+func TestHandleCreateLLMProfileParsesSummaryMaxTokens(t *testing.T) {
+	app := &fakeAdminApp{}
+	handler := NewAPIHandler(app, slog.Default())
+	body := bytes.NewBufferString(`{"id":"default","name":"Default","provider":"openai","base_url":"https://api.openai.com","model":"gpt-4o","max_tokens":128,"temperature":0.7,"summary_max_tokens":3072}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/llm-profiles", body)
+	rec := httptest.NewRecorder()
+
+	handler.HandleCreateLLMProfile(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if app.lastCreate.SummaryMaxTokens != 3072 {
+		t.Fatalf("SummaryMaxTokens = %d, want 3072", app.lastCreate.SummaryMaxTokens)
+	}
 }
 
 func TestHandleGetLLMProfileMapsWrappedNotFound(t *testing.T) {

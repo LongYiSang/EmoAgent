@@ -665,6 +665,7 @@ func TestRunPassesSummaryModelAndContextConfigToEngine(t *testing.T) {
 				Model:              "primary-model",
 				SummaryModel:       "summary-model",
 				SummaryTemperature: floatPtr(0.25),
+				SummaryMaxTokens:   2048,
 				MaxTokens:          64,
 				Temperature:        0.3,
 			},
@@ -679,7 +680,7 @@ func TestRunPassesSummaryModelAndContextConfigToEngine(t *testing.T) {
 			},
 		},
 		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
-		ActiveLLMProfile: &config.LLMProfile{Name: "active", Provider: "openai", Model: "profile-model", SummaryModel: "profile-summary", SummaryTemperature: floatPtr(0.05), MaxTokens: 128, Temperature: 0.1, InputBudgetTokens: intPtr(9000), ReserveOutputTokens: intPtr(512)},
+		ActiveLLMProfile: &config.LLMProfile{Name: "active", Provider: "openai", Model: "profile-model", SummaryModel: "profile-summary", SummaryTemperature: floatPtr(0.05), SummaryMaxTokens: 3072, MaxTokens: 128, Temperature: 0.1, InputBudgetTokens: intPtr(9000), ReserveOutputTokens: intPtr(512)},
 	}
 
 	if err := a.Run(ctx); err != nil {
@@ -698,6 +699,9 @@ func TestRunPassesSummaryModelAndContextConfigToEngine(t *testing.T) {
 	}
 	if runtimeCfg.SummaryTemperature == nil || *runtimeCfg.SummaryTemperature != 0.05 {
 		t.Fatalf("runtime summary temperature = %#v, want 0.05", runtimeCfg.SummaryTemperature)
+	}
+	if runtimeCfg.SummaryMaxTokens != 3072 {
+		t.Fatalf("runtime summary max tokens = %d, want 3072", runtimeCfg.SummaryMaxTokens)
 	}
 	if runtimeCfg.ContextConfig.KeepRecentUserTurns != 3 {
 		t.Fatalf("runtime keep recent = %d, want 3", runtimeCfg.ContextConfig.KeepRecentUserTurns)
@@ -770,6 +774,63 @@ func TestRunFallsBackToGlobalOrDefaultSummaryTemperature(t *testing.T) {
 	})
 }
 
+func TestRunFallsBackToGlobalOrDefaultSummaryMaxTokens(t *testing.T) {
+	t.Run("inherit global summary max tokens when profile unset", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		a := &App{
+			Config: &config.Config{
+				Server: config.ServerConfig{Host: "127.0.0.1", Port: 0},
+				LLM: config.LLMConfig{
+					Model:            "primary-model",
+					SummaryMaxTokens: 8192,
+					MaxTokens:        64,
+					Temperature:      0.3,
+				},
+			},
+			Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+			ActiveLLMProfile: &config.LLMProfile{Name: "active", Provider: "openai", Model: "profile-model", MaxTokens: 128, Temperature: 0.1},
+		}
+
+		if err := a.Run(ctx); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+
+		runtimeCfg := a.engine.RuntimeConfig()
+		if runtimeCfg.SummaryMaxTokens != 8192 {
+			t.Fatalf("runtime summary max tokens = %d, want inherited 8192", runtimeCfg.SummaryMaxTokens)
+		}
+	})
+
+	t.Run("default summary max tokens when unset everywhere", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		a := &App{
+			Config: &config.Config{
+				Server: config.ServerConfig{Host: "127.0.0.1", Port: 0},
+				LLM: config.LLMConfig{
+					Model:       "primary-model",
+					MaxTokens:   64,
+					Temperature: 0.3,
+				},
+			},
+			Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+			ActiveLLMProfile: &config.LLMProfile{Name: "active", Provider: "openai", Model: "profile-model", MaxTokens: 128, Temperature: 0.1},
+		}
+
+		if err := a.Run(ctx); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+
+		runtimeCfg := a.engine.RuntimeConfig()
+		if runtimeCfg.SummaryMaxTokens != 4096 {
+			t.Fatalf("runtime summary max tokens = %d, want default 4096", runtimeCfg.SummaryMaxTokens)
+		}
+	})
+}
+
 func TestUpdateLLMProfilePassesSummaryModelAndContextConfigToEngine(t *testing.T) {
 	t.Setenv("TEST_OPENAI_API_KEY", "test-key")
 
@@ -787,6 +848,7 @@ func TestUpdateLLMProfilePassesSummaryModelAndContextConfigToEngine(t *testing.T
 		Model:              "gpt-4o-mini",
 		SummaryModel:       "",
 		SummaryTemperature: floatPtr(0.18),
+		SummaryMaxTokens:   2048,
 		MaxTokens:          128,
 		Temperature:        0.2,
 		APIKeyEnv:          "TEST_OPENAI_API_KEY",
@@ -801,6 +863,7 @@ func TestUpdateLLMProfilePassesSummaryModelAndContextConfigToEngine(t *testing.T
 				BaseURL:            "https://api.openai.com",
 				Model:              "gpt-4o-mini",
 				SummaryTemperature: floatPtr(0.16),
+				SummaryMaxTokens:   4096,
 				MaxTokens:          128,
 				Temperature:        0.2,
 				APIKeyEnv:          "TEST_OPENAI_API_KEY",
@@ -817,7 +880,7 @@ func TestUpdateLLMProfilePassesSummaryModelAndContextConfigToEngine(t *testing.T
 		},
 		DB:               db,
 		Logger:           logger,
-		ActiveLLMProfile: &config.LLMProfile{Name: "default", Provider: "openai", BaseURL: "https://api.openai.com", Model: "gpt-4o-mini", SummaryTemperature: floatPtr(0.18), MaxTokens: 128, Temperature: 0.2, APIKeyEnv: "TEST_OPENAI_API_KEY", ReserveOutputTokens: intPtr(4096)},
+		ActiveLLMProfile: &config.LLMProfile{Name: "default", Provider: "openai", BaseURL: "https://api.openai.com", Model: "gpt-4o-mini", SummaryTemperature: floatPtr(0.18), SummaryMaxTokens: 2048, MaxTokens: 128, Temperature: 0.2, APIKeyEnv: "TEST_OPENAI_API_KEY", ReserveOutputTokens: intPtr(4096)},
 		engine:           chat.NewEngine(chat.EngineConfig{DB: db, Logger: logger, Model: "gpt-4o-mini", MaxTokens: 128, Temperature: 0.2, ContextConfig: config.DefaultConfig().Context}),
 	}
 
@@ -827,6 +890,7 @@ func TestUpdateLLMProfilePassesSummaryModelAndContextConfigToEngine(t *testing.T
 		Model:              "gpt-4.1-mini",
 		SummaryModel:       "gpt-4.1-nano",
 		SummaryTemperature: floatPtr(0.12),
+		SummaryMaxTokens:   3072,
 		MaxTokens:          256,
 		Temperature:        0.4,
 		APIKeyEnv:          "TEST_OPENAI_API_KEY",
@@ -841,6 +905,9 @@ func TestUpdateLLMProfilePassesSummaryModelAndContextConfigToEngine(t *testing.T
 	}
 	if runtimeCfg.SummaryTemperature == nil || *runtimeCfg.SummaryTemperature != 0.12 {
 		t.Fatalf("runtime summary temperature = %#v, want 0.12", runtimeCfg.SummaryTemperature)
+	}
+	if runtimeCfg.SummaryMaxTokens != 3072 {
+		t.Fatalf("runtime summary max tokens = %d, want 3072", runtimeCfg.SummaryMaxTokens)
 	}
 	if runtimeCfg.ContextConfig.KeepRecentUserTurns != 7 {
 		t.Fatalf("runtime keep recent = %d, want 7", runtimeCfg.ContextConfig.KeepRecentUserTurns)
@@ -870,6 +937,7 @@ func TestActivateLLMProfilePassesSummaryModelAndContextConfigToEngine(t *testing
 		Model:              "gpt-4o-mini",
 		SummaryModel:       "gpt-4o-mini",
 		SummaryTemperature: floatPtr(0.2),
+		SummaryMaxTokens:   2048,
 		MaxTokens:          128,
 		Temperature:        0.2,
 		APIKeyEnv:          "TEST_OPENAI_API_KEY",
@@ -883,6 +951,7 @@ func TestActivateLLMProfilePassesSummaryModelAndContextConfigToEngine(t *testing
 		Model:               "gpt-4.1-mini",
 		SummaryModel:        "gpt-4.1-nano",
 		SummaryTemperature:  floatPtr(0.07),
+		SummaryMaxTokens:    3072,
 		MaxTokens:           256,
 		Temperature:         0.1,
 		APIKeyEnv:           "TEST_OPENAI_API_KEY",
@@ -907,7 +976,7 @@ func TestActivateLLMProfilePassesSummaryModelAndContextConfigToEngine(t *testing
 		},
 		DB:               db,
 		Logger:           logger,
-		ActiveLLMProfile: &config.LLMProfile{Name: "default", Provider: "openai", BaseURL: "https://api.openai.com", Model: "gpt-4o-mini", SummaryModel: "gpt-4o-mini", SummaryTemperature: floatPtr(0.2), MaxTokens: 128, Temperature: 0.2, APIKeyEnv: "TEST_OPENAI_API_KEY"},
+		ActiveLLMProfile: &config.LLMProfile{Name: "default", Provider: "openai", BaseURL: "https://api.openai.com", Model: "gpt-4o-mini", SummaryModel: "gpt-4o-mini", SummaryTemperature: floatPtr(0.2), SummaryMaxTokens: 2048, MaxTokens: 128, Temperature: 0.2, APIKeyEnv: "TEST_OPENAI_API_KEY"},
 		engine:           chat.NewEngine(chat.EngineConfig{DB: db, Logger: logger, Model: "gpt-4o-mini", MaxTokens: 128, Temperature: 0.2, ContextConfig: config.DefaultConfig().Context}),
 	}
 
@@ -924,6 +993,9 @@ func TestActivateLLMProfilePassesSummaryModelAndContextConfigToEngine(t *testing
 	}
 	if runtimeCfg.SummaryTemperature == nil || *runtimeCfg.SummaryTemperature != 0.07 {
 		t.Fatalf("runtime summary temperature = %#v, want 0.07", runtimeCfg.SummaryTemperature)
+	}
+	if runtimeCfg.SummaryMaxTokens != 3072 {
+		t.Fatalf("runtime summary max tokens = %d, want 3072", runtimeCfg.SummaryMaxTokens)
 	}
 	if runtimeCfg.ContextConfig.KeepRecentUserTurns != 5 {
 		t.Fatalf("runtime keep recent = %d, want 5", runtimeCfg.ContextConfig.KeepRecentUserTurns)
