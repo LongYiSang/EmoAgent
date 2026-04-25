@@ -77,11 +77,12 @@ delegate_to_work
   -> Runtime.Run
   -> 可能的 context compression
   -> LLM 工具循环
-     - 普通工具
-     - request_decision
-     - finish_task
+     - 提取本轮 tool calls
+     - 先整体 ClassifyCall
+     - request_decision / finish_task 协议工具处理
      - permission_escalation_required 拦截
-     - 破坏性调用拦截与审批暂停
+     - tool_approval 审批门控拦截
+     - 普通工具执行
   -> TaskReport 或 PausedWork
 ```
 
@@ -90,7 +91,9 @@ delegate_to_work
 - Work 从空消息历史开始，Emotion 历史不会注入。
 - 每轮都会检查上下文长度，必要时先压缩，再判断是否超过最大输入限制。
 - 如果 LLM 不返回工具调用，则直接解析最终文本为任务结果。
-- 运行时会对 `finish_task`、`request_decision`、`permission_escalation_required`、审批拦截路径分别做专门处理。
+- 每轮真实执行前，运行时会先对本轮所有普通工具调用执行 `Dispatcher.ClassifyCall`，再根据分类结果决定暂停、报错或执行。
+- `finish_task` 和 `request_decision` 是协议工具，必须是本轮唯一工具调用；若与其他工具混用，本轮不会执行任何真实工具，只会把协议错误返回给模型。
+- 当任一工具调用分类为 `permission_escalation_required` 或 `tool_approval_required` 时，运行时会暂停并保存被拦截的调用，不执行同轮 sibling 工具。
 
 ---
 
@@ -132,9 +135,23 @@ delegate_to_work
 
 这就是“持有破坏性调用，等审批回来再继续”的实现方式。当前 WebSocket / chat engine 会在用户点击审批后直接走这条恢复链路，而不是再等待一轮 Emotion LLM 生成 `resume_work` 调用。
 
+如果这次内部恢复已经返回终态 `TaskReport`（`completed` / `failed` / `partial`），Chat Engine 后续只让 Emotion 组织对外表达，并禁用该叙述轮的工具集，避免模型在已经完成的任务上再次调用 `delegate_to_work`。
+
 ---
 
 ## 6. 破坏性工具提权与审批
+
+工具权限判定现在只有一个入口：`Dispatcher.ClassifyCall`。它一次完成：
+
+- registry spec / handler lookup
+- JSON Schema 参数校验
+- `Spec.DestructiveClassifier` 输入级破坏性判定
+- `permission_scope` 与工具实际所需权限比较
+- active approval context 检查
+
+`ClassifyCall` 返回 `CallClassification`，其中 `CallAction` 决定后续行为：执行、普通错误、权限拒绝、`permission_escalation_required` 暂停，或 `tool_approval_required` 暂停。旧的 `WouldNeedApproval` / `WouldNeedPermissionEscalation` 双预判链路已经移除。
+
+破坏性规则由工具自己声明，而不是由 dispatcher 硬编码工具名。当前 `bash` 在 `builtin/bash.go` 内声明 `DestructiveClassifier`，会把删除、覆盖、移动等命令升级为 `approved-destructive`；`write_file` / `edit_file` 暂未新增输入级 classifier。
 
 当 Work 产生的普通工具调用需要破坏性权限，而当前 scope 只有 `workspace-write` 时，运行时不会让 LLM 自己发明一个 `request_decision` 或 `tool_approval`。
 
@@ -251,9 +268,24 @@ journals/logs 仍然存在，用于保留 Work 的运行轨迹。
 | [`progress.go`](../../internal/work/progress.go) | Work 进度摘要结构与回调事件 |
 | [`journal.go`](../../internal/work/journal.go) | JSONL 日志写入 |
 
+### `internal/tool/`
+
+| 文件 | 作用 |
+|------|------|
+| [`dispatch.go`](../../internal/tool/dispatch.go) | `ClassifyCall` 单入口分类、权限判定、执行分发 |
+| [`spec.go`](../../internal/tool/spec.go) | 工具定义、权限等级、`DestructiveClassifier` 扩展点 |
+
 ### `internal/tool/builtin/`
 
 Work 现在可以接入更完整的工具集，按注册表和权限范围分配能力，而不再只是单一只读文件工具。
+
+- [`bash.go`](../../internal/tool/builtin/bash.go) 声明 bash 工具及其破坏性命令 classifier。
+
+### `internal/chat/`
+
+| 文件 | 作用 |
+|------|------|
+| [`engine.go`](../../internal/chat/engine.go) | 用户消息主循环、审批动作后的内部恢复、终态报告后的无工具叙述轮 |
 
 ---
 

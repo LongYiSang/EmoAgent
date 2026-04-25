@@ -134,6 +134,7 @@ flowchart LR
   - [x] 对话管理 --消息恢复、默认Persona选择、greeting是否显示
 - [x] Phase 4 · 工具系统 — Tool 定义规范、Handler 注册、内置基础工具
   - [x] 工具框架、注册
+  - [x] `Dispatcher.ClassifyCall` 单入口权限分类与工具自声明 `DestructiveClassifier`
   - [x] 基础工具 -- 时间获取、web_search
   - [ ] 额外内置工具 -- calculator、memory_note、set_reminder
   - [x] Worker工具 -- read_file、write_file、bash、edit_file、list_dir、web_fetch、

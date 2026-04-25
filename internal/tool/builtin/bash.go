@@ -39,8 +39,9 @@ func NewBashToolWithFacts(cfg config.BashConfig, facts runtimeenv.Facts, logger 
 			"required":["command"],
 			"additionalProperties":false
 		}`),
-		Scope:      tool.ScopeWork,
-		Permission: tool.PermWorkspaceWrite,
+		Scope:                 tool.ScopeWork,
+		Permission:            tool.PermWorkspaceWrite,
+		DestructiveClassifier: classifyBashDestructive,
 	}
 
 	shellArgs := resolveShellArgs(runtimeenv.ShellSpec{
@@ -136,6 +137,42 @@ func buildBashDescription(facts runtimeenv.Facts) string {
 	b.WriteString("Returns stdout, stderr, exit code, and whether the process timed out. ")
 	b.WriteString("Non-zero exit codes are not errors — inspect the output to determine success.")
 	return b.String()
+}
+
+func classifyBashDestructive(input json.RawMessage) (bool, string) {
+	var payload struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(input, &payload); err != nil {
+		return false, ""
+	}
+	command := strings.ToLower(" " + payload.Command + " ")
+	if command == "  " {
+		return false, ""
+	}
+	for _, needle := range []string{
+		" git reset --hard",
+		" git clean -",
+		" git checkout --",
+		" git restore --source",
+		" remove-item ",
+		" del ",
+		" erase ",
+		" rmdir ",
+		" rd ",
+		" rm ",
+		" rm -",
+		" cp -f ",
+		" mv -f ",
+		" copy /y ",
+		" move /y ",
+		" truncate ",
+	} {
+		if strings.Contains(command, needle) {
+			return true, "bash command may perform destructive file or git operations"
+		}
+	}
+	return false, ""
 }
 
 // resolveShellArgs returns the full shell invocation prefix.

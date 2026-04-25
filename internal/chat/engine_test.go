@@ -1770,6 +1770,9 @@ func TestEngineContinueAfterApproval_ResumesWorkDirectlyBeforeNarrating(t *testi
 	if !strings.Contains(llmClient.requests[0].System, "已完成删除。") {
 		t.Fatalf("system = %q, want task report summary in narration prompt", llmClient.requests[0].System)
 	}
+	if got := len(llmClient.requests[0].Tools); got != 0 {
+		t.Fatalf("narration tools = %d, want 0 after final Work report", got)
+	}
 }
 
 func TestEngineRoutesProgressEventsToWSWriter(t *testing.T) {

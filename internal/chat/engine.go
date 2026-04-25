@@ -238,9 +238,10 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 }
 
 type turnOptions struct {
-	persistUser bool
-	userContent string
-	extraSystem string
+	persistUser  bool
+	userContent  string
+	extraSystem  string
+	disableTools bool
 }
 
 func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config.Persona, cb func(delta string), opts turnOptions) (string, error) {
@@ -372,7 +373,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 
 	// Populate available tools only when the execution pipeline is enabled.
 	var tools []llm.ToolDef
-	if registry != nil && dispatcher != nil {
+	if !opts.disableTools && registry != nil && dispatcher != nil {
 		tools = registry.ForScope(tool.ScopeEmotion)
 	}
 
@@ -671,12 +672,13 @@ func (e *Engine) ContinueAfterApproval(ctx context.Context, sessionID string, pe
 	if approval == nil {
 		return "", errors.New("approval is required")
 	}
-	if note, handled, err := e.resumeApprovalDirectly(ctx, sessionID, approval); err != nil {
+	if note, handled, terminal, err := e.resumeApprovalDirectly(ctx, sessionID, approval); err != nil {
 		return "", err
 	} else if handled {
 		return e.sendTurn(ctx, sessionID, persona, cb, turnOptions{
-			persistUser: false,
-			extraSystem: note,
+			persistUser:  false,
+			extraSystem:  note,
+			disableTools: terminal,
 		})
 	}
 	note := buildApprovalContinuationNote(approval)
@@ -686,12 +688,12 @@ func (e *Engine) ContinueAfterApproval(ctx context.Context, sessionID string, pe
 	})
 }
 
-func (e *Engine) resumeApprovalDirectly(ctx context.Context, sessionID string, approval *protocol.ApprovalRequest) (string, bool, error) {
+func (e *Engine) resumeApprovalDirectly(ctx context.Context, sessionID string, approval *protocol.ApprovalRequest) (string, bool, bool, error) {
 	if approval == nil || strings.TrimSpace(sessionID) == "" {
-		return "", false, nil
+		return "", false, false, nil
 	}
 	if approval.ID == "" || approval.TaskID == "" {
-		return "", false, nil
+		return "", false, false, nil
 	}
 
 	e.mu.RLock()
@@ -699,10 +701,10 @@ func (e *Engine) resumeApprovalDirectly(ctx context.Context, sessionID string, a
 	dispatcher := e.dispatcher
 	e.mu.RUnlock()
 	if registry == nil || dispatcher == nil {
-		return "", false, nil
+		return "", false, false, nil
 	}
 	if _, ok := registry.GetSpec("resume_work"); !ok {
-		return "", false, nil
+		return "", false, false, nil
 	}
 
 	input, err := json.Marshal(map[string]string{
@@ -710,7 +712,7 @@ func (e *Engine) resumeApprovalDirectly(ctx context.Context, sessionID string, a
 		"approval_request_id": approval.ID,
 	})
 	if err != nil {
-		return "", false, err
+		return "", false, false, err
 	}
 
 	resumeCtx := work.WithSessionID(ctx, sessionID)
@@ -720,13 +722,13 @@ func (e *Engine) resumeApprovalDirectly(ctx context.Context, sessionID string, a
 		Input: input,
 	}, tool.PermReadOnly)
 	if result.NeedsApproval {
-		return "", false, fmt.Errorf("resume_work unexpectedly requested approval for %s", approval.ID)
+		return "", false, false, fmt.Errorf("resume_work unexpectedly requested approval for %s", approval.ID)
 	}
 	if result.IsError {
-		return "", false, decodeToolError(result.Content)
+		return "", false, false, decodeToolError(result.Content)
 	}
 
-	return buildApprovalOutcomeNote(approval, result.Content), true, nil
+	return buildApprovalOutcomeNote(approval, result.Content), true, isTerminalTaskReport(result.Content), nil
 }
 
 func effectiveSummaryModel(model, summaryModel string) string {
@@ -859,6 +861,19 @@ func buildApprovalOutcomeNote(approval *protocol.ApprovalRequest, outcome json.R
 		approval.Status,
 		string(outcome),
 	)
+}
+
+func isTerminalTaskReport(outcome json.RawMessage) bool {
+	var report protocol.TaskReport
+	if err := json.Unmarshal(outcome, &report); err != nil {
+		return false
+	}
+	switch strings.TrimSpace(report.Status) {
+	case "completed", "failed", "partial":
+		return strings.TrimSpace(report.Summary) != ""
+	default:
+		return false
+	}
 }
 
 func decodeToolError(content json.RawMessage) error {

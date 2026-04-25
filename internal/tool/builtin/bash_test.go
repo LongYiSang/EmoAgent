@@ -180,6 +180,33 @@ func TestNewBashTool_WindowsDescriptionIncludesShellAndCommandHints(t *testing.T
 	}
 }
 
+func TestNewBashTool_AttachesDestructiveClassifier(t *testing.T) {
+	spec, _ := NewBashTool(defaultBashCfg(), t.TempDir(), nil)
+	if spec.DestructiveClassifier == nil {
+		t.Fatal("bash spec should include a destructive classifier")
+	}
+
+	tests := []struct {
+		name  string
+		input json.RawMessage
+		want  bool
+	}{
+		{name: "rm", input: json.RawMessage(`{"command":"rm -rf tmp"}`), want: true},
+		{name: "powershell remove-item", input: json.RawMessage(`{"command":"Remove-Item -Recurse tmp"}`), want: true},
+		{name: "git reset hard", input: json.RawMessage(`{"command":"git reset --hard HEAD~1"}`), want: true},
+		{name: "echo", input: json.RawMessage(`{"command":"echo hello"}`), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, _ := spec.DestructiveClassifier(tt.input)
+			if got != tt.want {
+				t.Fatalf("DestructiveClassifier(%s) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestResolveShellArgs_Override(t *testing.T) {
 	args := resolveShellArgs(runtimeenv.ShellSpec{
 		Executable: "/bin/bash",

@@ -61,6 +61,20 @@ func newTestRegistryAndDispatcher(t *testing.T) (*tool.Registry, *tool.Dispatche
 	return registry, dispatcher
 }
 
+func testBashDestructiveClassifier(input json.RawMessage) (bool, string) {
+	var payload struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(input, &payload); err != nil {
+		return false, ""
+	}
+	command := strings.ToLower(" " + payload.Command + " ")
+	if strings.Contains(command, " rm ") || strings.Contains(command, " rm -") || strings.Contains(command, " del ") {
+		return true, "test destructive command"
+	}
+	return false, ""
+}
+
 func newTestRuntime(t *testing.T, client llm.Client) *Runtime {
 	t.Helper()
 	registry, dispatcher := newTestRegistryAndDispatcher(t)
@@ -92,11 +106,12 @@ func newApprovalTestRuntime(t *testing.T, client llm.Client, executed *[]string)
 
 	registry := tool.NewRegistry()
 	registry.Register(tool.Spec{
-		Name:        "bash",
-		Description: "runs a shell command",
-		Parameters:  json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":false}`),
-		Scope:       tool.ScopeWork,
-		Permission:  tool.PermWorkspaceWrite,
+		Name:                  "bash",
+		Description:           "runs a shell command",
+		Parameters:            json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":false}`),
+		Scope:                 tool.ScopeWork,
+		Permission:            tool.PermWorkspaceWrite,
+		DestructiveClassifier: testBashDestructiveClassifier,
 	}, func(_ context.Context, input json.RawMessage) (json.RawMessage, error) {
 		var payload struct {
 			Command string `json:"command"`
@@ -205,6 +220,20 @@ func finishTaskPayloadJSON(status, summary string, findings, openQuestions []str
 	}
 	out, _ := json.Marshal(payload)
 	return string(out)
+}
+
+func messagesContainToolError(messages []llm.Message, callID string, snippet string) bool {
+	for _, message := range messages {
+		if message.ToolCallID == callID && strings.Contains(message.Content, snippet) {
+			return true
+		}
+		for _, block := range message.ContentBlocks {
+			if block.ID == callID && block.IsError && strings.Contains(block.Content, snippet) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func TestRuntime_HappyPath(t *testing.T) {
@@ -775,13 +804,14 @@ func TestRuntime_AutoPausesOnApprovalBlockedToolFiltersSiblingToolCalls(t *testi
 	}
 }
 
-func TestRuntime_AutoPausesOnApprovalBlockedToolWhenMixedWithRequestDecision(t *testing.T) {
+func TestRuntime_RequestDecisionMixedWithBlockedToolDoesNotExecuteSibling(t *testing.T) {
 	client := &scriptedLLM{
 		responses: []*llm.ChatResponse{
 			mixedToolUseResp(
 				llm.ContentBlock{Type: "tool_use", ID: "decide-1", Name: "request_decision", Input: json.RawMessage(decisionPacketJSON(string(protocol.CatAuto), false))},
 				llm.ContentBlock{Type: "tool_use", ID: "bash-1", Name: "bash", Input: json.RawMessage(`{"command":"rm -rf tmp"}`)},
 			),
+			toolUseResp("finish-1", "finish_task", finishTaskPayloadJSON("completed", "done", nil, nil)),
 		},
 	}
 	var executed []string
@@ -792,38 +822,31 @@ func TestRuntime_AutoPausesOnApprovalBlockedToolWhenMixedWithRequestDecision(t *
 	brief.PermissionScope = "approved-destructive"
 
 	outcome := runtime.Run(context.Background(), brief, nil)
-	if outcome.Paused == nil {
-		t.Fatalf("expected paused outcome, got %#v", outcome)
-	}
 	if len(executed) != 0 {
-		t.Fatalf("blocked tool should not execute before pause, got %#v", executed)
+		t.Fatalf("mixed protocol round must not execute sibling tools, got %#v", executed)
 	}
-	if outcome.Paused.Packet.Category != protocol.CatToolApproval {
-		t.Fatalf("category = %q, want tool_approval", outcome.Paused.Packet.Category)
+	if outcome.Report == nil || outcome.Report.Status != "completed" {
+		t.Fatalf("expected completed report after protocol retry, got %#v", outcome)
 	}
-	if outcome.Paused.PendingCallID != "bash-1" {
-		t.Fatalf("PendingCallID = %q, want bash-1", outcome.Paused.PendingCallID)
+	if len(client.calls) != 2 {
+		t.Fatalf("LLM calls = %d, want 2", len(client.calls))
 	}
-	if outcome.Paused.PendingToolCall == nil || outcome.Paused.PendingToolCall.ID != "bash-1" {
-		t.Fatalf("PendingToolCall = %#v, want blocked bash call", outcome.Paused.PendingToolCall)
+	if !messagesContainToolError(client.calls[1].Messages, "decide-1", "request_decision must be the sole tool call in this round") {
+		t.Fatalf("second request missing request_decision protocol error: %#v", client.calls[1].Messages)
 	}
-	if len(outcome.Paused.Messages) != 1 {
-		t.Fatalf("paused messages = %#v, want one filtered assistant message", outcome.Paused.Messages)
-	}
-	for _, block := range outcome.Paused.Messages[0].ContentBlocks {
-		if block.Type == "tool_use" && block.ID == "decide-1" {
-			t.Fatalf("paused snapshot must drop request_decision sibling blocks: %#v", outcome.Paused.Messages[0].ContentBlocks)
-		}
+	if !messagesContainToolError(client.calls[1].Messages, "bash-1", "request_decision must be the sole tool call in this round") {
+		t.Fatalf("second request missing sibling protocol error: %#v", client.calls[1].Messages)
 	}
 }
 
-func TestRuntime_AutoPausesOnApprovalBlockedToolWhenMixedWithFinishTask(t *testing.T) {
+func TestRuntime_FinishTaskMixedWithBlockedToolDoesNotExecuteSibling(t *testing.T) {
 	client := &scriptedLLM{
 		responses: []*llm.ChatResponse{
 			mixedToolUseResp(
 				llm.ContentBlock{Type: "tool_use", ID: "finish-1", Name: "finish_task", Input: json.RawMessage(finishTaskPayloadJSON("completed", "done", nil, nil))},
 				llm.ContentBlock{Type: "tool_use", ID: "bash-1", Name: "bash", Input: json.RawMessage(`{"command":"rm -rf tmp"}`)},
 			),
+			toolUseResp("finish-2", "finish_task", finishTaskPayloadJSON("completed", "done", nil, nil)),
 		},
 	}
 	var executed []string
@@ -834,22 +857,20 @@ func TestRuntime_AutoPausesOnApprovalBlockedToolWhenMixedWithFinishTask(t *testi
 	brief.PermissionScope = "approved-destructive"
 
 	outcome := runtime.Run(context.Background(), brief, nil)
-	if outcome.Paused == nil {
-		t.Fatalf("expected paused outcome, got %#v", outcome)
-	}
 	if len(executed) != 0 {
-		t.Fatalf("blocked tool should not execute before pause, got %#v", executed)
+		t.Fatalf("mixed protocol round must not execute sibling tools, got %#v", executed)
 	}
-	if outcome.Paused.Packet.Category != protocol.CatToolApproval {
-		t.Fatalf("category = %q, want tool_approval", outcome.Paused.Packet.Category)
+	if outcome.Report == nil || outcome.Report.Status != "completed" {
+		t.Fatalf("expected completed report after protocol retry, got %#v", outcome)
 	}
-	if outcome.Paused.PendingCallID != "bash-1" {
-		t.Fatalf("PendingCallID = %q, want bash-1", outcome.Paused.PendingCallID)
+	if len(client.calls) != 2 {
+		t.Fatalf("LLM calls = %d, want 2", len(client.calls))
 	}
-	for _, block := range outcome.Paused.Messages[0].ContentBlocks {
-		if block.Type == "tool_use" && block.ID == "finish-1" {
-			t.Fatalf("paused snapshot must drop finish_task sibling blocks: %#v", outcome.Paused.Messages[0].ContentBlocks)
-		}
+	if !messagesContainToolError(client.calls[1].Messages, "finish-1", "finish_task must be the sole tool call in this round") {
+		t.Fatalf("second request missing finish_task protocol error: %#v", client.calls[1].Messages)
+	}
+	if !messagesContainToolError(client.calls[1].Messages, "bash-1", "finish_task must be the sole tool call in this round") {
+		t.Fatalf("second request missing sibling protocol error: %#v", client.calls[1].Messages)
 	}
 }
 

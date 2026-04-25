@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
 
 	contextutil "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/llm"
@@ -25,6 +24,24 @@ type Dispatcher struct {
 	logger    *slog.Logger
 }
 
+type CallAction string
+
+const (
+	CallActionExecute                      CallAction = "execute"
+	CallActionError                        CallAction = "error"
+	CallActionPermissionDenied             CallAction = "permission_denied"
+	CallActionPermissionEscalationRequired CallAction = "permission_escalation_required"
+	CallActionToolApprovalRequired         CallAction = "tool_approval_required"
+)
+
+type CallClassification struct {
+	Call               Call
+	Spec               Spec
+	RequiredPermission Permission
+	Action             CallAction
+	Reason             string
+}
+
 // NewDispatcher creates a Dispatcher. If a tool declares a schema, Execute
 // requires a non-nil validator; otherwise the call is rejected.
 func NewDispatcher(registry *Registry, validator SchemaValidator, logger *slog.Logger) *Dispatcher {
@@ -35,64 +52,69 @@ func NewDispatcher(registry *Registry, validator SchemaValidator, logger *slog.L
 	}
 }
 
-// WouldNeedApproval reports whether the call should be intercepted for explicit
-// approval before execution.
-func (d *Dispatcher) WouldNeedApproval(ctx context.Context, call Call, maxPermission Permission) bool {
+func (d *Dispatcher) ClassifyCall(ctx context.Context, call Call, maxPermission Permission) CallClassification {
+	classification := CallClassification{
+		Call:   call,
+		Action: CallActionError,
+	}
 	if d == nil || d.registry == nil {
-		return false
+		classification.Reason = "tool dispatcher is not configured"
+		return classification
 	}
-	spec, ok := d.registry.GetSpec(call.Name)
-	if !ok {
-		return false
-	}
-	requiredPermission := effectivePermission(spec, call.Input)
-	if requiredPermission != PermApprovedDestructive {
-		return false
-	}
-	if len(spec.Parameters) > 0 && d.validator == nil {
-		return false
-	}
-	if d.validator != nil && len(spec.Parameters) > 0 {
-		if err := d.validator.Validate(spec.Parameters, call.Input); err != nil {
-			return false
-		}
-	}
-	if !PermissionSatisfied(maxPermission, requiredPermission) {
-		return false
-	}
-	_, ok = ApprovalFromContext(ctx)
-	return !ok
-}
 
-// WouldNeedPermissionEscalation reports whether the call requires destructive
-// permission beyond the task's current workspace-write scope. This is distinct
-// from approval interception: Emotion must turn the pause into a user-facing
-// approval request and then resume Work with the user's answer.
-func (d *Dispatcher) WouldNeedPermissionEscalation(ctx context.Context, call Call, maxPermission Permission) bool {
-	if d == nil || d.registry == nil {
-		return false
-	}
 	spec, ok := d.registry.GetSpec(call.Name)
 	if !ok {
-		return false
+		classification.Reason = fmt.Sprintf("tool %q not found", call.Name)
+		return classification
 	}
-	requiredPermission := effectivePermission(spec, call.Input)
-	if requiredPermission != PermApprovedDestructive {
-		return false
+	classification.Spec = spec
+
+	if _, ok := d.registry.Get(call.Name); !ok {
+		classification.Reason = fmt.Sprintf("handler for tool %q not found", call.Name)
+		return classification
 	}
+
 	if len(spec.Parameters) > 0 && d.validator == nil {
-		return false
+		classification.Reason = fmt.Sprintf("schema validation unavailable for tool %q", call.Name)
+		return classification
 	}
 	if d.validator != nil && len(spec.Parameters) > 0 {
 		if err := d.validator.Validate(spec.Parameters, call.Input); err != nil {
-			return false
+			classification.Reason = fmt.Sprintf("input validation failed: %v", err)
+			return classification
 		}
 	}
-	if maxPermission != PermWorkspaceWrite {
-		return false
+
+	requiredPermission := effectivePermission(spec, call.Input)
+	classification.RequiredPermission = requiredPermission
+	if !PermissionSatisfied(maxPermission, requiredPermission) {
+		if requiredPermission == PermApprovedDestructive && maxPermission == PermWorkspaceWrite {
+			classification.Action = CallActionPermissionEscalationRequired
+			classification.Reason = fmt.Sprintf(
+				"permission escalation required: tool %q requires %q, granted %q",
+				call.Name, requiredPermission, maxPermission,
+			)
+			return classification
+		}
+		classification.Action = CallActionPermissionDenied
+		classification.Reason = fmt.Sprintf(
+			"permission denied: tool %q requires %q, granted %q",
+			call.Name, requiredPermission, maxPermission,
+		)
+		return classification
 	}
-	_, ok = ApprovalFromContext(ctx)
-	return !ok
+
+	if requiredPermission == PermApprovedDestructive {
+		approval, ok := ApprovalFromContext(ctx)
+		if !ok || !approval.AllowDestructive {
+			classification.Action = CallActionToolApprovalRequired
+			classification.Reason = fmt.Sprintf("approval required: tool %q needs an active approved request", call.Name)
+			return classification
+		}
+	}
+
+	classification.Action = CallActionExecute
+	return classification
 }
 
 // Execute runs a single tool call through the fail-closed pipeline:
@@ -101,68 +123,27 @@ func (d *Dispatcher) WouldNeedPermissionEscalation(ctx context.Context, call Cal
 //  3. Permission check → error if maxPermission < tool's required permission
 //  4. Handler execution → error if handler fails
 func (d *Dispatcher) Execute(ctx context.Context, call Call, maxPermission Permission) Result {
-	// 1. Registry lookup.
-	spec, ok := d.registry.GetSpec(call.Name)
-	if !ok {
-		d.logger.Warn("tool not found", "tool", call.Name, "call_id", call.ID)
-		return errorResult(call.ID, fmt.Sprintf("tool %q not found", call.Name))
+	classification := d.ClassifyCall(ctx, call, maxPermission)
+	switch classification.Action {
+	case CallActionExecute:
+		// continue
+	case CallActionToolApprovalRequired:
+		d.logClassificationBlock(classification, maxPermission)
+		return approvalRequiredResult(call.ID, classification.Reason)
+	case CallActionError, CallActionPermissionDenied, CallActionPermissionEscalationRequired:
+		d.logClassificationBlock(classification, maxPermission)
+		return errorResult(call.ID, classification.Reason)
+	default:
+		return errorResult(call.ID, fmt.Sprintf("unsupported tool action %q", classification.Action))
 	}
 
-	handler, ok := d.registry.Get(call.Name)
-	if !ok {
-		return errorResult(call.ID, fmt.Sprintf("handler for tool %q not found", call.Name))
-	}
-
-	// 2. Schema validation.
-	if len(spec.Parameters) > 0 && d.validator == nil {
-		d.logger.Error("schema validator missing",
-			"tool", call.Name,
-			"call_id", call.ID,
-		)
-		return errorResult(call.ID, fmt.Sprintf("schema validation unavailable for tool %q", call.Name))
-	}
-	if d.validator != nil && len(spec.Parameters) > 0 {
-		if err := d.validator.Validate(spec.Parameters, call.Input); err != nil {
-			d.logger.Warn("schema validation failed",
-				"tool", call.Name,
-				"call_id", call.ID,
-				"error", err,
-			)
-			return errorResult(call.ID, fmt.Sprintf("input validation failed: %v", err))
-		}
-	}
-
-	requiredPermission := effectivePermission(spec, call.Input)
-
-	// 3. Permission check.
-	if !PermissionSatisfied(maxPermission, requiredPermission) {
-		d.logger.Warn("permission denied",
-			"tool", call.Name,
-			"call_id", call.ID,
-			"required", requiredPermission,
-			"granted", maxPermission,
-		)
-		return errorResult(call.ID, fmt.Sprintf(
-			"permission denied: tool %q requires %q, granted %q",
-			call.Name, requiredPermission, maxPermission,
-		))
-	}
-	if requiredPermission == PermApprovedDestructive {
-		approval, ok := ApprovalFromContext(ctx)
-		if !ok || !approval.AllowDestructive {
-			d.logger.Warn("approval guard denied",
-				"tool", call.Name,
-				"call_id", call.ID,
-			)
-			return approvalRequiredResult(call.ID, fmt.Sprintf("approval required: tool %q needs an active approved request", call.Name))
-		}
-	}
+	handler, _ := d.registry.Get(call.Name)
 
 	// 4. Execute handler.
-	d.logger.Info("executing tool", "tool", call.Name, "call_id", call.ID)
+	d.logAttrs(slog.LevelInfo, "executing tool", "tool", call.Name, "call_id", call.ID)
 	result, err := handler(ctx, call.Input)
 	if err != nil {
-		d.logger.Error("tool execution failed",
+		d.logAttrs(slog.LevelError, "tool execution failed",
 			"tool", call.Name,
 			"call_id", call.ID,
 			"error", err,
@@ -171,7 +152,7 @@ func (d *Dispatcher) Execute(ctx context.Context, call Call, maxPermission Permi
 	}
 
 	digest := contextutil.SnipToolResult(call.Name, call.ID, result, maxInt, maxInt)
-	d.logger.Info("tool executed",
+	d.logAttrs(slog.LevelInfo, "tool executed",
 		"tool", call.Name,
 		"call_id", call.ID,
 		"size", digest.Size,
@@ -187,46 +168,12 @@ func (d *Dispatcher) Execute(ctx context.Context, call Call, maxPermission Permi
 }
 
 func effectivePermission(spec Spec, input json.RawMessage) Permission {
-	if spec.Name == "bash" && bashCommandRequiresApproval(input) {
-		return PermApprovedDestructive
-	}
-	return spec.Permission
-}
-
-func bashCommandRequiresApproval(input json.RawMessage) bool {
-	var payload struct {
-		Command string `json:"command"`
-	}
-	if err := json.Unmarshal(input, &payload); err != nil {
-		return false
-	}
-	command := strings.ToLower(" " + payload.Command + " ")
-	if command == "  " {
-		return false
-	}
-	for _, needle := range []string{
-		" git reset --hard",
-		" git clean -",
-		" git checkout --",
-		" git restore --source",
-		" remove-item ",
-		" del ",
-		" erase ",
-		" rmdir ",
-		" rd ",
-		" rm ",
-		" rm -",
-		" cp -f ",
-		" mv -f ",
-		" copy /y ",
-		" move /y ",
-		" truncate ",
-	} {
-		if strings.Contains(command, needle) {
-			return true
+	if spec.Permission == PermWorkspaceWrite && spec.DestructiveClassifier != nil {
+		if destructive, _ := spec.DestructiveClassifier(input); destructive {
+			return PermApprovedDestructive
 		}
 	}
-	return false
+	return spec.Permission
 }
 
 // ExecuteAll runs multiple tool calls sequentially.
@@ -304,3 +251,36 @@ func approvalRequiredResult(callID, msg string) Result {
 }
 
 const maxInt = int(^uint(0) >> 1)
+
+func (d *Dispatcher) logClassificationBlock(classification CallClassification, maxPermission Permission) {
+	level := slog.LevelWarn
+	if classification.Action == CallActionError {
+		level = slog.LevelError
+	}
+	d.logAttrs(level, "tool classification blocked",
+		"tool", classification.Call.Name,
+		"call_id", classification.Call.ID,
+		"action", classification.Action,
+		"required", classification.RequiredPermission,
+		"granted", maxPermission,
+		"reason", classification.Reason,
+	)
+}
+
+func (d *Dispatcher) logAttrs(level slog.Level, msg string, args ...any) {
+	if d == nil || d.logger == nil {
+		return
+	}
+	switch level {
+	case slog.LevelDebug:
+		d.logger.Debug(msg, args...)
+	case slog.LevelInfo:
+		d.logger.Info(msg, args...)
+	case slog.LevelWarn:
+		d.logger.Warn(msg, args...)
+	case slog.LevelError:
+		d.logger.Error(msg, args...)
+	default:
+		d.logger.Log(context.Background(), level, msg, args...)
+	}
+}

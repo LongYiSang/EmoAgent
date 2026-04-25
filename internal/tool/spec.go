@@ -46,13 +46,18 @@ func PermissionSatisfied(granted, required Permission) bool {
 	return g >= 0 && r >= 0 && g >= r
 }
 
+// DestructiveClassifier reports whether a specific tool input should be treated
+// as requiring approved-destructive permission.
+type DestructiveClassifier func(input json.RawMessage) (bool, string)
+
 // Spec defines a tool available to the LLM.
 type Spec struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	Parameters  json.RawMessage `json:"parameters"` // JSON Schema
-	Scope       Scope           `json:"scope"`
-	Permission  Permission      `json:"permission"`
+	Name                  string                `json:"name"`
+	Description           string                `json:"description"`
+	Parameters            json.RawMessage       `json:"parameters"` // JSON Schema
+	Scope                 Scope                 `json:"scope"`
+	Permission            Permission            `json:"permission"`
+	DestructiveClassifier DestructiveClassifier `json:"-"`
 }
 
 // ToToolDef converts a Spec to an llm.ToolDef for inclusion in ChatRequest.

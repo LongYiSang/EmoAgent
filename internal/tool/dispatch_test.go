@@ -56,6 +56,35 @@ func setupTestRegistry() *Registry {
 	return r
 }
 
+func testDestructiveClassifier(input json.RawMessage) (bool, string) {
+	var payload struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(input, &payload); err != nil {
+		return false, ""
+	}
+	command := strings.ToLower(" " + payload.Command + " ")
+	if strings.Contains(command, " rm ") || strings.Contains(command, " rm -") || strings.Contains(command, " del ") {
+		return true, "test destructive command"
+	}
+	return false, ""
+}
+
+func setupDestructiveRegistry() *Registry {
+	registry := NewRegistry()
+	registry.Register(Spec{
+		Name:                  "shell",
+		Description:           "Run shell command",
+		Parameters:            json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":false}`),
+		Scope:                 ScopeWork,
+		Permission:            PermWorkspaceWrite,
+		DestructiveClassifier: testDestructiveClassifier,
+	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{"status":"ok"}`), nil
+	})
+	return registry
+}
+
 func TestDispatcherExecute_Success(t *testing.T) {
 	d := NewDispatcher(setupTestRegistry(), &mockValidator{}, slog.Default())
 
@@ -166,22 +195,12 @@ func TestDispatcherExecute_PermissionDenied(t *testing.T) {
 	}
 }
 
-func TestDispatcherExecute_BashDestructiveCommandRequiresApprovalContext(t *testing.T) {
-	registry := NewRegistry()
-	registry.Register(Spec{
-		Name:        "bash",
-		Description: "Run shell command",
-		Parameters:  json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":false}`),
-		Scope:       ScopeWork,
-		Permission:  PermWorkspaceWrite,
-	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
-		return json.RawMessage(`{"status":"ok"}`), nil
-	})
-	d := NewDispatcher(registry, &mockValidator{}, slog.Default())
+func TestDispatcherExecute_DestructiveCommandRequiresApprovalContext(t *testing.T) {
+	d := NewDispatcher(setupDestructiveRegistry(), &mockValidator{}, slog.Default())
 
 	call := Call{
-		ID:    "call_bash_rm",
-		Name:  "bash",
+		ID:    "call_shell_rm",
+		Name:  "shell",
 		Input: json.RawMessage(`{"command":"rm -rf tmp"}`),
 	}
 
@@ -205,133 +224,124 @@ func TestDispatcherExecute_BashDestructiveCommandRequiresApprovalContext(t *test
 	}
 }
 
-func TestDispatcher_WouldNeedApproval(t *testing.T) {
-	registry := NewRegistry()
-	registry.Register(Spec{
-		Name:        "bash",
-		Description: "Run shell command",
-		Parameters:  json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":false}`),
-		Scope:       ScopeWork,
-		Permission:  PermWorkspaceWrite,
-	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
-		return json.RawMessage(`{"status":"ok"}`), nil
-	})
-	d := NewDispatcher(registry, MinimalSchemaValidator{}, slog.Default())
-	dWithoutValidator := NewDispatcher(registry, nil, slog.Default())
+func TestDispatcherClassifyCall(t *testing.T) {
+	d := NewDispatcher(setupDestructiveRegistry(), MinimalSchemaValidator{}, slog.Default())
 
 	destructive := Call{
-		ID:    "call_bash_rm",
-		Name:  "bash",
+		ID:    "call_shell_rm",
+		Name:  "shell",
 		Input: json.RawMessage(`{"command":"rm -rf tmp"}`),
 	}
 	nondestructive := Call{
-		ID:    "call_bash_echo",
-		Name:  "bash",
+		ID:    "call_shell_echo",
+		Name:  "shell",
 		Input: json.RawMessage(`{"command":"echo hi"}`),
 	}
 
-	if d.WouldNeedApproval(context.Background(), destructive, PermWorkspaceWrite) {
-		t.Fatal("workspace-write scope should remain a normal permission denial, not approval interception")
+	tests := []struct {
+		name         string
+		ctx          context.Context
+		call         Call
+		permission   Permission
+		wantAction   CallAction
+		wantRequired Permission
+	}{
+		{
+			name:         "workspace write destructive needs escalation",
+			call:         destructive,
+			permission:   PermWorkspaceWrite,
+			wantAction:   CallActionPermissionEscalationRequired,
+			wantRequired: PermApprovedDestructive,
+		},
+		{
+			name:         "approved destructive without approval needs tool approval",
+			call:         destructive,
+			permission:   PermApprovedDestructive,
+			wantAction:   CallActionToolApprovalRequired,
+			wantRequired: PermApprovedDestructive,
+		},
+		{
+			name: "approved destructive with active approval executes",
+			ctx: WithApproval(context.Background(), ApprovalContext{
+				RequestID:        "req-1",
+				AllowDestructive: true,
+			}),
+			call:         destructive,
+			permission:   PermApprovedDestructive,
+			wantAction:   CallActionExecute,
+			wantRequired: PermApprovedDestructive,
+		},
+		{
+			name: "approval context without destructive grant still needs tool approval",
+			ctx: WithApproval(context.Background(), ApprovalContext{
+				RequestID:        "req-2",
+				AllowDestructive: false,
+			}),
+			call:         destructive,
+			permission:   PermApprovedDestructive,
+			wantAction:   CallActionToolApprovalRequired,
+			wantRequired: PermApprovedDestructive,
+		},
+		{
+			name:         "read only destructive is permission denied",
+			call:         destructive,
+			permission:   PermReadOnly,
+			wantAction:   CallActionPermissionDenied,
+			wantRequired: PermApprovedDestructive,
+		},
+		{
+			name:         "non destructive workspace write executes",
+			call:         nondestructive,
+			permission:   PermWorkspaceWrite,
+			wantAction:   CallActionExecute,
+			wantRequired: PermWorkspaceWrite,
+		},
+		{
+			name: "schema invalid remains validation error",
+			call: Call{
+				ID:    "call_invalid",
+				Name:  "shell",
+				Input: json.RawMessage(`{"command":"rm -rf tmp","extra":"boom"}`),
+			},
+			permission:   PermApprovedDestructive,
+			wantAction:   CallActionError,
+			wantRequired: "",
+		},
+		{
+			name: "unknown tool is error",
+			call: Call{
+				ID:   "call_missing",
+				Name: "missing",
+			},
+			permission:   PermWorkspaceWrite,
+			wantAction:   CallActionError,
+			wantRequired: "",
+		},
 	}
-	if d.WouldNeedApproval(context.Background(), destructive, PermReadOnly) {
-		t.Fatal("read-only scope should remain a normal permission denial, not approval interception")
-	}
-	if !d.WouldNeedApproval(context.Background(), destructive, PermApprovedDestructive) {
-		t.Fatal("expected missing approval context to require approval even with approved-destructive scope")
-	}
-	if dWithoutValidator.WouldNeedApproval(context.Background(), destructive, PermApprovedDestructive) {
-		t.Fatal("missing validator should keep schemaed destructive calls out of approval interception")
-	}
-	if d.WouldNeedApproval(WithApproval(context.Background(), ApprovalContext{
-		RequestID:        "req-2",
-		AllowDestructive: false,
-	}), destructive, PermApprovedDestructive) {
-		t.Fatal("presence of any approval context should suppress approval interception")
-	}
-	if d.WouldNeedApproval(WithApproval(context.Background(), ApprovalContext{
-		RequestID:        "req-1",
-		AllowDestructive: true,
-	}), destructive, PermApprovedDestructive) {
-		t.Fatal("active approval context should suppress approval interception")
-	}
-	if d.WouldNeedApproval(context.Background(), nondestructive, PermWorkspaceWrite) {
-		t.Fatal("non-destructive bash command should not require approval")
-	}
-	if d.WouldNeedApproval(context.Background(), Call{
-		ID:    "call_invalid",
-		Name:  "bash",
-		Input: json.RawMessage(`{"command":"rm -rf tmp","extra":"boom"}`),
-	}, PermApprovedDestructive) {
-		t.Fatal("schema-invalid destructive input should stay a validation error, not an approval interception")
-	}
-	if d.WouldNeedApproval(context.Background(), Call{
-		ID:   "call_missing",
-		Name: "missing",
-	}, PermWorkspaceWrite) {
-		t.Fatal("unknown tool should not be classified as needing approval")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := tt.ctx
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			got := d.ClassifyCall(ctx, tt.call, tt.permission)
+			if got.Action != tt.wantAction {
+				t.Fatalf("Action = %q, want %q; reason=%s", got.Action, tt.wantAction, got.Reason)
+			}
+			if got.RequiredPermission != tt.wantRequired {
+				t.Fatalf("RequiredPermission = %q, want %q", got.RequiredPermission, tt.wantRequired)
+			}
+		})
 	}
 }
 
-func TestDispatcher_WouldNeedPermissionEscalation(t *testing.T) {
-	registry := NewRegistry()
-	registry.Register(Spec{
-		Name:        "bash",
-		Description: "Run shell command",
-		Parameters:  json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":false}`),
-		Scope:       ScopeWork,
-		Permission:  PermWorkspaceWrite,
-	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
-		return json.RawMessage(`{"status":"ok"}`), nil
-	})
-	d := NewDispatcher(registry, MinimalSchemaValidator{}, slog.Default())
-
-	destructive := Call{
-		ID:    "call_bash_rm",
-		Name:  "bash",
-		Input: json.RawMessage(`{"command":"rm -rf tmp"}`),
-	}
-	nondestructive := Call{
-		ID:    "call_bash_echo",
-		Name:  "bash",
-		Input: json.RawMessage(`{"command":"echo hi"}`),
-	}
-
-	if !d.WouldNeedPermissionEscalation(context.Background(), destructive, PermWorkspaceWrite) {
-		t.Fatal("workspace-write destructive call should trigger permission escalation classification")
-	}
-	if d.WouldNeedPermissionEscalation(context.Background(), destructive, PermApprovedDestructive) {
-		t.Fatal("approved-destructive scope should use approval interception instead of permission escalation classification")
-	}
-	if d.WouldNeedPermissionEscalation(context.Background(), destructive, PermReadOnly) {
-		t.Fatal("read-only scope should stay a normal permission denial")
-	}
-	if d.WouldNeedPermissionEscalation(context.Background(), nondestructive, PermWorkspaceWrite) {
-		t.Fatal("non-destructive command should not trigger permission escalation classification")
-	}
-	if d.WouldNeedPermissionEscalation(WithApproval(context.Background(), ApprovalContext{
-		RequestID:        "req-1",
-		AllowDestructive: true,
-	}), destructive, PermWorkspaceWrite) {
-		t.Fatal("active approval context should suppress permission escalation classification")
-	}
-}
-
-func TestDispatcherExecute_BashNonDestructiveCommandDoesNotRequireApproval(t *testing.T) {
-	registry := NewRegistry()
-	registry.Register(Spec{
-		Name:        "bash",
-		Description: "Run shell command",
-		Parameters:  json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":false}`),
-		Scope:       ScopeWork,
-		Permission:  PermWorkspaceWrite,
-	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
-		return json.RawMessage(`{"status":"ok"}`), nil
-	})
-	d := NewDispatcher(registry, &mockValidator{}, slog.Default())
+func TestDispatcherExecute_NonDestructiveCommandDoesNotRequireApproval(t *testing.T) {
+	d := NewDispatcher(setupDestructiveRegistry(), &mockValidator{}, slog.Default())
 
 	result := d.Execute(context.Background(), Call{
-		ID:    "call_bash_dir",
-		Name:  "bash",
+		ID:    "call_shell_dir",
+		Name:  "shell",
 		Input: json.RawMessage(`{"command":"dir"}`),
 	}, PermWorkspaceWrite)
 	if result.IsError {
@@ -350,27 +360,6 @@ func TestDispatcherExecute_HandlerError(t *testing.T) {
 
 	if !result.IsError {
 		t.Fatal("expected error from failing handler")
-	}
-}
-
-func TestBashCommandRequiresApproval(t *testing.T) {
-	tests := []struct {
-		name  string
-		input json.RawMessage
-		want  bool
-	}{
-		{name: "rm", input: json.RawMessage(`{"command":"rm -rf tmp"}`), want: true},
-		{name: "powershell remove-item", input: json.RawMessage(`{"command":"Remove-Item -Recurse tmp"}`), want: true},
-		{name: "git reset hard", input: json.RawMessage(`{"command":"git reset --hard HEAD~1"}`), want: true},
-		{name: "echo", input: json.RawMessage(`{"command":"echo hello"}`), want: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := bashCommandRequiresApproval(tt.input); got != tt.want {
-				t.Fatalf("bashCommandRequiresApproval(%s) = %v, want %v", tt.input, got, tt.want)
-			}
-		})
 	}
 }
 

@@ -260,50 +260,7 @@ func (r *Runtime) runLoop(
 			if progressCB != nil {
 				emitToolProgress(progressCB, calls, round, brief.TaskID)
 			}
-			if blockedCall, ok := findPermissionEscalationBlockedCall(r.cfg.Dispatcher, ctx, calls, permission); ok {
-				messages[len(messages)-1] = filterAssistantMessageForBlockedCallPause(messages[len(messages)-1], blockedCall.ID)
-				if journal != nil {
-					journal.Write("permission_escalation_intercepted", round, map[string]any{
-						"task_id": brief.TaskID,
-						"call_id": blockedCall.ID,
-						"name":    blockedCall.Name,
-						"input":   string(blockedCall.Input),
-					})
-				}
-				if escalationCount >= r.cfg.MaxEscalations {
-					report := failedReport(brief, fmt.Sprintf("max escalations exceeded (%d)", r.cfg.MaxEscalations))
-					return RunOutcome{Report: &report}, true
-				}
-				packet := buildPermissionEscalationPacket(brief, blockedCall)
-				outcome, _ := r.routeDecision(ctx, brief, blockedCall.ID, packet, messages, workProgress, round, escalationCount, journal)
-				if outcome.Paused != nil {
-					callCopy := blockedCall
-					outcome.Paused.PendingToolCall = &callCopy
-				}
-				return outcome, true
-			}
-			if blockedCall, ok := findApprovalBlockedCall(r.cfg.Dispatcher, ctx, calls, permission); ok {
-				messages[len(messages)-1] = filterAssistantMessageForBlockedCallPause(messages[len(messages)-1], blockedCall.ID)
-				if journal != nil {
-					journal.Write("tool_approval_intercepted", round, map[string]any{
-						"task_id": brief.TaskID,
-						"call_id": blockedCall.ID,
-						"name":    blockedCall.Name,
-						"input":   string(blockedCall.Input),
-					})
-				}
-				if escalationCount >= r.cfg.MaxEscalations {
-					report := failedReport(brief, fmt.Sprintf("max escalations exceeded (%d)", r.cfg.MaxEscalations))
-					return RunOutcome{Report: &report}, true
-				}
-				packet := buildToolApprovalPacket(brief, blockedCall)
-				outcome, _ := r.routeDecision(ctx, brief, blockedCall.ID, packet, messages, workProgress, round, escalationCount, journal)
-				if outcome.Paused != nil {
-					callCopy := blockedCall
-					outcome.Paused.PendingToolCall = &callCopy
-				}
-				return outcome, true
-			}
+			classifications := classifyToolCalls(r.cfg.Dispatcher, ctx, calls, permission)
 
 			finishCall, hasFinish, mixedFinishCalls := pickFinishTaskCall(calls)
 			if hasFinish {
@@ -315,14 +272,7 @@ func (r *Runtime) runLoop(
 					}
 					results := make([]tool.Result, 0, len(calls))
 					for _, call := range calls {
-						switch call.Name {
-						case "finish_task":
-							results = append(results, errorToolResult(call.ID, "finish_task must be the sole tool call in this round"))
-						case "request_decision":
-							results = append(results, errorToolResult(call.ID, "request_decision must be the sole tool call in this round"))
-						default:
-							results = append(results, r.cfg.Dispatcher.Execute(ctx, call, permission))
-						}
+						results = append(results, errorToolResult(call.ID, "finish_task must be the sole tool call in this round"))
 					}
 					logToolResults(journal, round, results)
 					messages = r.appendResultsAndSnip(messages, results, journal, round)
@@ -366,11 +316,7 @@ func (r *Runtime) runLoop(
 					}
 					results := make([]tool.Result, 0, len(calls))
 					for _, call := range calls {
-						if call.Name == "request_decision" {
-							results = append(results, errorToolResult(call.ID, "request_decision must be the sole tool call in this round"))
-							continue
-						}
-						results = append(results, r.cfg.Dispatcher.Execute(ctx, call, permission))
+						results = append(results, errorToolResult(call.ID, "request_decision must be the sole tool call in this round"))
 					}
 					logToolResults(journal, round, results)
 					messages = r.appendResultsAndSnip(messages, results, journal, round)
@@ -427,6 +373,53 @@ func (r *Runtime) runLoop(
 				messages = r.appendResultsAndSnip(messages, results, journal, round)
 				escalationCount++
 				return RunOutcome{}, false
+			}
+
+			if blocked, ok := firstClassificationByAction(classifications, tool.CallActionPermissionEscalationRequired); ok {
+				blockedCall := blocked.Call
+				messages[len(messages)-1] = filterAssistantMessageForBlockedCallPause(messages[len(messages)-1], blockedCall.ID)
+				if journal != nil {
+					journal.Write("permission_escalation_intercepted", round, map[string]any{
+						"task_id": brief.TaskID,
+						"call_id": blockedCall.ID,
+						"name":    blockedCall.Name,
+						"input":   string(blockedCall.Input),
+					})
+				}
+				if escalationCount >= r.cfg.MaxEscalations {
+					report := failedReport(brief, fmt.Sprintf("max escalations exceeded (%d)", r.cfg.MaxEscalations))
+					return RunOutcome{Report: &report}, true
+				}
+				packet := buildPermissionEscalationPacket(brief, blockedCall)
+				outcome, _ := r.routeDecision(ctx, brief, blockedCall.ID, packet, messages, workProgress, round, escalationCount, journal)
+				if outcome.Paused != nil {
+					callCopy := blockedCall
+					outcome.Paused.PendingToolCall = &callCopy
+				}
+				return outcome, true
+			}
+			if blocked, ok := firstClassificationByAction(classifications, tool.CallActionToolApprovalRequired); ok {
+				blockedCall := blocked.Call
+				messages[len(messages)-1] = filterAssistantMessageForBlockedCallPause(messages[len(messages)-1], blockedCall.ID)
+				if journal != nil {
+					journal.Write("tool_approval_intercepted", round, map[string]any{
+						"task_id": brief.TaskID,
+						"call_id": blockedCall.ID,
+						"name":    blockedCall.Name,
+						"input":   string(blockedCall.Input),
+					})
+				}
+				if escalationCount >= r.cfg.MaxEscalations {
+					report := failedReport(brief, fmt.Sprintf("max escalations exceeded (%d)", r.cfg.MaxEscalations))
+					return RunOutcome{Report: &report}, true
+				}
+				packet := buildToolApprovalPacket(brief, blockedCall)
+				outcome, _ := r.routeDecision(ctx, brief, blockedCall.ID, packet, messages, workProgress, round, escalationCount, journal)
+				if outcome.Paused != nil {
+					callCopy := blockedCall
+					outcome.Paused.PendingToolCall = &callCopy
+				}
+				return outcome, true
 			}
 
 			results := r.cfg.Dispatcher.ExecuteAll(ctx, calls, permission)
@@ -575,28 +568,24 @@ func (r *Runtime) routeDecision(
 	return RunOutcome{Paused: paused}, nil
 }
 
-func findApprovalBlockedCall(dispatcher *tool.Dispatcher, ctx context.Context, calls []tool.Call, maxPermission tool.Permission) (tool.Call, bool) {
+func classifyToolCalls(dispatcher *tool.Dispatcher, ctx context.Context, calls []tool.Call, maxPermission tool.Permission) []tool.CallClassification {
 	if dispatcher == nil {
-		return tool.Call{}, false
+		return nil
 	}
+	classifications := make([]tool.CallClassification, 0, len(calls))
 	for _, call := range calls {
-		if dispatcher.WouldNeedApproval(ctx, call, maxPermission) {
-			return call, true
-		}
+		classifications = append(classifications, dispatcher.ClassifyCall(ctx, call, maxPermission))
 	}
-	return tool.Call{}, false
+	return classifications
 }
 
-func findPermissionEscalationBlockedCall(dispatcher *tool.Dispatcher, ctx context.Context, calls []tool.Call, maxPermission tool.Permission) (tool.Call, bool) {
-	if dispatcher == nil {
-		return tool.Call{}, false
-	}
-	for _, call := range calls {
-		if dispatcher.WouldNeedPermissionEscalation(ctx, call, maxPermission) {
-			return call, true
+func firstClassificationByAction(classifications []tool.CallClassification, action tool.CallAction) (tool.CallClassification, bool) {
+	for _, classification := range classifications {
+		if classification.Action == action {
+			return classification, true
 		}
 	}
-	return tool.Call{}, false
+	return tool.CallClassification{}, false
 }
 
 func buildToolApprovalPacket(brief protocol.TaskBrief, call tool.Call) protocol.DecisionPacket {
