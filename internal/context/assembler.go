@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
@@ -121,6 +122,7 @@ func buildEmotionSystemPrompt(base string, pendingDecisions any, env runtimeenv.
 	if env.OS != "" {
 		result += "\n\nExecution environment: " + env.DisplayOS() + "."
 	}
+	result += "\n\n" + formatCurrentTimeContext(time.Now())
 	switch items := pendingDecisions.(type) {
 	case nil:
 		return result

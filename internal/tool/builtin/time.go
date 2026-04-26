@@ -13,7 +13,7 @@ var GetCurrentTimeSpec = tool.Spec{
 	Name:        "get_current_time",
 	Description: "Get the current date and time. Returns the current local time.",
 	Parameters:  json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
-	Scope:       tool.ScopeBoth,
+	Scope:       tool.ScopeWork,
 	Permission:  tool.PermReadOnly,
 }
 

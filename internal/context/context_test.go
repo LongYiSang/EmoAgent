@@ -72,6 +72,9 @@ func TestBuildEmotionContextUsesPinnedContextAndRecentTurns(t *testing.T) {
 	if !strings.Contains(assembled.System, "Execution environment: Windows.") {
 		t.Fatalf("System = %q, want Windows environment note", assembled.System)
 	}
+	if !strings.Contains(assembled.System, "当前时间上下文：") {
+		t.Fatalf("System = %q, want current time context", assembled.System)
+	}
 	for _, forbidden := range []string{"cmd /c", "Workspace root", "Path style"} {
 		if strings.Contains(assembled.System, forbidden) {
 			t.Fatalf("Emotion prompt should stay minimal, found %q in %s", forbidden, assembled.System)
@@ -85,6 +88,11 @@ func TestBuildEmotionContextUsesPinnedContextAndRecentTurns(t *testing.T) {
 	}
 	if assembled.Messages[1].Content != "recent answer" {
 		t.Fatalf("Messages[1] = %#v, want recent assistant turn preserved", assembled.Messages[1])
+	}
+	for _, msg := range assembled.Messages {
+		if strings.Contains(msg.Content, "当前时间上下文：") {
+			t.Fatalf("time context should stay out of message slots, found in %#v", msg)
+		}
 	}
 }
 

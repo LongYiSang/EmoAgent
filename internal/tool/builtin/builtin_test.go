@@ -46,8 +46,8 @@ func TestGetCurrentTimeSpec(t *testing.T) {
 	if spec.Name != "get_current_time" {
 		t.Errorf("Name = %q", spec.Name)
 	}
-	if spec.Scope != tool.ScopeBoth {
-		t.Errorf("Scope = %q, want %q", spec.Scope, tool.ScopeBoth)
+	if spec.Scope != tool.ScopeWork {
+		t.Errorf("Scope = %q, want %q", spec.Scope, tool.ScopeWork)
 	}
 	if spec.Permission != tool.PermReadOnly {
 		t.Errorf("Permission = %q, want %q", spec.Permission, tool.PermReadOnly)
@@ -58,6 +58,28 @@ func TestGetCurrentTimeSpec(t *testing.T) {
 	want := `{"type":"object","properties":{},"additionalProperties":false}`
 	if string(spec.Parameters) != want {
 		t.Errorf("Parameters = %s, want %s", spec.Parameters, want)
+	}
+}
+
+func TestRegisterAllScopesCurrentTimeForWorkOnly(t *testing.T) {
+	registry := tool.NewRegistry()
+	RegisterAll(registry, config.DefaultConfig(), t.TempDir(), slog.Default())
+
+	for _, def := range registry.ForScope(tool.ScopeEmotion) {
+		if def.Name == "get_current_time" {
+			t.Fatal("get_current_time should not be exposed to Emotion scope")
+		}
+	}
+
+	var foundInWork bool
+	for _, def := range registry.ForScope(tool.ScopeWork) {
+		if def.Name == "get_current_time" {
+			foundInWork = true
+			break
+		}
+	}
+	if !foundInWork {
+		t.Fatal("get_current_time should remain exposed to Work scope")
 	}
 }
 
