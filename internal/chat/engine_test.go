@@ -106,6 +106,32 @@ func (c *observingStreamClient) ChatStream(_ context.Context, req llm.ChatReques
 	return endTurnResponse(strings.Join(c.deltas, "")), nil
 }
 
+type reasoningStreamClient struct {
+	requests []llm.ChatRequest
+	events   []llm.StreamEvent
+	response *llm.ChatResponse
+}
+
+func (c *reasoningStreamClient) Chat(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+	panic("unexpected summary Chat call")
+}
+
+func (c *reasoningStreamClient) ChatStream(_ context.Context, req llm.ChatRequest, cb llm.StreamCallback) (*llm.ChatResponse, error) {
+	c.requests = append(c.requests, req)
+	for _, event := range c.events {
+		if cb != nil {
+			cb(event)
+		}
+	}
+	if cb != nil {
+		cb(llm.StreamEvent{Done: true})
+	}
+	if c.response != nil {
+		return c.response, nil
+	}
+	return endTurnResponse("ok"), nil
+}
+
 type reactiveRetryLLMClient struct {
 	requests []llm.ChatRequest
 	errs     []error
@@ -385,6 +411,169 @@ func TestEngineRealtimeStreamingEmitsDeltaBeforeChatStreamReturns(t *testing.T) 
 	}
 }
 
+func TestEngineStreamsReasoningEventsAndPersistsMetadata(t *testing.T) {
+	client := &reasoningStreamClient{
+		events: []llm.StreamEvent{
+			{Type: "reasoning", ReasoningContent: "think "},
+			{Type: "reasoning", ReasoningContent: "first"},
+			{Type: "text", Content: "Answer"},
+		},
+		response: &llm.ChatResponse{
+			ID:               "resp-reasoning",
+			Model:            "kimi-test",
+			Content:          "Answer",
+			StopReason:       "end_turn",
+			ReasoningContent: "think first",
+			ContentBlocks: []llm.ContentBlock{
+				{Type: "text", Text: "Answer"},
+			},
+		},
+	}
+	engine, db, _ := newTestEngine(t, client)
+	engine.providerName = "Moonshot"
+	engine.UpdateRealtimeStreaming(true)
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	var timeline []string
+	ctx := withWSWriter(context.Background(), func(msg WSMessage) {
+		timeline = append(timeline, msg.Type)
+		if msg.Reasoning != nil && msg.Reasoning.Content != "" {
+			timeline = append(timeline, "reasoning:"+msg.Reasoning.Content)
+		}
+		if msg.Reasoning != nil && msg.Reasoning.Provider != "" {
+			timeline = append(timeline, "provider:"+msg.Reasoning.Provider)
+		}
+	})
+	reply, err := engine.SendMessage(ctx, sessionID, &config.Persona{Name: "default", SystemPrompt: "system"}, "hello", func(delta string) {
+		if delta != "" {
+			timeline = append(timeline, "stream_delta:"+delta)
+		}
+	})
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if reply != "Answer" {
+		t.Fatalf("reply = %q, want Answer", reply)
+	}
+
+	wantTimeline := []string{
+		"reasoning_start", "provider:Moonshot",
+		"reasoning_delta", "reasoning:think ", "provider:Moonshot",
+		"reasoning_delta", "reasoning:first", "provider:Moonshot",
+		"reasoning_end", "reasoning:think first", "provider:Moonshot",
+		"stream_delta:Answer",
+	}
+	if strings.Join(timeline, "|") != strings.Join(wantTimeline, "|") {
+		t.Fatalf("timeline = %#v, want %#v", timeline, wantTimeline)
+	}
+
+	messages, err := db.GetAllMessages(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("GetAllMessages: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("messages len = %d, want user+assistant", len(messages))
+	}
+	if messages[1].Content != "Answer" {
+		t.Fatalf("assistant content = %q, want Answer", messages[1].Content)
+	}
+	if strings.Contains(messages[1].Content, "think first") {
+		t.Fatalf("assistant visible content leaked reasoning: %q", messages[1].Content)
+	}
+	blocks := decodeThinkingBlocks(t, messages[1].Metadata)
+	if len(blocks) != 1 {
+		t.Fatalf("thinking_blocks = %#v, want one block", blocks)
+	}
+	if blocks[0]["content"] != "think first" {
+		t.Fatalf("thinking content = %#v, want think first", blocks[0]["content"])
+	}
+	if blocks[0]["kind"] != "reasoning_content" {
+		t.Fatalf("thinking kind = %#v, want reasoning_content", blocks[0]["kind"])
+	}
+	if blocks[0]["provider"] != "Moonshot" {
+		t.Fatalf("thinking provider = %#v, want provider display name Moonshot", blocks[0]["provider"])
+	}
+	if _, ok := blocks[0]["duration_ms"].(float64); !ok {
+		t.Fatalf("duration_ms = %#v, want numeric", blocks[0]["duration_ms"])
+	}
+}
+
+func TestEngineEmitsOneShotReasoningWhenOnlyFinalResponseHasReasoning(t *testing.T) {
+	client := &reasoningStreamClient{
+		events: []llm.StreamEvent{
+			{Type: "text", Content: "Answer"},
+		},
+		response: &llm.ChatResponse{
+			ID:               "resp-reasoning-final",
+			Model:            "deepseek-test",
+			Content:          "Answer",
+			StopReason:       "end_turn",
+			ReasoningContent: "final thinking",
+			ContentBlocks: []llm.ContentBlock{
+				{Type: "text", Text: "Answer"},
+			},
+		},
+	}
+	engine, _, _ := newTestEngine(t, client)
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	var timeline []string
+	ctx := withWSWriter(context.Background(), func(msg WSMessage) {
+		timeline = append(timeline, msg.Type)
+		if msg.Reasoning != nil && msg.Reasoning.Content != "" {
+			timeline = append(timeline, "reasoning:"+msg.Reasoning.Content)
+		}
+	})
+	reply, err := engine.SendMessage(ctx, sessionID, &config.Persona{Name: "default", SystemPrompt: "system"}, "hello", func(delta string) {
+		if delta != "" {
+			timeline = append(timeline, "stream_delta:"+delta)
+		}
+	})
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if reply != "Answer" {
+		t.Fatalf("reply = %q, want Answer", reply)
+	}
+
+	wantTimeline := []string{
+		"reasoning_start",
+		"reasoning_delta", "reasoning:final thinking",
+		"reasoning_end", "reasoning:final thinking",
+		"stream_delta:Answer",
+	}
+	if strings.Join(timeline, "|") != strings.Join(wantTimeline, "|") {
+		t.Fatalf("timeline = %#v, want %#v", timeline, wantTimeline)
+	}
+}
+
+func decodeThinkingBlocks(t *testing.T, raw string) []map[string]any {
+	t.Helper()
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(raw), &metadata); err != nil {
+		t.Fatalf("Unmarshal(metadata): %v; raw=%s", err, raw)
+	}
+	values, ok := metadata["thinking_blocks"].([]any)
+	if !ok {
+		t.Fatalf("thinking_blocks = %#v, want array", metadata["thinking_blocks"])
+	}
+	blocks := make([]map[string]any, 0, len(values))
+	for _, value := range values {
+		block, ok := value.(map[string]any)
+		if !ok {
+			t.Fatalf("thinking block = %#v, want object", value)
+		}
+		blocks = append(blocks, block)
+	}
+	return blocks
+}
+
 func TestEngineUpdateConfigAffectsSubsequentMessages(t *testing.T) {
 	firstClient := &fakeLLMClient{
 		response: &llm.ChatResponse{ID: "resp-1", Content: "first", Model: "model-a"},
@@ -631,6 +820,46 @@ func (c *toolLoopLLMClient) ChatStream(_ context.Context, req llm.ChatRequest, c
 	}, nil
 }
 
+type reasoningToolLoopLLMClient struct {
+	requests []llm.ChatRequest
+}
+
+func (c *reasoningToolLoopLLMClient) Chat(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+	panic("unexpected Chat call")
+}
+
+func (c *reasoningToolLoopLLMClient) ChatStream(_ context.Context, req llm.ChatRequest, cb llm.StreamCallback) (*llm.ChatResponse, error) {
+	c.requests = append(c.requests, req)
+	switch len(c.requests) {
+	case 1:
+		if cb != nil {
+			cb(llm.StreamEvent{Type: "reasoning", ReasoningContent: "need a tool"})
+			cb(llm.StreamEvent{Done: true})
+		}
+		return &llm.ChatResponse{
+			ID:               "resp-tool-reasoning",
+			StopReason:       "tool_use",
+			ReasoningContent: "need a tool",
+			ContentBlocks: []llm.ContentBlock{
+				{Type: "tool_use", ID: "call_1", Name: "get_current_time", Input: json.RawMessage(`{}`)},
+			},
+		}, nil
+	default:
+		if cb != nil {
+			cb(llm.StreamEvent{Type: "text", Content: "done"})
+			cb(llm.StreamEvent{Done: true})
+		}
+		return &llm.ChatResponse{
+			ID:         "resp-final",
+			Content:    "done",
+			StopReason: "end_turn",
+			ContentBlocks: []llm.ContentBlock{
+				{Type: "text", Text: "done"},
+			},
+		}, nil
+	}
+}
+
 func TestEngineToolLoopExecutesToolAndReturnsResponse(t *testing.T) {
 	mockLLM := &toolLoopLLMClient{}
 
@@ -813,6 +1042,91 @@ func TestEngineRealtimeToolLoopKeepsVisibleTextAndEmitsToolEvents(t *testing.T) 
 	}
 	if strings.Contains(messages[1].Content, "current_time") {
 		t.Fatalf("assistant message contains tool result JSON: %q", messages[1].Content)
+	}
+}
+
+func TestEngineToolLoopEndsReasoningBeforeToolCallAndKeepsReasoningForNextRequest(t *testing.T) {
+	mockLLM := &reasoningToolLoopLLMClient{}
+	registry := tool.NewRegistry()
+	registry.Register(tool.Spec{
+		Name:        "get_current_time",
+		Description: "Get current time",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+		Scope:       tool.ScopeBoth,
+		Permission:  tool.PermReadOnly,
+	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{"current_time":"17:00:00","timezone":"CST"}`), nil
+	})
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "chat.db"), logger)
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, logger)
+	engine := NewEngine(EngineConfig{
+		LLM:               mockLLM,
+		DB:                db,
+		Logger:            logger,
+		Model:             "test-model",
+		MaxTokens:         256,
+		Temperature:       0.2,
+		RealtimeStreaming: true,
+		ContextConfig: config.ContextConfig{
+			InputBudgetTokens:    24000,
+			SoftCompactRatio:     0.75,
+			HardCompactRatio:     0.92,
+			ReserveOutputTokens:  4096,
+			KeepRecentUserTurns:  6,
+			ToolResultSoftTokens: 1000,
+			ToolResultHardTokens: 3000,
+		},
+		Provider:   "openai",
+		Registry:   registry,
+		Dispatcher: dispatcher,
+	})
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	var eventTypes []string
+	ctx := withWSWriter(context.Background(), func(msg WSMessage) {
+		switch msg.Type {
+		case "reasoning_start", "reasoning_delta", "reasoning_end", "tool_call_start", "tool_call_end":
+			eventTypes = append(eventTypes, msg.Type)
+		}
+	})
+	if _, err := engine.SendMessage(ctx, sessionID, &config.Persona{Name: "default", SystemPrompt: "system"}, "time?", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	wantPrefix := []string{"reasoning_start", "reasoning_delta", "reasoning_end", "tool_call_start"}
+	if len(eventTypes) < len(wantPrefix) {
+		t.Fatalf("eventTypes = %#v, want prefix %#v", eventTypes, wantPrefix)
+	}
+	for i, want := range wantPrefix {
+		if eventTypes[i] != want {
+			t.Fatalf("eventTypes = %#v, want prefix %#v", eventTypes, wantPrefix)
+		}
+	}
+	if len(mockLLM.requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(mockLLM.requests))
+	}
+	var assistantWithReasoning *llm.Message
+	for i := range mockLLM.requests[1].Messages {
+		msg := &mockLLM.requests[1].Messages[i]
+		if msg.Role == llm.RoleAssistant && msg.ReasoningContent != "" {
+			assistantWithReasoning = msg
+			break
+		}
+	}
+	if assistantWithReasoning == nil {
+		t.Fatalf("second request messages = %#v, want assistant message with ReasoningContent", mockLLM.requests[1].Messages)
+	}
+	if assistantWithReasoning.ReasoningContent != "need a tool" {
+		t.Fatalf("assistant ReasoningContent = %q, want need a tool", assistantWithReasoning.ReasoningContent)
 	}
 }
 

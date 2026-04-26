@@ -40,6 +40,7 @@ type EngineConfig struct {
 	Temperature        float64
 	ContextConfig      config.ContextConfig
 	Provider           string           // "openai" or "anthropic", needed by ResultsToMessages
+	ProviderName       string           // display name for UI metadata
 	Registry           *tool.Registry   // nil disables tool support
 	Dispatcher         *tool.Dispatcher // nil disables tool support
 	Pending            *work.PendingRegistry
@@ -51,6 +52,7 @@ type EngineConfig struct {
 // RuntimeConfig is the hot-swappable subset of EngineConfig used for new requests.
 type RuntimeConfig struct {
 	Provider           string
+	ProviderName       string
 	Model              string
 	Params             llm.RequestParams
 	SummaryModel       string
@@ -80,6 +82,7 @@ type Engine struct {
 	temperature        float64
 	contextCfg         config.ContextConfig
 	provider           string
+	providerName       string
 	registry           *tool.Registry
 	dispatcher         *tool.Dispatcher
 	pending            *work.PendingRegistry
@@ -98,6 +101,7 @@ func (e *Engine) UpdateConfig(client llm.Client, provider, model, summaryModel s
 		e.summaryLLM = client
 	}
 	e.provider = provider
+	e.providerName = provider
 	e.model = model
 	e.params = requestParamsFromLegacy(maxTokens, temperature, true)
 	e.summaryModel = summaryModel
@@ -111,7 +115,7 @@ func (e *Engine) UpdateConfig(client llm.Client, provider, model, summaryModel s
 	}
 }
 
-func (e *Engine) UpdateAgentRuntime(mainClient, summaryClient llm.Client, provider, model string, params llm.RequestParams, summaryModel string, summaryParams llm.RequestParams, contextCfg config.ContextConfig) {
+func (e *Engine) UpdateAgentRuntime(mainClient, summaryClient llm.Client, provider, providerName, model string, params llm.RequestParams, summaryModel string, summaryParams llm.RequestParams, contextCfg config.ContextConfig) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -122,6 +126,7 @@ func (e *Engine) UpdateAgentRuntime(mainClient, summaryClient llm.Client, provid
 		e.summaryLLM = summaryClient
 	}
 	e.provider = provider
+	e.providerName = providerDisplayName(providerName, provider)
 	e.model = model
 	e.params = cloneRequestParams(params)
 	e.summaryModel = summaryModel
@@ -160,6 +165,7 @@ func NewEngine(cfg EngineConfig) *Engine {
 		temperature:        cfg.Temperature,
 		contextCfg:         contextCfg,
 		provider:           cfg.Provider,
+		providerName:       providerDisplayName(cfg.ProviderName, cfg.Provider),
 		registry:           cfg.Registry,
 		dispatcher:         cfg.Dispatcher,
 		pending:            cfg.Pending,
@@ -176,6 +182,7 @@ func (e *Engine) RuntimeConfig() RuntimeConfig {
 
 	return RuntimeConfig{
 		Provider:           e.provider,
+		ProviderName:       e.providerName,
 		Model:              e.model,
 		Params:             cloneRequestParams(e.params),
 		SummaryModel:       e.summaryModel,
@@ -244,6 +251,146 @@ type turnOptions struct {
 	disableTools bool
 }
 
+type thinkingBlockMetadata struct {
+	ID         string `json:"id"`
+	Content    string `json:"content"`
+	DurationMS int64  `json:"duration_ms"`
+	Provider   string `json:"provider,omitempty"`
+	Model      string `json:"model,omitempty"`
+	Kind       string `json:"kind"`
+}
+
+type reasoningRoundTracker struct {
+	id         string
+	provider   string
+	model      string
+	startedAt  time.Time
+	writer     func(WSMessage)
+	content    strings.Builder
+	started    bool
+	ended      bool
+	recorded   bool
+	durationMS int64
+	sink       *[]thinkingBlockMetadata
+}
+
+func newReasoningRoundTracker(id, provider, model string, startedAt time.Time, writer func(WSMessage), sink *[]thinkingBlockMetadata) *reasoningRoundTracker {
+	return &reasoningRoundTracker{
+		id:        id,
+		provider:  provider,
+		model:     model,
+		startedAt: startedAt,
+		writer:    writer,
+		sink:      sink,
+	}
+}
+
+func (r *reasoningRoundTracker) delta(content string) {
+	if content == "" || r.ended {
+		return
+	}
+	r.start()
+	r.content.WriteString(content)
+	if r.writer != nil {
+		r.writer(WSMessage{
+			Type: "reasoning_delta",
+			Reasoning: &ReasoningActivity{
+				ID:       r.id,
+				Status:   "running",
+				Content:  content,
+				Provider: r.provider,
+				Model:    r.model,
+				Kind:     "reasoning_content",
+			},
+		})
+	}
+}
+
+func (r *reasoningRoundTracker) start() {
+	if r.started {
+		return
+	}
+	r.started = true
+	if r.writer != nil {
+		r.writer(WSMessage{
+			Type: "reasoning_start",
+			Reasoning: &ReasoningActivity{
+				ID:       r.id,
+				Status:   "running",
+				Provider: r.provider,
+				Model:    r.model,
+				Kind:     "reasoning_content",
+			},
+		})
+	}
+}
+
+func (r *reasoningRoundTracker) end() {
+	if !r.started || r.ended {
+		return
+	}
+	r.ended = true
+	r.durationMS = time.Since(r.startedAt).Milliseconds()
+	content := r.content.String()
+	if r.writer != nil {
+		r.writer(WSMessage{
+			Type: "reasoning_end",
+			Reasoning: &ReasoningActivity{
+				ID:         r.id,
+				Status:     "done",
+				Content:    content,
+				DurationMS: r.durationMS,
+				Provider:   r.provider,
+				Model:      r.model,
+				Kind:       "reasoning_content",
+			},
+		})
+	}
+	r.record(content)
+}
+
+func (r *reasoningRoundTracker) complete(finalContent string) {
+	if strings.TrimSpace(finalContent) == "" {
+		r.end()
+		return
+	}
+	if r.started {
+		r.end()
+		return
+	}
+	r.start()
+	r.content.WriteString(finalContent)
+	if r.writer != nil {
+		r.writer(WSMessage{
+			Type: "reasoning_delta",
+			Reasoning: &ReasoningActivity{
+				ID:       r.id,
+				Status:   "running",
+				Content:  finalContent,
+				Provider: r.provider,
+				Model:    r.model,
+				Kind:     "reasoning_content",
+			},
+		})
+	}
+	r.end()
+}
+
+func (r *reasoningRoundTracker) record(content string) {
+	if r.recorded || strings.TrimSpace(content) == "" || r.sink == nil {
+		return
+	}
+	r.recorded = true
+	*r.sink = append(*r.sink, thinkingBlockMetadata{
+		ID:         r.id,
+		Content:    content,
+		DurationMS: r.durationMS,
+		Provider:   r.provider,
+		Model:      r.model,
+		Kind:       "reasoning_content",
+	})
+}
+
 func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config.Persona, cb func(delta string), opts turnOptions) (string, error) {
 	e.mu.RLock()
 	client := e.llm
@@ -258,6 +405,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	temperature := e.temperature
 	contextCfg := e.contextCfg
 	provider := e.provider
+	providerName := providerDisplayName(e.providerName, provider)
 	registry := e.registry
 	dispatcher := e.dispatcher
 	pending := e.pending
@@ -437,10 +585,17 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 
 	var assistantContent string
 	var visibleBuilder strings.Builder
+	var thinkingBlocks []thinkingBlockMetadata
 	for round := 0; ; round++ {
 		var roundDeltas []string
+		roundStarted := time.Now()
+		reasoning := newReasoningRoundTracker("reasoning-"+uuid.NewString(), providerName, model, roundStarted, rawWriter, &thinkingBlocks)
 		resp, err = client.ChatStream(ctx, req, func(event llm.StreamEvent) {
+			if event.ReasoningContent != "" {
+				reasoning.delta(event.ReasoningContent)
+			}
 			if event.Content != "" {
+				reasoning.end()
 				roundDeltas = append(roundDeltas, event.Content)
 				if realtimeStreaming {
 					visibleBuilder.WriteString(event.Content)
@@ -448,6 +603,9 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 						cb(event.Content)
 					}
 				}
+			}
+			if event.ContentBlock != nil || event.Type == "tool_use" {
+				reasoning.end()
 			}
 		})
 		if err != nil {
@@ -481,6 +639,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 			e.logger.Error("llm request failed", "session", sessionID, "round", round, "error", err)
 			return "", err
 		}
+		reasoning.complete(resp.ReasoningContent)
 
 		if resp.StopReason != "tool_use" {
 			if realtimeStreaming {
@@ -626,7 +785,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	)
 
 	// Persist only the final assistant text reply to DB.
-	if err := e.db.AddMessageWithMetadata(ctx, uuid.NewString(), sessionID, "assistant", assistantContent, visibleMessageMetadata("assistant", assistantContent)); err != nil {
+	if err := e.db.AddMessageWithMetadata(ctx, uuid.NewString(), sessionID, "assistant", assistantContent, visibleMessageMetadataWithThinking("assistant", assistantContent, thinkingBlocks)); err != nil {
 		e.logger.Error("failed to store assistant message", "session", sessionID, "error", err)
 		return "", err
 	}
@@ -829,12 +988,28 @@ func cloneFloat64Ptr(value *float64) *float64 {
 	return &v
 }
 
+func providerDisplayName(name, fallback string) string {
+	name = strings.TrimSpace(name)
+	if name != "" {
+		return name
+	}
+	return fallback
+}
+
 func visibleMessageMetadata(role, content string) map[string]any {
 	return map[string]any{
 		"kind":           "dialogue_" + role,
 		"source":         role,
 		"token_estimate": contextutil.EstimateTokens(content),
 	}
+}
+
+func visibleMessageMetadataWithThinking(role, content string, thinkingBlocks []thinkingBlockMetadata) map[string]any {
+	metadata := visibleMessageMetadata(role, content)
+	if len(thinkingBlocks) > 0 {
+		metadata["thinking_blocks"] = thinkingBlocks
+	}
+	return metadata
 }
 
 func buildApprovalContinuationNote(approval *protocol.ApprovalRequest) string {

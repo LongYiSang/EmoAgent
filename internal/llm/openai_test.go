@@ -108,6 +108,106 @@ func TestOpenAIChat_MapsRequestParamsAndOmitsNilTemperature(t *testing.T) {
 	}
 }
 
+func TestOpenAIPayloadMapsKimiThinkingParams(t *testing.T) {
+	client := &openaiClient{
+		providerID: "moonshot",
+		baseURL:    "https://api.moonshot.cn",
+		logger:     slog.Default(),
+	}
+
+	payload := client.openaiPayload(ChatRequest{
+		Model:    "kimi-k2.6",
+		Messages: []Message{{Role: RoleUser, Content: "Hi"}},
+		Params: RequestParams{
+			Thinking: &ThinkingConfig{Mode: "enabled"},
+			Extra: map[string]any{
+				"thinking": map[string]any{"type": "disabled", "budget_tokens": float64(2048)},
+			},
+		},
+	}, false)
+
+	thinking, ok := payload["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("thinking = %#v, want object", payload["thinking"])
+	}
+	if got := thinking["type"]; got != "enabled" {
+		t.Fatalf("thinking.type = %#v, want enabled", got)
+	}
+	if _, exists := thinking["budget_tokens"]; exists {
+		t.Fatalf("thinking budget_tokens should not be mapped for Kimi: %#v", thinking)
+	}
+}
+
+func TestOpenAIPayloadMapsDeepSeekThinkingParams(t *testing.T) {
+	client := &openaiClient{
+		providerID: "deepseek",
+		baseURL:    "https://api.deepseek.com",
+		logger:     slog.Default(),
+	}
+
+	payload := client.openaiPayload(ChatRequest{
+		Model:    "deepseek-v4-pro",
+		Messages: []Message{{Role: RoleUser, Content: "Hi"}},
+		Params: RequestParams{
+			Thinking: &ThinkingConfig{Mode: "disabled", Effort: "max"},
+		},
+	}, false)
+
+	thinking, ok := payload["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("thinking = %#v, want object", payload["thinking"])
+	}
+	if got := thinking["type"]; got != "disabled" {
+		t.Fatalf("thinking.type = %#v, want disabled", got)
+	}
+	if got := payload["reasoning_effort"]; got != "max" {
+		t.Fatalf("reasoning_effort = %#v, want max fallback from Thinking.Effort", got)
+	}
+
+	payload = client.openaiPayload(ChatRequest{
+		Model:    "deepseek-v4-pro",
+		Messages: []Message{{Role: RoleUser, Content: "Hi"}},
+		Params: RequestParams{
+			ReasoningEffort: "high",
+			Thinking:        &ThinkingConfig{Mode: "manual", Effort: "max"},
+		},
+	}, false)
+	if got := payload["reasoning_effort"]; got != "high" {
+		t.Fatalf("reasoning_effort = %#v, want explicit ReasoningEffort to win", got)
+	}
+	thinking, ok = payload["thinking"].(map[string]any)
+	if !ok || thinking["type"] != "enabled" {
+		t.Fatalf("thinking = %#v, want enabled for manual mode", payload["thinking"])
+	}
+}
+
+func TestOpenAIPayloadPreservesUnknownProviderExtraThinking(t *testing.T) {
+	client := &openaiClient{
+		providerID: "custom",
+		baseURL:    "https://llm.example.test",
+		logger:     slog.Default(),
+	}
+
+	payload := client.openaiPayload(ChatRequest{
+		Model:    "custom-thinking-model",
+		Messages: []Message{{Role: RoleUser, Content: "Hi"}},
+		Params: RequestParams{
+			Thinking: &ThinkingConfig{Mode: "enabled"},
+			Extra: map[string]any{
+				"thinking": map[string]any{"custom": "kept"},
+			},
+		},
+	}, false)
+
+	thinking, ok := payload["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("thinking = %#v, want preserved object", payload["thinking"])
+	}
+	if got := thinking["custom"]; got != "kept" {
+		t.Fatalf("thinking.custom = %#v, want kept", got)
+	}
+}
+
 func TestDiscoverModelsOpenAICompatible(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" {
@@ -470,5 +570,65 @@ func TestOpenAIChatStream_TextOnly(t *testing.T) {
 	}
 	if resp.StopReason != "end_turn" {
 		t.Errorf("StopReason: got %q", resp.StopReason)
+	}
+}
+
+func TestOpenAIChatStream_ReasoningContentDelta(t *testing.T) {
+	sseEvents := []string{
+		`data: {"id":"chatcmpl-006","model":"kimi-test","choices":[{"delta":{"reasoning_content":"think "},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl-006","model":"kimi-test","choices":[{"delta":{"reasoning_content":"first"},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl-006","model":"kimi-test","choices":[{"delta":{"content":"Answer"},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl-006","model":"kimi-test","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":8}}`,
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, e := range sseEvents {
+			fmt.Fprintln(w, e)
+			fmt.Fprintln(w)
+		}
+	}))
+	defer server.Close()
+
+	client := newTestOpenAIClient(server.URL)
+
+	var eventTypes []string
+	var reasoningChunks []string
+	var textChunks []string
+	resp, err := client.ChatStream(context.Background(), ChatRequest{
+		Model:       "kimi-test",
+		Messages:    []Message{{Role: RoleUser, Content: "Hi"}},
+		MaxTokens:   100,
+		Temperature: 0.5,
+	}, func(event StreamEvent) {
+		switch {
+		case event.ReasoningContent != "":
+			eventTypes = append(eventTypes, event.Type)
+			reasoningChunks = append(reasoningChunks, event.ReasoningContent)
+		case event.Content != "":
+			eventTypes = append(eventTypes, event.Type)
+			textChunks = append(textChunks, event.Content)
+		case event.Done:
+			eventTypes = append(eventTypes, "done")
+		}
+	})
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+
+	if got, want := strings.Join(eventTypes, ","), "reasoning,reasoning,text,done"; got != want {
+		t.Fatalf("event types = %q, want %q", got, want)
+	}
+	if got := strings.Join(reasoningChunks, ""); got != "think first" {
+		t.Fatalf("reasoning chunks = %q, want think first", got)
+	}
+	if got := strings.Join(textChunks, ""); got != "Answer" {
+		t.Fatalf("text chunks = %q, want Answer", got)
+	}
+	if resp.ReasoningContent != "think first" {
+		t.Fatalf("resp.ReasoningContent = %q, want think first", resp.ReasoningContent)
+	}
+	if resp.Content != "Answer" {
+		t.Fatalf("resp.Content = %q, want Answer", resp.Content)
 	}
 }

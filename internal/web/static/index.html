@@ -238,6 +238,50 @@
     .tool-meta { display: flex; flex-wrap: wrap; gap: 6px; color: var(--muted); font-family: var(--font-data); }
     .tool-meta span { padding: 3px 7px; border-radius: 999px; background: rgba(126,103,94,.1); }
 
+    /* ── Thinking activity ── */
+    .reasoning {
+      align-self: flex-start; max-width: var(--thread-width); width: 100%;
+      display: flex; gap: 12px; align-items: flex-start;
+      animation: slide-up .24s var(--ease-out);
+    }
+    .reasoning-av {
+      width: 32px; height: 32px; flex-shrink: 0; border-radius: 50%;
+      background: linear-gradient(135deg, var(--lavender-soft), #FCE7EF);
+      color: var(--lavender-ink); display: grid; place-items: center; border: 1px solid rgba(127,96,177,.16);
+    }
+    .reasoning-card {
+      flex: 1; min-width: 0; background: #FFFDFA; border: 1px solid var(--hair);
+      border-radius: var(--r-md); border-top-left-radius: 8px; overflow: hidden; box-shadow: var(--shadow-sm);
+    }
+    .reasoning-head {
+      width: 100%; border: 0; background: transparent; padding: 11px 14px;
+      display: grid; grid-template-columns: 1fr auto auto; gap: 10px;
+      align-items: center; text-align: left; cursor: pointer;
+    }
+    .reasoning-title { font-size: 12.5px; font-weight: 800; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .reasoning-badge {
+      display: inline-flex; align-items: center; padding: 3px 8px; border-radius: 999px;
+      font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em;
+      background: var(--lavender-soft); color: var(--lavender-ink);
+    }
+    .reasoning.done .reasoning-badge { background: var(--mint-soft); color: var(--mint-ink); }
+    .reasoning-caret { color: var(--muted); transition: transform .18s var(--ease-out); }
+    .reasoning.expanded .reasoning-caret { transform: rotate(180deg); }
+    .reasoning-body {
+      display: none; border-top: 1px solid var(--hair); padding: 12px 14px;
+      background: linear-gradient(180deg, #FFFDFA 0%, #FBFAF8 100%);
+      gap: 9px; font-size: 12px; color: var(--ink-2);
+    }
+    .reasoning.expanded .reasoning-body { display: grid; }
+    .reasoning-preview {
+      margin: 0; white-space: pre-wrap; word-break: break-word;
+      font-family: var(--font-mono); font-size: 11.5px; line-height: 1.55;
+      padding: 10px 11px; border-radius: 11px; background: #fff; border: 1px solid var(--hair);
+      max-height: 220px; overflow: auto;
+    }
+    .reasoning-meta { display: flex; flex-wrap: wrap; gap: 6px; color: var(--muted); font-family: var(--font-data); }
+    .reasoning-meta span { padding: 3px 7px; border-radius: 999px; background: rgba(126,103,94,.1); }
+
     /* ── Approvals ── */
     .approvals-wrap { display: none !important; }
     .approval {
@@ -491,6 +535,7 @@
   const dismissedApprovalIDs = new Set();
   let workProgressNode = null;
   const toolActivityNodes = new Map();
+  const reasoningActivityNodes = new Map();
 
   function escapeHTML(text) {
     return String(text ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
@@ -505,7 +550,7 @@
     renderApprovals(); if (!next) input.focus();
   }
   function clearMessages() {
-    pendingAssistant = null; clearWorkProgress(); toolActivityNodes.clear(); messagesEl.innerHTML = '';
+    pendingAssistant = null; clearWorkProgress(); toolActivityNodes.clear(); reasoningActivityNodes.clear(); messagesEl.innerHTML = '';
   }
   function timelineMillis(raw, fallback = Date.now()) {
     const parsed = Date.parse(raw || ''); return Number.isNaN(parsed) ? fallback : parsed;
@@ -517,6 +562,12 @@
   }
   function messageCreatedAtOf(item) { return messageField(item, 'createdAt') || messageField(item, 'created_at'); }
   function approvalCreatedAtOf(item) { return approvalField(item, 'created_at') || approvalField(item, 'createdAt'); }
+  function messageMetadataOf(item) {
+    const raw = messageField(item, 'metadata');
+    if (!raw) return {};
+    if (typeof raw === 'object') return raw;
+    try { return JSON.parse(raw); } catch (_) { return {}; }
+  }
 
   function insertApprovalNode(node) {
     if (!node) return;
@@ -585,6 +636,7 @@
     for (const item of messages || []) {
       const role = messageField(item, 'role') || 'assistant';
       const content = messageField(item, 'content');
+      if (role === 'assistant') renderThinkingBlocksFromMetadata(messageMetadataOf(item), messageCreatedAtOf(item), item.ID || item.id || messageField(item, 'id'));
       if (content) appendMessage(role, content, { createdAt: messageCreatedAtOf(item), skipScroll: true });
     }
     scrollToBottom();
@@ -761,6 +813,81 @@
   function showWorkProgress(text) { const c = (text||'').trim(); if (!c) return; setMessageContent(ensureWorkProgressNode(), c); }
   function clearWorkProgress() { if (workProgressNode?.parentNode) workProgressNode.parentNode.removeChild(workProgressNode); workProgressNode = null; }
 
+  function reasoningField(item, field) {
+    if (!item || typeof item !== 'object') return '';
+    return item[field] ?? item[field[0].toUpperCase() + field.slice(1)] ?? '';
+  }
+  function formatReasoningDuration(ms) {
+    const n = Number(ms || 0);
+    if (!Number.isFinite(n) || n <= 0) return '';
+    if (n < 1000) return `${Math.round(n)} ms`;
+    const seconds = n / 1000;
+    return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} 秒`;
+  }
+  function reasoningStatusLabel(status) {
+    switch (status) { case 'running': return 'thinking'; case 'done': return 'done'; default: return status || 'thinking'; }
+  }
+  function renderReasoningActivity(node, reasoning, collapse) {
+    const id = reasoningField(reasoning, 'id');
+    const status = reasoningField(reasoning, 'status') || 'running';
+    const duration = Number(reasoningField(reasoning, 'duration_ms') || reasoningField(reasoning, 'durationMS') || 0);
+    const provider = reasoningField(reasoning, 'provider');
+    const model = reasoningField(reasoning, 'model');
+    const content = reasoningField(reasoning, 'content') || node.dataset.reasoningContent || '';
+    const wasExpanded = node.classList.contains('expanded');
+    const expanded = collapse ? false : (wasExpanded || !node.dataset.hadEnd);
+    const title = status === 'running' ? '思考中...' : (duration ? `思考了 ${formatReasoningDuration(duration)}` : '思考完成');
+    node.className = `reasoning ${status}${expanded ? ' expanded' : ''}`;
+    node.dataset.reasoningId = id;
+    node.dataset.reasoningContent = content;
+    if (collapse) node.dataset.hadEnd = '1';
+    node.innerHTML = `
+      <div class="reasoning-av"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3a4 4 0 0 0-4 4c0 1.4.7 2.6 1.7 3.3A4.8 4.8 0 0 0 6 13c0 3.3 2.7 6 6 6s6-2.7 6-6c0-1-.3-1.9-.7-2.7A4 4 0 0 0 19 7a4 4 0 0 0-4-4"/><path d="M9 7h.01"/><path d="M15 7h.01"/><path d="M10 14c1.3.8 2.7.8 4 0"/></svg></div>
+      <div class="reasoning-card">
+        <button class="reasoning-head" type="button" aria-expanded="${expanded}">
+          <span class="reasoning-title">${escapeHTML(title)}</span>
+          <span class="reasoning-badge">${escapeHTML(reasoningStatusLabel(status))}</span>
+          <span class="reasoning-caret">⌄</span>
+        </button>
+        <div class="reasoning-body">
+          ${content ? `<pre class="reasoning-preview">${escapeHTML(content)}</pre>` : '<div class="reasoning-preview">Waiting for reasoning...</div>'}
+          <div class="reasoning-meta">${duration?`<span>${duration} ms</span>`:''}${provider?`<span>${escapeHTML(provider)}</span>`:''}${model?`<span>${escapeHTML(model)}</span>`:''}</div>
+        </div>
+      </div>`;
+    const head = node.querySelector('.reasoning-head');
+    head?.addEventListener('click', () => { node.classList.toggle('expanded'); head.setAttribute('aria-expanded', node.classList.contains('expanded')); });
+  }
+  function collapseReasoningActivities() {
+    for (const node of reasoningActivityNodes.values()) {
+      if (!node?.isConnected) continue;
+      node.classList.remove('expanded');
+      node.querySelector('.reasoning-head')?.setAttribute('aria-expanded', 'false');
+    }
+  }
+  function upsertReasoningActivity(reasoning, collapse = false, append = false, createdAt = '') {
+    const id = reasoningField(reasoning, 'id'); if (!id) return;
+    let node = reasoningActivityNodes.get(id);
+    if (!node || !node.isConnected) {
+      node = document.createElement('div'); setTimelineMeta(node, 'reasoning', createdAt || new Date().toISOString());
+      if (workProgressNode?.parentNode === messagesEl) messagesEl.insertBefore(node, workProgressNode);
+      else messagesEl.appendChild(node);
+      reasoningActivityNodes.set(id, node);
+    }
+    const incoming = reasoningField(reasoning, 'content');
+    if (incoming) node.dataset.reasoningContent = append ? `${node.dataset.reasoningContent || ''}${incoming}` : incoming;
+    const normalized = { ...reasoning, content: node.dataset.reasoningContent || incoming || '' };
+    renderReasoningActivity(node, normalized, collapse); scrollToBottom();
+  }
+  function renderThinkingBlocksFromMetadata(metadata, createdAt, messageID) {
+    const blocks = metadata?.thinking_blocks || metadata?.thinkingBlocks || [];
+    if (!Array.isArray(blocks)) return;
+    blocks.forEach((block, index) => {
+      const rawID = reasoningField(block, 'id') || String(index + 1);
+      const historyID = `${messageID || 'history'}:${rawID}`;
+      upsertReasoningActivity({ ...block, id: historyID, status: 'done' }, true, false, createdAt);
+    });
+  }
+
   function toolField(item, field) {
     if (!item || typeof item !== 'object') return '';
     return item[field] ?? item[field[0].toUpperCase() + field.slice(1)] ?? '';
@@ -895,12 +1022,15 @@
           if (connectAttempt?.awaitingSessionReady) resolveConnectAttempt();
           await loadSessionList(); await loadApprovals(currentSessionId); break;
         case 'greeting': appendMessage('assistant', payload.content || ''); break;
-        case 'stream_start': pendingAssistant = null; toolActivityNodes.clear(); setSending(true); break;
+        case 'stream_start': pendingAssistant = null; toolActivityNodes.clear(); reasoningActivityNodes.clear(); setSending(true); break;
+        case 'reasoning_start': pendingAssistant = null; upsertReasoningActivity(payload.reasoning || payload.Reasoning, false, false); break;
+        case 'reasoning_delta': pendingAssistant = null; upsertReasoningActivity(payload.reasoning || payload.Reasoning, false, true); break;
+        case 'reasoning_end': pendingAssistant = null; upsertReasoningActivity(payload.reasoning || payload.Reasoning, true, false); break;
         case 'stream_delta':
           if (!pendingAssistant) pendingAssistant = appendMessage('assistant', '');
           setMessageContent(pendingAssistant, `${messageTextOf(pendingAssistant)}${payload.content || ''}`); break;
         case 'stream_end':
-          pendingAssistant = null; clearWorkProgress(); pendingApprovalActions.clear(); setSending(false);
+          pendingAssistant = null; collapseReasoningActivities(); clearWorkProgress(); pendingApprovalActions.clear(); setSending(false);
           await loadSessionList(); await loadApprovals(currentSessionId); break;
         case 'tool_call_start': pendingAssistant = null; upsertToolActivity(payload.tool || payload.Tool, false); break;
         case 'tool_call_end': pendingAssistant = null; upsertToolActivity(payload.tool || payload.Tool, true); break;

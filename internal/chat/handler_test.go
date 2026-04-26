@@ -266,6 +266,62 @@ func TestHandlerStreamsToolCallEvents(t *testing.T) {
 	}
 }
 
+func TestHandlerStreamsReasoningEvents(t *testing.T) {
+	handler, engine := newTestHandler()
+	engine.deltas = []string{"done"}
+	engine.sendReply = "done"
+	engine.sendHook = func(ctx context.Context) {
+		writer := wsWriterFromContext(ctx)
+		if writer == nil {
+			t.Fatal("ws writer missing from message context")
+		}
+		writer(WSMessage{Type: "reasoning_start", Reasoning: &ReasoningActivity{ID: "reasoning-1", Status: "running", Kind: "reasoning_content"}})
+		writer(WSMessage{Type: "reasoning_delta", Reasoning: &ReasoningActivity{ID: "reasoning-1", Status: "running", Content: "thinking", Kind: "reasoning_content"}})
+		writer(WSMessage{Type: "reasoning_end", Reasoning: &ReasoningActivity{ID: "reasoning-1", Status: "done", Content: "thinking", DurationMS: 42, Kind: "reasoning_content"}})
+	}
+
+	conn := dialTestWS(t, handler)
+	defer conn.Close(websocket.StatusNormalClosure, "bye")
+
+	var msg WSMessage
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(session_ready): %v", err)
+	}
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(greeting): %v", err)
+	}
+
+	if err := wsjson.Write(context.Background(), conn, WSMessage{Type: "message", Content: "think"}); err != nil {
+		t.Fatalf("Write(message): %v", err)
+	}
+
+	var types []string
+	var reasoning []ReasoningActivity
+	for len(types) < 6 {
+		msg = WSMessage{}
+		if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+			t.Fatalf("Read(stream): %v", err)
+		}
+		types = append(types, msg.Type)
+		if msg.Reasoning != nil {
+			reasoning = append(reasoning, *msg.Reasoning)
+		}
+	}
+
+	want := []string{"stream_start", "reasoning_start", "reasoning_delta", "reasoning_end", "stream_delta", "stream_end"}
+	for i := range want {
+		if types[i] != want[i] {
+			t.Fatalf("types[%d] = %q, want %q (all=%#v)", i, types[i], want[i], types)
+		}
+	}
+	if len(reasoning) != 3 {
+		t.Fatalf("reasoning = %#v, want start/delta/end", reasoning)
+	}
+	if reasoning[1].Content != "thinking" || reasoning[2].DurationMS != 42 {
+		t.Fatalf("reasoning = %#v, want delta content and end duration", reasoning)
+	}
+}
+
 func TestHandlerRepliesToPing(t *testing.T) {
 	handler, _ := newTestHandler()
 	conn := dialTestWS(t, handler)

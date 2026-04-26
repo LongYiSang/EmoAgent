@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -37,6 +38,7 @@ func NewClient(cfg ProviderConfig, logger *slog.Logger) (Client, error) {
 	switch cfg.Protocol {
 	case "openai", "openai_compatible":
 		return &openaiClient{
+			providerID: cfg.ID,
 			baseURL:    cfg.BaseURL,
 			apiKey:     apiKey,
 			httpClient: &http.Client{Timeout: 120 * time.Second},
@@ -68,6 +70,7 @@ func defaultAPIKeyEnv(provider string) string {
 // --- OpenAI compatible implementation ---
 
 type openaiClient struct {
+	providerID string
 	baseURL    string
 	apiKey     string
 	httpClient *http.Client
@@ -224,7 +227,11 @@ func (c *openaiClient) toMessages(req ChatRequest) []openaiMessage {
 
 		default:
 			// Simple text message.
-			msgs = append(msgs, openaiMessage{Role: string(m.Role), Content: strPtr(m.Content)})
+			msg := openaiMessage{Role: string(m.Role), Content: strPtr(m.Content)}
+			if m.ReasoningContent != "" {
+				msg.ReasoningContent = strPtr(m.ReasoningContent)
+			}
+			msgs = append(msgs, msg)
 		}
 	}
 	return msgs
@@ -377,6 +384,15 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 		if len(chunk.Choices) > 0 {
 			choice := chunk.Choices[0]
 
+			// Reasoning content delta (thinking models).
+			if choice.Delta.ReasoningContent != nil && *choice.Delta.ReasoningContent != "" {
+				delta := *choice.Delta.ReasoningContent
+				accumulatedReasoning += delta
+				if cb != nil {
+					cb(StreamEvent{Type: "reasoning", ReasoningContent: delta})
+				}
+			}
+
 			// Text delta.
 			if choice.Delta.Content != nil && *choice.Delta.Content != "" {
 				delta := *choice.Delta.Content
@@ -384,11 +400,6 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 				if cb != nil {
 					cb(StreamEvent{Type: "text", Content: delta})
 				}
-			}
-
-			// Reasoning content delta (thinking models).
-			if choice.Delta.ReasoningContent != nil && *choice.Delta.ReasoningContent != "" {
-				accumulatedReasoning += *choice.Delta.ReasoningContent
 			}
 
 			// Tool call deltas.
@@ -472,6 +483,7 @@ func (c *openaiClient) openaiPayload(req ChatRequest, stream bool) map[string]an
 		"model": {}, "messages": {}, "max_tokens": {}, "temperature": {}, "top_p": {},
 		"presence_penalty": {}, "frequency_penalty": {}, "reasoning_effort": {}, "stream": {}, "tools": {},
 	})
+	flavor := c.openaiCompatFlavor(req.Model)
 	payload["model"] = req.Model
 	payload["messages"] = c.toMessages(req)
 	if params.MaxTokens > 0 {
@@ -489,8 +501,15 @@ func (c *openaiClient) openaiPayload(req ChatRequest, stream bool) map[string]an
 	if params.FrequencyPenalty != nil {
 		payload["frequency_penalty"] = *params.FrequencyPenalty
 	}
-	if params.ReasoningEffort != "" {
-		payload["reasoning_effort"] = params.ReasoningEffort
+	reasoningEffort := params.ReasoningEffort
+	if reasoningEffort == "" && flavor == "deepseek" && params.Thinking != nil {
+		reasoningEffort = strings.TrimSpace(params.Thinking.Effort)
+	}
+	if reasoningEffort != "" {
+		payload["reasoning_effort"] = reasoningEffort
+	}
+	if thinking := providerThinkingPayload(flavor, params.Thinking); thinking != nil {
+		payload["thinking"] = thinking
 	}
 	if stream {
 		payload["stream"] = true
@@ -499,6 +518,37 @@ func (c *openaiClient) openaiPayload(req ChatRequest, stream bool) map[string]an
 		payload["tools"] = tools
 	}
 	return payload
+}
+
+func (c *openaiClient) openaiCompatFlavor(model string) string {
+	providerID := strings.ToLower(strings.TrimSpace(c.providerID))
+	baseURL := strings.ToLower(strings.TrimSpace(c.baseURL))
+	model = strings.ToLower(strings.TrimSpace(model))
+	switch {
+	case strings.Contains(providerID, "deepseek") || strings.Contains(baseURL, "api.deepseek.com") || strings.HasPrefix(model, "deepseek-"):
+		return "deepseek"
+	case strings.Contains(providerID, "moonshot") || strings.Contains(providerID, "kimi") || strings.Contains(baseURL, "api.moonshot.cn") || strings.Contains(model, "kimi"):
+		return "moonshot"
+	default:
+		return ""
+	}
+}
+
+func providerThinkingPayload(flavor string, thinking *ThinkingConfig) map[string]any {
+	if flavor != "moonshot" && flavor != "deepseek" {
+		return nil
+	}
+	if thinking == nil {
+		return nil
+	}
+	switch strings.ToLower(strings.TrimSpace(thinking.Mode)) {
+	case "enabled", "manual":
+		return map[string]any{"type": "enabled"}
+	case "disabled":
+		return map[string]any{"type": "disabled"}
+	default:
+		return nil
+	}
 }
 
 func effectiveRequestParams(req ChatRequest) RequestParams {

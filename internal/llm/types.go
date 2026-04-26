@@ -112,10 +112,11 @@ type Usage struct {
 
 // StreamEvent represents a single event during streaming.
 type StreamEvent struct {
-	Type         string        // "text", "tool_use", "" (for backward compat)
-	Content      string        // text delta
-	ContentBlock *ContentBlock // completed tool_use block (set on content_block_stop)
-	Done         bool          // true when stream is complete
+	Type             string        // "text", "reasoning", "tool_use", "" (for backward compat)
+	Content          string        // text delta
+	ReasoningContent string        // thinking/reasoning delta
+	ContentBlock     *ContentBlock // completed tool_use block (set on content_block_stop)
+	Done             bool          // true when stream is complete
 }
 
 // StreamCallback is called for each streaming chunk.

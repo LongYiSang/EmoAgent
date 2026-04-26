@@ -29,6 +29,7 @@ type WSMessage struct {
 	OptionID  string                    `json:"option_id,omitempty"`
 	Approval  *protocol.ApprovalRequest `json:"approval,omitempty"`
 	Tool      *ToolActivity             `json:"tool,omitempty"`
+	Reasoning *ReasoningActivity        `json:"reasoning,omitempty"`
 }
 
 // ToolActivity is the compact, UI-safe description of a live tool call.
@@ -41,6 +42,17 @@ type ToolActivity struct {
 	Size        int    `json:"size,omitempty"`
 	Hash        string `json:"hash,omitempty"`
 	IsTruncated bool   `json:"is_truncated,omitempty"`
+}
+
+// ReasoningActivity is the UI-safe description of a model thinking block.
+type ReasoningActivity struct {
+	ID         string `json:"id"`
+	Status     string `json:"status"`
+	Content    string `json:"content,omitempty"`
+	DurationMS int64  `json:"duration_ms,omitempty"`
+	Provider   string `json:"provider,omitempty"`
+	Model      string `json:"model,omitempty"`
+	Kind       string `json:"kind,omitempty"`
 }
 
 // AppInterface exposes the persona methods the handler needs from App.

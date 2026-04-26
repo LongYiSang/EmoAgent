@@ -177,6 +177,7 @@ func (a *App) Run(ctx context.Context) error {
 	maxTokens := 0
 	temperature := 0.0
 	provider := ""
+	providerName := ""
 	currentClient := a.LLM
 	summaryClient := a.LLM
 	contextCfg := a.globalContextConfig()
@@ -190,6 +191,7 @@ func (a *App) Run(ctx context.Context) error {
 		maxTokens = params.MaxTokens
 		temperature = derefFloat64(params.Temperature, 0)
 		provider = toolProviderName(activeRuntime.EmotionMain.Provider.Protocol)
+		providerName = providerDisplayName(activeRuntime.EmotionMain.Provider)
 		contextCfg = activeRuntime.Context
 	}
 
@@ -282,6 +284,7 @@ func (a *App) Run(ctx context.Context) error {
 		Temperature:        temperature,
 		ContextConfig:      contextCfg,
 		Provider:           provider,
+		ProviderName:       providerName,
 		Registry:           a.toolRegistry,
 		Dispatcher:         dispatcher,
 		Pending:            pendingRegistry,
@@ -1028,6 +1031,7 @@ func (a *App) ActivateAgentConfig(id string) error {
 			runtime.EmotionMain.Client,
 			runtime.EmotionSummary.Client,
 			toolProviderName(runtime.EmotionMain.Provider.Protocol),
+			providerDisplayName(runtime.EmotionMain.Provider),
 			runtime.EmotionMain.Model,
 			runtime.EmotionMain.Params,
 			runtime.EmotionSummary.Model,
@@ -1108,6 +1112,13 @@ func toolProviderName(protocol string) string {
 		return "anthropic"
 	}
 	return "openai"
+}
+
+func providerDisplayName(provider config.LLMProvider) string {
+	if strings.TrimSpace(provider.Name) != "" {
+		return provider.Name
+	}
+	return provider.ID
 }
 
 func cloneFloat64Ptr(value *float64) *float64 {
