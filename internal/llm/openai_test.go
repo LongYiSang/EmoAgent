@@ -110,9 +110,13 @@ func TestOpenAIChat_MapsRequestParamsAndOmitsNilTemperature(t *testing.T) {
 
 func TestOpenAIPayloadMapsKimiThinkingParams(t *testing.T) {
 	client := &openaiClient{
-		providerID: "moonshot",
-		baseURL:    "https://api.moonshot.cn",
-		logger:     slog.Default(),
+		providerID:             "moonshot",
+		baseURL:                "https://proxy.example.test",
+		reasoningRequestStyle:  ReasoningRequestThinkingType,
+		reasoningResponseStyle: ReasoningResponseReasoningContent,
+		chatCompletionsPath:    "/v1/chat/completions",
+		modelsPath:             "/v1/models",
+		logger:                 slog.Default(),
 	}
 
 	payload := client.openaiPayload(ChatRequest{
@@ -140,9 +144,14 @@ func TestOpenAIPayloadMapsKimiThinkingParams(t *testing.T) {
 
 func TestOpenAIPayloadMapsDeepSeekThinkingParams(t *testing.T) {
 	client := &openaiClient{
-		providerID: "deepseek",
-		baseURL:    "https://api.deepseek.com",
-		logger:     slog.Default(),
+		providerID:                     "deepseek",
+		baseURL:                        "https://proxy.example.test",
+		reasoningRequestStyle:          ReasoningRequestThinkingType,
+		reasoningResponseStyle:         ReasoningResponseReasoningContent,
+		thinkingEffortFallbackToReason: true,
+		chatCompletionsPath:            "/v1/chat/completions",
+		modelsPath:                     "/v1/models",
+		logger:                         slog.Default(),
 	}
 
 	payload := client.openaiPayload(ChatRequest{
@@ -205,6 +214,58 @@ func TestOpenAIPayloadPreservesUnknownProviderExtraThinking(t *testing.T) {
 	}
 	if got := thinking["custom"]; got != "kept" {
 		t.Fatalf("thinking.custom = %#v, want kept", got)
+	}
+}
+
+func TestOpenAIPayloadDoesNotInferThinkingFromURLOrModel(t *testing.T) {
+	client := &openaiClient{
+		providerID: "custom",
+		baseURL:    "https://api.deepseek.com",
+		logger:     slog.Default(),
+	}
+
+	payload := client.openaiPayload(ChatRequest{
+		Model:    "deepseek-v4-pro",
+		Messages: []Message{{Role: RoleUser, Content: "Hi"}},
+		Params: RequestParams{
+			Thinking: &ThinkingConfig{Mode: "enabled", Effort: "high"},
+		},
+	}, false)
+
+	if _, exists := payload["thinking"]; exists {
+		t.Fatalf("thinking should not be inferred from URL/model: %#v", payload["thinking"])
+	}
+	if _, exists := payload["reasoning_effort"]; exists {
+		t.Fatalf("reasoning_effort fallback should not be inferred from URL/model: %#v", payload["reasoning_effort"])
+	}
+}
+
+func TestOpenAIChatParsesMessageReasoningStyle(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{
+			"id": "chatcmpl-groq",
+			"model": "openai/gpt-oss-20b",
+			"choices": [{
+				"message": {"content": "Final", "reasoning": "hidden work"},
+				"finish_reason": "stop"
+			}],
+			"usage": {"prompt_tokens": 1, "completion_tokens": 2}
+		}`)
+	}))
+	defer server.Close()
+	client := newTestOpenAIClient(server.URL)
+	client.reasoningResponseStyle = ReasoningResponseMessageReasoning
+
+	resp, err := client.Chat(context.Background(), ChatRequest{
+		Model:    "openai/gpt-oss-20b",
+		Messages: []Message{{Role: RoleUser, Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if resp.ReasoningContent != "hidden work" {
+		t.Fatalf("ReasoningContent = %q, want hidden work", resp.ReasoningContent)
 	}
 }
 
@@ -368,6 +429,27 @@ func TestOpenAIToMessages_ToolResult(t *testing.T) {
 	}
 	if *msgs[3].Content != `{"time":"10:00"}` {
 		t.Errorf("msg[3].Content: got %q", *msgs[3].Content)
+	}
+}
+
+func TestOpenAIToMessagesPreservesReasoningOnlyWhenCapabilityEnabled(t *testing.T) {
+	req := ChatRequest{Messages: []Message{{
+		Role:             RoleAssistant,
+		ReasoningContent: "need a tool",
+		ContentBlocks: []ContentBlock{
+			{Type: "tool_use", ID: "call_abc", Name: "get_time", Input: json.RawMessage(`{"tz":"UTC"}`)},
+		},
+	}}}
+
+	custom := &openaiClient{logger: slog.Default()}
+	if got := custom.toMessages(req)[0].ReasoningContent; got != nil {
+		t.Fatalf("custom ReasoningContent = %q, want omitted", *got)
+	}
+
+	moonshot := &openaiClient{logger: slog.Default(), toolReasoningContinuation: ToolReasoningContinuationPreserve}
+	got := moonshot.toMessages(req)[0].ReasoningContent
+	if got == nil || *got != "need a tool" {
+		t.Fatalf("moonshot ReasoningContent = %#v, want preserved", got)
 	}
 }
 

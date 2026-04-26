@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -259,12 +260,67 @@ func TestAgentConfigMigrationDropsProfilesAndRuntimeKeys(t *testing.T) {
 	}
 }
 
+func TestProviderPresetMigrationBackfillsExactPresetIDsOnly(t *testing.T) {
+	dir := t.TempDir()
+	sqlDB, err := sql.Open("sqlite", filepath.Join(dir, "migration.db"))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer sqlDB.Close()
+
+	_, err = sqlDB.Exec(`
+CREATE TABLE schema_version (
+    version    INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT INTO schema_version (version) VALUES (11);
+CREATE TABLE llm_providers (
+    id                      TEXT PRIMARY KEY,
+    name                    TEXT NOT NULL,
+    protocol                TEXT NOT NULL,
+    base_url                TEXT NOT NULL,
+    api_key_env             TEXT NOT NULL,
+    model_discovery         TEXT NOT NULL DEFAULT 'manual',
+    enabled                 INTEGER NOT NULL DEFAULT 1,
+    models_cache_json       TEXT NOT NULL DEFAULT '[]',
+    models_cache_updated_at TEXT,
+    created_at              TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT INTO llm_providers (id, name, protocol, base_url, api_key_env, model_discovery, enabled)
+VALUES
+    ('moonshot', 'Moonshot', 'openai_compatible', 'https://api.moonshot.cn', 'MOONSHOT_API_KEY', 'openai_models', 1),
+    ('local-kimi', 'Local Kimi', 'openai_compatible', 'https://api.example.test', 'LOCAL_KIMI_KEY', 'manual', 1);
+`)
+	if err != nil {
+		t.Fatalf("seed v11 schema: %v", err)
+	}
+	if err := ApplyMigrations(sqlDB); err != nil {
+		t.Fatalf("ApplyMigrations: %v", err)
+	}
+
+	var moonshotPreset, localPreset string
+	if err := sqlDB.QueryRow("SELECT preset_id FROM llm_providers WHERE id = 'moonshot'").Scan(&moonshotPreset); err != nil {
+		t.Fatalf("query moonshot preset: %v", err)
+	}
+	if err := sqlDB.QueryRow("SELECT preset_id FROM llm_providers WHERE id = 'local-kimi'").Scan(&localPreset); err != nil {
+		t.Fatalf("query local preset: %v", err)
+	}
+	if moonshotPreset != "moonshot" {
+		t.Fatalf("moonshot preset_id = %q, want moonshot", moonshotPreset)
+	}
+	if localPreset != "" {
+		t.Fatalf("local-kimi preset_id = %q, want empty custom behavior", localPreset)
+	}
+}
+
 func TestProviderAndAgentConfigCRUD(t *testing.T) {
 	db := testDB(t)
 
 	provider := config.LLMProvider{
 		ID:             "moonshot",
 		Name:           "Moonshot",
+		PresetID:       "moonshot",
 		Protocol:       "openai_compatible",
 		BaseURL:        "https://api.moonshot.cn",
 		APIKeyEnv:      "MOONSHOT_API_KEY",
@@ -280,6 +336,9 @@ func TestProviderAndAgentConfigCRUD(t *testing.T) {
 	}
 	if len(providers) != 1 || providers[0].ID != "moonshot" {
 		t.Fatalf("providers = %#v, want moonshot", providers)
+	}
+	if providers[0].PresetID != "moonshot" {
+		t.Fatalf("provider preset_id = %q, want moonshot", providers[0].PresetID)
 	}
 
 	temperature := 0.1

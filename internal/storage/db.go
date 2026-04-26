@@ -165,24 +165,25 @@ func (d *DB) UpsertLLMProvider(provider config.LLMProvider) error {
 	}
 	_, err := d.db.Exec(`
 		INSERT INTO llm_providers (
-			id, name, protocol, base_url, api_key_env, model_discovery, enabled, updated_at
+			id, name, preset_id, protocol, base_url, api_key_env, model_discovery, enabled, updated_at
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
+			preset_id = excluded.preset_id,
 			protocol = excluded.protocol,
 			base_url = excluded.base_url,
 			api_key_env = excluded.api_key_env,
 			model_discovery = excluded.model_discovery,
 			enabled = excluded.enabled,
 			updated_at = datetime('now')
-	`, provider.ID, provider.Name, provider.Protocol, provider.BaseURL, provider.APIKeyEnv, discovery, boolInt(provider.Enabled))
+	`, provider.ID, provider.Name, provider.PresetID, provider.Protocol, provider.BaseURL, provider.APIKeyEnv, discovery, boolInt(provider.Enabled))
 	return err
 }
 
 func (d *DB) GetLLMProvider(ctx context.Context, id string) (*LLMProviderRecord, error) {
 	row := d.db.QueryRowContext(ctx, `
-		SELECT id, name, protocol, base_url, api_key_env, model_discovery, enabled,
+		SELECT id, name, preset_id, protocol, base_url, api_key_env, model_discovery, enabled,
 		       models_cache_json, models_cache_updated_at, created_at, updated_at
 		FROM llm_providers
 		WHERE id = ?
@@ -199,7 +200,7 @@ func (d *DB) GetLLMProvider(ctx context.Context, id string) (*LLMProviderRecord,
 
 func (d *DB) ListLLMProviders() ([]LLMProviderRecord, error) {
 	rows, err := d.db.Query(`
-		SELECT id, name, protocol, base_url, api_key_env, model_discovery, enabled,
+		SELECT id, name, preset_id, protocol, base_url, api_key_env, model_discovery, enabled,
 		       models_cache_json, models_cache_updated_at, created_at, updated_at
 		FROM llm_providers
 		ORDER BY id
@@ -706,6 +707,7 @@ func scanLLMProvider(row scanner) (LLMProviderRecord, error) {
 	if err := row.Scan(
 		&record.ID,
 		&record.Name,
+		&record.PresetID,
 		&record.Protocol,
 		&record.BaseURL,
 		&record.APIKeyEnv,

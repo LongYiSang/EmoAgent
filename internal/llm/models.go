@@ -14,6 +14,11 @@ type ModelInfo struct {
 }
 
 func DiscoverModels(ctx context.Context, cfg ProviderConfig) ([]ModelInfo, error) {
+	resolved, err := ResolveProviderConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	cfg = resolved
 	apiKeyEnv := cfg.APIKeyEnv
 	if apiKeyEnv == "" {
 		apiKeyEnv = defaultAPIKeyEnv(cfg.Protocol)
@@ -23,7 +28,7 @@ func DiscoverModels(ctx context.Context, cfg ProviderConfig) ([]ModelInfo, error
 		return nil, fmt.Errorf("%s environment variable not set", apiKeyEnv)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.BaseURL+"/v1/models", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpointURL(cfg.BaseURL, cfg.ModelsPath), nil)
 	if err != nil {
 		return nil, fmt.Errorf("create models request: %w", err)
 	}

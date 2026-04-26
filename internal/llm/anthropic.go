@@ -11,10 +11,11 @@ import (
 )
 
 type anthropicClient struct {
-	baseURL    string
-	apiKey     string
-	httpClient *http.Client
-	logger     *slog.Logger
+	baseURL      string
+	messagesPath string
+	apiKey       string
+	httpClient   *http.Client
+	logger       *slog.Logger
 }
 
 // --- Anthropic Messages API types ---
@@ -162,7 +163,11 @@ func (c *anthropicClient) doRequest(ctx context.Context, body []byte, stream boo
 		client = &http.Client{} // no timeout for streaming
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/v1/messages", bytes.NewReader(body))
+	messagesPath := c.messagesPath
+	if messagesPath == "" {
+		messagesPath = "/v1/messages"
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", endpointURL(c.baseURL, messagesPath), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}

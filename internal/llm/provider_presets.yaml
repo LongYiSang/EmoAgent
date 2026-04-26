@@ -1,0 +1,261 @@
+presets:
+  - id: openai
+    name: OpenAI
+    protocol: openai_compatible
+    base_url: https://api.openai.com
+    api_key_env: OPENAI_API_KEY
+    model_discovery: openai_models
+    chat_completions_path: /v1/chat/completions
+    models_path: /v1/models
+    documentation_url: https://platform.openai.com/docs
+    capabilities:
+      reasoning_request_style: reasoning_effort
+    admin:
+      visible_params: [max_tokens, temperature, stream, top_p, presence_penalty, frequency_penalty, reasoning_effort, extra]
+      main_defaults:
+        max_tokens: 8192
+        temperature: 0.7
+        stream: true
+      summary_defaults:
+        max_tokens: 2048
+        temperature: 0.1
+        stream: false
+  - id: moonshot
+    name: Moonshot
+    protocol: openai_compatible
+    base_url: https://api.moonshot.cn
+    api_key_env: MOONSHOT_API_KEY
+    model_discovery: openai_models
+    chat_completions_path: /v1/chat/completions
+    models_path: /v1/models
+    documentation_url: https://platform.kimi.com/docs/api/overview
+    capabilities:
+      reasoning_request_style: thinking_type
+      reasoning_response_style: reasoning_content
+      tool_reasoning_continuation: preserve_during_tool_loop
+    admin:
+      visible_params: [max_tokens, temperature, stream, thinking_mode, extra]
+      main_defaults:
+        max_tokens: 16384
+        temperature: 1
+        stream: true
+        thinking:
+          mode: enabled
+      summary_defaults:
+        max_tokens: 4096
+        temperature: 0.1
+        stream: false
+        thinking:
+          mode: disabled
+  - id: deepseek
+    name: DeepSeek
+    protocol: openai_compatible
+    base_url: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+    model_discovery: openai_models
+    chat_completions_path: /v1/chat/completions
+    models_path: /v1/models
+    documentation_url: https://api-docs.deepseek.com/zh-cn/guides/thinking_mode
+    capabilities:
+      reasoning_request_style: thinking_type
+      reasoning_response_style: reasoning_content
+      tool_reasoning_continuation: preserve_during_tool_loop
+      thinking_effort_fallback_to_reasoning: true
+    admin:
+      visible_params: [max_tokens, stream, reasoning_effort, thinking_mode, extra]
+      main_defaults:
+        max_tokens: 16384
+        stream: true
+        reasoning_effort: high
+        thinking:
+          mode: enabled
+      summary_defaults:
+        max_tokens: 2048
+        stream: false
+        thinking:
+          mode: disabled
+  - id: anthropic
+    name: Anthropic
+    protocol: anthropic
+    base_url: https://api.anthropic.com
+    api_key_env: ANTHROPIC_API_KEY
+    model_discovery: anthropic_models
+    chat_completions_path: /v1/messages
+    models_path: /v1/models
+    documentation_url: https://docs.anthropic.com/
+    capabilities:
+      reasoning_request_style: anthropic_thinking
+      reasoning_response_style: anthropic_thinking_blocks
+      tool_reasoning_continuation: preserve_during_tool_loop
+    admin:
+      visible_params: [max_tokens, temperature, stream, thinking_mode, thinking_budget, extra]
+      main_defaults:
+        max_tokens: 8192
+        temperature: 0.7
+        stream: true
+        thinking:
+          mode: enabled
+          budget_tokens: 4096
+      summary_defaults:
+        max_tokens: 2048
+        temperature: 0.1
+        stream: false
+  - id: gemini
+    name: Gemini
+    protocol: openai_compatible
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    api_key_env: GEMINI_API_KEY
+    model_discovery: openai_models
+    chat_completions_path: /chat/completions
+    models_path: /models
+    documentation_url: https://ai.google.dev/gemini-api/docs/openai
+    admin:
+      visible_params: [max_tokens, temperature, stream, top_p, extra]
+      main_defaults:
+        max_tokens: 8192
+        temperature: 0.7
+        stream: true
+      summary_defaults:
+        max_tokens: 2048
+        temperature: 0.1
+        stream: false
+  - id: qwen_dashscope_cn
+    name: Qwen DashScope CN
+    protocol: openai_compatible
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_key_env: DASHSCOPE_API_KEY
+    model_discovery: openai_models
+    chat_completions_path: /chat/completions
+    models_path: /models
+    documentation_url: https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope
+    admin:
+      visible_params: [max_tokens, temperature, stream, top_p, extra]
+      main_defaults:
+        max_tokens: 8192
+        temperature: 0.7
+        stream: true
+      summary_defaults:
+        max_tokens: 2048
+        temperature: 0.1
+        stream: false
+  - id: qwen_dashscope_intl
+    name: Qwen DashScope International
+    protocol: openai_compatible
+    base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+    api_key_env: DASHSCOPE_API_KEY
+    model_discovery: openai_models
+    chat_completions_path: /chat/completions
+    models_path: /models
+    documentation_url: https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope
+    admin:
+      visible_params: [max_tokens, temperature, stream, top_p, extra]
+      main_defaults:
+        max_tokens: 8192
+        temperature: 0.7
+        stream: true
+      summary_defaults:
+        max_tokens: 2048
+        temperature: 0.1
+        stream: false
+  - id: xai
+    name: xAI
+    protocol: openai_compatible
+    base_url: https://api.x.ai
+    api_key_env: XAI_API_KEY
+    model_discovery: openai_models
+    chat_completions_path: /v1/chat/completions
+    models_path: /v1/models
+    documentation_url: https://docs.x.ai/docs
+    capabilities:
+      reasoning_request_style: reasoning_effort
+      reasoning_response_style: reasoning_content
+    admin:
+      visible_params: [max_tokens, temperature, stream, top_p, reasoning_effort, extra]
+      main_defaults:
+        max_tokens: 8192
+        temperature: 0.7
+        stream: true
+        reasoning_effort: high
+      summary_defaults:
+        max_tokens: 2048
+        temperature: 0.1
+        stream: false
+  - id: groq
+    name: Groq
+    protocol: openai_compatible
+    base_url: https://api.groq.com/openai
+    api_key_env: GROQ_API_KEY
+    model_discovery: openai_models
+    chat_completions_path: /v1/chat/completions
+    models_path: /v1/models
+    documentation_url: https://console.groq.com/docs/openai
+    capabilities:
+      reasoning_request_style: reasoning_effort
+      reasoning_response_style: message_reasoning
+    admin:
+      visible_params: [max_tokens, temperature, stream, top_p, reasoning_effort, extra]
+      main_defaults:
+        max_tokens: 8192
+        temperature: 0.6
+        stream: true
+        reasoning_effort: high
+      summary_defaults:
+        max_tokens: 2048
+        temperature: 0.1
+        stream: false
+  - id: mistral
+    name: Mistral
+    protocol: openai_compatible
+    base_url: https://api.mistral.ai
+    api_key_env: MISTRAL_API_KEY
+    model_discovery: openai_models
+    chat_completions_path: /v1/chat/completions
+    models_path: /v1/models
+    documentation_url: https://docs.mistral.ai/
+    admin:
+      visible_params: [max_tokens, temperature, stream, top_p, presence_penalty, frequency_penalty, extra]
+      main_defaults:
+        max_tokens: 8192
+        temperature: 0.7
+        stream: true
+      summary_defaults:
+        max_tokens: 2048
+        temperature: 0.1
+        stream: false
+  - id: openrouter
+    name: OpenRouter
+    protocol: openai_compatible
+    base_url: https://openrouter.ai/api
+    api_key_env: OPENROUTER_API_KEY
+    model_discovery: openai_models
+    chat_completions_path: /v1/chat/completions
+    models_path: /v1/models
+    documentation_url: https://openrouter.ai/docs/api-reference/overview
+    admin:
+      visible_params: [max_tokens, temperature, stream, top_p, reasoning_effort, extra]
+      main_defaults:
+        max_tokens: 8192
+        temperature: 0.7
+        stream: true
+      summary_defaults:
+        max_tokens: 2048
+        temperature: 0.1
+        stream: false
+  - id: custom_openai_compatible
+    name: Custom OpenAI Compatible
+    protocol: openai_compatible
+    base_url: https://api.example.com
+    api_key_env: OPENAI_API_KEY
+    model_discovery: manual
+    chat_completions_path: /v1/chat/completions
+    models_path: /v1/models
+    admin:
+      visible_params: [max_tokens, temperature, stream, top_p, presence_penalty, frequency_penalty, reasoning_effort, thinking_mode, thinking_budget, thinking_effort, extra]
+      main_defaults:
+        max_tokens: 4096
+        temperature: 0.7
+        stream: true
+      summary_defaults:
+        max_tokens: 2048
+        temperature: 0.1
+        stream: false

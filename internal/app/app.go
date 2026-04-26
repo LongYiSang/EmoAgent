@@ -335,6 +335,7 @@ func (a *App) Run(ctx context.Context) error {
 
 func registerRoutes(mux *http.ServeMux, api *web.APIHandler, chatHandler http.Handler, staticHandler http.Handler) {
 	mux.HandleFunc("GET /api/llm-providers", api.HandleListLLMProviders)
+	mux.HandleFunc("GET /api/llm-provider-presets", api.HandleListLLMProviderPresets)
 	mux.HandleFunc("POST /api/llm-providers", api.HandleCreateLLMProvider)
 	mux.HandleFunc("GET /api/llm-providers/{id}", api.HandleGetLLMProvider)
 	mux.HandleFunc("PUT /api/llm-providers/{id}", api.HandleUpdateLLMProvider)
@@ -562,6 +563,7 @@ func (a *App) modelRuntime(binding config.ModelBinding, requireClient bool) (Mod
 func (a *App) buildClientForProvider(provider config.LLMProvider) (llm.Client, error) {
 	return llm.NewClient(llm.ProviderConfig{
 		ID:        provider.ID,
+		PresetID:  provider.PresetID,
 		Protocol:  provider.Protocol,
 		BaseURL:   provider.BaseURL,
 		APIKeyEnv: provider.APIKeyEnv,
@@ -849,6 +851,11 @@ func (a *App) GetLLMProvider(id string) (*config.LLMProvider, error) {
 }
 
 func (a *App) CreateLLMProvider(provider config.LLMProvider) error {
+	var err error
+	provider, err = provider.WithPresetDefaults()
+	if err != nil {
+		return err
+	}
 	if err := provider.Validate(); err != nil {
 		return err
 	}
@@ -864,6 +871,11 @@ func (a *App) CreateLLMProvider(provider config.LLMProvider) error {
 
 func (a *App) UpdateLLMProvider(id string, provider config.LLMProvider) error {
 	provider.ID = id
+	var err error
+	provider, err = provider.WithPresetDefaults()
+	if err != nil {
+		return err
+	}
 	if err := provider.Validate(); err != nil {
 		return err
 	}
@@ -895,6 +907,7 @@ func (a *App) RefreshLLMProviderModels(id string) ([]llm.ModelInfo, error) {
 	}
 	models, err := llm.DiscoverModels(context.Background(), llm.ProviderConfig{
 		ID:        provider.ID,
+		PresetID:  provider.PresetID,
 		Protocol:  provider.Protocol,
 		BaseURL:   provider.BaseURL,
 		APIKeyEnv: provider.APIKeyEnv,

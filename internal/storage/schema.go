@@ -256,6 +256,20 @@ CREATE TABLE IF NOT EXISTS agent_configs (
 );
 `,
 	},
+	{
+		Version: 12,
+		SQL: `
+ALTER TABLE llm_providers ADD COLUMN preset_id TEXT NOT NULL DEFAULT '';
+
+UPDATE llm_providers
+SET preset_id = id
+WHERE id IN (
+    'openai', 'moonshot', 'deepseek', 'anthropic', 'gemini',
+    'qwen_dashscope_cn', 'qwen_dashscope_intl', 'xai', 'groq',
+    'mistral', 'openrouter', 'custom_openai_compatible'
+);
+`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.

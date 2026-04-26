@@ -80,6 +80,7 @@ context:
 llm_providers:
   - id: moonshot
     name: Moonshot
+    preset_id: moonshot
     protocol: openai_compatible
     base_url: https://api.moonshot.cn
     api_key_env: MOONSHOT_API_KEY
@@ -188,6 +189,7 @@ server:
 llm_providers:
   - id: moonshot
     name: Moonshot
+    preset_id: moonshot
     protocol: openai_compatible
     base_url: https://api.moonshot.cn
     api_key_env: MOONSHOT_API_KEY
@@ -251,6 +253,9 @@ agent:
 	}
 	if got := cfg.LLMProviders[0].Protocol; got != "openai_compatible" {
 		t.Fatalf("provider protocol = %q, want openai_compatible", got)
+	}
+	if got := cfg.LLMProviders[0].PresetID; got != "moonshot" {
+		t.Fatalf("provider preset_id = %q, want moonshot", got)
 	}
 	if len(cfg.AgentConfigs) != 1 {
 		t.Fatalf("len(AgentConfigs) = %d, want 1", len(cfg.AgentConfigs))

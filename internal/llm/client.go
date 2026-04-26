@@ -22,6 +22,11 @@ type Client interface {
 
 // NewClient creates a Client based on provider connection settings.
 func NewClient(cfg ProviderConfig, logger *slog.Logger) (Client, error) {
+	resolved, err := ResolveProviderConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	cfg = resolved
 	apiKeyEnv := cfg.APIKeyEnv
 	if apiKeyEnv == "" {
 		apiKeyEnv = defaultAPIKeyEnv(cfg.Protocol)
@@ -38,18 +43,25 @@ func NewClient(cfg ProviderConfig, logger *slog.Logger) (Client, error) {
 	switch cfg.Protocol {
 	case "openai", "openai_compatible":
 		return &openaiClient{
-			providerID: cfg.ID,
-			baseURL:    cfg.BaseURL,
-			apiKey:     apiKey,
-			httpClient: &http.Client{Timeout: 120 * time.Second},
-			logger:     logger,
+			providerID:                     cfg.ID,
+			baseURL:                        cfg.BaseURL,
+			apiKey:                         apiKey,
+			httpClient:                     &http.Client{Timeout: 120 * time.Second},
+			logger:                         logger,
+			chatCompletionsPath:            cfg.ChatCompletionsPath,
+			modelsPath:                     cfg.ModelsPath,
+			reasoningRequestStyle:          cfg.ReasoningRequestStyle,
+			reasoningResponseStyle:         cfg.ReasoningResponseStyle,
+			toolReasoningContinuation:      cfg.ToolReasoningContinuation,
+			thinkingEffortFallbackToReason: cfg.ThinkingEffortFallbackToReason,
 		}, nil
 	case "anthropic":
 		return &anthropicClient{
-			baseURL:    cfg.BaseURL,
-			apiKey:     apiKey,
-			httpClient: &http.Client{Timeout: 120 * time.Second},
-			logger:     logger,
+			baseURL:      cfg.BaseURL,
+			messagesPath: cfg.ChatCompletionsPath,
+			apiKey:       apiKey,
+			httpClient:   &http.Client{Timeout: 120 * time.Second},
+			logger:       logger,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported LLM provider: %s", cfg.Protocol)
@@ -70,11 +82,17 @@ func defaultAPIKeyEnv(provider string) string {
 // --- OpenAI compatible implementation ---
 
 type openaiClient struct {
-	providerID string
-	baseURL    string
-	apiKey     string
-	httpClient *http.Client
-	logger     *slog.Logger
+	providerID                     string
+	baseURL                        string
+	apiKey                         string
+	httpClient                     *http.Client
+	logger                         *slog.Logger
+	chatCompletionsPath            string
+	modelsPath                     string
+	reasoningRequestStyle          string
+	reasoningResponseStyle         string
+	toolReasoningContinuation      string
+	thinkingEffortFallbackToReason bool
 }
 
 // openaiRequest is the OpenAI chat completions request format.
@@ -123,6 +141,7 @@ type openaiResponse struct {
 		Message struct {
 			Content          *string          `json:"content"`
 			ReasoningContent *string          `json:"reasoning_content"`
+			Reasoning        *string          `json:"reasoning"`
 			ToolCalls        []openaiToolCall `json:"tool_calls,omitempty"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
@@ -140,6 +159,7 @@ type openaiStreamChunk struct {
 		Delta struct {
 			Content          *string          `json:"content"`
 			ReasoningContent *string          `json:"reasoning_content"`
+			Reasoning        *string          `json:"reasoning"`
 			ToolCalls        []openaiToolCall `json:"tool_calls,omitempty"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
@@ -220,7 +240,7 @@ func (c *openaiClient) toMessages(req ChatRequest) []openaiMessage {
 			if len(toolCalls) > 0 {
 				msg.ToolCalls = toolCalls
 			}
-			if m.ReasoningContent != "" {
+			if c.preserveReasoningContent(m) {
 				msg.ReasoningContent = strPtr(m.ReasoningContent)
 			}
 			msgs = append(msgs, msg)
@@ -228,13 +248,17 @@ func (c *openaiClient) toMessages(req ChatRequest) []openaiMessage {
 		default:
 			// Simple text message.
 			msg := openaiMessage{Role: string(m.Role), Content: strPtr(m.Content)}
-			if m.ReasoningContent != "" {
+			if c.preserveReasoningContent(m) {
 				msg.ReasoningContent = strPtr(m.ReasoningContent)
 			}
 			msgs = append(msgs, msg)
 		}
 	}
 	return msgs
+}
+
+func (c *openaiClient) preserveReasoningContent(m Message) bool {
+	return m.ReasoningContent != "" && c.toolReasoningContinuation == ToolReasoningContinuationPreserve
 }
 
 func (c *openaiClient) toolCallsToContentBlocks(calls []openaiToolCall) []ContentBlock {
@@ -256,7 +280,7 @@ func (c *openaiClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/v1/chat/completions", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", endpointURL(c.baseURL, c.chatCompletionsPath), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -308,6 +332,9 @@ func (c *openaiClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse
 		if choice.Message.ReasoningContent != nil {
 			chatResp.ReasoningContent = *choice.Message.ReasoningContent
 		}
+		if c.reasoningResponseStyle == ReasoningResponseMessageReasoning && choice.Message.Reasoning != nil {
+			chatResp.ReasoningContent = *choice.Message.Reasoning
+		}
 
 		// Tool calls.
 		if len(choice.Message.ToolCalls) > 0 {
@@ -330,7 +357,7 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 
 	// Use a client without timeout for streaming — context handles cancellation.
 	streamClient := &http.Client{}
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/v1/chat/completions", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", endpointURL(c.baseURL, c.chatCompletionsPath), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -387,6 +414,13 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 			// Reasoning content delta (thinking models).
 			if choice.Delta.ReasoningContent != nil && *choice.Delta.ReasoningContent != "" {
 				delta := *choice.Delta.ReasoningContent
+				accumulatedReasoning += delta
+				if cb != nil {
+					cb(StreamEvent{Type: "reasoning", ReasoningContent: delta})
+				}
+			}
+			if c.reasoningResponseStyle == ReasoningResponseMessageReasoning && choice.Delta.Reasoning != nil && *choice.Delta.Reasoning != "" {
+				delta := *choice.Delta.Reasoning
 				accumulatedReasoning += delta
 				if cb != nil {
 					cb(StreamEvent{Type: "reasoning", ReasoningContent: delta})
@@ -483,7 +517,6 @@ func (c *openaiClient) openaiPayload(req ChatRequest, stream bool) map[string]an
 		"model": {}, "messages": {}, "max_tokens": {}, "temperature": {}, "top_p": {},
 		"presence_penalty": {}, "frequency_penalty": {}, "reasoning_effort": {}, "stream": {}, "tools": {},
 	})
-	flavor := c.openaiCompatFlavor(req.Model)
 	payload["model"] = req.Model
 	payload["messages"] = c.toMessages(req)
 	if params.MaxTokens > 0 {
@@ -502,13 +535,13 @@ func (c *openaiClient) openaiPayload(req ChatRequest, stream bool) map[string]an
 		payload["frequency_penalty"] = *params.FrequencyPenalty
 	}
 	reasoningEffort := params.ReasoningEffort
-	if reasoningEffort == "" && flavor == "deepseek" && params.Thinking != nil {
+	if reasoningEffort == "" && c.thinkingEffortFallbackToReason && params.Thinking != nil {
 		reasoningEffort = strings.TrimSpace(params.Thinking.Effort)
 	}
 	if reasoningEffort != "" {
 		payload["reasoning_effort"] = reasoningEffort
 	}
-	if thinking := providerThinkingPayload(flavor, params.Thinking); thinking != nil {
+	if thinking := providerThinkingPayload(c.reasoningRequestStyle, params.Thinking); thinking != nil {
 		payload["thinking"] = thinking
 	}
 	if stream {
@@ -520,22 +553,8 @@ func (c *openaiClient) openaiPayload(req ChatRequest, stream bool) map[string]an
 	return payload
 }
 
-func (c *openaiClient) openaiCompatFlavor(model string) string {
-	providerID := strings.ToLower(strings.TrimSpace(c.providerID))
-	baseURL := strings.ToLower(strings.TrimSpace(c.baseURL))
-	model = strings.ToLower(strings.TrimSpace(model))
-	switch {
-	case strings.Contains(providerID, "deepseek") || strings.Contains(baseURL, "api.deepseek.com") || strings.HasPrefix(model, "deepseek-"):
-		return "deepseek"
-	case strings.Contains(providerID, "moonshot") || strings.Contains(providerID, "kimi") || strings.Contains(baseURL, "api.moonshot.cn") || strings.Contains(model, "kimi"):
-		return "moonshot"
-	default:
-		return ""
-	}
-}
-
-func providerThinkingPayload(flavor string, thinking *ThinkingConfig) map[string]any {
-	if flavor != "moonshot" && flavor != "deepseek" {
+func providerThinkingPayload(requestStyle string, thinking *ThinkingConfig) map[string]any {
+	if requestStyle != ReasoningRequestThinkingType {
 		return nil
 	}
 	if thinking == nil {

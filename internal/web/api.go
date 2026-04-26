@@ -59,6 +59,10 @@ type llmProvidersResponse struct {
 	Providers []config.LLMProvider `json:"providers"`
 }
 
+type llmProviderPresetsResponse struct {
+	Presets []llm.ProviderPreset `json:"presets"`
+}
+
 type agentConfigsResponse struct {
 	ActiveID string               `json:"active_id"`
 	Configs  []config.AgentConfig `json:"configs"`
@@ -128,6 +132,10 @@ func (h *APIHandler) HandleListLLMProviders(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, llmProvidersResponse{Providers: providers})
+}
+
+func (h *APIHandler) HandleListLLMProviderPresets(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, llmProviderPresetsResponse{Presets: llm.ListProviderPresets()})
 }
 
 func (h *APIHandler) HandleGetLLMProvider(w http.ResponseWriter, r *http.Request) {
@@ -643,6 +651,7 @@ func normalizeProvider(provider *config.LLMProvider) {
 	}
 	provider.ID = strings.TrimSpace(provider.ID)
 	provider.Name = strings.TrimSpace(provider.Name)
+	provider.PresetID = strings.TrimSpace(provider.PresetID)
 	provider.Protocol = strings.TrimSpace(provider.Protocol)
 	provider.BaseURL = strings.TrimRight(strings.TrimSpace(provider.BaseURL), "/")
 	provider.APIKeyEnv = strings.TrimSpace(provider.APIKeyEnv)

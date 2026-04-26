@@ -142,6 +142,12 @@
     .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
     .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .form-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .hidden-param { display: none !important; }
+    .param-note {
+      color: var(--muted); font-size: 10.5px; line-height: 1.35;
+      margin-top: 4px;
+    }
+    .param-note.warn { color: #9a6a00; }
 
     /* ── Model Slots (Agent Configs) ── */
     .slot-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
@@ -327,6 +333,7 @@
                 <div class="grid">
                   <div class="field"><label for="p-id">ID</label><input class="mono" id="p-id" autocomplete="off"></div>
                   <div class="field"><label for="p-name">Name</label><input id="p-name" autocomplete="off"></div>
+                  <div class="field"><label for="p-preset">Preset</label><select id="p-preset"></select></div>
                   <div class="field"><label for="p-protocol">Protocol</label><select id="p-protocol"><option value="openai_compatible">openai_compatible</option><option value="anthropic">anthropic</option></select></div>
                   <div class="field"><label for="p-discovery">Model Discovery</label><select id="p-discovery"><option value="manual">manual</option><option value="openai_models">openai_models</option><option value="anthropic_models">anthropic_models</option></select></div>
                   <div class="field"><label for="p-base-url">Base URL</label><input class="mono" id="p-base-url" autocomplete="off"></div>
@@ -586,6 +593,7 @@
   ];
   const state = {
     providers: [],
+    providerPresets: [],
     providerModels: {},
     selectedProvider: '',
     agents: [],
@@ -595,6 +603,20 @@
     personas: [],
     selectedPersona: '',
   };
+  const slotParamFields = {
+    max_tokens: 'max',
+    temperature: 'temp',
+    stream: 'stream',
+    top_p: 'top-p',
+    presence_penalty: 'presence',
+    frequency_penalty: 'frequency',
+    reasoning_effort: 'reasoning',
+    thinking_mode: 'thinking-mode',
+    thinking_budget: 'thinking-budget',
+    thinking_effort: 'thinking-effort',
+    extra: 'extra',
+  };
+  const allSlotParams = Object.keys(slotParamFields);
 
   function status(text) { $('status').textContent = text; }
   function esc(v) {
@@ -631,6 +653,27 @@
   function providerOptions(selected) {
     return state.providers.map(p => `<option value="${esc(p.id)}"${p.id === selected ? ' selected' : ''}>${esc(p.name || p.id)}</option>`).join('');
   }
+  function presetOptions(selected) {
+    return `<option value="">Manual / no preset</option>` + state.providerPresets.map(p =>
+      `<option value="${esc(p.id)}"${p.id === selected ? ' selected' : ''}>${esc(p.name || p.id)}</option>`
+    ).join('');
+  }
+  function renderProviderPresetOptions(selected) {
+    $('p-preset').innerHTML = presetOptions(selected || '');
+  }
+  function presetByID(id) {
+    return state.providerPresets.find(p => p.id === id) || null;
+  }
+  function providerByID(id) {
+    return state.providers.find(p => p.id === id) || null;
+  }
+  function presetForProvider(provider) {
+    return provider?.preset_id ? presetByID(provider.preset_id) : null;
+  }
+  function slotDefaults(slot, preset) {
+    if (!preset?.admin) return {};
+    return slot.endsWith('summary') ? (preset.admin.summary_defaults || {}) : (preset.admin.main_defaults || {});
+  }
   function personaOptions(selected) {
     return state.personas.map(p => `<option value="${esc(p.key)}"${p.key === selected ? ' selected' : ''}>${esc(p.name || p.key)}</option>`).join('');
   }
@@ -646,6 +689,7 @@
       <div class="slot" data-slot="${id}">
         <div class="slot-head">
           <h3>${icon} ${esc(label)}</h3>
+          <button class="btn ghost slot-recommend" type="button" data-slot="${id}">Apply recommended</button>
         </div>
         <div class="slot-core">
           <div class="grid">
@@ -653,8 +697,8 @@
             <div class="field"><label for="${id}-model">Model</label><input id="${id}-model" list="model-options" autocomplete="off"></div>
           </div>
           <div class="grid">
-            <div class="field"><label for="${id}-max">Max Tokens</label><input id="${id}-max" type="number" min="0" placeholder="inherit"></div>
-            <div class="field"><label for="${id}-temp">Temperature</label><input id="${id}-temp" type="number" min="0" max="2" step="0.01" placeholder="omit"></div>
+            <div class="field" data-param="max_tokens"><label for="${id}-max">Max Tokens</label><input id="${id}-max" type="number" min="0" placeholder="inherit"><div class="param-note" id="${id}-max-note"></div></div>
+            <div class="field" data-param="temperature"><label for="${id}-temp">Temperature</label><input id="${id}-temp" type="number" min="0" max="2" step="0.01" placeholder="omit"><div class="param-note" id="${id}-temp-note"></div></div>
           </div>
         </div>
         <button class="slot-advanced-toggle" type="button" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')">
@@ -662,31 +706,122 @@
         </button>
         <div class="slot-advanced">
           <div class="grid">
-            <div class="field"><label for="${id}-stream">Stream</label><select id="${id}-stream"><option value="">inherit</option><option value="true">true</option><option value="false">false</option></select></div>
-            <div class="field"><label for="${id}-top-p">Top P</label><input id="${id}-top-p" type="number" min="0" max="1" step="0.01" placeholder="omit"></div>
-            <div class="field"><label for="${id}-presence">Presence Penalty</label><input id="${id}-presence" type="number" step="0.01" placeholder="omit"></div>
-            <div class="field"><label for="${id}-frequency">Frequency Penalty</label><input id="${id}-frequency" type="number" step="0.01" placeholder="omit"></div>
-            <div class="field"><label for="${id}-reasoning">Reasoning Effort</label><input id="${id}-reasoning" autocomplete="off" placeholder="omit"></div>
-            <div class="field"><label for="${id}-thinking-mode">Thinking Mode</label><input id="${id}-thinking-mode" autocomplete="off" placeholder="omit"></div>
-            <div class="field"><label for="${id}-thinking-budget">Thinking Budget</label><input id="${id}-thinking-budget" type="number" min="0" placeholder="omit"></div>
-            <div class="field"><label for="${id}-thinking-effort">Thinking Effort</label><input id="${id}-thinking-effort" autocomplete="off" placeholder="omit"></div>
+            <div class="field" data-param="stream"><label for="${id}-stream">Stream</label><select id="${id}-stream"><option value="">inherit</option><option value="true">true</option><option value="false">false</option></select><div class="param-note" id="${id}-stream-note"></div></div>
+            <div class="field" data-param="top_p"><label for="${id}-top-p">Top P</label><input id="${id}-top-p" type="number" min="0" max="1" step="0.01" placeholder="omit"><div class="param-note" id="${id}-top-p-note"></div></div>
+            <div class="field" data-param="presence_penalty"><label for="${id}-presence">Presence Penalty</label><input id="${id}-presence" type="number" step="0.01" placeholder="omit"><div class="param-note" id="${id}-presence-note"></div></div>
+            <div class="field" data-param="frequency_penalty"><label for="${id}-frequency">Frequency Penalty</label><input id="${id}-frequency" type="number" step="0.01" placeholder="omit"><div class="param-note" id="${id}-frequency-note"></div></div>
+            <div class="field" data-param="reasoning_effort"><label for="${id}-reasoning">Reasoning Effort</label><input id="${id}-reasoning" autocomplete="off" placeholder="omit"><div class="param-note" id="${id}-reasoning-note"></div></div>
+            <div class="field" data-param="thinking_mode"><label for="${id}-thinking-mode">Thinking Mode</label><input id="${id}-thinking-mode" autocomplete="off" placeholder="omit"><div class="param-note" id="${id}-thinking-mode-note"></div></div>
+            <div class="field" data-param="thinking_budget"><label for="${id}-thinking-budget">Thinking Budget</label><input id="${id}-thinking-budget" type="number" min="0" placeholder="omit"><div class="param-note" id="${id}-thinking-budget-note"></div></div>
+            <div class="field" data-param="thinking_effort"><label for="${id}-thinking-effort">Thinking Effort</label><input id="${id}-thinking-effort" autocomplete="off" placeholder="omit"><div class="param-note" id="${id}-thinking-effort-note"></div></div>
           </div>
-          <div class="field" style="margin-top:10px"><label for="${id}-extra">Extra JSON</label><textarea id="${id}-extra" placeholder="{}"></textarea></div>
+          <div class="field" data-param="extra" style="margin-top:10px"><label for="${id}-extra">Extra JSON</label><textarea id="${id}-extra" placeholder="{}"></textarea><div class="param-note" id="${id}-extra-note"></div></div>
         </div>
       </div>
     `).join('');
+    for (const [id] of slotDefs) {
+      $(`${id}-provider`).addEventListener('change', () => renderSlotCapabilities(id));
+      $(`${id}-model`).addEventListener('input', () => renderSlotCapabilities(id));
+      for (const suffix of Object.values(slotParamFields)) {
+        const el = $(`${id}-${suffix}`);
+        if (el) {
+          el.addEventListener('input', () => renderSlotCapabilities(id));
+          el.addEventListener('change', () => renderSlotCapabilities(id));
+        }
+      }
+      document.querySelector(`.slot[data-slot="${id}"] .slot-recommend`).addEventListener('click', () => applyRecommendedParams(id));
+      renderSlotCapabilities(id);
+    }
   }
 
   // ── Provider CRUD ──
+  function recommendedParamValue(defaults, param) {
+    const thinking = defaults.thinking || {};
+    switch (param) {
+      case 'max_tokens': return defaults.max_tokens;
+      case 'temperature': return defaults.temperature;
+      case 'stream': return defaults.stream;
+      case 'top_p': return defaults.top_p;
+      case 'presence_penalty': return defaults.presence_penalty;
+      case 'frequency_penalty': return defaults.frequency_penalty;
+      case 'reasoning_effort': return defaults.reasoning_effort;
+      case 'thinking_mode': return thinking.mode;
+      case 'thinking_budget': return thinking.budget_tokens;
+      case 'thinking_effort': return thinking.effort;
+      case 'extra': return defaults.extra;
+      default: return undefined;
+    }
+  }
+
+  function formatRecommendedValue(value) {
+    if (value === undefined) return '';
+    if (typeof value === 'object') return JSON.stringify(value);
+    return String(value);
+  }
+
+  function slotParamHasValue(slot, param) {
+    const el = $(`${slot}-${slotParamFields[param]}`);
+    return !!text(el?.value);
+  }
+
+  function renderSlotCapabilities(slot) {
+    const slotEl = document.querySelector(`.slot[data-slot="${slot}"]`);
+    if (!slotEl) return;
+    const provider = providerByID($(`${slot}-provider`)?.value || '');
+    const preset = presetForProvider(provider);
+    const visible = new Set(preset?.admin?.visible_params?.length ? preset.admin.visible_params : allSlotParams);
+    const defaults = slotDefaults(slot, preset);
+    for (const param of allSlotParams) {
+      const suffix = slotParamFields[param];
+      const field = slotEl.querySelector(`[data-param="${param}"]`);
+      const note = $(`${slot}-${suffix}-note`);
+      if (!field || !note) continue;
+      const supported = visible.has(param);
+      const hasValue = slotParamHasValue(slot, param);
+      const recommended = recommendedParamValue(defaults, param);
+      field.classList.toggle('hidden-param', !supported && !hasValue);
+      note.classList.toggle('warn', !supported && hasValue);
+      if (!supported && hasValue) {
+        note.textContent = 'Current provider may ignore this value.';
+      } else if (supported && recommended !== undefined) {
+        note.textContent = `Recommended: ${formatRecommendedValue(recommended)}`;
+      } else {
+        note.textContent = '';
+      }
+    }
+  }
+
+  function setSlotValueIfEmpty(slot, param, value) {
+    if (value === undefined) return;
+    const el = $(`${slot}-${slotParamFields[param]}`);
+    if (!el || text(el.value)) return;
+    el.value = param === 'extra' ? JSON.stringify(value, null, 2) : String(value);
+  }
+
+  function applyRecommendedParams(slot) {
+    const provider = providerByID($(`${slot}-provider`)?.value || '');
+    const preset = presetForProvider(provider);
+    if (!preset) {
+      status('No preset recommendations for this provider');
+      return;
+    }
+    const defaults = slotDefaults(slot, preset);
+    for (const param of allSlotParams) {
+      setSlotValueIfEmpty(slot, param, recommendedParamValue(defaults, param));
+    }
+    renderSlotCapabilities(slot);
+    status('Recommended empty fields applied');
+  }
+
   function renderProviderList() {
     const q = text($('provider-search').value).toLowerCase();
-    const items = state.providers.filter(p => `${p.id} ${p.name} ${p.protocol} ${p.base_url}`.toLowerCase().includes(q));
+    const items = state.providers.filter(p => `${p.id} ${p.name} ${p.preset_id} ${p.protocol} ${p.base_url}`.toLowerCase().includes(q));
     $('provider-count').textContent = `${state.providers.length} provider${state.providers.length === 1 ? '' : 's'}`;
     const list = $('provider-list');
     list.innerHTML = items.length ? items.map(p => `
       <button class="item ${p.id === state.selectedProvider ? 'active' : ''}" data-id="${esc(p.id)}">
         <div class="item-title"><span>${esc(p.name || p.id)}</span><span class="badge ${p.enabled ? 'ok' : 'warn'}">${p.enabled ? 'enabled' : 'disabled'}</span></div>
-        <div class="item-meta">${esc(p.id)} · ${esc(p.protocol)}</div>
+        <div class="item-meta">${esc(p.id)} · ${esc(p.preset_id || 'custom')} · ${esc(p.protocol)}</div>
       </button>
     `).join('') : '<div class="hint" style="padding:8px">No providers</div>';
     list.querySelectorAll('.item').forEach(btn => btn.addEventListener('click', () => selectProvider(btn.dataset.id)));
@@ -694,6 +829,7 @@
 
   function clearProvider() {
     state.selectedProvider = '';
+    renderProviderPresetOptions('');
     $('p-id').readOnly = false; $('p-id').value = '';
     $('p-name').value = ''; $('p-protocol').value = 'openai_compatible';
     $('p-discovery').value = 'manual'; $('p-base-url').value = '';
@@ -710,6 +846,7 @@
     const p = state.providers.find(item => item.id === id);
     if (!p) return;
     state.selectedProvider = id;
+    renderProviderPresetOptions(p.preset_id || '');
     $('p-id').readOnly = true; $('p-id').value = p.id || '';
     $('p-name').value = p.name || ''; $('p-protocol').value = p.protocol || 'openai_compatible';
     $('p-discovery').value = p.model_discovery || 'manual';
@@ -717,7 +854,7 @@
     $('p-api-key-env').value = p.api_key_env || '';
     $('p-enabled').checked = !!p.enabled;
     $('provider-title').textContent = p.name || p.id || 'Provider';
-    $('provider-meta').textContent = `${p.protocol || ''} / ${p.model_discovery || 'manual'}`;
+    $('provider-meta').textContent = `${p.preset_id || 'custom'} / ${p.protocol || ''} / ${p.model_discovery || 'manual'}`;
     $('delete-provider').disabled = false;
     $('refresh-models').disabled = !id;
     renderProviderList();
@@ -726,8 +863,28 @@
 
   function providerPayload() {
     return { id: text($('p-id').value), name: text($('p-name').value), protocol: text($('p-protocol').value),
+      preset_id: text($('p-preset').value),
       base_url: text($('p-base-url').value), api_key_env: text($('p-api-key-env').value),
       model_discovery: text($('p-discovery').value) || 'manual', enabled: $('p-enabled').checked };
+  }
+
+  function applyProviderPreset() {
+    const preset = presetByID(text($('p-preset').value));
+    if (!preset) return;
+    if (!$('p-id').readOnly && !text($('p-id').value)) $('p-id').value = preset.id || '';
+    $('p-name').value = preset.name || '';
+    $('p-protocol').value = preset.protocol || 'openai_compatible';
+    $('p-discovery').value = preset.model_discovery || 'manual';
+    $('p-base-url').value = preset.base_url || '';
+    $('p-api-key-env').value = preset.api_key_env || '';
+    $('provider-title').textContent = $('p-name').value || $('p-id').value || 'Provider';
+    $('provider-meta').textContent = `${preset.id || 'custom'} / ${preset.protocol || ''} / ${preset.model_discovery || 'manual'}`;
+  }
+
+  async function loadProviderPresets() {
+    const data = await request('/api/llm-provider-presets');
+    state.providerPresets = data.presets || [];
+    renderProviderPresetOptions($('p-preset').value || '');
   }
 
   async function loadProviders() {
@@ -802,6 +959,7 @@
     $(`${slot}-thinking-budget`).value = params.thinking?.budget_tokens ?? '';
     $(`${slot}-thinking-effort`).value = params.thinking?.effort || '';
     $(`${slot}-extra`).value = params.extra ? JSON.stringify(params.extra, null, 2) : '';
+    renderSlotCapabilities(slot);
   }
   function hydrateAgentForm(agent) {
     $('a-persona').innerHTML = personaOptions(agent?.persona_key || '');
@@ -1014,6 +1172,7 @@
   $('reload-providers').addEventListener('click', () => loadProviders().catch(showError));
   $('reload-agents').addEventListener('click', () => loadAgents().catch(showError));
   $('reload-personas').addEventListener('click', () => loadPersonas().catch(showError));
+  $('p-preset').addEventListener('change', applyProviderPreset);
 
   $('provider-form').addEventListener('submit', async e => {
     e.preventDefault();
@@ -1070,7 +1229,7 @@
   });
 
   function showError(error) { console.error(error); status(error.message || String(error)); }
-  async function init() { createSlotFields(); clearProvider(); clearAgent(); clearPersona();
+  async function init() { await loadProviderPresets(); createSlotFields(); clearProvider(); clearAgent(); clearPersona();
     await loadProviders(); await loadPersonas(); await loadAgents(); }
   init().catch(showError);
 })();

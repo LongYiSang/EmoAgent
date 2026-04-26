@@ -191,7 +191,7 @@ func TestHandleCreateLLMProviderNormalizesPayload(t *testing.T) {
 	app := &fakeAdminApp{}
 	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
-	body := bytes.NewBufferString(`{"id":" moonshot ","name":" Moonshot ","protocol":"openai_compatible","base_url":"https://api.moonshot.cn/","api_key_env":" MOONSHOT_API_KEY ","enabled":true}`)
+	body := bytes.NewBufferString(`{"id":" moonshot ","name":" Moonshot ","preset_id":" moonshot ","protocol":"openai_compatible","base_url":"https://api.moonshot.cn/","api_key_env":" MOONSHOT_API_KEY ","enabled":true}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/llm-providers", body)
 	rec := httptest.NewRecorder()
 	handler.HandleCreateLLMProvider(rec, req)
@@ -204,6 +204,39 @@ func TestHandleCreateLLMProviderNormalizesPayload(t *testing.T) {
 	}
 	if app.lastProvider.ModelDiscovery != "manual" {
 		t.Fatalf("ModelDiscovery = %q, want manual", app.lastProvider.ModelDiscovery)
+	}
+	if app.lastProvider.PresetID != "moonshot" {
+		t.Fatalf("PresetID = %q, want moonshot", app.lastProvider.PresetID)
+	}
+}
+
+func TestHandleListLLMProviderPresets(t *testing.T) {
+	handler := NewAPIHandler(&fakeAdminApp{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/llm-provider-presets", nil)
+	rec := httptest.NewRecorder()
+	handler.HandleListLLMProviderPresets(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var body struct {
+		Presets []llm.ProviderPreset `json:"presets"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	var foundMoonshot bool
+	for _, preset := range body.Presets {
+		if preset.ID == "moonshot" {
+			foundMoonshot = true
+			if preset.Admin.MainDefaults.MaxTokens == 0 {
+				t.Fatalf("moonshot main defaults missing: %#v", preset.Admin)
+			}
+		}
+	}
+	if !foundMoonshot {
+		t.Fatalf("moonshot preset missing from response: %#v", body.Presets)
 	}
 }
 

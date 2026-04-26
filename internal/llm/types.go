@@ -37,10 +37,18 @@ type ToolDef struct {
 
 // ProviderConfig contains the connection settings needed to build an LLM client.
 type ProviderConfig struct {
-	ID        string
-	Protocol  string
-	BaseURL   string
-	APIKeyEnv string
+	ID                  string
+	PresetID            string
+	Protocol            string
+	BaseURL             string
+	APIKeyEnv           string
+	ChatCompletionsPath string
+	ModelsPath          string
+
+	ReasoningRequestStyle          string
+	ReasoningResponseStyle         string
+	ToolReasoningContinuation      string
+	ThinkingEffortFallbackToReason bool
 }
 
 // RequestParams is the provider-agnostic set of generation parameters.

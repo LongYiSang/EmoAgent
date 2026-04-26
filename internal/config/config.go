@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/longyisang/emoagent/internal/llm"
@@ -28,6 +29,7 @@ type Config struct {
 type LLMProvider struct {
 	ID             string `yaml:"id" json:"id"`
 	Name           string `yaml:"name" json:"name"`
+	PresetID       string `yaml:"preset_id" json:"preset_id"`
 	Protocol       string `yaml:"protocol" json:"protocol"`
 	BaseURL        string `yaml:"base_url" json:"base_url"`
 	APIKeyEnv      string `yaml:"api_key_env" json:"api_key_env"`
@@ -296,6 +298,13 @@ func Load(path string) (*Config, error) {
 	cfg.Work.ApplyDefaults()
 	cfg.WebFetch.applyDefaults()
 	cfg.Bash.applyDefaults()
+	for i := range cfg.LLMProviders {
+		provider, err := cfg.LLMProviders[i].WithPresetDefaults()
+		if err != nil {
+			return nil, fmt.Errorf("llm_providers[%d]: %w", i, err)
+		}
+		cfg.LLMProviders[i] = provider
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("validate config: %w", err)
@@ -370,6 +379,11 @@ func (p LLMProvider) Validate() error {
 	if p.Name == "" {
 		return fmt.Errorf("name is required")
 	}
+	if p.PresetID != "" {
+		if _, ok := llm.ProviderPresetByID(p.PresetID); !ok {
+			return fmt.Errorf("unsupported preset_id: %s", p.PresetID)
+		}
+	}
 	switch p.Protocol {
 	case "openai_compatible", "anthropic":
 	default:
@@ -387,6 +401,42 @@ func (p LLMProvider) Validate() error {
 		return fmt.Errorf("unsupported model_discovery: %s", p.ModelDiscovery)
 	}
 	return nil
+}
+
+func (p LLMProvider) WithPresetDefaults() (LLMProvider, error) {
+	p.ID = strings.TrimSpace(p.ID)
+	p.Name = strings.TrimSpace(p.Name)
+	p.PresetID = strings.TrimSpace(p.PresetID)
+	p.Protocol = strings.TrimSpace(p.Protocol)
+	p.BaseURL = strings.TrimRight(strings.TrimSpace(p.BaseURL), "/")
+	p.APIKeyEnv = strings.TrimSpace(p.APIKeyEnv)
+	p.ModelDiscovery = strings.TrimSpace(p.ModelDiscovery)
+	if p.PresetID == "" {
+		return p, nil
+	}
+	preset, ok := llm.ProviderPresetByID(p.PresetID)
+	if !ok {
+		return LLMProvider{}, fmt.Errorf("unsupported preset_id: %s", p.PresetID)
+	}
+	if p.ID == "" {
+		p.ID = preset.ID
+	}
+	if p.Name == "" {
+		p.Name = preset.Name
+	}
+	if p.Protocol == "" {
+		p.Protocol = preset.Protocol
+	}
+	if p.BaseURL == "" {
+		p.BaseURL = preset.BaseURL
+	}
+	if p.APIKeyEnv == "" {
+		p.APIKeyEnv = preset.APIKeyEnv
+	}
+	if p.ModelDiscovery == "" {
+		p.ModelDiscovery = preset.ModelDiscovery
+	}
+	return p, nil
 }
 
 func (a AgentConfig) Validate() error {
