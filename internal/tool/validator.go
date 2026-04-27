@@ -116,6 +116,16 @@ func validateEnum(schema map[string]any, value any, path string) error {
 }
 
 func validateArray(schema map[string]any, items []any, path string) error {
+	if rawMinItems, ok := schema["minItems"]; ok {
+		minItems, ok := rawMinItems.(float64)
+		if !ok || math.Trunc(minItems) != minItems || minItems < 0 {
+			return fmt.Errorf("%s: minItems must be a non-negative integer", path)
+		}
+		if len(items) < int(minItems) {
+			return fmt.Errorf("%s: expected at least %d items", path, int(minItems))
+		}
+	}
+
 	itemSchema, ok := schema["items"]
 	if !ok {
 		return nil

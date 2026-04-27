@@ -27,7 +27,7 @@ type dirEntry struct {
 func NewListDirTool(projectRoot string) (tool.Spec, tool.Handler) {
 	spec := tool.Spec{
 		Name:        "list_dir",
-		Description: "List files and directories under a workspace path. Returns name, type, size, and modification time for each entry.",
+		Description: "List files and directories under a workspace-relative path. Absolute paths and path traversal are rejected. Use max_entries to keep results focused; output includes truncated when the listing hit the limit. Returns name, type, size, and modification time for each entry.",
 		Parameters: json.RawMessage(`{
 			"type":"object",
 			"properties":{

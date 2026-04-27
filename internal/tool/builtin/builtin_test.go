@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -172,5 +173,58 @@ func TestRegisterAll_WebSearchProviderFails(t *testing.T) {
 	// web_search fails; remaining: get_current_time, read_file, list_dir, write_file, edit_file, web_fetch
 	if len(specs) != 6 {
 		t.Fatalf("expected 6 tools, got %d", len(specs))
+	}
+}
+
+func TestBuiltinToolDescriptionsDocumentP1SafetyAndSourceRules(t *testing.T) {
+	root := t.TempDir()
+	readSpec, _ := NewReadFileTool(root)
+	listSpec, _ := NewListDirTool(root)
+	writeSpec, _ := NewWriteFileTool(root)
+	editSpec, _ := NewEditFileTool(root)
+	webFetchSpec, _ := NewWebFetchTool(defaultWebFetchCfg(), nil)
+
+	assertDescriptionContains(t, readSpec.Description,
+		"workspace-relative path",
+		"Absolute paths and path traversal are rejected",
+		"valid UTF-8",
+		"1 MiB",
+	)
+	assertDescriptionContains(t, listSpec.Description,
+		"workspace-relative path",
+		"truncated",
+		"max_entries",
+	)
+	assertDescriptionContains(t, writeSpec.Description,
+		"workspace-relative path",
+		"overwrites",
+		"1 MiB",
+	)
+	assertDescriptionContains(t, editSpec.Description,
+		"workspace-relative path",
+		"exactly once",
+		"valid UTF-8",
+	)
+	assertDescriptionContains(t, webFetchSpec.Description,
+		"final_url",
+		"status",
+		"truncated",
+	)
+	assertDescriptionContains(t, WebSearchSpec.Description,
+		"source URLs",
+		"Use web_fetch",
+	)
+	assertDescriptionContains(t, GetCurrentTimeSpec.Description,
+		"current local time",
+		"timezone",
+	)
+}
+
+func assertDescriptionContains(t *testing.T, description string, snippets ...string) {
+	t.Helper()
+	for _, snippet := range snippets {
+		if !strings.Contains(description, snippet) {
+			t.Fatalf("description missing %q: %s", snippet, description)
+		}
 	}
 }

@@ -11,7 +11,7 @@ import (
 // GetCurrentTimeSpec defines the tool specification for get_current_time.
 var GetCurrentTimeSpec = tool.Spec{
 	Name:        "get_current_time",
-	Description: "Get the current date and time. Returns the current local time.",
+	Description: "Get the current local time. Returns current_time and timezone.",
 	Parameters:  json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
 	Scope:       tool.ScopeWork,
 	Permission:  tool.PermReadOnly,

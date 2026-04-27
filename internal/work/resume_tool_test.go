@@ -18,9 +18,10 @@ import (
 func makePausedForResume(t *testing.T, taskID string) *PausedWork {
 	t.Helper()
 	brief := protocol.TaskBrief{
-		TaskID:          taskID,
-		Goal:            "complete task",
-		PermissionScope: "read-only",
+		TaskID:             taskID,
+		Goal:               "complete task",
+		AcceptanceCriteria: []string{"Task is completed or a blocker is reported"},
+		PermissionScope:    "read-only",
 	}
 	if err := ValidateAndComplete(&brief); err != nil {
 		t.Fatalf("ValidateAndComplete: %v", err)
@@ -34,6 +35,21 @@ func makePausedForResume(t *testing.T, taskID string) *PausedWork {
 		Packet:          validDecisionPacket(taskID),
 		Round:           1,
 		EscalationCount: 1,
+	}
+}
+
+func TestResumeTool_DescriptionSeparatesDecisionAndApprovalPaths(t *testing.T) {
+	spec, _ := NewResumeTool(nil, nil, t.TempDir(), testLogger())
+
+	for _, snippet := range []string{
+		"ordinary decision pauses",
+		"permission_escalation_required",
+		"approval-gated pauses",
+		"If an internal approval outcome note says Work has already resumed, do not call resume_work again.",
+	} {
+		if !strings.Contains(spec.Description, snippet) {
+			t.Fatalf("description missing %q: %s", snippet, spec.Description)
+		}
 	}
 }
 

@@ -14,7 +14,7 @@ import (
 // WebSearchSpec defines the tool specification for web_search.
 var WebSearchSpec = tool.Spec{
 	Name:        "web_search",
-	Description: "Search the web for up-to-date information. Returns a list of results with title, URL, and snippet. Use for questions requiring recent or external facts.",
+	Description: "Search the web for up-to-date or external facts. Returns results with title, source URLs, and snippets. Use web_fetch on a specific result URL when you need source content beyond the snippet.",
 	Parameters:  json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer"}},"required":["query"],"additionalProperties":false}`),
 	Scope:       tool.ScopeBoth,
 	Permission:  tool.PermReadOnly,

@@ -16,7 +16,7 @@ import (
 func NewEditFileTool(projectRoot string) (tool.Spec, tool.Handler) {
 	spec := tool.Spec{
 		Name:        "edit_file",
-		Description: "Replace occurrences of old_string with new_string in a workspace file. With replace_all=false (default) the string must appear exactly once. Returns the number of replacements made.",
+		Description: "Replace old_string with new_string in a valid UTF-8 workspace file using a workspace-relative path. Absolute paths and path traversal are rejected. With replace_all=false (default), old_string must appear exactly once. Files larger than 1 MiB are rejected. Returns the number of replacements made.",
 		Parameters: json.RawMessage(`{
 			"type":"object",
 			"properties":{

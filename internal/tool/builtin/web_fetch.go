@@ -21,7 +21,7 @@ import (
 func NewWebFetchTool(cfg config.WebFetchConfig, logger *slog.Logger) (tool.Spec, tool.Handler) {
 	spec := tool.Spec{
 		Name:        "web_fetch",
-		Description: "Fetch a URL and return its text content. HTML pages are stripped to readable plain text. Returns status, content type, and text with an optional truncation flag.",
+		Description: "Fetch a specific http or https source URL and return readable text. HTML pages are stripped to readable plain text. Returns url, final_url, status, content_type, text, and truncated; treat truncated=true as incomplete source content.",
 		Parameters: json.RawMessage(`{
 			"type":"object",
 			"properties":{

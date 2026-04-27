@@ -65,6 +65,25 @@ func TestMinimalSchemaValidator_ValidateArrayItems(t *testing.T) {
 	}
 }
 
+func TestMinimalSchemaValidator_ValidateArrayMinItems(t *testing.T) {
+	v := MinimalSchemaValidator{}
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"acceptance_criteria":{"type":"array","items":{"type":"string"},"minItems":1}
+		},
+		"required":["acceptance_criteria"],
+		"additionalProperties":false
+	}`)
+
+	if err := v.Validate(schema, json.RawMessage(`{"acceptance_criteria":["verified"]}`)); err != nil {
+		t.Fatalf("Validate returned error: %v", err)
+	}
+	if err := v.Validate(schema, json.RawMessage(`{"acceptance_criteria":[]}`)); err == nil {
+		t.Fatal("Validate should reject arrays shorter than minItems")
+	}
+}
+
 func TestMinimalSchemaValidator_ValidateEnum(t *testing.T) {
 	v := MinimalSchemaValidator{}
 	schema := json.RawMessage(`{

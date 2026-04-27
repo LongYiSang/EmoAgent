@@ -134,6 +134,7 @@ func buildBashDescription(facts runtimeenv.Facts) string {
 		b.WriteString("Do not assume Unix commands such as ls, rm, or pwd are available. ")
 	}
 	b.WriteString("Prefer read_file, list_dir, write_file, and edit_file for file operations. ")
+	b.WriteString("Use for tests, builds, command-based verification, or operations not covered by dedicated tools. ")
 	b.WriteString("Returns stdout, stderr, exit code, and whether the process timed out. ")
 	b.WriteString("Non-zero exit codes are not errors — inspect the output to determine success.")
 	return b.String()

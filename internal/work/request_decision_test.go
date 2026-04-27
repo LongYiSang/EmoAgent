@@ -21,6 +21,15 @@ func TestRequestDecisionDescriptionAndSchemaMatchBatchAContract(t *testing.T) {
 	if !strings.Contains(spec.Description, "use emotion_judgment only when Emotion should decide using relationship, tone, preference, or emotional context") {
 		t.Fatalf("description = %q, want emotion_judgment ownership guidance", spec.Description)
 	}
+	for _, snippet := range []string{
+		"option ids must be stable strings",
+		"source should identify the file, URL, command, or observation",
+		"Use auto only for low-risk operational choices",
+	} {
+		if !strings.Contains(spec.Description, snippet) {
+			t.Fatalf("description missing %q: %s", snippet, spec.Description)
+		}
+	}
 
 	var schema struct {
 		Properties map[string]struct {

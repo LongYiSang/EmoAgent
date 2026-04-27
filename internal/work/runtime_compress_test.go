@@ -54,7 +54,7 @@ func TestRuntime_CompressesOnSoftLimit(t *testing.T) {
 		Model:                    "test",
 		MaxTokens:                4096,
 		MaxToolRounds:            10,
-		MaxInputTokens:           2500,
+		MaxInputTokens:           3500,
 		CompressSoftRatio:        0.7,
 		CompressKeepRounds:       2,
 		ToolSnipSoftTokens:       500,

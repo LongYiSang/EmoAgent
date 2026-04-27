@@ -195,3 +195,34 @@ func TestBuildWorkSystem_DistinguishesPermissionEscalationFromEmotionJudgment(t 
 		}
 	}
 }
+
+func TestBuildWorkSystem_IncludesP1ExecutionQualitySections(t *testing.T) {
+	text := BuildWorkSystem(protocol.TaskBrief{
+		Goal:               "make the README install steps clearer",
+		PermissionScope:    "workspace-write",
+		AcceptanceCriteria: []string{"README install steps are clearer", "Changes are verified"},
+	}, runtimeenv.Facts{
+		OS:            "windows",
+		WorkspaceRoot: `D:\repo`,
+		PathStyle:     "windows",
+		BashEnabled:   true,
+		ShellDisplay:  "cmd /c",
+	})
+
+	for _, snippet := range []string{
+		"## Operating Loop",
+		"Understand the Goal, Background, Constraints, and Acceptance Criteria before using tools.",
+		"## Tool Selection Policy",
+		"Use web_search to discover sources and web_fetch to read a specific source URL.",
+		"File tool paths must be workspace-relative; use \".\" for the workspace root and never pass the absolute Workspace root to file tools.",
+		"When creating or overwriting a file in a missing directory, prefer write_file with create_dirs=true instead of shell mkdir.",
+		"## Verification",
+		"After any workspace-write change, run the narrowest practical verification.",
+		"## Minimal Change Policy",
+		"Preserve unrelated user changes and do not perform opportunistic refactors.",
+	} {
+		if !strings.Contains(text, snippet) {
+			t.Fatalf("system prompt missing %q: %s", snippet, text)
+		}
+	}
+}

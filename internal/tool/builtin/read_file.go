@@ -18,7 +18,7 @@ const readFileMaxBytes = 1 << 20
 func NewReadFileTool(projectRoot string) (tool.Spec, tool.Handler) {
 	spec := tool.Spec{
 		Name:        "read_file",
-		Description: "Read a UTF-8 text file from the workspace using a relative path.",
+		Description: "Read a valid UTF-8 text file from the workspace using a workspace-relative path. Absolute paths and path traversal are rejected. Files larger than 1 MiB are rejected. Returns path, content, and size.",
 		Parameters: json.RawMessage(`{
 			"type":"object",
 			"properties":{"path":{"type":"string"}},

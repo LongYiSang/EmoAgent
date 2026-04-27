@@ -181,8 +181,9 @@ func newTestRuntimeWithDecider(t *testing.T, client llm.Client, decider RuntimeD
 func newValidatedBrief(t *testing.T) protocol.TaskBrief {
 	t.Helper()
 	brief := protocol.TaskBrief{
-		Goal:            "inspect go.mod",
-		PermissionScope: "read-only",
+		Goal:               "inspect go.mod",
+		AcceptanceCriteria: []string{"go.mod inspection is reported"},
+		PermissionScope:    "read-only",
 	}
 	if err := ValidateAndComplete(&brief); err != nil {
 		t.Fatalf("ValidateAndComplete returned error: %v", err)
@@ -982,9 +983,10 @@ func TestRuntime_ResumeReExecutesApprovedToolCall(t *testing.T) {
 	runtime := newApprovalTestRuntime(t, client, &executed)
 
 	brief := protocol.TaskBrief{
-		TaskID:          "task-approval",
-		Goal:            "delete generated tmp directory",
-		PermissionScope: "approved-destructive",
+		TaskID:             "task-approval",
+		Goal:               "delete generated tmp directory",
+		AcceptanceCriteria: []string{"Generated tmp directory is deleted"},
+		PermissionScope:    "approved-destructive",
 	}
 	if err := ValidateAndComplete(&brief); err != nil {
 		t.Fatalf("ValidateAndComplete returned error: %v", err)
@@ -1051,9 +1053,10 @@ func TestRuntime_ResumeRejectedApprovalDoesNotExecuteBlockedTool(t *testing.T) {
 	runtime := newApprovalTestRuntime(t, client, &executed)
 
 	brief := protocol.TaskBrief{
-		TaskID:          "task-approval-reject",
-		Goal:            "delete generated tmp directory",
-		PermissionScope: "approved-destructive",
+		TaskID:             "task-approval-reject",
+		Goal:               "delete generated tmp directory",
+		AcceptanceCriteria: []string{"Deletion is either completed or safely rejected"},
+		PermissionScope:    "approved-destructive",
 	}
 	if err := ValidateAndComplete(&brief); err != nil {
 		t.Fatalf("ValidateAndComplete returned error: %v", err)

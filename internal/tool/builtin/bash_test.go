@@ -173,6 +173,8 @@ func TestNewBashTool_WindowsDescriptionIncludesShellAndCommandHints(t *testing.T
 		`workspace root D:\repo`,
 		"Do not assume Unix commands such as ls, rm, or pwd are available.",
 		"Prefer read_file, list_dir, write_file, and edit_file",
+		"Use for tests, builds, command-based verification",
+		"Non-zero exit codes are not errors",
 	} {
 		if !strings.Contains(spec.Description, snippet) {
 			t.Fatalf("description missing %q: %s", snippet, spec.Description)

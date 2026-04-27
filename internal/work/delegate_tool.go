@@ -15,10 +15,17 @@ import (
 const delegateToolDescription = `Delegate a high-effort or noisy sub-task to the Work subagent.
 
 Use this when a task needs multiple tool calls, file inspection, or verification work that should stay out of the main conversation.
+Give Work an outcome, not a script:
+- goal is the concrete result to produce
+- background is only the relevant context Work needs
+- constraints are hard limits, files, permissions, and things not to do
+- acceptance_criteria must contain at least one observable success condition
+
 Permission guidance:
 - use read-only for analysis only
 - use workspace-write for non-destructive writes/edits
 - use approved-destructive when the goal includes delete/remove/move/rename/overwrite or equivalent irreversible file operations
+- approved-destructive may only be used after explicit user approval
 
 The result is one of:
 1. A TaskReport JSON (task completed normally)
@@ -32,10 +39,10 @@ var delegateToolSchema = json.RawMessage(`{
 		"goal":{"type":"string"},
 		"background":{"type":"string"},
 		"constraints":{"type":"array","items":{"type":"string"}},
-		"acceptance_criteria":{"type":"array","items":{"type":"string"}},
+		"acceptance_criteria":{"type":"array","items":{"type":"string"},"minItems":1},
 		"permission_scope":{"type":"string","enum":["read-only","workspace-write","approved-destructive"]}
 	},
-	"required":["goal","permission_scope"],
+	"required":["goal","acceptance_criteria","permission_scope"],
 	"additionalProperties":false
 }`)
 

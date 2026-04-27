@@ -70,6 +70,34 @@ func BuildWorkSystem(brief protocol.TaskBrief, env runtimeenv.Facts) string {
 	}
 	b.WriteString("- Prefer dedicated file tools (read_file, list_dir, write_file, edit_file) for file and directory operations.\n\n")
 
+	b.WriteString("## Operating Loop\n")
+	b.WriteString("- Understand the Goal, Background, Constraints, and Acceptance Criteria before using tools.\n")
+	b.WriteString("- Start by observing the workspace or source material with the narrowest useful read/list/search tool.\n")
+	b.WriteString("- Use small tool calls, inspect each result, then adapt the next step from the evidence.\n")
+	b.WriteString("- Do not skip straight to broad rewrites, destructive actions, or final reporting when verification is still possible.\n")
+	b.WriteString("- When the acceptance criteria are satisfied or blocked, call `finish_task` exactly once.\n\n")
+
+	b.WriteString("## Tool Selection Policy\n")
+	b.WriteString("- Prefer dedicated file tools for file and directory operations: list_dir before broad reads, read_file for UTF-8 text, edit_file for targeted replacements, write_file for intentional full-file writes.\n")
+	b.WriteString("- File tool paths must be workspace-relative; use \".\" for the workspace root and never pass the absolute Workspace root to file tools.\n")
+	b.WriteString("- When creating or overwriting a file in a missing directory, prefer write_file with create_dirs=true instead of shell mkdir.\n")
+	b.WriteString("- Use shell only for tests, builds, command-based verification, or operations not covered by dedicated tools.\n")
+	b.WriteString("- Use web_search to discover sources and web_fetch to read a specific source URL.\n")
+	b.WriteString("- Treat truncated tool results as incomplete; narrow the path/query/range or fetch a more specific source before drawing conclusions.\n")
+	b.WriteString("- Never rely on raw tool dumps as final output; summarize only user-relevant facts in `finish_task`.\n\n")
+
+	b.WriteString("## Verification\n")
+	b.WriteString("- After any workspace-write change, run the narrowest practical verification.\n")
+	b.WriteString("- Prefer targeted package tests, focused build checks, or direct file inspection over broad expensive commands unless the task requires broad confidence.\n")
+	b.WriteString("- If shell commands are unavailable, verify with read_file/list_dir/web_fetch or other allowed tools and state the verification gap in `finish_task`.\n")
+	b.WriteString("- If verification fails, fix the issue when it is within scope; otherwise report the failure and remaining blocker.\n\n")
+
+	b.WriteString("## Minimal Change Policy\n")
+	b.WriteString("- Make only the smallest change needed to satisfy the delegated goal and acceptance criteria.\n")
+	b.WriteString("- Preserve unrelated user changes and do not perform opportunistic refactors.\n")
+	b.WriteString("- Do not touch generated, credential, environment, or VCS files unless the brief explicitly asks and permission allows it.\n")
+	b.WriteString("- If a choice changes scope, side effects, or user-visible behavior beyond the brief, call `request_decision` instead of guessing.\n\n")
+
 	b.WriteString("## Permission\n")
 	switch brief.PermissionScope {
 	case "workspace-write":

@@ -45,6 +45,14 @@ func TestDelegateTool_SchemaStaysValidatorCompatible(t *testing.T) {
 	if len(enum) != 3 || enum[0] != "read-only" || enum[1] != "workspace-write" || enum[2] != "approved-destructive" {
 		t.Fatalf("permission_scope enum = %#v, want [read-only workspace-write approved-destructive]", enum)
 	}
+	acceptanceCriteria := props["acceptance_criteria"].(map[string]any)
+	if acceptanceCriteria["minItems"] != float64(1) {
+		t.Fatalf("acceptance_criteria minItems = %#v, want 1", acceptanceCriteria["minItems"])
+	}
+	required := schema["required"].([]any)
+	if !containsAnyString(required, "acceptance_criteria") {
+		t.Fatalf("schema required = %#v, want acceptance_criteria", required)
+	}
 }
 
 func TestDelegateTool_SchemaAcceptsFullBriefInput(t *testing.T) {
@@ -73,6 +81,8 @@ func TestDelegateTool_DescriptionIncludesPermissionGuidance(t *testing.T) {
 
 	spec, _ := NewDelegateTool(runtime, nil, t.TempDir(), testLogger())
 	for _, snippet := range []string{
+		"acceptance_criteria must contain at least one observable success condition",
+		"Give Work an outcome, not a script",
 		"use approved-destructive when the goal includes delete/remove/move/rename/overwrite",
 		"use workspace-write for non-destructive writes/edits",
 	} {
@@ -90,6 +100,7 @@ func TestDelegateTool_SchemaRejectsRemovedExpressionBrief(t *testing.T) {
 	spec, _ := NewDelegateTool(runtime, nil, t.TempDir(), testLogger())
 	input := json.RawMessage(`{
 		"goal":"inspect config",
+		"acceptance_criteria":["confirm config facts"],
 		"permission_scope":"read-only",
 		"expression_brief":{"tone":"calm"}
 	}`)
@@ -106,8 +117,9 @@ func TestDelegateTool_HandlerAcceptsApprovedDestructiveScope(t *testing.T) {
 
 	_, handler := NewDelegateTool(runtime, nil, t.TempDir(), testLogger())
 	input, err := json.Marshal(map[string]any{
-		"goal":             "edit config",
-		"permission_scope": "approved-destructive",
+		"goal":                "edit config",
+		"acceptance_criteria": []string{"Config edit is complete"},
+		"permission_scope":    "approved-destructive",
 	})
 	if err != nil {
 		t.Fatalf("Marshal returned error: %v", err)
@@ -135,6 +147,7 @@ func TestDelegateTool_HandlerRejectsRemovedExpressionBriefField(t *testing.T) {
 	_, handler := NewDelegateTool(runtime, nil, t.TempDir(), testLogger())
 	input := json.RawMessage(`{
 		"goal":"inspect config",
+		"acceptance_criteria":["confirm config facts"],
 		"permission_scope":"read-only",
 		"expression_brief":{"tone":"calm"}
 	}`)
@@ -151,9 +164,10 @@ func TestDelegateTool_HappyPathWritesJournalAndReturnsReport(t *testing.T) {
 	root := t.TempDir()
 	_, handler := NewDelegateTool(runtime, nil, root, testLogger())
 	input, err := json.Marshal(map[string]any{
-		"goal":             "inspect file",
-		"background":       "look at go.mod",
-		"permission_scope": "read-only",
+		"goal":                "inspect file",
+		"background":          "look at go.mod",
+		"acceptance_criteria": []string{"Report whether go.mod was inspected"},
+		"permission_scope":    "read-only",
 	})
 	if err != nil {
 		t.Fatalf("Marshal returned error: %v", err)
@@ -212,7 +226,7 @@ func TestDelegateTool_EmitsProgressEndOnReport(t *testing.T) {
 		events = append(events, event)
 	})
 
-	input := json.RawMessage(`{"goal":"inspect config","permission_scope":"read-only"}`)
+	input := json.RawMessage(`{"goal":"inspect config","acceptance_criteria":["report active config"],"permission_scope":"read-only"}`)
 	if _, err := handler(ctx, input); err != nil {
 		t.Fatalf("handler returned error: %v", err)
 	}
@@ -240,7 +254,7 @@ func TestDelegateTool_EmitsProgressPausedOnPause(t *testing.T) {
 		events = append(events, event)
 	})
 
-	input := json.RawMessage(`{"goal":"inspect config","permission_scope":"read-only"}`)
+	input := json.RawMessage(`{"goal":"inspect config","acceptance_criteria":["pause with a decision packet"],"permission_scope":"read-only"}`)
 	if _, err := handler(ctx, input); err != nil {
 		t.Fatalf("handler returned error: %v", err)
 	}
@@ -264,7 +278,7 @@ func TestDelegateTool_PausedJournalUsesDerivedRiskLevel(t *testing.T) {
 	root := t.TempDir()
 	_, handler := NewDelegateTool(runtime, nil, root, testLogger())
 
-	input := json.RawMessage(`{"goal":"inspect config","permission_scope":"read-only"}`)
+	input := json.RawMessage(`{"goal":"inspect config","acceptance_criteria":["pause with a decision packet"],"permission_scope":"read-only"}`)
 	if _, err := handler(context.Background(), input); err != nil {
 		t.Fatalf("handler returned error: %v", err)
 	}
@@ -303,6 +317,28 @@ func TestDelegateTool_PausedJournalUsesDerivedRiskLevel(t *testing.T) {
 	if !strings.Contains(pausedLine, `"risk":"low"`) {
 		t.Fatalf("task_paused line = %s, want derived low risk", pausedLine)
 	}
+}
+
+func TestDelegateTool_HandlerRejectsMissingAcceptanceCriteria(t *testing.T) {
+	runtime := newTestRuntime(t, &scriptedLLM{
+		responses: []*llm.ChatResponse{textResp(`{"status":"completed","summary":"ok"}`)},
+	})
+
+	_, handler := NewDelegateTool(runtime, nil, t.TempDir(), testLogger())
+	input := json.RawMessage(`{"goal":"inspect config","permission_scope":"read-only"}`)
+
+	if _, err := handler(context.Background(), input); err == nil {
+		t.Fatal("handler should reject missing acceptance_criteria")
+	}
+}
+
+func containsAnyString(values []any, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func hasProgressKind(events []progress.Event, target progress.EventKind) bool {

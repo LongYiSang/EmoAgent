@@ -43,6 +43,9 @@ func ValidateAndComplete(brief *protocol.TaskBrief) error {
 	if utf8.RuneCountInString(brief.Goal) > maxGoalRunes {
 		return fmt.Errorf("task brief goal exceeds %d runes", maxGoalRunes)
 	}
+	if !hasNonEmptyAcceptanceCriterion(brief.AcceptanceCriteria) {
+		return fmt.Errorf("task brief acceptance_criteria requires at least one non-empty item")
+	}
 	switch brief.PermissionScope {
 	case "read-only", "workspace-write", "approved-destructive":
 		// accepted
@@ -59,4 +62,13 @@ func ValidateAndComplete(brief *protocol.TaskBrief) error {
 		brief.CreatedAt = time.Now().UTC()
 	}
 	return nil
+}
+
+func hasNonEmptyAcceptanceCriterion(criteria []string) bool {
+	for _, criterion := range criteria {
+		if strings.TrimSpace(criterion) != "" {
+			return true
+		}
+	}
+	return false
 }

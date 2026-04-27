@@ -9,8 +9,9 @@ import (
 
 func TestValidateAndComplete_HappyPath(t *testing.T) {
 	b := &protocol.TaskBrief{
-		Goal:            "read go.mod and list dependencies",
-		PermissionScope: "read-only",
+		Goal:               "read go.mod and list dependencies",
+		AcceptanceCriteria: []string{"List dependency names"},
+		PermissionScope:    "read-only",
 	}
 
 	if err := ValidateAndComplete(b); err != nil {
@@ -26,8 +27,9 @@ func TestValidateAndComplete_HappyPath(t *testing.T) {
 
 func TestValidateAndComplete_EmptyGoalRejected(t *testing.T) {
 	b := &protocol.TaskBrief{
-		Goal:            "",
-		PermissionScope: "read-only",
+		Goal:               "",
+		AcceptanceCriteria: []string{"Summarize findings"},
+		PermissionScope:    "read-only",
 	}
 
 	if err := ValidateAndComplete(b); err == nil {
@@ -37,8 +39,9 @@ func TestValidateAndComplete_EmptyGoalRejected(t *testing.T) {
 
 func TestValidateAndComplete_GoalTooLongRejected(t *testing.T) {
 	b := &protocol.TaskBrief{
-		Goal:            strings.Repeat("中", 501),
-		PermissionScope: "read-only",
+		Goal:               strings.Repeat("中", 501),
+		AcceptanceCriteria: []string{"Summarize findings"},
+		PermissionScope:    "read-only",
 	}
 
 	if err := ValidateAndComplete(b); err == nil {
@@ -48,8 +51,9 @@ func TestValidateAndComplete_GoalTooLongRejected(t *testing.T) {
 
 func TestValidateAndComplete_WorkspaceWriteAccepted(t *testing.T) {
 	b := &protocol.TaskBrief{
-		Goal:            "write a summary file",
-		PermissionScope: "workspace-write",
+		Goal:               "write a summary file",
+		AcceptanceCriteria: []string{"Summary file is written"},
+		PermissionScope:    "workspace-write",
 	}
 	if err := ValidateAndComplete(b); err != nil {
 		t.Fatalf("ValidateAndComplete should accept workspace-write, got: %v", err)
@@ -58,8 +62,9 @@ func TestValidateAndComplete_WorkspaceWriteAccepted(t *testing.T) {
 
 func TestValidateAndComplete_ApprovedDestructiveAccepted(t *testing.T) {
 	b := &protocol.TaskBrief{
-		Goal:            "delete generated cache files after approval",
-		PermissionScope: "approved-destructive",
+		Goal:               "delete generated cache files after approval",
+		AcceptanceCriteria: []string{"Approved cache files are deleted"},
+		PermissionScope:    "approved-destructive",
 	}
 	if err := ValidateAndComplete(b); err != nil {
 		t.Fatalf("ValidateAndComplete should accept approved-destructive, got: %v", err)
@@ -68,8 +73,8 @@ func TestValidateAndComplete_ApprovedDestructiveAccepted(t *testing.T) {
 
 func TestValidateAndComplete_RejectsDestructiveGoalWithoutApprovedScope(t *testing.T) {
 	tests := []protocol.TaskBrief{
-		{Goal: "删除 hi.txt", PermissionScope: "workspace-write"},
-		{Goal: "delete tmp directory", PermissionScope: "workspace-write"},
+		{Goal: "删除 hi.txt", AcceptanceCriteria: []string{"hi.txt is removed"}, PermissionScope: "workspace-write"},
+		{Goal: "delete tmp directory", AcceptanceCriteria: []string{"tmp directory is removed"}, PermissionScope: "workspace-write"},
 	}
 
 	for _, tc := range tests {
@@ -84,8 +89,9 @@ func TestValidateAndComplete_RejectsDestructiveGoalWithoutApprovedScope(t *testi
 
 func TestValidateAndComplete_AllowsDestructiveGoalWithApprovedScope(t *testing.T) {
 	b := &protocol.TaskBrief{
-		Goal:            "删除 hi.txt",
-		PermissionScope: "approved-destructive",
+		Goal:               "删除 hi.txt",
+		AcceptanceCriteria: []string{"hi.txt is removed"},
+		PermissionScope:    "approved-destructive",
 	}
 
 	if err := ValidateAndComplete(b); err != nil {
@@ -97,8 +103,9 @@ func TestValidateAndComplete_UnsupportedScopeRejected(t *testing.T) {
 	for _, scope := range []string{"superuser", ""} {
 		t.Run(scope, func(t *testing.T) {
 			b := &protocol.TaskBrief{
-				Goal:            "edit config",
-				PermissionScope: scope,
+				Goal:               "edit config",
+				AcceptanceCriteria: []string{"Config is edited"},
+				PermissionScope:    scope,
 			}
 			err := ValidateAndComplete(b)
 			if err == nil {
@@ -110,9 +117,10 @@ func TestValidateAndComplete_UnsupportedScopeRejected(t *testing.T) {
 
 func TestValidateAndComplete_PreservesExistingTaskID(t *testing.T) {
 	b := &protocol.TaskBrief{
-		TaskID:          "fixed-task-id",
-		Goal:            "read file",
-		PermissionScope: "read-only",
+		TaskID:             "fixed-task-id",
+		Goal:               "read file",
+		AcceptanceCriteria: []string{"File contents are summarized"},
+		PermissionScope:    "read-only",
 	}
 
 	if err := ValidateAndComplete(b); err != nil {
@@ -120,5 +128,45 @@ func TestValidateAndComplete_PreservesExistingTaskID(t *testing.T) {
 	}
 	if b.TaskID != "fixed-task-id" {
 		t.Fatalf("TaskID = %q, want fixed-task-id", b.TaskID)
+	}
+}
+
+func TestValidateAndComplete_RequiresAcceptanceCriteria(t *testing.T) {
+	tests := []struct {
+		name  string
+		brief protocol.TaskBrief
+	}{
+		{
+			name: "missing",
+			brief: protocol.TaskBrief{
+				Goal:            "inspect config",
+				PermissionScope: "read-only",
+			},
+		},
+		{
+			name: "empty",
+			brief: protocol.TaskBrief{
+				Goal:               "inspect config",
+				AcceptanceCriteria: []string{},
+				PermissionScope:    "read-only",
+			},
+		},
+		{
+			name: "blank only",
+			brief: protocol.TaskBrief{
+				Goal:               "inspect config",
+				AcceptanceCriteria: []string{"  "},
+				PermissionScope:    "read-only",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			if err := ValidateAndComplete(&tc.brief); err == nil {
+				t.Fatal("ValidateAndComplete should reject missing or blank acceptance criteria")
+			}
+		})
 	}
 }

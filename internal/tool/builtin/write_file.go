@@ -16,7 +16,7 @@ const writeFileMaxBytes = 1 << 20 // 1 MiB
 func NewWriteFileTool(projectRoot string) (tool.Spec, tool.Handler) {
 	spec := tool.Spec{
 		Name:        "write_file",
-		Description: "Write content to a file in the workspace. Creates the file if it does not exist; overwrites if it does. Use create_dirs to create missing parent directories.",
+		Description: "Write content to a workspace file using a workspace-relative path. Absolute paths and path traversal are rejected. Creates the file if it does not exist; overwrites existing content if it does. Content larger than 1 MiB is rejected. Use create_dirs to create missing parent directories.",
 		Parameters: json.RawMessage(`{
 			"type":"object",
 			"properties":{
