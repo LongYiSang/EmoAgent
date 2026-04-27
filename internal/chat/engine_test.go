@@ -338,8 +338,8 @@ func TestEngineSendMessageStreamsAndPersistsConversation(t *testing.T) {
 		t.Fatalf("streamed = %#v, want [Hi \" there\"]", streamed)
 	}
 
-	if !strings.HasPrefix(fakeLLM.lastRequest.System, "You are warm.") {
-		t.Fatalf("System = %q, want prefix %q", fakeLLM.lastRequest.System, "You are warm.")
+	if !strings.Contains(fakeLLM.lastRequest.System, "<persona>\nYou are warm.\n</persona>") {
+		t.Fatalf("System = %q, want persona section", fakeLLM.lastRequest.System)
 	}
 	if !strings.Contains(fakeLLM.lastRequest.System, "Emotion Work Delegation Contract") {
 		t.Fatalf("System = %q, want Emotion Work Delegation Contract section", fakeLLM.lastRequest.System)

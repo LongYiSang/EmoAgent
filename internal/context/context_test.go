@@ -45,7 +45,11 @@ func (c *summaryUpdateClient) ChatStream(context.Context, llm.ChatRequest, llm.S
 func TestBuildEmotionContextUsesPinnedContextAndRecentTurns(t *testing.T) {
 	persona := &config.Persona{
 		Name:         "default",
+		Description:  "A steady companion for focused work.",
 		SystemPrompt: "You are warm.",
+		Tone:         "warm, direct",
+		Quirks:       []string{"remembers follow-ups", "keeps replies concise"},
+		Greeting:     "hello from greeting only",
 	}
 	history := []storage.MessageRecord{
 		{ID: "1", Role: "user", Content: "old question"},
@@ -67,8 +71,28 @@ func TestBuildEmotionContextUsesPinnedContextAndRecentTurns(t *testing.T) {
 		t.Fatalf("BuildEmotionContext: %v", err)
 	}
 
-	if !strings.HasPrefix(assembled.System, "You are warm.") {
-		t.Fatalf("System = %q, want prefix %q", assembled.System, "You are warm.")
+	for _, snippet := range []string{
+		"<persona>",
+		"You are warm.",
+		"## Persona Description\nA steady companion for focused work.",
+		"## Tone\nwarm, direct",
+		"## Quirks\n- remembers follow-ups\n- keeps replies concise",
+		"</persona>",
+		"<operating_contract>",
+		"</operating_contract>",
+		"<runtime_context>",
+		"</runtime_context>",
+		"<internal_context_data_policy>",
+		"</internal_context_data_policy>",
+		"running_summary",
+		"tool_digests",
+	} {
+		if !strings.Contains(assembled.System, snippet) {
+			t.Fatalf("System = %q, want snippet %q", assembled.System, snippet)
+		}
+	}
+	if strings.Contains(assembled.System, "hello from greeting only") {
+		t.Fatalf("System = %q, should not include greeting", assembled.System)
 	}
 	if !strings.Contains(assembled.System, "Emotion Work Delegation Contract") {
 		t.Fatalf("System = %q, want Emotion Work Delegation Contract section", assembled.System)
@@ -186,8 +210,8 @@ func TestBuildEmotionContextPlacesToolDigestBeforeRecentTurns(t *testing.T) {
 	if len(assembled.Messages) != 3 {
 		t.Fatalf("len(Messages) = %d, want 3", len(assembled.Messages))
 	}
-	if !strings.HasPrefix(assembled.System, "You are warm.") {
-		t.Fatalf("System = %q, want prefix %q", assembled.System, "You are warm.")
+	if !strings.Contains(assembled.System, "<persona>\nYou are warm.\n</persona>") {
+		t.Fatalf("System = %q, want persona section", assembled.System)
 	}
 	if !strings.Contains(assembled.System, "Emotion Work Delegation Contract") {
 		t.Fatalf("System = %q, want Emotion Work Delegation Contract section", assembled.System)
@@ -398,6 +422,9 @@ func TestBuildEmotionContextWithPendingSummariesAddsResumeNote(t *testing.T) {
 
 	if !strings.Contains(assembled.System, "Pending Decision(s) Resume Note") {
 		t.Fatalf("system prompt missing resume note: %s", assembled.System)
+	}
+	if !strings.Contains(assembled.System, "<pending_work>") || !strings.Contains(assembled.System, "</pending_work>") {
+		t.Fatalf("system prompt missing pending_work section: %s", assembled.System)
 	}
 	if !strings.Contains(assembled.System, "task-1") {
 		t.Fatalf("system prompt missing pending task id: %s", assembled.System)
