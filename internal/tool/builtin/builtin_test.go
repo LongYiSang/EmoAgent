@@ -61,7 +61,7 @@ func TestGetCurrentTimeSpec(t *testing.T) {
 	}
 }
 
-func TestRegisterAllScopesCurrentTimeForWorkOnly(t *testing.T) {
+func TestRegisterAllKeepsCurrentTimeWorkOnlyBecauseEmotionGetsTimeContext(t *testing.T) {
 	registry := tool.NewRegistry()
 	RegisterAll(registry, config.DefaultConfig(), t.TempDir(), slog.Default())
 

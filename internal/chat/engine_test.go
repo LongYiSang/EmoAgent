@@ -39,7 +39,7 @@ func (f *fakeLLMClient) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatR
 	return &llm.ChatResponse{
 		ID:      "summary-1",
 		Model:   req.Model,
-		Content: `{"running_summary":{"session_goal":"summarized"}}`,
+		Content: engineSummaryContent("summarized"),
 	}, nil
 }
 
@@ -54,6 +54,28 @@ func (f *fakeLLMClient) ChatStream(_ context.Context, req llm.ChatRequest, cb ll
 		cb(llm.StreamEvent{Done: true})
 	}
 	return f.response, f.err
+}
+
+func engineSummaryContent(goal string) string {
+	payload := map[string]any{
+		"running_summary": map[string]any{
+			"session_goal": goal,
+			"user_facts":   []string{},
+			"relationship_state": map[string]any{
+				"tone":           "",
+				"recent_emotion": "",
+				"promises_made":  []string{},
+			},
+			"open_loops":    []string{},
+			"decisions":     []string{},
+			"do_not_forget": []string{},
+		},
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
 }
 
 type summaryDeadlineClient struct {
@@ -206,7 +228,7 @@ func (c *scriptedEngineClient) Chat(_ context.Context, req llm.ChatRequest) (*ll
 	return &llm.ChatResponse{
 		ID:      "summary-1",
 		Model:   req.Model,
-		Content: `{"running_summary":{"session_goal":"summary"}}`,
+		Content: engineSummaryContent("summary"),
 	}, nil
 }
 
@@ -319,8 +341,8 @@ func TestEngineSendMessageStreamsAndPersistsConversation(t *testing.T) {
 	if !strings.HasPrefix(fakeLLM.lastRequest.System, "You are warm.") {
 		t.Fatalf("System = %q, want prefix %q", fakeLLM.lastRequest.System, "You are warm.")
 	}
-	if !strings.Contains(fakeLLM.lastRequest.System, "Delegation Guideline") {
-		t.Fatalf("System = %q, want Delegation Guideline section", fakeLLM.lastRequest.System)
+	if !strings.Contains(fakeLLM.lastRequest.System, "Emotion Work Delegation Contract") {
+		t.Fatalf("System = %q, want Emotion Work Delegation Contract section", fakeLLM.lastRequest.System)
 	}
 	if fakeLLM.lastRequest.Model != "test-model" {
 		t.Fatalf("Model = %q, want test-model", fakeLLM.lastRequest.Model)
@@ -1384,7 +1406,7 @@ func TestSummaryDoesNotPolluteVisibleHistory(t *testing.T) {
 		chatResponse: &llm.ChatResponse{
 			ID:      "summary-1",
 			Model:   "summary-model",
-			Content: `{"running_summary":{"session_goal":"summarized old history"}}`,
+			Content: engineSummaryContent("summarized old history"),
 		},
 		response: &llm.ChatResponse{ID: "resp-1", Content: "ok", StopReason: "end_turn"},
 	}
@@ -2086,6 +2108,42 @@ func TestEngineContinueAfterApproval_ResumesWorkDirectlyBeforeNarrating(t *testi
 	}
 	if got := len(llmClient.requests[0].Tools); got != 0 {
 		t.Fatalf("narration tools = %d, want 0 after final Work report", got)
+	}
+}
+
+func TestApprovalNotesSeparateContinuationFromAlreadyResumedOutcome(t *testing.T) {
+	approval := &protocol.ApprovalRequest{
+		ID:               "approval-1",
+		TaskID:           "task-1",
+		Status:           string(protocol.ApprovalStatusApproved),
+		SelectedOptionID: "allow",
+	}
+
+	continuation := buildApprovalContinuationNote(approval)
+	for _, snippet := range []string{
+		"Internal Approval Continuation",
+		"has not been consumed",
+		"calling resume_work",
+		"If the approval is rejected, resume with rejection",
+	} {
+		if !strings.Contains(continuation, snippet) {
+			t.Fatalf("continuation note missing %q: %s", snippet, continuation)
+		}
+	}
+	if strings.Contains(continuation, "already been resumed internally") {
+		t.Fatalf("continuation note should not describe direct internal resume: %s", continuation)
+	}
+
+	outcome := buildApprovalOutcomeNote(approval, json.RawMessage(`{"status":"completed","summary":"done"}`))
+	for _, snippet := range []string{
+		"Internal Approval Outcome",
+		"already been resumed internally",
+		"Do not call resume_work again",
+		"do not reuse the consumed approval_request_id",
+	} {
+		if !strings.Contains(outcome, snippet) {
+			t.Fatalf("outcome note missing %q: %s", snippet, outcome)
+		}
 	}
 }
 

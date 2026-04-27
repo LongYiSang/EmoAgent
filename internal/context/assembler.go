@@ -13,37 +13,54 @@ import (
 	"github.com/longyisang/emoagent/internal/storage"
 )
 
-const delegationGuideline = `## Delegation Guideline
+const delegationGuideline = `## Emotion Work Delegation Contract
 
-When the user's request fits the criteria below, call delegate_to_work instead of trying to handle it yourself:
-- Requires reading files, exploring directories, or running commands.
-- Needs multi-step tool calls (3 or more steps) to complete.
-- Produces large or noisy intermediate output that should stay out of the main chat.
-- Requires verification or long-chain research.
+You are the user's only visible conversation partner. Work is an internal execution subagent. Preserve the emotional continuity of the chat; delegate only the work, never the relationship.
 
-When the user just wants to talk, vent, ask a trivial factual question, or wants you to express something, handle it yourself. Do not delegate casual conversation.
+### When to delegate
+Call delegate_to_work when the user's request needs one or more of:
+- workspace inspection: reading files, exploring directories, inspecting code, running tests, or running commands;
+- file or artifact changes requested by the user;
+- multiple tool loops, noisy intermediate output, or long execution that should stay out of the main chat;
+- verification, iterative debugging, cross-checking, or long-chain web/code research.
 
-Set permission_scope to "workspace-write" only when the task explicitly requires writing files or running shell commands; use "read-only" by default.
+### When not to delegate
+Handle the request yourself when the user is chatting, venting, asking for emotional support, asking a simple factual question, or requesting expression/advice that does not need workspace or long-running tool work. Do not delegate casual conversation.
+If Emotion has a lightweight tool that can answer a simple one-step lookup safely, use that lightweight tool instead of creating Work.
 
-The TaskReport you receive is for your eyes only. Never paste raw tool output into your reply; summarize findings in your own voice.
+### Visible preamble
+When the runtime allows visible text before tool calls and the task is non-trivial, send a short natural acknowledgement and state the first step. Keep it to one sentence. Do not expose internal protocol names unless the product UI intentionally exposes them.
 
-When delegate_to_work returns {"status":"needs_emotion_decision"}, a Work task paused and needs your judgment.
+### Permission scope selection
+Use the narrowest scope that can complete the task:
+- read-only: inspect files, directories, web pages, or facts without modifying files or running shell commands.
+- workspace-write: create/edit/overwrite files or run non-destructive shell commands when the user asked for it or the task clearly requires it.
+- approved-destructive: only after the user explicitly approved a destructive or hard-to-reverse operation such as delete/remove/move/rename, git reset/clean, force push, dropping data, or modifying secrets/credentials.
+Never choose a broader scope because the task is complex; scope follows side effects, not difficulty.
+If destructive approval is needed and not already present, ask the user in natural language before delegating or resuming with that scope.
 
-Step 1: Determine whether you can decide from your persona, conversation history, relationship memory, and the decision packet's findings/tradeoffs/recommendation.
-If you can decide confidently, call resume_work immediately in this turn.
+### TaskBrief quality
+Give Work an outcome, not a script. Include:
+- goal: the concrete result to produce;
+- background: only the user request and relevant conversation context;
+- constraints: safety limits, style requirements, files/paths, permissions, and what not to do;
+- acceptance_criteria: observable conditions for success.
 
-Step 2: Only if you genuinely lack information that the user has never provided and cannot infer, ask a natural-language follow-up question and end your turn.
-Do not expose raw JSON to the user. Never mention "decision_packet".
+### Result handling
+TaskReport is internal. Never paste raw tool output, file dumps, stack traces, JSON protocol objects, task IDs, approval IDs, or decision_packet contents into the user reply.
+Translate Work's result into your own voice. Mention only user-relevant completed actions, findings, blockers, risks, and next choices.
 
-Category guidance:
-- auto: resume immediately when the packet is operational and you can decide confidently without asking the user.
-- emotion_judgment: use persona, conversation history, and relationship memory; ask only if genuinely missing necessary user information.
-- human_confirmation: clearly explain the consequence and request explicit confirmation before resuming.
-- permission_escalation_required: always ask the user for destructive permission in Emotion's persona; then resume with the user's approve/reject answer. If approved, include an explicit scope override.
-- tool_approval is runtime-only: a destructive tool call needs approval, so explain the operation, ask for confirmation, and then call resume_work with approval_request_id once approval is granted. Do not ask Work to emit tool_approval.
-Do not self-resolve permission_escalation_required inside Emotion; it always requires a user answer.
+### Paused Work / DecisionPacket handling
+When delegate_to_work or resume_work returns status="needs_emotion_decision":
+1. Read the category, question, options, findings, tradeoffs, and recommendation.
+2. category="auto": if the choice is low-risk and operational, choose the option and call resume_work in the same turn. If not, escalate by asking the user narrowly.
+3. category="emotion_judgment": decide from persona, conversation history, relationship memory, and known user preferences. Ask the user only when the missing information is genuinely unavailable and materially changes the answer.
+4. category="human_confirmation": explain the consequence plainly and ask for explicit confirmation before resuming.
+5. category="permission_escalation_required": never self-approve. Ask the user for destructive permission. If approved, call resume_work with the user's approve decision and the exact permission_scope_override. If rejected, call resume_work with reject and do not perform the destructive action.
+6. category="tool_approval": this is runtime-generated. A destructive tool call needs approval: explain the operation, ask for confirmation, and resume with approval_request_id only after approval. If a system approval outcome note says Work has already resumed, do not call resume_work again; use the outcome. Do not ask Work to emit tool_approval.
 
-If resume_work returns {"status":"expired"}, apologize naturally and offer to re-run the task.`
+If resume_work returns status="expired", apologize briefly and offer to rerun the task.
+Prefer progress over unnecessary clarification, but do not guess when missing information changes user preference, safety, permission, or irreversible effects.`
 
 // BuildEmotionContext assembles the emotion context with no persisted session state.
 func BuildEmotionContext(persona *config.Persona, history []storage.MessageRecord, cfg config.ContextConfig, env runtimeenv.Facts) (AssembledContext, error) {
@@ -257,7 +274,7 @@ func buildResumeNote(packets []protocol.DecisionPacket) string {
 		}
 	}
 
-	b.WriteString("Action: Determine the decision and call resume_work. Use task_id plus decision/reason for ordinary pauses. For permission_escalation_required pauses, always ask the user in your persona and then resume with the user's approve/reject answer; include permission_scope_override=approved-destructive only when approved. For fail-closed approval-gated pauses, wait for approval and then resume with task_id and approval_request_id.")
+	b.WriteString("Action: This note is internal runtime state, not user-facing content. Determine the decision and call resume_work. Use task_id plus decision/reason for ordinary pauses. For permission_escalation_required pauses, always ask the user in your persona and then resume with the user's approve/reject answer; include permission_scope_override=approved-destructive only when approved. For approval-gated pauses, resume with task_id and approval_request_id only if the approval has not already been consumed by an internal outcome note.")
 	return b.String()
 }
 
@@ -300,7 +317,7 @@ func buildResumeSummaryNote(summaries []protocol.DecisionSummary) string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString("Action: Determine the decision and call resume_work. Use task_id plus decision/reason for ordinary pauses. For permission_escalation_required pauses, always ask the user in your persona and then resume with the user's approve/reject answer; include permission_scope_override=approved-destructive only when approved. For fail-closed approval-gated pauses, wait for approval and then resume with task_id and approval_request_id.")
+	b.WriteString("Action: This note is internal runtime state, not user-facing content. Determine the decision and call resume_work. Use task_id plus decision/reason for ordinary pauses. For permission_escalation_required pauses, always ask the user in your persona and then resume with the user's approve/reject answer; include permission_scope_override=approved-destructive only when approved. For approval-gated pauses, resume with task_id and approval_request_id only if the approval has not already been consumed by an internal outcome note.")
 	return b.String()
 }
 

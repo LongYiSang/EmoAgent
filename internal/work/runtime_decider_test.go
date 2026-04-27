@@ -53,8 +53,18 @@ func TestRuntimeDecider_SystemPromptOmitsStyleDelta(t *testing.T) {
 	if strings.Contains(text, "style_delta") {
 		t.Fatalf("system prompt should not mention removed style_delta field: %s", text)
 	}
-	if !strings.Contains(text, `"constraints_delta": ["optional additional constraints"]`) {
+	if !strings.Contains(text, `"constraints_delta": []`) {
 		t.Fatalf("system prompt should still mention constraints_delta: %s", text)
+	}
+	for _, snippet := range []string{
+		"the chosen decision is one of the provided option IDs",
+		"does not authorize destructive",
+		"confidence is low",
+		"No markdown, code fences, prose, or extra keys",
+	} {
+		if !strings.Contains(text, snippet) {
+			t.Fatalf("system prompt missing %q: %s", snippet, text)
+		}
 	}
 }
 
@@ -89,6 +99,54 @@ func TestRuntimeDecider_InvalidJSONFallsBackToEscalation(t *testing.T) {
 	}
 	if !decision.Escalate {
 		t.Fatalf("expected escalation, got %#v", decision)
+	}
+}
+
+func TestRuntimeDecider_RepairsSchemaInvalidDecision(t *testing.T) {
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			textResp(`{"escalate":false,"decision":"a","reason":"ok","unexpected":"x"}`),
+			textResp(`{"escalate":false,"escalate_reason":"","decision":"b","reason":"schema repaired","constraints_delta":[]}`),
+		},
+	}
+	decider := NewLLMRuntimeDecider(client, "test-model")
+
+	decision, err := decider.Decide(context.Background(), protocol.TaskBrief{Goal: "goal"}, testExecutionOnlyPacket())
+	if err != nil {
+		t.Fatalf("Decide returned error: %v", err)
+	}
+	if decision.Escalate {
+		t.Fatalf("decision escalated unexpectedly: %#v", decision)
+	}
+	if decision.Decision != "b" {
+		t.Fatalf("Decision = %q, want repaired option b", decision.Decision)
+	}
+	if len(client.calls) != 2 {
+		t.Fatalf("LLM calls = %d, want initial + repair", len(client.calls))
+	}
+	if !strings.Contains(client.calls[1].System, "Repair") {
+		t.Fatalf("repair system prompt = %q, want repair instruction", client.calls[1].System)
+	}
+}
+
+func TestRuntimeDecider_RepairsEscalationWithDecision(t *testing.T) {
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			textResp(`{"escalate":true,"escalate_reason":"needs user","decision":"a","reason":"bad","constraints_delta":[]}`),
+			textResp(`{"escalate":true,"escalate_reason":"needs user","decision":"","reason":"cannot decide safely","constraints_delta":[]}`),
+		},
+	}
+	decider := NewLLMRuntimeDecider(client, "test-model")
+
+	decision, err := decider.Decide(context.Background(), protocol.TaskBrief{Goal: "goal"}, testExecutionOnlyPacket())
+	if err != nil {
+		t.Fatalf("Decide returned error: %v", err)
+	}
+	if !decision.Escalate || decision.EscalateReason != "needs user" {
+		t.Fatalf("decision = %#v, want repaired escalation", decision)
+	}
+	if len(client.calls) != 2 {
+		t.Fatalf("LLM calls = %d, want initial + repair", len(client.calls))
 	}
 }
 

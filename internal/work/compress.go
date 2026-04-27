@@ -111,7 +111,25 @@ func compressWorkContextWithParams(
 
 	newProgress, err := parseProgressSummaryResponse(resp)
 	if err != nil {
-		return messages, currentProgress, fmt.Errorf("parse progress summary: %w", err)
+		repairReq, repairBuildErr := buildProgressRepairRequest(req, resp, err)
+		if repairBuildErr == nil {
+			repairResp, repairErr := summaryClient.Chat(ctx, repairReq)
+			if repairErr == nil {
+				newProgress, err = parseProgressSummaryResponse(repairResp)
+			} else {
+				err = fmt.Errorf("progress summary repair LLM call: %w", repairErr)
+			}
+		} else {
+			err = repairBuildErr
+		}
+		if err != nil {
+			slog.Warn("work progress summary repair failed, using deterministic fallback",
+				"model", summaryModel,
+				"error", err,
+				"old_messages", len(oldMessages),
+			)
+			newProgress = fallbackWorkProgress(currentProgress)
+		}
 	}
 
 	newProgress.DecisionsReceived = mergeStringItems(
@@ -136,6 +154,28 @@ func compressWorkContextWithParams(
 	)
 
 	return compressed, newProgress, nil
+}
+
+const progressFallbackMarker = "[uncompressed round omitted due to progress parse failure]"
+
+func fallbackWorkProgress(current WorkProgress) WorkProgress {
+	progress := normalizeWorkProgress(current)
+	if !stringSliceContains(progress.ErrorsEncountered, progressFallbackMarker) {
+		progress.ErrorsEncountered = append(progress.ErrorsEncountered, progressFallbackMarker)
+	}
+	if progress.CurrentApproach == "" {
+		progress.CurrentApproach = "progress_summary_repair_failed"
+	}
+	return progress
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func isWorkProgressMessage(msg llm.Message) bool {

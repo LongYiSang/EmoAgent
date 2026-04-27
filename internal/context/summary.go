@@ -1,9 +1,11 @@
 package context
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -19,10 +21,45 @@ const (
 )
 
 var summarySystemPrompt = strings.TrimSpace(`
-You maintain a structured running summary for an emotion-oriented conversation.
-Return JSON only in the form {"running_summary":{...}}.
-Preserve still-valid promises_made and do_not_forget entries unless the new messages explicitly revoke them.
-Do not emit prose, markdown, or explanations outside the JSON object.
+You maintain the persistent running_summary for an emotion-oriented companion conversation.
+Return exactly one JSON object with this shape:
+{
+  "running_summary": {
+    "session_goal": "",
+    "user_facts": [],
+    "relationship_state": {
+      "tone": "",
+      "recent_emotion": "",
+      "promises_made": []
+    },
+    "open_loops": [],
+    "decisions": [],
+    "do_not_forget": []
+  }
+}
+
+Update rules:
+- Merge the current running_summary with the new messages; do not summarize only the delta.
+- Preserve still-valid promises_made and do_not_forget unless new messages explicitly revoke, fulfill, or supersede them.
+- Add durable user facts, preferences, boundaries, recurring needs, and relationship-relevant context that could help future conversations.
+- Omit transient small talk, one-off wording, raw tool output, stack traces, protocol objects, and internal IDs.
+- Do not store credentials, secrets, private keys, access tokens, or sensitive operational data.
+- relationship_state.tone should describe the current interaction style in a short phrase.
+- relationship_state.recent_emotion should be cautious and descriptive; do not diagnose mental health.
+- open_loops should contain unresolved commitments, pending questions, or tasks that still need follow-up.
+- decisions should contain user or assistant decisions that change future behavior, task direction, or preferences.
+- do_not_forget should contain high-importance memory only; keep it short and deduplicated.
+- Remove obsolete items when the new messages clearly make them false or fulfilled.
+- Deduplicate semantically similar entries. Keep each array item to one concise sentence.
+- Use empty strings and empty arrays when unknown.
+- JSON only. No markdown, prose, code fences, or explanations.
+`)
+
+var summaryRepairSystemPrompt = strings.TrimSpace(`
+Repair the running_summary response to the exact required JSON schema.
+Do not add facts that are not present in the provided current summary or messages.
+Remove protocol leaks, raw tool output, credentials, secrets, stack traces, internal IDs, and any prose outside JSON.
+Return JSON only. No markdown, code fences, or explanations.
 `)
 
 type sessionStateReader interface {
@@ -160,6 +197,20 @@ func UpdateRunningSummaryWithParams(
 
 	nextSummary, err := parseRunningSummaryResponse(resp)
 	if err != nil {
+		repairReq, repairBuildErr := buildSummaryRepairRequest(req, resp, err)
+		if repairBuildErr == nil {
+			repairResp, repairErr := client.Chat(ctx, repairReq)
+			copyResponseStatsToReport(&report, repairResp)
+			if repairErr == nil {
+				nextSummary, err = parseRunningSummaryResponse(repairResp)
+			} else {
+				err = fmt.Errorf("summary repair LLM call: %w", repairErr)
+			}
+		} else {
+			err = repairBuildErr
+		}
+	}
+	if err != nil {
 		markSummaryFailure(&current, err, time.Now().UTC(), defaultSummaryFailureCooldown)
 		copyFailureStateToReport(&report, current)
 		return &current, report, err
@@ -218,13 +269,7 @@ func cloneStringSlice(values []string) []string {
 }
 
 func mergeRunningSummary(current RunningSummary, next RunningSummary) RunningSummary {
-	merged := normalizeRunningSummary(next)
-	merged.RelationshipState.PromisesMade = mergeProtectedItems(
-		current.RelationshipState.PromisesMade,
-		merged.RelationshipState.PromisesMade,
-	)
-	merged.DoNotForget = mergeProtectedItems(current.DoNotForget, merged.DoNotForget)
-	return merged
+	return normalizeRunningSummary(next)
 }
 
 func mergeProtectedItems(existing []string, incoming []string) []string {
@@ -355,19 +400,206 @@ func parseRunningSummaryResponse(resp *llm.ChatResponse) (RunningSummary, error)
 		if !ok {
 			continue
 		}
-		var envelope struct {
-			RunningSummary RunningSummary `json:"running_summary"`
+		summary, err := decodeAndValidateRunningSummary(content)
+		if err != nil {
+			return RunningSummary{}, fmt.Errorf("validate running summary response: %w", err)
 		}
-		if err := json.Unmarshal([]byte(content), &envelope); err != nil {
-			return RunningSummary{}, fmt.Errorf("unmarshal running summary response: %w", err)
-		}
-		return normalizeRunningSummary(envelope.RunningSummary), nil
+		return summary, nil
 	}
 
 	if resp.StopReason == "max_tokens" {
 		return RunningSummary{}, fmt.Errorf("summary response truncated: stop_reason=max_tokens raw_stop_reason=%q", resp.RawStopReason)
 	}
 	return RunningSummary{}, fmt.Errorf("unmarshal running summary response: complete running_summary JSON object not found")
+}
+
+func buildSummaryRepairRequest(req llm.ChatRequest, resp *llm.ChatResponse, parseErr error) (llm.ChatRequest, error) {
+	payload, err := json.Marshal(struct {
+		Error           string `json:"error"`
+		InvalidResponse string `json:"invalid_response"`
+	}{
+		Error:           parseErr.Error(),
+		InvalidResponse: truncateRepairContent(firstSummaryResponseCandidate(resp)),
+	})
+	if err != nil {
+		return llm.ChatRequest{}, fmt.Errorf("marshal summary repair payload: %w", err)
+	}
+
+	repairReq := req
+	repairReq.System = summaryRepairSystemPrompt
+	repairReq.Messages = append(append([]llm.Message(nil), req.Messages...), llm.Message{
+		Role:    llm.RoleUser,
+		Content: string(payload),
+	})
+	repairReq.Temperature = 0
+	repairReq.Stream = false
+	repairReq.Params = req.Params
+	zero := 0.0
+	repairReq.Params.Temperature = &zero
+	stream := false
+	repairReq.Params.Stream = &stream
+	return repairReq, nil
+}
+
+func firstSummaryResponseCandidate(resp *llm.ChatResponse) string {
+	candidates := summaryResponseCandidates(resp)
+	if len(candidates) == 0 {
+		return ""
+	}
+	return candidates[0]
+}
+
+func truncateRepairContent(content string) string {
+	const max = 8000
+	if len(content) <= max {
+		return content
+	}
+	return content[:max]
+}
+
+func decodeAndValidateRunningSummary(content string) (RunningSummary, error) {
+	var rawEnvelope struct {
+		RunningSummary json.RawMessage `json:"running_summary"`
+	}
+	if err := decodeStrict([]byte(content), &rawEnvelope); err != nil {
+		return RunningSummary{}, fmt.Errorf("decode envelope: %w", err)
+	}
+	if len(rawEnvelope.RunningSummary) == 0 {
+		return RunningSummary{}, fmt.Errorf("running_summary is required")
+	}
+	var summaryFields map[string]json.RawMessage
+	if err := json.Unmarshal(rawEnvelope.RunningSummary, &summaryFields); err != nil {
+		return RunningSummary{}, fmt.Errorf("running_summary must be an object: %w", err)
+	}
+	if err := validateRunningSummaryJSONShape(summaryFields); err != nil {
+		return RunningSummary{}, err
+	}
+
+	var summary RunningSummary
+	if err := decodeStrict(rawEnvelope.RunningSummary, &summary); err != nil {
+		return RunningSummary{}, fmt.Errorf("decode running_summary: %w", err)
+	}
+	summary = normalizeRunningSummary(summary)
+	if err := validateRunningSummaryContent(summary); err != nil {
+		return RunningSummary{}, err
+	}
+	return summary, nil
+}
+
+func validateRunningSummaryJSONShape(fields map[string]json.RawMessage) error {
+	for _, spec := range []struct {
+		name string
+		kind string
+		want byte
+	}{
+		{name: "session_goal", kind: "string", want: '"'},
+		{name: "user_facts", kind: "array", want: '['},
+		{name: "relationship_state", kind: "object", want: '{'},
+		{name: "open_loops", kind: "array", want: '['},
+		{name: "decisions", kind: "array", want: '['},
+		{name: "do_not_forget", kind: "array", want: '['},
+	} {
+		if err := requireJSONFieldKind(fields, spec.name, spec.kind, spec.want); err != nil {
+			return err
+		}
+	}
+	var relationshipFields map[string]json.RawMessage
+	if err := json.Unmarshal(fields["relationship_state"], &relationshipFields); err != nil {
+		return fmt.Errorf("relationship_state must be an object: %w", err)
+	}
+	for _, spec := range []struct {
+		name string
+		kind string
+		want byte
+	}{
+		{name: "tone", kind: "string", want: '"'},
+		{name: "recent_emotion", kind: "string", want: '"'},
+		{name: "promises_made", kind: "array", want: '['},
+	} {
+		if err := requireJSONFieldKind(relationshipFields, "relationship_state."+spec.name, spec.kind, spec.want); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func requireJSONFieldKind(fields map[string]json.RawMessage, name string, kind string, want byte) error {
+	raw, ok := fields[strings.TrimPrefix(name, "relationship_state.")]
+	if !ok {
+		return fmt.Errorf("%s is required", name)
+	}
+	actual, ok := firstJSONByte(raw)
+	if !ok || actual != want {
+		return fmt.Errorf("%s must be a JSON %s", name, kind)
+	}
+	return nil
+}
+
+func firstJSONByte(raw json.RawMessage) (byte, bool) {
+	for _, b := range raw {
+		switch b {
+		case ' ', '\n', '\r', '\t':
+			continue
+		default:
+			return b, true
+		}
+	}
+	return 0, false
+}
+
+func decodeStrict(input []byte, dst any) error {
+	decoder := json.NewDecoder(bytes.NewReader(input))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("unexpected trailing JSON input")
+		}
+		return err
+	}
+	return nil
+}
+
+func validateRunningSummaryContent(summary RunningSummary) error {
+	values := []string{
+		summary.SessionGoal,
+		summary.RelationshipState.Tone,
+		summary.RelationshipState.RecentEmotion,
+	}
+	values = append(values, summary.UserFacts...)
+	values = append(values, summary.RelationshipState.PromisesMade...)
+	values = append(values, summary.OpenLoops...)
+	values = append(values, summary.Decisions...)
+	values = append(values, summary.DoNotForget...)
+	for _, value := range values {
+		if len([]rune(value)) > 1000 {
+			return fmt.Errorf("summary text item exceeds 1000 runes")
+		}
+		if containsProtocolLeak(value) {
+			return fmt.Errorf("summary contains internal protocol leakage")
+		}
+	}
+	return nil
+}
+
+func containsProtocolLeak(value string) bool {
+	lower := strings.ToLower(value)
+	for _, term := range []string{
+		"decision_packet",
+		"approval_request_id",
+		"taskreport",
+		"task_report",
+		"tool_approval",
+		"permission_escalation_required",
+	} {
+		if strings.Contains(lower, term) {
+			return true
+		}
+	}
+	return false
 }
 
 func summaryResponseCandidates(resp *llm.ChatResponse) []string {

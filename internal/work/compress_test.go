@@ -118,6 +118,81 @@ func TestCompressWorkContext_OverBudget_Compresses(t *testing.T) {
 	}
 }
 
+func TestCompressWorkContext_RetriesInvalidProgressSummary(t *testing.T) {
+	messages := []llm.Message{
+		{Role: llm.RoleAssistant, Content: largeContent(800)},
+		{Role: llm.RoleTool, ToolCallID: "c1", Content: largeContent(800)},
+		{Role: llm.RoleAssistant, Content: largeContent(800)},
+		{Role: llm.RoleTool, ToolCallID: "c2", Content: largeContent(800)},
+		{Role: llm.RoleAssistant, Content: "recent assistant"},
+		{Role: llm.RoleTool, ToolCallID: "c3", Content: "recent tool result"},
+	}
+	fakeLLM := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			{Content: `not json`},
+			{Content: `{"work_progress":{"task_goal":"repaired","steps_completed":["read file"],"key_findings":[],"errors_encountered":[],"current_approach":"ready_to_finish","decisions_received":[]}}`},
+		},
+	}
+
+	got, gotProgress, err := compressWorkContext(
+		context.Background(), fakeLLM, "test-model",
+		messages, WorkProgress{}, "", 1000, 0.7, 2,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fakeLLM.calls) != 2 {
+		t.Fatalf("summary calls = %d, want initial + repair", len(fakeLLM.calls))
+	}
+	if gotProgress.TaskGoal != "repaired" {
+		t.Fatalf("progress.TaskGoal = %q, want repaired", gotProgress.TaskGoal)
+	}
+	if len(got) >= len(messages) {
+		t.Fatalf("compressed messages (%d) should be fewer than original (%d)", len(got), len(messages))
+	}
+}
+
+func TestCompressWorkContext_FallbackCompressesWhenProgressRepairFails(t *testing.T) {
+	messages := []llm.Message{
+		{Role: llm.RoleAssistant, Content: largeContent(800)},
+		{Role: llm.RoleTool, ToolCallID: "c1", Content: largeContent(800)},
+		{Role: llm.RoleAssistant, Content: largeContent(800)},
+		{Role: llm.RoleTool, ToolCallID: "c2", Content: largeContent(800)},
+		{Role: llm.RoleAssistant, Content: "recent assistant"},
+		{Role: llm.RoleTool, ToolCallID: "c3", Content: "recent tool result"},
+	}
+	fakeLLM := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			{Content: `not json`},
+			{Content: `still not json`},
+		},
+	}
+	current := WorkProgress{TaskGoal: "old goal", KeyFindings: []string{"keep this"}}
+
+	got, gotProgress, err := compressWorkContext(
+		context.Background(), fakeLLM, "test-model",
+		messages, current, "", 1000, 0.7, 2,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fakeLLM.calls) != 2 {
+		t.Fatalf("summary calls = %d, want initial + repair", len(fakeLLM.calls))
+	}
+	if gotProgress.TaskGoal != "old goal" {
+		t.Fatalf("progress.TaskGoal = %q, want old goal", gotProgress.TaskGoal)
+	}
+	if !containsString(gotProgress.KeyFindings, "keep this") {
+		t.Fatalf("KeyFindings = %#v, want preserved current progress", gotProgress.KeyFindings)
+	}
+	if !containsString(gotProgress.ErrorsEncountered, "[uncompressed round omitted due to progress parse failure]") {
+		t.Fatalf("ErrorsEncountered = %#v, want deterministic fallback marker", gotProgress.ErrorsEncountered)
+	}
+	if len(got) >= len(messages) {
+		t.Fatalf("compressed messages (%d) should be fewer than original (%d)", len(got), len(messages))
+	}
+}
+
 func TestFindKeepBoundary(t *testing.T) {
 	messages := []llm.Message{
 		{Role: llm.RoleAssistant, Content: "round0"},
@@ -261,4 +336,13 @@ func largeContent(n int) string {
 		b[i] = 'x'
 	}
 	return string(b)
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

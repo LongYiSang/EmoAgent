@@ -19,15 +19,22 @@ import (
 )
 
 type summaryUpdateClient struct {
+	responses    []*llm.ChatResponse
 	response     *llm.ChatResponse
 	err          error
 	lastReq      llm.ChatRequest
 	chatRequests []llm.ChatRequest
+	index        int
 }
 
 func (c *summaryUpdateClient) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 	c.lastReq = req
 	c.chatRequests = append(c.chatRequests, req)
+	if len(c.responses) > 0 {
+		resp := c.responses[min(c.index, len(c.responses)-1)]
+		c.index++
+		return resp, c.err
+	}
 	return c.response, c.err
 }
 
@@ -63,8 +70,8 @@ func TestBuildEmotionContextUsesPinnedContextAndRecentTurns(t *testing.T) {
 	if !strings.HasPrefix(assembled.System, "You are warm.") {
 		t.Fatalf("System = %q, want prefix %q", assembled.System, "You are warm.")
 	}
-	if !strings.Contains(assembled.System, "Delegation Guideline") {
-		t.Fatalf("System = %q, want Delegation Guideline section", assembled.System)
+	if !strings.Contains(assembled.System, "Emotion Work Delegation Contract") {
+		t.Fatalf("System = %q, want Emotion Work Delegation Contract section", assembled.System)
 	}
 	if !strings.Contains(assembled.System, "delegate_to_work") {
 		t.Fatalf("System = %q, want delegate_to_work reference", assembled.System)
@@ -182,8 +189,8 @@ func TestBuildEmotionContextPlacesToolDigestBeforeRecentTurns(t *testing.T) {
 	if !strings.HasPrefix(assembled.System, "You are warm.") {
 		t.Fatalf("System = %q, want prefix %q", assembled.System, "You are warm.")
 	}
-	if !strings.Contains(assembled.System, "Delegation Guideline") {
-		t.Fatalf("System = %q, want Delegation Guideline section", assembled.System)
+	if !strings.Contains(assembled.System, "Emotion Work Delegation Contract") {
+		t.Fatalf("System = %q, want Emotion Work Delegation Contract section", assembled.System)
 	}
 	if assembled.Messages[0].Role != "user" {
 		t.Fatalf("Messages[0].Role = %q, want user", assembled.Messages[0].Role)
@@ -458,8 +465,9 @@ func TestBuildEmotionContext_IncludesPermissionEscalationGuidance(t *testing.T) 
 
 	for _, snippet := range []string{
 		"permission_escalation_required",
-		"always ask the user for destructive permission in Emotion's persona",
-		"Do not self-resolve permission_escalation_required inside Emotion",
+		"never self-approve",
+		"Ask the user for destructive permission",
+		"permission_scope_override",
 		"emotion_judgment",
 	} {
 		if !strings.Contains(assembled.System, snippet) {
@@ -543,12 +551,12 @@ func TestCompactReportCarriesSummaryCoverageAndSummaryModel(t *testing.T) {
 	}
 }
 
-func TestRunningSummaryIterativeUpdatePreservesProtectedFields(t *testing.T) {
+func TestRunningSummaryIterativeUpdateUsesModelOutputAsMergedSummary(t *testing.T) {
 	client := &summaryUpdateClient{
 		response: &llm.ChatResponse{
 			ID:      "summary-1",
 			Model:   "summary-model",
-			Content: `{"running_summary":{"session_goal":"updated goal","relationship_state":{"tone":"steady","recent_emotion":"focused"},"open_loops":["new loop"],"decisions":["new decision"]}}`,
+			Content: `{"running_summary":{"session_goal":"updated goal","user_facts":[],"relationship_state":{"tone":"steady","recent_emotion":"focused","promises_made":[]},"open_loops":["new loop"],"decisions":["new decision"],"do_not_forget":[]}}`,
 		},
 	}
 	state := &ctxpkg.ContextState{
@@ -583,11 +591,11 @@ func TestRunningSummaryIterativeUpdatePreservesProtectedFields(t *testing.T) {
 	if !report.Attempted || report.DeltaCount != 2 {
 		t.Fatalf("SummaryUpdateReport = %#v, want attempted delta_count=2", report)
 	}
-	if len(next.RunningSummary.RelationshipState.PromisesMade) != 1 || next.RunningSummary.RelationshipState.PromisesMade[0] != "follow up tomorrow" {
-		t.Fatalf("PromisesMade = %#v, want preserved existing promise", next.RunningSummary.RelationshipState.PromisesMade)
+	if len(next.RunningSummary.RelationshipState.PromisesMade) != 0 {
+		t.Fatalf("PromisesMade = %#v, want model-authoritative empty list", next.RunningSummary.RelationshipState.PromisesMade)
 	}
-	if len(next.RunningSummary.DoNotForget) != 1 || next.RunningSummary.DoNotForget[0] != "user needs concise updates" {
-		t.Fatalf("DoNotForget = %#v, want preserved existing constraint", next.RunningSummary.DoNotForget)
+	if len(next.RunningSummary.DoNotForget) != 0 {
+		t.Fatalf("DoNotForget = %#v, want model-authoritative empty list", next.RunningSummary.DoNotForget)
 	}
 	if next.RunningSummary.SessionGoal != "updated goal" {
 		t.Fatalf("SessionGoal = %q, want updated goal", next.RunningSummary.SessionGoal)
@@ -600,13 +608,39 @@ func TestRunningSummaryIterativeUpdatePreservesProtectedFields(t *testing.T) {
 	}
 }
 
+func TestRunningSummaryPromptIncludesSchemaAndSafetyRules(t *testing.T) {
+	client := &summaryUpdateClient{
+		response: &llm.ChatResponse{
+			ID:      "summary-1",
+			Model:   "summary-model",
+			Content: `{"running_summary":{"session_goal":"updated goal","user_facts":[],"relationship_state":{"tone":"","recent_emotion":"","promises_made":[]},"open_loops":[],"decisions":[],"do_not_forget":[]}}`,
+		},
+	}
+
+	_, _, err := ctxpkg.UpdateRunningSummary(context.Background(), client, "summary-model", 0, nil, &config.Persona{Name: "default", SystemPrompt: "system"}, summaryParsingHistory(), nil, testContextConfig())
+	if err != nil {
+		t.Fatalf("UpdateRunningSummary: %v", err)
+	}
+	for _, snippet := range []string{
+		`"running_summary"`,
+		`"relationship_state"`,
+		"Do not store credentials",
+		"Remove obsolete items",
+		"JSON only",
+	} {
+		if !strings.Contains(client.lastReq.System, snippet) {
+			t.Fatalf("summary system prompt missing %q: %s", snippet, client.lastReq.System)
+		}
+	}
+}
+
 func TestRunningSummaryIterativeUpdateUsesConfiguredSummaryTemperature(t *testing.T) {
 	summaryTemperature := 0.35
 	client := &summaryUpdateClient{
 		response: &llm.ChatResponse{
 			ID:      "summary-1",
 			Model:   "summary-model",
-			Content: `{"running_summary":{"session_goal":"updated goal"}}`,
+			Content: summaryContent("updated goal"),
 		},
 	}
 	history := []storage.MessageRecord{
@@ -640,7 +674,7 @@ func TestRunningSummaryParsesFencedJSON(t *testing.T) {
 		response: &llm.ChatResponse{
 			ID:      "summary-1",
 			Model:   "summary-model",
-			Content: "```json\n{\"running_summary\":{\"session_goal\":\"from fenced json\"}}\n```",
+			Content: "```json\n" + summaryContent("from fenced json") + "\n```",
 		},
 	}
 	next := runSummaryUpdateForParsing(t, client)
@@ -654,7 +688,7 @@ func TestRunningSummaryParsesEmbeddedJSON(t *testing.T) {
 		response: &llm.ChatResponse{
 			ID:      "summary-1",
 			Model:   "summary-model",
-			Content: "好的，摘要如下：{\"running_summary\":{\"session_goal\":\"from embedded json\"}}",
+			Content: "好的，摘要如下：" + summaryContent("from embedded json"),
 		},
 	}
 	next := runSummaryUpdateForParsing(t, client)
@@ -668,7 +702,7 @@ func TestRunningSummaryParsesEmbeddedJSONAfterNonSummaryObject(t *testing.T) {
 		response: &llm.ChatResponse{
 			ID:      "summary-1",
 			Model:   "summary-model",
-			Content: "{\"note\":\"not the summary\"}\n{\"running_summary\":{\"session_goal\":\"from second object\"}}",
+			Content: "{\"note\":\"not the summary\"}\n" + summaryContent("from second object"),
 		},
 	}
 	next := runSummaryUpdateForParsing(t, client)
@@ -682,7 +716,7 @@ func TestRunningSummaryUsesReasoningContentJSONFallback(t *testing.T) {
 		response: &llm.ChatResponse{
 			ID:               "summary-1",
 			Model:            "summary-model",
-			ReasoningContent: "{\"running_summary\":{\"session_goal\":\"from reasoning json\"}}",
+			ReasoningContent: summaryContent("from reasoning json"),
 		},
 	}
 	next := runSummaryUpdateForParsing(t, client)
@@ -714,6 +748,65 @@ func TestRunningSummaryRejectsFreeformReasoningContent(t *testing.T) {
 	}
 }
 
+func TestRunningSummaryRepairsInvalidLeakySummary(t *testing.T) {
+	client := &summaryUpdateClient{
+		responses: []*llm.ChatResponse{
+			{
+				ID:      "summary-1",
+				Model:   "summary-model",
+				Content: `{"running_summary":{"session_goal":"bad","user_facts":["decision_packet leaked"],"relationship_state":{"tone":"","recent_emotion":"","promises_made":[]},"open_loops":[],"decisions":[],"do_not_forget":[]}}`,
+			},
+			{
+				ID:      "summary-2",
+				Model:   "summary-model",
+				Content: `{"running_summary":{"session_goal":"repaired","user_facts":[],"relationship_state":{"tone":"","recent_emotion":"","promises_made":[]},"open_loops":[],"decisions":[],"do_not_forget":[]}}`,
+			},
+		},
+	}
+
+	next, _, err := ctxpkg.UpdateRunningSummary(context.Background(), client, "summary-model", 0, nil, &config.Persona{Name: "default", SystemPrompt: "system"}, summaryParsingHistory(), nil, testContextConfig())
+	if err != nil {
+		t.Fatalf("UpdateRunningSummary: %v", err)
+	}
+	if got := len(client.chatRequests); got != 2 {
+		t.Fatalf("summary calls = %d, want initial + repair", got)
+	}
+	if !strings.Contains(client.chatRequests[1].System, "Repair") {
+		t.Fatalf("repair system prompt = %q, want repair instruction", client.chatRequests[1].System)
+	}
+	if next.RunningSummary.SessionGoal != "repaired" {
+		t.Fatalf("SessionGoal = %q, want repaired", next.RunningSummary.SessionGoal)
+	}
+}
+
+func TestRunningSummaryRepairsMissingRequiredStructure(t *testing.T) {
+	client := &summaryUpdateClient{
+		responses: []*llm.ChatResponse{
+			{
+				ID:      "summary-1",
+				Model:   "summary-model",
+				Content: `{"running_summary":{"session_goal":"bad","relationship_state":{"tone":"","recent_emotion":"","promises_made":[]}}}`,
+			},
+			{
+				ID:      "summary-2",
+				Model:   "summary-model",
+				Content: summaryContent("repaired structure"),
+			},
+		},
+	}
+
+	next, _, err := ctxpkg.UpdateRunningSummary(context.Background(), client, "summary-model", 0, nil, &config.Persona{Name: "default", SystemPrompt: "system"}, summaryParsingHistory(), nil, testContextConfig())
+	if err != nil {
+		t.Fatalf("UpdateRunningSummary: %v", err)
+	}
+	if got := len(client.chatRequests); got != 2 {
+		t.Fatalf("summary calls = %d, want initial + repair", got)
+	}
+	if next.RunningSummary.SessionGoal != "repaired structure" {
+		t.Fatalf("SessionGoal = %q, want repaired structure", next.RunningSummary.SessionGoal)
+	}
+}
+
 func TestRunningSummaryFailureCooldownSkipsNextAttempt(t *testing.T) {
 	firstClient := &summaryUpdateClient{
 		response: &llm.ChatResponse{ID: "summary-1", Model: "summary-model", Content: "not json"},
@@ -722,8 +815,8 @@ func TestRunningSummaryFailureCooldownSkipsNextAttempt(t *testing.T) {
 	if err == nil {
 		t.Fatal("first UpdateRunningSummary err = nil, want parse failure")
 	}
-	if len(firstClient.chatRequests) != 1 {
-		t.Fatalf("first summary calls = %d, want 1", len(firstClient.chatRequests))
+	if len(firstClient.chatRequests) != 2 {
+		t.Fatalf("first summary calls = %d, want initial + repair", len(firstClient.chatRequests))
 	}
 
 	secondClient := &summaryUpdateClient{
@@ -749,7 +842,7 @@ func TestRunningSummarySuccessClearsFailureState(t *testing.T) {
 		response: &llm.ChatResponse{
 			ID:      "summary-1",
 			Model:   "summary-model",
-			Content: `{"running_summary":{"session_goal":"recovered"}}`,
+			Content: summaryContent("recovered"),
 		},
 	}
 	state := &ctxpkg.ContextState{
@@ -782,6 +875,27 @@ func summaryParsingHistory() []storage.MessageRecord {
 		{ID: "m2", Role: "assistant", Content: "older assistant"},
 		{ID: "m3", Role: "user", Content: "latest user"},
 	}
+}
+
+func summaryContent(goal string) string {
+	payload, err := json.Marshal(map[string]any{
+		"running_summary": map[string]any{
+			"session_goal":  goal,
+			"user_facts":    []string{},
+			"open_loops":    []string{},
+			"decisions":     []string{},
+			"do_not_forget": []string{},
+			"relationship_state": map[string]any{
+				"tone":           "",
+				"recent_emotion": "",
+				"promises_made":  []string{},
+			},
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return string(payload)
 }
 
 func testContextConfig() config.ContextConfig {

@@ -40,7 +40,7 @@ flowchart TB
     subgraph E[" Emotion 根代理 · 唯一对话者"]
       direction TB
       E_core[" persona · Agent人设"]
-      E_tool["轻量工具<br/>time · web_search"]
+      E_tool["当前时间上下文<br/>web_search"]
       E_mem["持久记忆"]
       E_emo["情感状态机<br/>Valence · Arousal"]
     end

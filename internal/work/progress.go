@@ -36,11 +36,37 @@ func (p WorkProgress) IsZero() bool {
 
 var workProgressSystemPrompt = strings.TrimSpace(`
 You maintain a structured rolling progress summary for a task execution agent.
-Return JSON only in the form {"work_progress":{...}}.
-Merge the new round information with the existing progress.
-Keep steps_completed and key_findings concise - one sentence per item.
-Drop intermediate detail that has been superseded by later findings.
-Do not emit prose, markdown, or explanations outside the JSON object.
+Return exactly one JSON object with this shape:
+{
+  "work_progress": {
+    "task_goal": "",
+    "steps_completed": [],
+    "key_findings": [],
+    "errors_encountered": [],
+    "current_approach": "",
+    "decisions_received": []
+  }
+}
+
+Update rules:
+- Merge the existing work_progress with the new round messages; never summarize only the new round.
+- Preserve task_goal unless the new round explicitly corrects it.
+- steps_completed must include completed actions only, not plans, intentions, or attempted steps that failed.
+- key_findings must include durable facts relevant to the delegated task, summarized in one sentence each.
+- errors_encountered must include still-relevant tool errors, failed commands, permission blockers, or verification failures.
+- current_approach should state the next immediate approach, blocker, or "ready_to_finish" when the task appears complete.
+- decisions_received should preserve user, Emotion, runtime, and permission decisions that affect the task path.
+- Drop superseded intermediate details, duplicate findings, and raw tool output.
+- Do not include stack traces, long file excerpts, protocol JSON, or internal approval IDs unless an ID is required to identify the active pause.
+- Use empty strings and empty arrays when unknown.
+- JSON only. No markdown, prose, code fences, or explanations.
+`)
+
+var workProgressRepairSystemPrompt = strings.TrimSpace(`
+Repair the work_progress response to the exact required JSON schema.
+Do not add facts that are not present in the provided current progress or round messages.
+Remove protocol leaks, raw tool output, stack traces, internal approval IDs, and any prose outside JSON.
+Return JSON only. No markdown, code fences, or explanations.
 `)
 
 func buildProgressSummaryRequest(model string, current WorkProgress, delta []llm.Message) (llm.ChatRequest, error) {
@@ -141,13 +167,168 @@ func parseProgressSummaryResponse(resp *llm.ChatResponse) (WorkProgress, error) 
 		return WorkProgress{}, fmt.Errorf("progress summary response content is empty")
 	}
 
-	var envelope struct {
-		WorkProgress WorkProgress `json:"work_progress"`
+	progress, err := decodeAndValidateWorkProgress(stripCodeFence(content))
+	if err != nil {
+		return WorkProgress{}, fmt.Errorf("validate work progress response: %w", err)
 	}
-	if err := json.Unmarshal([]byte(content), &envelope); err != nil {
-		return WorkProgress{}, fmt.Errorf("unmarshal work progress response: %w", err)
+	return progress, nil
+}
+
+func buildProgressRepairRequest(req llm.ChatRequest, resp *llm.ChatResponse, parseErr error) (llm.ChatRequest, error) {
+	payload, err := json.Marshal(struct {
+		Error           string `json:"error"`
+		InvalidResponse string `json:"invalid_response"`
+	}{
+		Error:           parseErr.Error(),
+		InvalidResponse: truncateProgressRepairContent(progressResponseText(resp)),
+	})
+	if err != nil {
+		return llm.ChatRequest{}, fmt.Errorf("marshal progress repair payload: %w", err)
 	}
-	return normalizeWorkProgress(envelope.WorkProgress), nil
+	repairReq := req
+	repairReq.System = workProgressRepairSystemPrompt
+	repairReq.Messages = append(append([]llm.Message(nil), req.Messages...), llm.Message{
+		Role:    llm.RoleUser,
+		Content: string(payload),
+	})
+	repairReq.Temperature = 0
+	repairReq.Stream = false
+	repairReq.Params = req.Params
+	zero := 0.0
+	repairReq.Params.Temperature = &zero
+	stream := false
+	repairReq.Params.Stream = &stream
+	return repairReq, nil
+}
+
+func progressResponseText(resp *llm.ChatResponse) string {
+	if resp == nil {
+		return ""
+	}
+	if content := strings.TrimSpace(resp.Content); content != "" {
+		return content
+	}
+	var b strings.Builder
+	for _, block := range resp.ContentBlocks {
+		if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
+			b.WriteString(block.Text)
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func truncateProgressRepairContent(content string) string {
+	const max = 8000
+	if len(content) <= max {
+		return content
+	}
+	return content[:max]
+}
+
+func decodeAndValidateWorkProgress(content string) (WorkProgress, error) {
+	var rawEnvelope struct {
+		WorkProgress json.RawMessage `json:"work_progress"`
+	}
+	if err := decodeStrictJSON(json.RawMessage(content), &rawEnvelope); err != nil {
+		return WorkProgress{}, fmt.Errorf("decode envelope: %w", err)
+	}
+	if len(rawEnvelope.WorkProgress) == 0 {
+		return WorkProgress{}, fmt.Errorf("work_progress is required")
+	}
+	var progressFields map[string]json.RawMessage
+	if err := json.Unmarshal(rawEnvelope.WorkProgress, &progressFields); err != nil {
+		return WorkProgress{}, fmt.Errorf("work_progress must be an object: %w", err)
+	}
+	if err := validateWorkProgressJSONShape(progressFields); err != nil {
+		return WorkProgress{}, err
+	}
+	var progress WorkProgress
+	if err := decodeStrictJSON(rawEnvelope.WorkProgress, &progress); err != nil {
+		return WorkProgress{}, fmt.Errorf("decode work_progress: %w", err)
+	}
+	progress = normalizeWorkProgress(progress)
+	if err := validateWorkProgressContent(progress); err != nil {
+		return WorkProgress{}, err
+	}
+	return progress, nil
+}
+
+func validateWorkProgressJSONShape(fields map[string]json.RawMessage) error {
+	for _, spec := range []struct {
+		name string
+		kind string
+		want byte
+	}{
+		{name: "task_goal", kind: "string", want: '"'},
+		{name: "steps_completed", kind: "array", want: '['},
+		{name: "key_findings", kind: "array", want: '['},
+		{name: "errors_encountered", kind: "array", want: '['},
+		{name: "current_approach", kind: "string", want: '"'},
+		{name: "decisions_received", kind: "array", want: '['},
+	} {
+		if err := requireWorkJSONFieldKind(fields, spec.name, spec.kind, spec.want); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func requireWorkJSONFieldKind(fields map[string]json.RawMessage, name string, kind string, want byte) error {
+	raw, ok := fields[name]
+	if !ok {
+		return fmt.Errorf("%s is required", name)
+	}
+	actual, ok := firstWorkJSONByte(raw)
+	if !ok || actual != want {
+		return fmt.Errorf("%s must be a JSON %s", name, kind)
+	}
+	return nil
+}
+
+func firstWorkJSONByte(raw json.RawMessage) (byte, bool) {
+	for _, b := range raw {
+		switch b {
+		case ' ', '\n', '\r', '\t':
+			continue
+		default:
+			return b, true
+		}
+	}
+	return 0, false
+}
+
+func validateWorkProgressContent(progress WorkProgress) error {
+	values := []string{progress.TaskGoal, progress.CurrentApproach}
+	values = append(values, progress.StepsCompleted...)
+	values = append(values, progress.KeyFindings...)
+	values = append(values, progress.ErrorsEncountered...)
+	values = append(values, progress.DecisionsReceived...)
+	for _, value := range values {
+		if len([]rune(value)) > 1000 {
+			return fmt.Errorf("work_progress text item exceeds 1000 runes")
+		}
+		if containsWorkProtocolLeak(value) {
+			return fmt.Errorf("work_progress contains internal protocol leakage")
+		}
+	}
+	return nil
+}
+
+func containsWorkProtocolLeak(value string) bool {
+	lower := strings.ToLower(value)
+	for _, term := range []string{
+		"decision_packet",
+		"approval_request_id",
+		"taskreport",
+		"task_report",
+		"tool_approval",
+		"permission_escalation_required",
+	} {
+		if strings.Contains(lower, term) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeWorkProgress(p WorkProgress) WorkProgress {

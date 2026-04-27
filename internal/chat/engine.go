@@ -1017,7 +1017,7 @@ func buildApprovalContinuationNote(approval *protocol.ApprovalRequest) string {
 		return ""
 	}
 	return fmt.Sprintf(
-		"## Internal Approval Event\nApproval request %s for task %s is now %s. Selected option: %s. Continue the paused task immediately if appropriate. Use resume_work with task_id and approval_request_id. Do not mention internal approval IDs to the user unless necessary.",
+		"## Internal Approval Continuation\nA user approval decision was received for a paused Work task.\nThis note is internal runtime state, not user-facing content.\n\nApproval request %s for task %s is now %s.\nSelected option: %s.\n\nIf the task is still paused and this approval has not been consumed, continue the paused task now by calling resume_work with the matching task_id and approval_request_id.\nIf the approval is rejected, resume with rejection so Work can stop or choose a safe alternative.\nDo not mention approval_request_id, task_id, internal approval flow, or raw protocol objects to the user.",
 		approval.ID,
 		approval.TaskID,
 		approval.Status,
@@ -1030,7 +1030,7 @@ func buildApprovalOutcomeNote(approval *protocol.ApprovalRequest, outcome json.R
 		return ""
 	}
 	return fmt.Sprintf(
-		"## Internal Approval Event\nApproval request %s for task %s is now %s. The user's decision has already been applied and the paused Work task has already been resumed internally. Do not call resume_work again for this approval_request_id.\n\n## Internal Resume Outcome\n%s\n\nUse the internal outcome above to continue naturally. If it is already a final result, explain it to the user in your own words. If the task paused again, continue from the current pending state instead of reusing the consumed approval. Never expose raw JSON or internal IDs to the user.",
+		"## Internal Approval Outcome\nApproval request %s for task %s is now %s. The user's decision has already been applied and the paused Work task has already been resumed internally. Do not call resume_work again for this approval_request_id.\n\n## Internal Resume Outcome\n%s\n\nUse the internal outcome above to continue naturally. If it is already a final result, explain it to the user in your own words. If the task paused again, continue from the current pending state and do not reuse the consumed approval_request_id. Never expose raw JSON, internal IDs, protocol JSON, or approval plumbing to the user.",
 		approval.ID,
 		approval.TaskID,
 		approval.Status,

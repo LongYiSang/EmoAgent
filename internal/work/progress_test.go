@@ -46,6 +46,26 @@ func TestBuildProgressSummaryRequest_IncludesCurrentProgress(t *testing.T) {
 	}
 }
 
+func TestBuildProgressSummaryRequest_IncludesSchemaAndSafetyRules(t *testing.T) {
+	req, err := buildProgressSummaryRequest("gpt-4o-mini", WorkProgress{}, []llm.Message{
+		{Role: llm.RoleAssistant, Content: "I will run tests"},
+	})
+	if err != nil {
+		t.Fatalf("buildProgressSummaryRequest: %v", err)
+	}
+	for _, snippet := range []string{
+		`"work_progress"`,
+		`"steps_completed"`,
+		"completed actions only",
+		"errors_encountered must include still-relevant tool errors",
+		"JSON only",
+	} {
+		if !strings.Contains(req.System, snippet) {
+			t.Fatalf("progress system prompt missing %q: %s", snippet, req.System)
+		}
+	}
+}
+
 func TestParseProgressSummaryResponse(t *testing.T) {
 	resp := &llm.ChatResponse{
 		Content: `{"work_progress":{"task_goal":"analyze config","steps_completed":["read file","parsed yaml"],"key_findings":["missing field X"],"errors_encountered":[],"current_approach":"checking defaults","decisions_received":[]}}`,
@@ -77,5 +97,27 @@ func TestParseProgressSummaryResponse_EmptyContent(t *testing.T) {
 	_, err := parseProgressSummaryResponse(&llm.ChatResponse{})
 	if err == nil {
 		t.Fatal("expected error for empty content")
+	}
+}
+
+func TestParseProgressSummaryResponse_RejectsProtocolLeak(t *testing.T) {
+	resp := &llm.ChatResponse{
+		Content: `{"work_progress":{"task_goal":"analyze config","steps_completed":["read file"],"key_findings":["TaskReport leaked"],"errors_encountered":[],"current_approach":"checking defaults","decisions_received":[]}}`,
+	}
+
+	_, err := parseProgressSummaryResponse(resp)
+	if err == nil {
+		t.Fatal("expected protocol leak to fail validation")
+	}
+}
+
+func TestParseProgressSummaryResponse_RejectsMissingRequiredStructure(t *testing.T) {
+	resp := &llm.ChatResponse{
+		Content: `{"work_progress":{"task_goal":"analyze config","steps_completed":["read file"],"current_approach":"checking defaults"}}`,
+	}
+
+	_, err := parseProgressSummaryResponse(resp)
+	if err == nil {
+		t.Fatal("expected missing required fields to fail validation")
 	}
 }
