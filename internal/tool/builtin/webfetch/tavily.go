@@ -1,58 +1,55 @@
-package web_fetch_tavily
+package webfetch
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
 	"strings"
-	"time"
+
+	tavilyapi "github.com/longyisang/emoagent/internal/tool/builtin/tavily"
 )
 
 // TavilyConfig holds configuration for the Tavily extract provider.
 type TavilyConfig struct {
 	APIKey         string
 	BaseURL        string
-	Timeout        time.Duration
 	TimeoutSec     int
 	ExtractDepth   string
 	Format         string
 	IncludeImages  bool
 	IncludeFavicon bool
 	IncludeUsage   bool
+	Client         *tavilyapi.Client
 }
 
 type tavilyProvider struct {
-	cfg        TavilyConfig
-	httpClient *http.Client
-	logger     *slog.Logger
+	cfg    TavilyConfig
+	client *tavilyapi.Client
+	logger *slog.Logger
 }
 
 // NewTavilyProvider creates a provider backed by Tavily /extract.
 func NewTavilyProvider(cfg TavilyConfig, logger *slog.Logger) Provider {
-	if cfg.BaseURL == "" {
-		cfg.BaseURL = "https://api.tavily.com"
-	}
 	if cfg.ExtractDepth == "" {
 		cfg.ExtractDepth = "basic"
 	}
 	if cfg.Format == "" {
 		cfg.Format = "markdown"
 	}
-	timeout := cfg.Timeout
-	if timeout <= 0 {
-		timeout = 20 * time.Second
-	}
 	if cfg.TimeoutSec <= 0 {
-		cfg.TimeoutSec = int(timeout / time.Second)
+		cfg.TimeoutSec = 20
+	}
+	client := cfg.Client
+	if client == nil {
+		client = tavilyapi.NewClient(tavilyapi.Config{
+			APIKey:  cfg.APIKey,
+			BaseURL: cfg.BaseURL,
+		}, logger)
 	}
 	return &tavilyProvider{
-		cfg:        cfg,
-		httpClient: &http.Client{Timeout: timeout},
-		logger:     logger,
+		cfg:    cfg,
+		client: client,
+		logger: logger,
 	}
 }
 
@@ -100,40 +97,13 @@ func (p *tavilyProvider) Fetch(ctx context.Context, sourceURL string, opts Optio
 		reqBody.Timeout = float64(p.cfg.TimeoutSec)
 	}
 
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("tavily extract: marshal request: %w", err)
-	}
-
-	endpoint := strings.TrimRight(p.cfg.BaseURL, "/") + "/extract"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("tavily extract: create request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
-	req.Header.Set("Content-Type", "application/json")
-
 	if p.logger != nil {
 		p.logger.DebugContext(ctx, "tavily extract", "url", sourceURL, "depth", p.cfg.ExtractDepth, "format", p.cfg.Format)
 	}
 
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("tavily extract: http request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("tavily extract: read response: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("tavily extract: status %d: %s", resp.StatusCode, truncateForError(string(respBody), 512))
-	}
-
 	var tavilyResp tavilyExtractResponse
-	if err := json.Unmarshal(respBody, &tavilyResp); err != nil {
-		return nil, fmt.Errorf("tavily extract: decode response: %w", err)
+	if err := p.client.PostJSON(ctx, "/extract", reqBody, &tavilyResp, "extract"); err != nil {
+		return nil, err
 	}
 	if len(tavilyResp.Results) == 0 {
 		return nil, fmt.Errorf("tavily extract: no successful results%s%s",

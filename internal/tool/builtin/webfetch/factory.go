@@ -1,4 +1,4 @@
-package web_fetch_tavily
+package webfetch
 
 import (
 	"fmt"
@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/tool/builtin/tavily"
 )
 
 // NewProvider creates the configured web_fetch provider.
@@ -35,14 +36,17 @@ func NewProvider(cfg config.WebFetchConfig, logger *slog.Logger) (Provider, erro
 		}
 		return NewTavilyProvider(TavilyConfig{
 			APIKey:         apiKey,
-			BaseURL:        cfg.BaseURL,
-			Timeout:        timeout,
 			TimeoutSec:     cfg.TimeoutSec,
 			ExtractDepth:   cfg.ExtractDepth,
 			Format:         cfg.Format,
 			IncludeImages:  cfg.IncludeImages,
 			IncludeFavicon: cfg.IncludeFavicon,
 			IncludeUsage:   cfg.IncludeUsage,
+			Client: tavily.NewClient(tavily.Config{
+				APIKey:  apiKey,
+				BaseURL: cfg.BaseURL,
+				Timeout: timeout,
+			}, logger),
 		}, logger), nil
 	default:
 		return nil, fmt.Errorf("unsupported webfetch provider %q", cfg.Provider)

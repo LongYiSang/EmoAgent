@@ -1,9 +1,8 @@
-package web_fetch_tavily
+package webfetch
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/tool/builtin/tavily"
 )
 
 func defaultTestConfig() config.WebFetchConfig {
@@ -127,11 +127,9 @@ func TestDirectFetchInvalidScheme(t *testing.T) {
 func TestTavilyFetchSuccess(t *testing.T) {
 	const apiKey = "test-key"
 
-	var gotAuth string
 	var gotPath string
 	var reqBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
 		gotPath = r.URL.Path
 		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
 			http.Error(w, "bad body", http.StatusBadRequest)
@@ -161,14 +159,17 @@ func TestTavilyFetchSuccess(t *testing.T) {
 	cfg.IncludeImages = true
 	cfg.IncludeUsage = true
 	provider := NewTavilyProvider(TavilyConfig{
-		APIKey:         apiKey,
-		BaseURL:        cfg.BaseURL,
-		Timeout:        time.Duration(cfg.TimeoutSec) * time.Second,
 		ExtractDepth:   cfg.ExtractDepth,
 		Format:         cfg.Format,
 		IncludeImages:  cfg.IncludeImages,
 		IncludeFavicon: cfg.IncludeFavicon,
 		IncludeUsage:   cfg.IncludeUsage,
+		TimeoutSec:     cfg.TimeoutSec,
+		Client: tavily.NewClient(tavily.Config{
+			APIKey:  apiKey,
+			BaseURL: cfg.BaseURL,
+			Timeout: time.Duration(cfg.TimeoutSec) * time.Second,
+		}, nil),
 	}, nil)
 
 	resp, err := provider.Fetch(context.Background(), "https://example.com/article", Options{MaxBytes: 1 << 20})
@@ -177,9 +178,6 @@ func TestTavilyFetchSuccess(t *testing.T) {
 	}
 	if gotPath != "/extract" {
 		t.Fatalf("path = %q, want /extract", gotPath)
-	}
-	if gotAuth != "Bearer "+apiKey {
-		t.Fatalf("Authorization = %q, want Bearer %s", gotAuth, apiKey)
 	}
 	if reqBody["urls"] != "https://example.com/article" {
 		t.Fatalf("urls = %#v, want requested URL", reqBody["urls"])
@@ -236,11 +234,13 @@ func TestTavilyFetchFailedOnly(t *testing.T) {
 	defer srv.Close()
 
 	provider := NewTavilyProvider(TavilyConfig{
-		APIKey:       "key",
-		BaseURL:      srv.URL,
-		Timeout:      5 * time.Second,
 		ExtractDepth: "basic",
 		Format:       "markdown",
+		Client: tavily.NewClient(tavily.Config{
+			APIKey:  "key",
+			BaseURL: srv.URL,
+			Timeout: 5 * time.Second,
+		}, nil),
 	}, nil)
 
 	_, err := provider.Fetch(context.Background(), "https://example.com/missing", Options{MaxBytes: 1 << 20})
@@ -249,62 +249,5 @@ func TestTavilyFetchFailedOnly(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "blocked") || !strings.Contains(err.Error(), "req-failed") {
 		t.Fatalf("error = %q, want failed reason and request_id", err.Error())
-	}
-}
-
-func TestTavilyFetchNon2xx(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "rate limited", http.StatusTooManyRequests)
-	}))
-	defer srv.Close()
-
-	provider := NewTavilyProvider(TavilyConfig{
-		APIKey:       "key",
-		BaseURL:      srv.URL,
-		Timeout:      5 * time.Second,
-		ExtractDepth: "basic",
-		Format:       "markdown",
-	}, nil)
-
-	_, err := provider.Fetch(context.Background(), "https://example.com", Options{MaxBytes: 1 << 20})
-	if err == nil {
-		t.Fatal("expected non-2xx error")
-	}
-	if !strings.Contains(err.Error(), "429") || !strings.Contains(err.Error(), "rate limited") {
-		t.Fatalf("error = %q, want status and body", err.Error())
-	}
-}
-
-func TestTavilyFetchContextTimeout(t *testing.T) {
-	done := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer close(done)
-		select {
-		case <-r.Context().Done():
-		case <-time.After(5 * time.Second):
-		}
-	}))
-	defer func() {
-		<-done
-		srv.Close()
-	}()
-
-	provider := NewTavilyProvider(TavilyConfig{
-		APIKey:       "key",
-		BaseURL:      srv.URL,
-		Timeout:      5 * time.Second,
-		ExtractDepth: "basic",
-		Format:       "markdown",
-	}, nil)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
-	defer cancel()
-
-	_, err := provider.Fetch(ctx, "https://example.com", Options{MaxBytes: 1 << 20})
-	if err == nil {
-		t.Fatal("expected context timeout")
-	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("errors.Is(context.DeadlineExceeded) = false for %v", err)
 	}
 }

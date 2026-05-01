@@ -1,4 +1,4 @@
-package web_fetch_tavily
+package webfetch
 
 import (
 	"context"

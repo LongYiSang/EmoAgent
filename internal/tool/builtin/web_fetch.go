@@ -9,12 +9,12 @@ import (
 
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/tool"
-	"github.com/longyisang/emoagent/internal/tool/builtin/web_fetch_tavily"
+	"github.com/longyisang/emoagent/internal/tool/builtin/webfetch"
 )
 
 // NewWebFetchTool constructs the web_fetch tool for Work.
 func NewWebFetchTool(cfg config.WebFetchConfig, logger *slog.Logger) (tool.Spec, tool.Handler) {
-	provider, err := web_fetch_tavily.NewProvider(cfg, logger)
+	provider, err := webfetch.NewProvider(cfg, logger)
 	if err != nil {
 		provider = nil
 	}
@@ -22,7 +22,7 @@ func NewWebFetchTool(cfg config.WebFetchConfig, logger *slog.Logger) (tool.Spec,
 }
 
 // NewWebFetchToolWithProvider constructs the web_fetch tool around an explicit provider.
-func NewWebFetchToolWithProvider(provider web_fetch_tavily.Provider, cfg config.WebFetchConfig, logger *slog.Logger) (tool.Spec, tool.Handler) {
+func NewWebFetchToolWithProvider(provider webfetch.Provider, cfg config.WebFetchConfig, logger *slog.Logger) (tool.Spec, tool.Handler) {
 	spec := tool.Spec{
 		Name:        "web_fetch",
 		Description: "Fetch a specific http or https source URL and return readable text. Returns url, final_url, text, truncated, and provider; direct fetch also returns status and content_type. Treat truncated=true as incomplete source content.",
@@ -64,7 +64,7 @@ func NewWebFetchToolWithProvider(provider web_fetch_tavily.Provider, cfg config.
 			limit = cfg.MaxBytes
 		}
 
-		resp, err := provider.Fetch(ctx, u, web_fetch_tavily.Options{MaxBytes: limit})
+		resp, err := provider.Fetch(ctx, u, webfetch.Options{MaxBytes: limit})
 		if err != nil {
 			return nil, err
 		}

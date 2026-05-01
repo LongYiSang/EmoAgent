@@ -1,14 +1,11 @@
 package websearch
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
 	"time"
+
+	tavilyapi "github.com/longyisang/emoagent/internal/tool/builtin/tavily"
 )
 
 // TavilyConfig holds configuration for the Tavily search provider.
@@ -17,27 +14,33 @@ type TavilyConfig struct {
 	BaseURL       string        // if empty, defaults to "https://api.tavily.com"
 	Timeout       time.Duration // if 0, defaults to 30s
 	IncludeAnswer bool          // default false
+	Client        *tavilyapi.Client
 }
 
 type tavilyProvider struct {
-	cfg        TavilyConfig
-	httpClient *http.Client
-	logger     *slog.Logger
+	cfg    TavilyConfig
+	client *tavilyapi.Client
+	logger *slog.Logger
 }
 
 // NewTavilyProvider creates a new Tavily search provider.
 func NewTavilyProvider(cfg TavilyConfig, logger *slog.Logger) Provider {
-	if cfg.BaseURL == "" {
-		cfg.BaseURL = "https://api.tavily.com"
-	}
 	timeout := cfg.Timeout
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
+	client := cfg.Client
+	if client == nil {
+		client = tavilyapi.NewClient(tavilyapi.Config{
+			APIKey:  cfg.APIKey,
+			BaseURL: cfg.BaseURL,
+			Timeout: timeout,
+		}, logger)
+	}
 	return &tavilyProvider{
-		cfg:        cfg,
-		httpClient: &http.Client{Timeout: timeout},
-		logger:     logger,
+		cfg:    cfg,
+		client: client,
+		logger: logger,
 	}
 }
 
@@ -97,39 +100,13 @@ func (p *tavilyProvider) Search(ctx context.Context, query string, opts Options)
 		ExcludeDomains: excludeDomains,
 	}
 
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("tavily: marshal request: %w", err)
-	}
-
-	url := p.cfg.BaseURL + "/search"
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("tavily: create request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	p.logger.Debug("tavily search", "query", query, "max_results", maxResults, "depth", searchDepth)
-
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("tavily: http request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("tavily: read response: %w", err)
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("tavily: status %d: %s", resp.StatusCode, string(respBody))
+	if p.logger != nil {
+		p.logger.DebugContext(ctx, "tavily search", "query", query, "max_results", maxResults, "depth", searchDepth)
 	}
 
 	var tavilyResp tavilyResponse
-	if err := json.Unmarshal(respBody, &tavilyResp); err != nil {
-		return nil, fmt.Errorf("tavily: decode response: %w", err)
+	if err := p.client.PostJSON(ctx, "/search", reqBody, &tavilyResp, "search"); err != nil {
+		return nil, err
 	}
 
 	results := make([]Result, len(tavilyResp.Results))
