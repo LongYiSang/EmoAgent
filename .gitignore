@@ -26,9 +26,6 @@ env/
 *.swp
 *.swo
 *~
-/docs/superpowers/
-/.superpowers/
-/.claude/
 
 # Env & secrets
 .env
@@ -56,3 +53,16 @@ tmp/
 
 /task_report.json
 
+# Agent
+/docs/superpowers/
+/.superpowers/
+/.claude/
+/sessions/
+/sources/
+/statuses/
+/config.json
+/events.jsonl
+/.claude-plugin/
+/views.json
+/labels/
+/skills/

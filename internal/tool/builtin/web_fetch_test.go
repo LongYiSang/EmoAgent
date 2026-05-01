@@ -15,6 +15,7 @@ import (
 func defaultWebFetchCfg() config.WebFetchConfig {
 	return config.WebFetchConfig{
 		Enabled:      true,
+		Provider:     "direct",
 		TimeoutSec:   5,
 		MaxBytes:     1 << 20,
 		MaxRedirects: 5,
@@ -164,12 +165,29 @@ func TestWebFetch_InvalidScheme(t *testing.T) {
 }
 
 func TestHTMLToText_ScriptStripped(t *testing.T) {
-	src := `<html><head><title>T</title></head><body><script>alert(1)</script><p>Visible</p></body></html>`
-	result := htmlToText(src)
-	if strings.Contains(result, "alert") {
-		t.Fatalf("script content leaked into text: %q", result)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><head><title>T</title></head><body><script>alert(1)</script><p>Visible</p></body></html>`))
+	}))
+	defer srv.Close()
+
+	_, handler := NewWebFetchTool(defaultWebFetchCfg(), nil)
+	input, _ := json.Marshal(map[string]string{"url": srv.URL})
+	raw, err := handler(context.Background(), input)
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
 	}
-	if !strings.Contains(result, "Visible") {
-		t.Fatalf("visible text missing: %q", result)
+
+	var out struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if strings.Contains(out.Text, "alert") {
+		t.Fatalf("script content leaked into text: %q", out.Text)
+	}
+	if !strings.Contains(out.Text, "Visible") {
+		t.Fatalf("visible text missing: %q", out.Text)
 	}
 }

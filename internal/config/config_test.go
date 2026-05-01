@@ -497,6 +497,58 @@ func TestDefaultWebSearchConfig(t *testing.T) {
 	}
 }
 
+func TestDefaultWebFetchConfig(t *testing.T) {
+	cfg := DefaultConfig()
+	wf := cfg.WebFetch
+	if wf.Enabled != true {
+		t.Errorf("default webfetch.enabled = %v, want true", wf.Enabled)
+	}
+	if wf.Provider != "tavily" {
+		t.Errorf("default webfetch.provider = %q, want tavily", wf.Provider)
+	}
+	if wf.APIKeyEnv != "TAVILY_API_KEY" {
+		t.Errorf("default webfetch.api_key_env = %q, want TAVILY_API_KEY", wf.APIKeyEnv)
+	}
+	if wf.BaseURL != "https://api.tavily.com" {
+		t.Errorf("default webfetch.base_url = %q, want https://api.tavily.com", wf.BaseURL)
+	}
+	if wf.ExtractDepth != "basic" {
+		t.Errorf("default webfetch.extract_depth = %q, want basic", wf.ExtractDepth)
+	}
+	if wf.Format != "markdown" {
+		t.Errorf("default webfetch.format = %q, want markdown", wf.Format)
+	}
+}
+
+func TestLoadWebFetchDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+webfetch:
+  enabled: true
+`), 0o644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.WebFetch.Provider != "tavily" {
+		t.Errorf("webfetch.provider = %q, want tavily", cfg.WebFetch.Provider)
+	}
+	if cfg.WebFetch.APIKeyEnv != "TAVILY_API_KEY" {
+		t.Errorf("webfetch.api_key_env = %q, want TAVILY_API_KEY", cfg.WebFetch.APIKeyEnv)
+	}
+	if cfg.WebFetch.BaseURL != "https://api.tavily.com" {
+		t.Errorf("webfetch.base_url = %q, want https://api.tavily.com", cfg.WebFetch.BaseURL)
+	}
+	if cfg.WebFetch.ExtractDepth != "basic" {
+		t.Errorf("webfetch.extract_depth = %q, want basic", cfg.WebFetch.ExtractDepth)
+	}
+	if cfg.WebFetch.Format != "markdown" {
+		t.Errorf("webfetch.format = %q, want markdown", cfg.WebFetch.Format)
+	}
+}
+
 func TestWebSearchValidateEnabled(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.WebSearch.Enabled = true

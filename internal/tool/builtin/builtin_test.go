@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -173,6 +175,108 @@ func TestRegisterAll_WebSearchProviderFails(t *testing.T) {
 	// web_search fails; remaining: get_current_time, read_file, list_dir, write_file, edit_file, web_fetch
 	if len(specs) != 6 {
 		t.Fatalf("expected 6 tools, got %d", len(specs))
+	}
+}
+
+func TestRegisterAll_WebFetchDefaultMissingKeyFallsBackToDirect(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.WebFetch.APIKeyEnv = "MISSING_TAVILY_KEY"
+	t.Setenv("MISSING_TAVILY_KEY", "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("direct fallback"))
+	}))
+	defer srv.Close()
+
+	registry := tool.NewRegistry()
+	RegisterAll(registry, cfg, t.TempDir(), slog.Default())
+
+	handler, ok := registry.Get("web_fetch")
+	if !ok {
+		t.Fatal("web_fetch handler not found")
+	}
+	input, _ := json.Marshal(map[string]string{"url": srv.URL})
+	raw, err := handler(context.Background(), input)
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	var out struct {
+		Provider string `json:"provider"`
+		Text     string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Provider != "direct" {
+		t.Fatalf("provider = %q, want direct", out.Provider)
+	}
+	if !strings.Contains(out.Text, "direct fallback") {
+		t.Fatalf("text = %q, want direct fallback", out.Text)
+	}
+}
+
+func TestRegisterAll_WebFetchTavilyWithKey(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.WebFetch.APIKeyEnv = "TEST_TAVILY_KEY"
+	t.Setenv("TEST_TAVILY_KEY", "fake-key")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/extract" {
+			t.Fatalf("path = %q, want /extract", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"results": [{"url": "https://example.com", "raw_content": "tavily content"}],
+			"failed_results": [],
+			"request_id": "req-register"
+		}`))
+	}))
+	defer srv.Close()
+	cfg.WebFetch.BaseURL = srv.URL
+
+	registry := tool.NewRegistry()
+	RegisterAll(registry, cfg, t.TempDir(), slog.Default())
+
+	handler, ok := registry.Get("web_fetch")
+	if !ok {
+		t.Fatal("web_fetch handler not found")
+	}
+	input, _ := json.Marshal(map[string]string{"url": "https://example.com"})
+	raw, err := handler(context.Background(), input)
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	var out struct {
+		Provider  string `json:"provider"`
+		Text      string `json:"text"`
+		RequestID string `json:"request_id"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Provider != "tavily" {
+		t.Fatalf("provider = %q, want tavily", out.Provider)
+	}
+	if out.Text != "tavily content" {
+		t.Fatalf("text = %q, want tavily content", out.Text)
+	}
+	if out.RequestID != "req-register" {
+		t.Fatalf("request_id = %q, want req-register", out.RequestID)
+	}
+}
+
+func TestRegisterAll_WebFetchDirectDoesNotNeedKey(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.WebFetch.Provider = "direct"
+	cfg.WebFetch.APIKeyEnv = "MISSING_TAVILY_KEY"
+	t.Setenv("MISSING_TAVILY_KEY", "")
+
+	registry := tool.NewRegistry()
+	RegisterAll(registry, cfg, t.TempDir(), slog.Default())
+
+	if _, ok := registry.Get("web_fetch"); !ok {
+		t.Fatal("web_fetch handler not found")
 	}
 }
 

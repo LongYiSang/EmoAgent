@@ -62,14 +62,31 @@ type ModelBinding struct {
 }
 
 type WebFetchConfig struct {
-	Enabled      bool   `yaml:"enabled"`
-	TimeoutSec   int    `yaml:"timeout_sec"`
-	MaxBytes     int    `yaml:"max_bytes"`
-	MaxRedirects int    `yaml:"max_redirects"`
-	UserAgent    string `yaml:"user_agent"`
+	Enabled        bool   `yaml:"enabled"`
+	Provider       string `yaml:"provider"`    // "tavily" | "direct"
+	APIKeyEnv      string `yaml:"api_key_env"` // "TAVILY_API_KEY"
+	BaseURL        string `yaml:"base_url"`
+	TimeoutSec     int    `yaml:"timeout_sec"`
+	MaxBytes       int    `yaml:"max_bytes"`
+	MaxRedirects   int    `yaml:"max_redirects"`
+	UserAgent      string `yaml:"user_agent"`
+	ExtractDepth   string `yaml:"extract_depth"` // "basic" | "advanced"
+	Format         string `yaml:"format"`        // "markdown" | "text"
+	IncludeImages  bool   `yaml:"include_images"`
+	IncludeFavicon bool   `yaml:"include_favicon"`
+	IncludeUsage   bool   `yaml:"include_usage"`
 }
 
 func (c *WebFetchConfig) applyDefaults() {
+	if c.Provider == "" {
+		c.Provider = "tavily"
+	}
+	if c.APIKeyEnv == "" {
+		c.APIKeyEnv = "TAVILY_API_KEY"
+	}
+	if c.BaseURL == "" {
+		c.BaseURL = "https://api.tavily.com"
+	}
 	if c.TimeoutSec == 0 {
 		c.TimeoutSec = 20
 	}
@@ -81,6 +98,12 @@ func (c *WebFetchConfig) applyDefaults() {
 	}
 	if c.UserAgent == "" {
 		c.UserAgent = "EmoAgent/0.1"
+	}
+	if c.ExtractDepth == "" {
+		c.ExtractDepth = "basic"
+	}
+	if c.Format == "" {
+		c.Format = "markdown"
 	}
 }
 
@@ -266,10 +289,15 @@ func DefaultConfig() *Config {
 		},
 		WebFetch: WebFetchConfig{
 			Enabled:      true,
+			Provider:     "tavily",
+			APIKeyEnv:    "TAVILY_API_KEY",
+			BaseURL:      "https://api.tavily.com",
 			TimeoutSec:   20,
 			MaxBytes:     1 << 20,
 			MaxRedirects: 5,
 			UserAgent:    "EmoAgent/0.1",
+			ExtractDepth: "basic",
+			Format:       "markdown",
 		},
 		Bash: BashConfig{
 			Enabled:        false,
@@ -340,6 +368,23 @@ func (c *Config) Validate() error {
 		}
 		if c.WebSearch.APIKeyEnv == "" {
 			return fmt.Errorf("websearch.api_key_env is required when websearch is enabled")
+		}
+	}
+	if c.WebFetch.Enabled {
+		switch c.WebFetch.Provider {
+		case "direct", "tavily":
+		default:
+			return fmt.Errorf("webfetch.provider must be direct or tavily, got %q", c.WebFetch.Provider)
+		}
+		switch c.WebFetch.ExtractDepth {
+		case "basic", "advanced":
+		default:
+			return fmt.Errorf("webfetch.extract_depth must be basic or advanced, got %q", c.WebFetch.ExtractDepth)
+		}
+		switch c.WebFetch.Format {
+		case "markdown", "text":
+		default:
+			return fmt.Errorf("webfetch.format must be markdown or text, got %q", c.WebFetch.Format)
 		}
 	}
 	if c.Work.SoftTTL <= 0 {

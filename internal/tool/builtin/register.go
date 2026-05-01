@@ -7,6 +7,7 @@ import (
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/tool"
+	"github.com/longyisang/emoagent/internal/tool/builtin/web_fetch_tavily"
 	"github.com/longyisang/emoagent/internal/tool/builtin/websearch"
 )
 
@@ -58,9 +59,14 @@ func registerWebFetch(registry *tool.Registry, cfg *config.Config, logger *slog.
 	if !cfg.WebFetch.Enabled {
 		return
 	}
-	spec, handler := NewWebFetchTool(cfg.WebFetch, logger)
+	provider, err := web_fetch_tavily.NewProvider(cfg.WebFetch, logger)
+	if err != nil {
+		logger.Warn("web_fetch disabled", "error", err)
+		return
+	}
+	spec, handler := NewWebFetchToolWithProvider(provider, cfg.WebFetch, logger)
 	registry.Register(spec, handler)
-	logger.Info("web_fetch registered")
+	logger.Info("web_fetch registered", "provider", provider.Name())
 }
 
 // registerBash conditionally registers the bash tool.
