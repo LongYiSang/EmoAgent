@@ -63,11 +63,14 @@ type fakeMemoryBridge struct {
 	rolloverErr     error
 	appendUserErr   error
 	appendAssistErr error
+	retrieveBlock   string
+	retrieveErr     error
 
 	ensureCalls    []memoryEnsureCall
 	rolloverCalls  []memoryRolloverCall
 	userEpisodes   []memoryEpisodeCall
 	assistEpisodes []memoryEpisodeCall
+	retrieveCalls  []memoryRetrieveCall
 }
 
 type memoryEnsureCall struct {
@@ -85,6 +88,12 @@ type memoryEpisodeCall struct {
 	SegmentID string
 	MessageID string
 	Content   string
+}
+
+type memoryRetrieveCall struct {
+	ChatSessionID      string
+	Query              string
+	ExcludedEpisodeIDs []string
 }
 
 func (f *fakeMemoryBridge) EnsureSegment(_ context.Context, chatSessionID string, personaID string) (MemorySegmentRef, error) {
@@ -123,6 +132,18 @@ func (f *fakeMemoryBridge) AppendAssistantEpisode(_ context.Context, segmentID s
 		return "", f.appendAssistErr
 	}
 	return "episode-assistant", nil
+}
+
+func (f *fakeMemoryBridge) RetrievePromptBlock(_ context.Context, chatSessionID string, query string, excludedEpisodeIDs ...string) (string, error) {
+	f.retrieveCalls = append(f.retrieveCalls, memoryRetrieveCall{
+		ChatSessionID:      chatSessionID,
+		Query:              query,
+		ExcludedEpisodeIDs: append([]string(nil), excludedEpisodeIDs...),
+	})
+	if f.retrieveErr != nil {
+		return "", f.retrieveErr
+	}
+	return f.retrieveBlock, nil
 }
 
 func (f *fakeMemoryBridge) FinalizeSegment(context.Context, string, string, string) error {
@@ -506,6 +527,138 @@ func TestEngineSendMessageAppendsMemoryEpisodes(t *testing.T) {
 	}
 	if bridge.assistEpisodes[0].SegmentID != "segment-current" || bridge.assistEpisodes[0].Content != "Hi there" || bridge.assistEpisodes[0].MessageID == "" {
 		t.Fatalf("assistant episode = %#v, want current segment/content/message id", bridge.assistEpisodes[0])
+	}
+}
+
+func TestEngineSendMessageSkipsMemoryRetrieveWhenPromptInjectionDisabled(t *testing.T) {
+	fakeLLM := &fakeLLMClient{
+		response: endTurnResponse("ok"),
+	}
+	engine, _, _ := newTestEngine(t, fakeLLM)
+	bridge := &fakeMemoryBridge{
+		ensureResult:  MemorySegmentRef{SegmentID: "segment-current", MemorySessionID: "memory-current"},
+		retrieveBlock: "[长期记忆上下文]\n\n- 用户喜欢手冲咖啡。",
+	}
+	engine.memory = bridge
+	engine.memoryRetrieval = config.MemoryRetrievalConfig{
+		Enabled:             true,
+		InjectPrompt:        false,
+		UseFTS:              true,
+		FinalMemoryCount:    4,
+		ContextBudgetTokens: 700,
+		FailOpen:            true,
+	}
+
+	ctx := context.Background()
+	sessionID, err := engine.StartSession(ctx, "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	if _, err := engine.SendMessage(ctx, sessionID, &config.Persona{Name: "default", SystemPrompt: "system"}, "咖啡", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if len(bridge.retrieveCalls) != 0 {
+		t.Fatalf("retrieve calls = %#v, want none", bridge.retrieveCalls)
+	}
+	if strings.Contains(fakeLLM.lastRequest.System, "[长期记忆上下文]") {
+		t.Fatalf("system = %q, want no long-term memory block", fakeLLM.lastRequest.System)
+	}
+}
+
+func TestEngineSendMessageInjectsRetrievedMemoryPromptBlock(t *testing.T) {
+	fakeLLM := &fakeLLMClient{
+		response: endTurnResponse("ok"),
+	}
+	engine, _, _ := newTestEngine(t, fakeLLM)
+	bridge := &fakeMemoryBridge{
+		ensureResult:  MemorySegmentRef{SegmentID: "segment-current", MemorySessionID: "memory-current"},
+		retrieveBlock: "[长期记忆上下文]\n\n- 用户喜欢手冲咖啡。",
+	}
+	engine.memory = bridge
+	engine.memoryRetrieval = config.MemoryRetrievalConfig{
+		Enabled:             true,
+		InjectPrompt:        true,
+		UseFTS:              true,
+		FinalMemoryCount:    4,
+		ContextBudgetTokens: 700,
+		FailOpen:            true,
+	}
+
+	ctx := context.Background()
+	sessionID, err := engine.StartSession(ctx, "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	bridge.ensureCalls = nil
+
+	if _, err := engine.SendMessage(ctx, sessionID, &config.Persona{Name: "default", SystemPrompt: "system"}, "咖啡", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if len(bridge.retrieveCalls) != 1 {
+		t.Fatalf("retrieve calls = %#v, want one", bridge.retrieveCalls)
+	}
+	call := bridge.retrieveCalls[0]
+	if call.ChatSessionID != sessionID || call.Query != "咖啡" {
+		t.Fatalf("retrieve call = %#v, want session/query", call)
+	}
+	if len(call.ExcludedEpisodeIDs) != 1 || call.ExcludedEpisodeIDs[0] != "episode-user" {
+		t.Fatalf("excluded episode ids = %#v, want current user episode", call.ExcludedEpisodeIDs)
+	}
+	if !strings.Contains(fakeLLM.lastRequest.System, "[长期记忆上下文]") || !strings.Contains(fakeLLM.lastRequest.System, "- 用户喜欢手冲咖啡。") {
+		t.Fatalf("system = %q, want long-term memory block", fakeLLM.lastRequest.System)
+	}
+}
+
+func TestEngineMemoryRetrieveFailureFollowsFailOpenConfig(t *testing.T) {
+	tests := []struct {
+		name     string
+		failOpen bool
+		wantErr  bool
+	}{
+		{name: "fail open", failOpen: true, wantErr: false},
+		{name: "fail closed", failOpen: false, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeLLM := &fakeLLMClient{
+				response: endTurnResponse("ok"),
+			}
+			engine, _, _ := newTestEngine(t, fakeLLM)
+			bridge := &fakeMemoryBridge{
+				ensureResult: MemorySegmentRef{SegmentID: "segment-current", MemorySessionID: "memory-current"},
+				retrieveErr:  errors.New("retrieve failed"),
+			}
+			engine.memory = bridge
+			engine.memoryRetrieval = config.MemoryRetrievalConfig{
+				Enabled:             true,
+				InjectPrompt:        true,
+				UseFTS:              true,
+				FinalMemoryCount:    4,
+				ContextBudgetTokens: 700,
+				FailOpen:            tt.failOpen,
+			}
+
+			ctx := context.Background()
+			sessionID, err := engine.StartSession(ctx, "default")
+			if err != nil {
+				t.Fatalf("StartSession: %v", err)
+			}
+			_, err = engine.SendMessage(ctx, sessionID, &config.Persona{Name: "default", SystemPrompt: "system"}, "咖啡", nil)
+			if tt.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "retrieve memory prompt block") {
+					t.Fatalf("SendMessage error = %v, want retrieve memory prompt block", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SendMessage: %v", err)
+			}
+			if fakeLLM.lastRequest.System == "" {
+				t.Fatal("LLM was not called after fail-open retrieve error")
+			}
+		})
 	}
 }
 

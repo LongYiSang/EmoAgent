@@ -43,8 +43,20 @@ type AgentRuntimeConfig struct {
 }
 
 type MemoryConfig struct {
-	Enabled    bool   `yaml:"enabled" json:"enabled"`
-	ConfigPath string `yaml:"config_path" json:"config_path"`
+	Enabled         bool                  `yaml:"enabled" json:"enabled"`
+	ConfigPath      string                `yaml:"config_path" json:"config_path"`
+	ManualRulesPath string                `yaml:"manual_rules_path" json:"manual_rules_path"`
+	Retrieval       MemoryRetrievalConfig `yaml:"retrieval" json:"retrieval"`
+}
+
+type MemoryRetrievalConfig struct {
+	Enabled             bool `yaml:"enabled" json:"enabled"`
+	InjectPrompt        bool `yaml:"inject_prompt" json:"inject_prompt"`
+	UseFTS              bool `yaml:"use_fts" json:"use_fts"`
+	UseMirror           bool `yaml:"use_mirror" json:"use_mirror"`
+	FinalMemoryCount    int  `yaml:"final_memory_count" json:"final_memory_count"`
+	ContextBudgetTokens int  `yaml:"context_budget_tokens" json:"context_budget_tokens"`
+	FailOpen            bool `yaml:"fail_open" json:"fail_open"`
 }
 
 type AgentConfig struct {
@@ -280,8 +292,18 @@ func DefaultConfig() *Config {
 			Path: "./data/emo.db",
 		},
 		Memory: MemoryConfig{
-			Enabled:    false,
-			ConfigPath: "./config/memorycore.yaml",
+			Enabled:         false,
+			ConfigPath:      "./config/memorycore.yaml",
+			ManualRulesPath: "./config/memory_manual_rules.yaml",
+			Retrieval: MemoryRetrievalConfig{
+				Enabled:             true,
+				InjectPrompt:        false,
+				UseFTS:              true,
+				UseMirror:           false,
+				FinalMemoryCount:    4,
+				ContextBudgetTokens: 700,
+				FailOpen:            true,
+			},
 		},
 		Log: LogConfig{
 			Level:  "info",
@@ -358,6 +380,17 @@ func (c *Config) Validate() error {
 	}
 	if c.Memory.Enabled && strings.TrimSpace(c.Memory.ConfigPath) == "" {
 		return fmt.Errorf("memory.config_path is required when memory is enabled")
+	}
+	if c.Memory.Enabled && strings.TrimSpace(c.Memory.ManualRulesPath) == "" {
+		return fmt.Errorf("memory.manual_rules_path is required when memory is enabled")
+	}
+	if c.Memory.Enabled && c.Memory.Retrieval.Enabled {
+		if c.Memory.Retrieval.FinalMemoryCount <= 0 {
+			return fmt.Errorf("memory.retrieval.final_memory_count must be > 0")
+		}
+		if c.Memory.Retrieval.ContextBudgetTokens <= 0 {
+			return fmt.Errorf("memory.retrieval.context_budget_tokens must be > 0")
+		}
 	}
 	if err := c.Context.Validate(); err != nil {
 		return fmt.Errorf("context: %w", err)

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 	"github.com/longyisang/emoagent/internal/apperrors"
 	"github.com/longyisang/emoagent/internal/chat"
 	"github.com/longyisang/emoagent/internal/config"
@@ -52,6 +53,7 @@ type App struct {
 	Config             *config.Config
 	DB                 *storage.DB
 	Memory             *memoryhost.Host
+	ManualMemoryRules  *memoryhost.ManualRules
 	LLM                llm.Client
 	Logger             *slog.Logger
 	Personas           map[string]*config.Persona
@@ -158,11 +160,16 @@ func (a *App) Init(ctx context.Context, configPath string) error {
 	a.Logger.Info("tool registry initialized", "tools", len(a.toolRegistry.Specs()))
 
 	if cfg.Memory.Enabled {
+		manualRules, err := memoryhost.LoadManualRules(cfg.Memory.ManualRulesPath)
+		if err != nil {
+			return fmt.Errorf("load memory manual rules: %w", err)
+		}
 		memoryHost, err := memoryhost.OpenFromConfig(ctx, cfg.Memory.ConfigPath, a.Logger)
 		if err != nil {
 			return fmt.Errorf("open memorycore: %w", err)
 		}
 		a.Memory = memoryHost
+		a.ManualMemoryRules = manualRules
 	}
 
 	a.Logger.Info("EmoAgent initialized")
@@ -301,7 +308,8 @@ func (a *App) Run(ctx context.Context) error {
 		Approvals:          approvalService,
 		Environment:        a.environment,
 		RealtimeStreaming:  cfg.Chat.RealtimeStreaming,
-		Memory:             memoryhost.NewBridge(a.Memory, a.DB, a.Logger),
+		Memory:             memoryhost.NewBridge(a.Memory, a.DB, a.Logger, a.ManualMemoryRules, memoryRetrievalPolicy(cfg.Memory.Retrieval)),
+		MemoryRetrieval:    cfg.Memory.Retrieval,
 	})
 	a.approvalService = approvalService
 	chatHandler := chat.NewHandler(a.engine, a, a.Logger)
@@ -379,6 +387,16 @@ func registerRoutes(mux *http.ServeMux, api *web.APIHandler, chatHandler http.Ha
 	mux.Handle("/", staticHandler)
 }
 
+func memoryRetrievalPolicy(cfg config.MemoryRetrievalConfig) memorycore.RetrievalPolicy {
+	return memorycore.RetrievalPolicy{
+		SensitivityPermission: memorycore.SensitivityNormal,
+		FinalMemoryCount:      cfg.FinalMemoryCount,
+		ContextBudgetTokens:   cfg.ContextBudgetTokens,
+		UseFTS:                cfg.UseFTS,
+		UseMirror:             cfg.UseMirror,
+	}
+}
+
 // Shutdown cleanly releases resources.
 func (a *App) Shutdown() error {
 	if a.cancel != nil {
@@ -392,6 +410,7 @@ func (a *App) Shutdown() error {
 			a.Memory = nil
 		}
 	}
+	a.ManualMemoryRules = nil
 	if a.DB != nil {
 		if err := a.DB.Close(); err != nil {
 			closeErr = errors.Join(closeErr, fmt.Errorf("close database: %w", err))

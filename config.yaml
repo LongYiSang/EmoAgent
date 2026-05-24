@@ -74,6 +74,15 @@ agent:
 
 memory:
   enabled: true
+  manual_rules_path: "./config/memory_manual_rules.yaml"
+  retrieval:
+    enabled: true
+    inject_prompt: true
+    use_fts: true
+    use_mirror: false
+    final_memory_count: 4
+    context_budget_tokens: 700
+    fail_open: true
 
 work:
   max_tool_rounds: 24

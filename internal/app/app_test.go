@@ -235,6 +235,33 @@ func TestInitMemoryEnabledWrapsStartupError(t *testing.T) {
 	}
 }
 
+func TestInitMemoryEnabledWrapsManualRulesStartupError(t *testing.T) {
+	dir := t.TempDir()
+	memoryDBPath := filepath.Join(dir, "memory.db")
+	memoryConfigPath := writeAppMemoryCoreConfig(t, dir, true, true, memoryDBPath)
+	rulesPath := filepath.Join(dir, "bad-memory-rules.yaml")
+	if err := os.WriteFile(rulesPath, []byte(`
+pin_rules:
+  - prefix: 记住
+    predicate: likes
+    fact_type: stable_preference
+    content_summary: 用户喜欢对象。
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile bad rules: %v", err)
+	}
+	configPath := writeAppInitConfigWithManualRules(t, dir, true, memoryConfigPath, rulesPath)
+
+	a := New()
+	err := a.Init(context.Background(), configPath)
+	if err == nil {
+		t.Fatal("Init succeeded with invalid manual rules, want error")
+	}
+	t.Cleanup(func() { _ = a.Shutdown() })
+	if !strings.Contains(err.Error(), "load memory manual rules") {
+		t.Fatalf("Init error = %v, want load memory manual rules", err)
+	}
+}
+
 func TestGetDefaultPersonaName(t *testing.T) {
 	a := &App{
 		ActiveAgentRuntime: &ActiveAgentRuntime{PersonaKey: "default"},
@@ -709,6 +736,11 @@ func TestDeleteSessionReturnsNotFoundForMissingSession(t *testing.T) {
 
 func writeAppInitConfig(t *testing.T, dir string, memoryEnabled bool, memoryConfigPath string) string {
 	t.Helper()
+	return writeAppInitConfigWithManualRules(t, dir, memoryEnabled, memoryConfigPath, "")
+}
+
+func writeAppInitConfigWithManualRules(t *testing.T, dir string, memoryEnabled bool, memoryConfigPath string, manualRulesPath string) string {
+	t.Helper()
 
 	personaDir := filepath.Join(dir, "personas")
 	if err := os.MkdirAll(personaDir, 0o755); err != nil {
@@ -716,6 +748,9 @@ func writeAppInitConfig(t *testing.T, dir string, memoryEnabled bool, memoryConf
 	}
 	if err := os.WriteFile(filepath.Join(personaDir, "default.yaml"), []byte("name: Default\nsystem_prompt: test\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile persona: %v", err)
+	}
+	if memoryEnabled && manualRulesPath == "" {
+		manualRulesPath = writeAppManualRulesConfig(t, dir)
 	}
 
 	configPath := filepath.Join(dir, "config.yaml")
@@ -755,15 +790,42 @@ agent:
 memory:
   enabled: %t
   config_path: %q
+%s
 db:
   path: %q
 personas:
   dir: %q
-`, memoryEnabled, filepath.ToSlash(memoryConfigPath), filepath.ToSlash(filepath.Join(dir, "emo.db")), filepath.ToSlash(personaDir))
+`, memoryEnabled, filepath.ToSlash(memoryConfigPath), formatManualRulesPathYAML(manualRulesPath), filepath.ToSlash(filepath.Join(dir, "emo.db")), filepath.ToSlash(personaDir))
 	if err := os.WriteFile(configPath, []byte(body), 0o644); err != nil {
 		t.Fatalf("WriteFile app config: %v", err)
 	}
 	return configPath
+}
+
+func writeAppManualRulesConfig(t *testing.T, dir string) string {
+	t.Helper()
+
+	path := filepath.Join(dir, "memory_manual_rules.yaml")
+	body := `
+pin_rules:
+  - prefix: 请记住我喜欢
+    predicate: likes
+    fact_type: stable_preference
+    content_summary: 用户喜欢{object}。
+forget_prefixes:
+  - 忘记
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("WriteFile manual rules: %v", err)
+	}
+	return path
+}
+
+func formatManualRulesPathYAML(path string) string {
+	if path == "" {
+		return ""
+	}
+	return fmt.Sprintf("  manual_rules_path: %q", filepath.ToSlash(path))
 }
 
 func writeAppMemoryCoreConfig(t *testing.T, dir string, enabled bool, autoMigrate bool, dbPath string) string {

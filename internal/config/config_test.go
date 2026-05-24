@@ -28,6 +28,30 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Memory.ConfigPath != "./config/memorycore.yaml" {
 		t.Errorf("default memory.config_path = %q, want ./config/memorycore.yaml", cfg.Memory.ConfigPath)
 	}
+	if cfg.Memory.ManualRulesPath != "./config/memory_manual_rules.yaml" {
+		t.Errorf("default memory.manual_rules_path = %q, want ./config/memory_manual_rules.yaml", cfg.Memory.ManualRulesPath)
+	}
+	if !cfg.Memory.Retrieval.Enabled {
+		t.Error("default memory.retrieval.enabled = false, want true")
+	}
+	if cfg.Memory.Retrieval.InjectPrompt {
+		t.Error("default memory.retrieval.inject_prompt = true, want false")
+	}
+	if !cfg.Memory.Retrieval.UseFTS {
+		t.Error("default memory.retrieval.use_fts = false, want true")
+	}
+	if cfg.Memory.Retrieval.UseMirror {
+		t.Error("default memory.retrieval.use_mirror = true, want false")
+	}
+	if cfg.Memory.Retrieval.FinalMemoryCount != 4 {
+		t.Errorf("default memory.retrieval.final_memory_count = %d, want 4", cfg.Memory.Retrieval.FinalMemoryCount)
+	}
+	if cfg.Memory.Retrieval.ContextBudgetTokens != 700 {
+		t.Errorf("default memory.retrieval.context_budget_tokens = %d, want 700", cfg.Memory.Retrieval.ContextBudgetTokens)
+	}
+	if !cfg.Memory.Retrieval.FailOpen {
+		t.Error("default memory.retrieval.fail_open = false, want true")
+	}
 	if cfg.Context.InputBudgetTokens <= 0 {
 		t.Errorf("default context.input_budget_tokens = %d, want > 0", cfg.Context.InputBudgetTokens)
 	}
@@ -130,6 +154,15 @@ agent:
 memory:
   enabled: true
   config_path: ./custom-memorycore.yaml
+  manual_rules_path: ./custom-memory-rules.yaml
+  retrieval:
+    enabled: true
+    inject_prompt: true
+    use_fts: false
+    use_mirror: true
+    final_memory_count: 3
+    context_budget_tokens: 600
+    fail_open: false
 `), 0o644)
 
 	cfg, err := Load(path)
@@ -180,6 +213,21 @@ memory:
 	if cfg.Memory.ConfigPath != "./custom-memorycore.yaml" {
 		t.Fatalf("memory.config_path = %q, want ./custom-memorycore.yaml", cfg.Memory.ConfigPath)
 	}
+	if cfg.Memory.ManualRulesPath != "./custom-memory-rules.yaml" {
+		t.Fatalf("memory.manual_rules_path = %q, want ./custom-memory-rules.yaml", cfg.Memory.ManualRulesPath)
+	}
+	if !cfg.Memory.Retrieval.Enabled || !cfg.Memory.Retrieval.InjectPrompt || cfg.Memory.Retrieval.UseFTS || !cfg.Memory.Retrieval.UseMirror {
+		t.Fatalf("memory.retrieval flags = %#v", cfg.Memory.Retrieval)
+	}
+	if cfg.Memory.Retrieval.FinalMemoryCount != 3 {
+		t.Fatalf("memory.retrieval.final_memory_count = %d, want 3", cfg.Memory.Retrieval.FinalMemoryCount)
+	}
+	if cfg.Memory.Retrieval.ContextBudgetTokens != 600 {
+		t.Fatalf("memory.retrieval.context_budget_tokens = %d, want 600", cfg.Memory.Retrieval.ContextBudgetTokens)
+	}
+	if cfg.Memory.Retrieval.FailOpen {
+		t.Fatal("memory.retrieval.fail_open = true, want false")
+	}
 	// Default should still apply for unset fields.
 	if cfg.DB.Path != "./data/emo.db" {
 		t.Errorf("db.path = %q, want default", cfg.DB.Path)
@@ -192,6 +240,41 @@ memory:
 	}
 	if cfg.Work.JournalDir != "./logs/work" {
 		t.Errorf("work.journal_dir = %q, want ./logs/work", cfg.Work.JournalDir)
+	}
+}
+
+func TestValidateMemoryRetrievalLimits(t *testing.T) {
+	tests := []struct {
+		name   string
+		update func(*Config)
+		want   string
+	}{
+		{
+			name: "final memory count",
+			update: func(cfg *Config) {
+				cfg.Memory.Retrieval.FinalMemoryCount = 0
+			},
+			want: "memory.retrieval.final_memory_count must be > 0",
+		},
+		{
+			name: "context budget tokens",
+			update: func(cfg *Config) {
+				cfg.Memory.Retrieval.ContextBudgetTokens = 0
+			},
+			want: "memory.retrieval.context_budget_tokens must be > 0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Memory.Enabled = true
+			tt.update(cfg)
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Validate error = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 

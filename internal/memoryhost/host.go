@@ -11,10 +11,11 @@ import (
 )
 
 type Host struct {
-	Service memorycore.Service
-	Source  string
-	DBPath  string
-	logger  *slog.Logger
+	Service         memorycore.Service
+	Source          string
+	DBPath          string
+	retrievalPolicy memorycore.RetrievalPolicy
+	logger          *slog.Logger
 }
 
 func OpenFromConfig(ctx context.Context, path string, logger *slog.Logger) (*Host, error) {
@@ -41,11 +42,11 @@ func OpenFromConfig(ctx context.Context, path string, logger *slog.Logger) (*Hos
 		return nil, fmt.Errorf("memorycore core.auto_migrate must be true")
 	}
 
-	return open(ctx, runtime.Options, logger, path)
+	return open(ctx, runtime.Options, runtime.RetrievalPolicy, logger, path)
 }
 
 func OpenWithOptions(ctx context.Context, opts memorycore.Options, logger *slog.Logger) (*Host, error) {
-	return open(ctx, opts, logger, "options")
+	return open(ctx, opts, memorycore.RetrievalPolicy{}, logger, "options")
 }
 
 func (h *Host) Close() error {
@@ -62,7 +63,7 @@ func (h *Host) Close() error {
 	return nil
 }
 
-func open(ctx context.Context, opts memorycore.Options, logger *slog.Logger, source string) (*Host, error) {
+func open(ctx context.Context, opts memorycore.Options, retrievalPolicy memorycore.RetrievalPolicy, logger *slog.Logger, source string) (*Host, error) {
 	if strings.TrimSpace(opts.DBPath) == "" {
 		return nil, fmt.Errorf("memorycore DBPath is required")
 	}
@@ -76,10 +77,11 @@ func open(ctx context.Context, opts memorycore.Options, logger *slog.Logger, sou
 	}
 
 	host := &Host{
-		Service: svc,
-		Source:  source,
-		DBPath:  opts.DBPath,
-		logger:  logger,
+		Service:         svc,
+		Source:          source,
+		DBPath:          opts.DBPath,
+		retrievalPolicy: retrievalPolicy,
+		logger:          logger,
 	}
 	if logger != nil {
 		logger.Info("memorycore opened", "source", source, "db_path", opts.DBPath)

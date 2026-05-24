@@ -1,0 +1,29 @@
+pin_rules:
+  - prefix: 请记住我喜欢
+    predicate: likes
+    fact_type: stable_preference
+    content_summary: 用户喜欢{object}。
+  - prefix: 请记住我不喜欢
+    predicate: dislikes
+    fact_type: stable_preference
+    content_summary: 用户不喜欢{object}。
+  - prefix: 以后叫我
+    predicate: prefers_name
+    fact_type: core_identity
+    content_summary: 用户偏好被称呼为 {object}。
+  - prefix: 我的名字是
+    predicate: prefers_name
+    fact_type: core_identity
+    content_summary: 用户偏好被称呼为 {object}。
+  - prefix: 我更喜欢
+    predicate: likes
+    fact_type: stable_preference
+    content_summary: 用户更喜欢{object}。
+  - prefix: 我不想再聊
+    predicate: has_boundary
+    fact_type: relational_state
+    content_summary: 用户不想再聊{object}。
+forget_prefixes:
+  - 忘记
+  - 别再提
+  - 删除

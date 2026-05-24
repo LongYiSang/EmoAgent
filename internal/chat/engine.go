@@ -33,6 +33,7 @@ type MemoryBridge interface {
 	RolloverSegment(ctx context.Context, chatSessionID string, personaID string, reason string) (MemorySegmentRef, error)
 	AppendUserEpisode(ctx context.Context, segmentID string, messageID string, content string) (string, error)
 	AppendAssistantEpisode(ctx context.Context, segmentID string, messageID string, content string) (string, error)
+	RetrievePromptBlock(ctx context.Context, chatSessionID string, query string, excludedEpisodeIDs ...string) (string, error)
 	FinalizeSegment(ctx context.Context, segmentID string, reason string, summary string) error
 }
 
@@ -60,6 +61,7 @@ type EngineConfig struct {
 	Environment        runtimeenv.Facts
 	RealtimeStreaming  bool
 	Memory             MemoryBridge
+	MemoryRetrieval    config.MemoryRetrievalConfig
 }
 
 // RuntimeConfig is the hot-swappable subset of EngineConfig used for new requests.
@@ -103,6 +105,7 @@ type Engine struct {
 	environment        runtimeenv.Facts
 	realtimeStreaming  bool
 	memory             MemoryBridge
+	memoryRetrieval    config.MemoryRetrievalConfig
 }
 
 // UpdateConfig hot-swaps the active LLM client and request parameters for new sends.
@@ -187,6 +190,7 @@ func NewEngine(cfg EngineConfig) *Engine {
 		environment:        cfg.Environment,
 		realtimeStreaming:  cfg.RealtimeStreaming,
 		memory:             cfg.Memory,
+		memoryRetrieval:    cfg.MemoryRetrieval,
 	}
 }
 
@@ -437,6 +441,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	approvals := e.approvals
 	env := e.environment
 	realtimeStreaming := e.realtimeStreaming
+	memoryRetrieval := e.memoryRetrieval
 	e.mu.RUnlock()
 
 	if client == nil {
@@ -454,6 +459,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 
 	var memorySegment MemorySegmentRef
 	var hasMemorySegment bool
+	var userEpisodeID string
 	if opts.persistUser {
 		userMessageID := uuid.NewString()
 		if err := e.db.AddMessageWithMetadata(ctx, userMessageID, sessionID, "user", opts.userContent, visibleMessageMetadata("user", opts.userContent)); err != nil {
@@ -462,8 +468,10 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 		}
 		memorySegment, hasMemorySegment = e.ensureMemorySegment(ctx, sessionID)
 		if hasMemorySegment {
-			if _, err := e.memory.AppendUserEpisode(ctx, memorySegment.SegmentID, userMessageID, opts.userContent); err != nil {
+			if episodeID, err := e.memory.AppendUserEpisode(ctx, memorySegment.SegmentID, userMessageID, opts.userContent); err != nil {
 				e.logMemoryWarning("append user memory episode", sessionID, err)
+			} else {
+				userEpisodeID = episodeID
 			}
 		}
 		if err := e.db.UpdateSessionTimestamp(ctx, sessionID); err != nil {
@@ -538,6 +546,24 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	}
 	if opts.extraSystem != "" {
 		assembled.System += "\n\n" + opts.extraSystem
+	}
+	if opts.persistUser && memoryRetrieval.Enabled && memoryRetrieval.InjectPrompt && e.memory != nil {
+		excludedEpisodeIDs := []string(nil)
+		if strings.TrimSpace(userEpisodeID) != "" {
+			excludedEpisodeIDs = append(excludedEpisodeIDs, userEpisodeID)
+		}
+		memoryBlock, retrieveErr := e.memory.RetrievePromptBlock(ctx, sessionID, opts.userContent, excludedEpisodeIDs...)
+		if retrieveErr != nil {
+			e.logMemoryWarning("retrieve memory prompt block", sessionID, retrieveErr)
+			if !memoryRetrieval.FailOpen {
+				return "", fmt.Errorf("retrieve memory prompt block: %w", retrieveErr)
+			}
+		} else if strings.TrimSpace(memoryBlock) != "" {
+			assembled.System += "\n\n" + strings.TrimSpace(memoryBlock)
+			assembled.Budget = contextutil.NewBudget(contextCfg, assembled.System, assembled.Messages)
+			assembled.CompactReport.PreEstimatedTokens = assembled.Budget.EstimatedTokens
+			assembled.CompactReport.PostEstimatedTokens = assembled.Budget.EstimatedTokens
+		}
 	}
 	if state != nil {
 		state.ContextVersion = contextutil.CurrentContextVersion
