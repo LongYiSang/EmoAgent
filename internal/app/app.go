@@ -21,6 +21,7 @@ import (
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/logger"
+	"github.com/longyisang/emoagent/internal/memoryhost"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/storage"
@@ -50,6 +51,7 @@ var (
 type App struct {
 	Config             *config.Config
 	DB                 *storage.DB
+	Memory             *memoryhost.Host
 	LLM                llm.Client
 	Logger             *slog.Logger
 	Personas           map[string]*config.Persona
@@ -154,6 +156,14 @@ func (a *App) Init(ctx context.Context, configPath string) error {
 	a.environment = runtimeenv.BuildEnvironmentFacts(runtime.GOOS, projectRoot, a.Config.Bash)
 	builtin.RegisterAllWithFacts(a.toolRegistry, a.Config, projectRoot, a.environment, a.Logger)
 	a.Logger.Info("tool registry initialized", "tools", len(a.toolRegistry.Specs()))
+
+	if cfg.Memory.Enabled {
+		memoryHost, err := memoryhost.OpenFromConfig(ctx, cfg.Memory.ConfigPath, a.Logger)
+		if err != nil {
+			return fmt.Errorf("open memorycore: %w", err)
+		}
+		a.Memory = memoryHost
+	}
 
 	a.Logger.Info("EmoAgent initialized")
 	return nil
@@ -373,15 +383,23 @@ func (a *App) Shutdown() error {
 	if a.cancel != nil {
 		a.cancel()
 	}
+	var closeErr error
+	if a.Memory != nil {
+		if err := a.Memory.Close(); err != nil {
+			closeErr = errors.Join(closeErr, fmt.Errorf("close memorycore: %w", err))
+		} else {
+			a.Memory = nil
+		}
+	}
 	if a.DB != nil {
 		if err := a.DB.Close(); err != nil {
-			return fmt.Errorf("close database: %w", err)
+			closeErr = errors.Join(closeErr, fmt.Errorf("close database: %w", err))
 		}
 	}
 	if a.Logger != nil {
 		a.Logger.Info("EmoAgent stopped")
 	}
-	return nil
+	return closeErr
 }
 
 func (a *App) applyRuntimeOverrides() error {

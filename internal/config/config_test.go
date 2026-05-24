@@ -25,6 +25,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Memory.Enabled {
 		t.Error("default memory.enabled = true, want false")
 	}
+	if cfg.Memory.ConfigPath != "./config/memorycore.yaml" {
+		t.Errorf("default memory.config_path = %q, want ./config/memorycore.yaml", cfg.Memory.ConfigPath)
+	}
 	if cfg.Context.InputBudgetTokens <= 0 {
 		t.Errorf("default context.input_budget_tokens = %d, want > 0", cfg.Context.InputBudgetTokens)
 	}
@@ -126,6 +129,7 @@ agent:
   active_config: default
 memory:
   enabled: true
+  config_path: ./custom-memorycore.yaml
 `), 0o644)
 
 	cfg, err := Load(path)
@@ -172,6 +176,9 @@ memory:
 	}
 	if !cfg.Memory.Enabled {
 		t.Fatal("memory.enabled = false, want true")
+	}
+	if cfg.Memory.ConfigPath != "./custom-memorycore.yaml" {
+		t.Fatalf("memory.config_path = %q, want ./custom-memorycore.yaml", cfg.Memory.ConfigPath)
 	}
 	// Default should still apply for unset fields.
 	if cfg.DB.Path != "./data/emo.db" {

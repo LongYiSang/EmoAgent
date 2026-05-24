@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -177,6 +178,61 @@ personas:
 		t.Fatalf("Init error = %v, want missing new seed message", err)
 	}
 	_ = a.Shutdown()
+}
+
+func TestInitMemoryDisabledDoesNotRequireMemoryCoreConfig(t *testing.T) {
+	dir := t.TempDir()
+	missingMemoryConfig := filepath.Join(dir, "missing-memorycore.yaml")
+	memoryDBPath := filepath.Join(dir, "memory.db")
+	configPath := writeAppInitConfig(t, dir, false, missingMemoryConfig)
+
+	a := New()
+	t.Cleanup(func() { _ = a.Shutdown() })
+	if err := a.Init(context.Background(), configPath); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	if a.Memory != nil {
+		t.Fatalf("App.Memory = %#v, want nil when memory.enabled=false", a.Memory)
+	}
+	if _, err := os.Stat(memoryDBPath); !os.IsNotExist(err) {
+		t.Fatalf("memory db stat error = %v, want not exist", err)
+	}
+}
+
+func TestInitMemoryEnabledOpensMemoryCore(t *testing.T) {
+	dir := t.TempDir()
+	memoryDBPath := filepath.Join(dir, "memory.db")
+	memoryConfigPath := writeAppMemoryCoreConfig(t, dir, true, true, memoryDBPath)
+	configPath := writeAppInitConfig(t, dir, true, memoryConfigPath)
+
+	a := New()
+	t.Cleanup(func() { _ = a.Shutdown() })
+	if err := a.Init(context.Background(), configPath); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	if a.Memory == nil {
+		t.Fatal("App.Memory = nil, want initialized host")
+	}
+	if _, err := os.Stat(memoryDBPath); err != nil {
+		t.Fatalf("memory db was not created: %v", err)
+	}
+}
+
+func TestInitMemoryEnabledWrapsStartupError(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writeAppInitConfig(t, dir, true, filepath.Join(dir, "missing-memorycore.yaml"))
+
+	a := New()
+	err := a.Init(context.Background(), configPath)
+	if err == nil {
+		t.Fatal("Init succeeded with missing memorycore config, want error")
+	}
+	t.Cleanup(func() { _ = a.Shutdown() })
+	if !strings.Contains(err.Error(), "open memorycore") {
+		t.Fatalf("Init error = %v, want open memorycore", err)
+	}
 }
 
 func TestGetDefaultPersonaName(t *testing.T) {
@@ -649,6 +705,84 @@ func TestDeleteSessionReturnsNotFoundForMissingSession(t *testing.T) {
 	if !errors.Is(err, apperrors.ErrSessionNotFound) {
 		t.Fatalf("DeleteSession error = %v, want ErrSessionNotFound", err)
 	}
+}
+
+func writeAppInitConfig(t *testing.T, dir string, memoryEnabled bool, memoryConfigPath string) string {
+	t.Helper()
+
+	personaDir := filepath.Join(dir, "personas")
+	if err := os.MkdirAll(personaDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll persona dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(personaDir, "default.yaml"), []byte("name: Default\nsystem_prompt: test\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile persona: %v", err)
+	}
+
+	configPath := filepath.Join(dir, "config.yaml")
+	body := fmt.Sprintf(`
+server:
+  host: "127.0.0.1"
+  port: 8081
+llm_providers:
+  - id: moonshot
+    name: Moonshot
+    protocol: openai_compatible
+    base_url: https://api.moonshot.cn
+    api_key_env: MOONSHOT_API_KEY
+    model_discovery: manual
+    enabled: true
+agent_configs:
+  - id: default
+    name: Default
+    persona_key: default
+    emotion:
+      main:
+        provider_id: moonshot
+        model: kimi-k2.6
+      summary:
+        provider_id: moonshot
+        model: kimi-k2.6
+    work:
+      main:
+        provider_id: moonshot
+        model: kimi-k2.6
+      summary:
+        provider_id: moonshot
+        model: kimi-k2.6
+    context_overrides: {}
+agent:
+  active_config: default
+memory:
+  enabled: %t
+  config_path: %q
+db:
+  path: %q
+personas:
+  dir: %q
+`, memoryEnabled, filepath.ToSlash(memoryConfigPath), filepath.ToSlash(filepath.Join(dir, "emo.db")), filepath.ToSlash(personaDir))
+	if err := os.WriteFile(configPath, []byte(body), 0o644); err != nil {
+		t.Fatalf("WriteFile app config: %v", err)
+	}
+	return configPath
+}
+
+func writeAppMemoryCoreConfig(t *testing.T, dir string, enabled bool, autoMigrate bool, dbPath string) string {
+	t.Helper()
+
+	configPath := filepath.Join(dir, "memorycore.yaml")
+	body := fmt.Sprintf(`
+schema_version: memorycore.config.v0.2
+enabled: %t
+core:
+  db_path: %q
+  persona_id: default
+  auto_migrate: %t
+  enable_fts: true
+`, enabled, filepath.ToSlash(dbPath), autoMigrate)
+	if err := os.WriteFile(configPath, []byte(body), 0o644); err != nil {
+		t.Fatalf("WriteFile memorycore config: %v", err)
+	}
+	return configPath
 }
 
 func TestGetSessionDetailReturnsMessages(t *testing.T) {

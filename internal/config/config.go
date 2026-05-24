@@ -43,7 +43,8 @@ type AgentRuntimeConfig struct {
 }
 
 type MemoryConfig struct {
-	Enabled bool `yaml:"enabled" json:"enabled"`
+	Enabled    bool   `yaml:"enabled" json:"enabled"`
+	ConfigPath string `yaml:"config_path" json:"config_path"`
 }
 
 type AgentConfig struct {
@@ -279,7 +280,8 @@ func DefaultConfig() *Config {
 			Path: "./data/emo.db",
 		},
 		Memory: MemoryConfig{
-			Enabled: false,
+			Enabled:    false,
+			ConfigPath: "./config/memorycore.yaml",
 		},
 		Log: LogConfig{
 			Level:  "info",
@@ -353,6 +355,9 @@ func Load(path string) (*Config, error) {
 func (c *Config) Validate() error {
 	if c.Server.Port < 1 || c.Server.Port > 65535 {
 		return fmt.Errorf("server.port must be 1-65535, got %d", c.Server.Port)
+	}
+	if c.Memory.Enabled && strings.TrimSpace(c.Memory.ConfigPath) == "" {
+		return fmt.Errorf("memory.config_path is required when memory is enabled")
 	}
 	if err := c.Context.Validate(); err != nil {
 		return fmt.Errorf("context: %w", err)

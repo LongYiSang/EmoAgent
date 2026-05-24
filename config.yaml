@@ -73,7 +73,7 @@ agent:
   active_config: "default"
 
 memory:
-  enabled: false
+  enabled: true
 
 work:
   max_tool_rounds: 24
