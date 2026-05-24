@@ -24,6 +24,18 @@ import (
 
 var errApprovalPending = errors.New("approval pending")
 
+const memoryFinalizeReasonSessionResume = "session_resume"
+
+type MemorySegmentRef = storage.MemorySegmentRef
+
+type MemoryBridge interface {
+	EnsureSegment(ctx context.Context, chatSessionID string, personaID string) (MemorySegmentRef, error)
+	RolloverSegment(ctx context.Context, chatSessionID string, personaID string, reason string) (MemorySegmentRef, error)
+	AppendUserEpisode(ctx context.Context, segmentID string, messageID string, content string) (string, error)
+	AppendAssistantEpisode(ctx context.Context, segmentID string, messageID string, content string) (string, error)
+	FinalizeSegment(ctx context.Context, segmentID string, reason string, summary string) error
+}
+
 // EngineConfig defines the dependencies for Engine.
 type EngineConfig struct {
 	LLM                llm.Client
@@ -47,6 +59,7 @@ type EngineConfig struct {
 	Approvals          *work.ApprovalService
 	Environment        runtimeenv.Facts
 	RealtimeStreaming  bool
+	Memory             MemoryBridge
 }
 
 // RuntimeConfig is the hot-swappable subset of EngineConfig used for new requests.
@@ -89,6 +102,7 @@ type Engine struct {
 	approvals          *work.ApprovalService
 	environment        runtimeenv.Facts
 	realtimeStreaming  bool
+	memory             MemoryBridge
 }
 
 // UpdateConfig hot-swaps the active LLM client and request parameters for new sends.
@@ -172,6 +186,7 @@ func NewEngine(cfg EngineConfig) *Engine {
 		approvals:          cfg.Approvals,
 		environment:        cfg.Environment,
 		realtimeStreaming:  cfg.RealtimeStreaming,
+		memory:             cfg.Memory,
 	}
 }
 
@@ -206,6 +221,11 @@ func (e *Engine) StartSession(ctx context.Context, personaName string) (string, 
 	if err := e.db.CreateSession(ctx, sessionID, personaName); err != nil {
 		return "", err
 	}
+	if e.memory != nil {
+		if _, err := e.memory.EnsureSegment(ctx, sessionID, personaName); err != nil {
+			e.logMemoryWarning("ensure memory segment", sessionID, err)
+		}
+	}
 	return sessionID, nil
 }
 
@@ -224,6 +244,11 @@ func (e *Engine) ResumeSession(ctx context.Context, sessionID string, personaKey
 	}
 	if session == nil || session.Persona != personaKey {
 		return "", false, nil
+	}
+	if e.memory != nil {
+		if _, err := e.memory.RolloverSegment(ctx, sessionID, personaKey, memoryFinalizeReasonSessionResume); err != nil {
+			e.logMemoryWarning("rollover memory segment", sessionID, err)
+		}
 	}
 	return sessionID, true, nil
 }
@@ -427,10 +452,19 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 		return "", errors.New("persona is required")
 	}
 
+	var memorySegment MemorySegmentRef
+	var hasMemorySegment bool
 	if opts.persistUser {
-		if err := e.db.AddMessageWithMetadata(ctx, uuid.NewString(), sessionID, "user", opts.userContent, visibleMessageMetadata("user", opts.userContent)); err != nil {
+		userMessageID := uuid.NewString()
+		if err := e.db.AddMessageWithMetadata(ctx, userMessageID, sessionID, "user", opts.userContent, visibleMessageMetadata("user", opts.userContent)); err != nil {
 			e.logger.Error("failed to store user message", "session", sessionID, "error", err)
 			return "", err
+		}
+		memorySegment, hasMemorySegment = e.ensureMemorySegment(ctx, sessionID)
+		if hasMemorySegment {
+			if _, err := e.memory.AppendUserEpisode(ctx, memorySegment.SegmentID, userMessageID, opts.userContent); err != nil {
+				e.logMemoryWarning("append user memory episode", sessionID, err)
+			}
 		}
 		if err := e.db.UpdateSessionTimestamp(ctx, sessionID); err != nil {
 			e.logger.Error("failed to update session timestamp", "session", sessionID, "error", err)
@@ -785,9 +819,18 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	)
 
 	// Persist only the final assistant text reply to DB.
-	if err := e.db.AddMessageWithMetadata(ctx, uuid.NewString(), sessionID, "assistant", assistantContent, visibleMessageMetadataWithThinking("assistant", assistantContent, thinkingBlocks)); err != nil {
+	assistantMessageID := uuid.NewString()
+	if err := e.db.AddMessageWithMetadata(ctx, assistantMessageID, sessionID, "assistant", assistantContent, visibleMessageMetadataWithThinking("assistant", assistantContent, thinkingBlocks)); err != nil {
 		e.logger.Error("failed to store assistant message", "session", sessionID, "error", err)
 		return "", err
+	}
+	if !hasMemorySegment {
+		memorySegment, hasMemorySegment = e.ensureMemorySegment(ctx, sessionID)
+	}
+	if hasMemorySegment {
+		if _, err := e.memory.AppendAssistantEpisode(ctx, memorySegment.SegmentID, assistantMessageID, assistantContent); err != nil {
+			e.logMemoryWarning("append assistant memory episode", sessionID, err)
+		}
 	}
 	if err := e.db.UpdateSessionTimestamp(ctx, sessionID); err != nil {
 		e.logger.Error("failed to update session timestamp", "session", sessionID, "error", err)
@@ -994,6 +1037,44 @@ func providerDisplayName(name, fallback string) string {
 		return name
 	}
 	return fallback
+}
+
+func (e *Engine) ensureMemorySegment(ctx context.Context, sessionID string) (MemorySegmentRef, bool) {
+	if e.memory == nil {
+		return MemorySegmentRef{}, false
+	}
+	personaID, err := e.memoryPersonaID(ctx, sessionID)
+	if err != nil {
+		e.logMemoryWarning("load memory segment persona", sessionID, err)
+		return MemorySegmentRef{}, false
+	}
+	segment, err := e.memory.EnsureSegment(ctx, sessionID, personaID)
+	if err != nil {
+		e.logMemoryWarning("ensure memory segment", sessionID, err)
+		return MemorySegmentRef{}, false
+	}
+	return segment, true
+}
+
+func (e *Engine) memoryPersonaID(ctx context.Context, sessionID string) (string, error) {
+	if e.db == nil {
+		return "", errors.New("chat engine database is not configured")
+	}
+	session, err := e.db.GetSession(ctx, sessionID)
+	if err != nil {
+		return "", err
+	}
+	if session == nil {
+		return "", fmt.Errorf("session not found: %s", sessionID)
+	}
+	return session.Persona, nil
+}
+
+func (e *Engine) logMemoryWarning(action string, sessionID string, err error) {
+	if e.logger == nil || err == nil {
+		return
+	}
+	e.logger.Warn(action+" failed", "session", sessionID, "error", err)
 }
 
 func visibleMessageMetadata(role, content string) map[string]any {

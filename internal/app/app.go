@@ -301,6 +301,7 @@ func (a *App) Run(ctx context.Context) error {
 		Approvals:          approvalService,
 		Environment:        a.environment,
 		RealtimeStreaming:  cfg.Chat.RealtimeStreaming,
+		Memory:             memoryhost.NewBridge(a.Memory, a.DB, a.Logger),
 	})
 	a.approvalService = approvalService
 	chatHandler := chat.NewHandler(a.engine, a, a.Logger)

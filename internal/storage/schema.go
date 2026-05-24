@@ -270,6 +270,43 @@ WHERE id IN (
 );
 `,
 	},
+	{
+		Version: 13,
+		SQL: `
+CREATE TABLE IF NOT EXISTS memory_chat_links (
+    chat_session_id          TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    persona_id               TEXT NOT NULL,
+    current_memory_session_id TEXT,
+    created_at               TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at               TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS memory_segments (
+    id                         TEXT PRIMARY KEY,
+    chat_session_id            TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    memory_session_id          TEXT NOT NULL,
+    segment_index              INTEGER NOT NULL CHECK (segment_index >= 1),
+    started_at                 TEXT NOT NULL,
+    last_activity_at           TEXT NOT NULL,
+    finalized_at               TEXT,
+    finalize_reason            TEXT,
+    summary                    TEXT,
+    last_user_episode_id       TEXT,
+    last_assistant_episode_id  TEXT,
+    last_extracted_at          TEXT,
+    extraction_status          TEXT,
+    UNIQUE(chat_session_id, segment_index),
+    UNIQUE(memory_session_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_segments_active
+    ON memory_segments(chat_session_id)
+    WHERE finalized_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_memory_segments_chat
+    ON memory_segments(chat_session_id, segment_index);
+`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.

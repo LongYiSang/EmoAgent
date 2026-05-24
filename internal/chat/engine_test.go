@@ -56,6 +56,79 @@ func (f *fakeLLMClient) ChatStream(_ context.Context, req llm.ChatRequest, cb ll
 	return f.response, f.err
 }
 
+type fakeMemoryBridge struct {
+	ensureResult    MemorySegmentRef
+	rolloverResult  MemorySegmentRef
+	ensureErr       error
+	rolloverErr     error
+	appendUserErr   error
+	appendAssistErr error
+
+	ensureCalls    []memoryEnsureCall
+	rolloverCalls  []memoryRolloverCall
+	userEpisodes   []memoryEpisodeCall
+	assistEpisodes []memoryEpisodeCall
+}
+
+type memoryEnsureCall struct {
+	ChatSessionID string
+	PersonaID     string
+}
+
+type memoryRolloverCall struct {
+	ChatSessionID string
+	PersonaID     string
+	Reason        string
+}
+
+type memoryEpisodeCall struct {
+	SegmentID string
+	MessageID string
+	Content   string
+}
+
+func (f *fakeMemoryBridge) EnsureSegment(_ context.Context, chatSessionID string, personaID string) (MemorySegmentRef, error) {
+	f.ensureCalls = append(f.ensureCalls, memoryEnsureCall{ChatSessionID: chatSessionID, PersonaID: personaID})
+	if f.ensureErr != nil {
+		return MemorySegmentRef{}, f.ensureErr
+	}
+	if f.ensureResult.SegmentID == "" {
+		f.ensureResult = MemorySegmentRef{SegmentID: "segment-current", MemorySessionID: "memory-current"}
+	}
+	return f.ensureResult, nil
+}
+
+func (f *fakeMemoryBridge) RolloverSegment(_ context.Context, chatSessionID string, personaID string, reason string) (MemorySegmentRef, error) {
+	f.rolloverCalls = append(f.rolloverCalls, memoryRolloverCall{ChatSessionID: chatSessionID, PersonaID: personaID, Reason: reason})
+	if f.rolloverErr != nil {
+		return MemorySegmentRef{}, f.rolloverErr
+	}
+	if f.rolloverResult.SegmentID == "" {
+		f.rolloverResult = MemorySegmentRef{SegmentID: "segment-next", MemorySessionID: "memory-next"}
+	}
+	return f.rolloverResult, nil
+}
+
+func (f *fakeMemoryBridge) AppendUserEpisode(_ context.Context, segmentID string, messageID string, content string) (string, error) {
+	f.userEpisodes = append(f.userEpisodes, memoryEpisodeCall{SegmentID: segmentID, MessageID: messageID, Content: content})
+	if f.appendUserErr != nil {
+		return "", f.appendUserErr
+	}
+	return "episode-user", nil
+}
+
+func (f *fakeMemoryBridge) AppendAssistantEpisode(_ context.Context, segmentID string, messageID string, content string) (string, error) {
+	f.assistEpisodes = append(f.assistEpisodes, memoryEpisodeCall{SegmentID: segmentID, MessageID: messageID, Content: content})
+	if f.appendAssistErr != nil {
+		return "", f.appendAssistErr
+	}
+	return "episode-assistant", nil
+}
+
+func (f *fakeMemoryBridge) FinalizeSegment(context.Context, string, string, string) error {
+	return nil
+}
+
 func engineSummaryContent(goal string) string {
 	payload := map[string]any{
 		"running_summary": map[string]any{
@@ -297,6 +370,25 @@ func TestEngineStartSessionPersistsSession(t *testing.T) {
 	}
 }
 
+func TestEngineStartSessionEnsuresMemorySegment(t *testing.T) {
+	engine, _, _ := newTestEngine(t, &fakeLLMClient{})
+	bridge := &fakeMemoryBridge{
+		ensureResult: MemorySegmentRef{SegmentID: "segment-1", MemorySessionID: "memory-1"},
+	}
+	engine.memory = bridge
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if len(bridge.ensureCalls) != 1 {
+		t.Fatalf("ensure calls = %#v, want one call", bridge.ensureCalls)
+	}
+	if bridge.ensureCalls[0].ChatSessionID != sessionID || bridge.ensureCalls[0].PersonaID != "default" {
+		t.Fatalf("ensure call = %#v, want session/default", bridge.ensureCalls[0])
+	}
+}
+
 func TestEngineSendMessageStreamsAndPersistsConversation(t *testing.T) {
 	fakeLLM := &fakeLLMClient{
 		deltas: []string{"Hi", " there"},
@@ -369,6 +461,85 @@ func TestEngineSendMessageStreamsAndPersistsConversation(t *testing.T) {
 	}
 	if messages[3].Role != "assistant" || messages[3].Content != "Hi there" {
 		t.Fatalf("messages[3] = %#v, want persisted assistant message", messages[3])
+	}
+}
+
+func TestEngineSendMessageAppendsMemoryEpisodes(t *testing.T) {
+	fakeLLM := &fakeLLMClient{
+		response: &llm.ChatResponse{
+			ID:         "resp-1",
+			Content:    "Hi there",
+			StopReason: "end_turn",
+		},
+	}
+	engine, _, _ := newTestEngine(t, fakeLLM)
+	bridge := &fakeMemoryBridge{
+		ensureResult: MemorySegmentRef{SegmentID: "segment-current", MemorySessionID: "memory-current"},
+	}
+	engine.memory = bridge
+
+	ctx := context.Background()
+	sessionID, err := engine.StartSession(ctx, "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	bridge.ensureCalls = nil
+
+	reply, err := engine.SendMessage(ctx, sessionID, &config.Persona{Name: "default", SystemPrompt: "system"}, "How are you?", nil)
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if reply != "Hi there" {
+		t.Fatalf("reply = %q, want Hi there", reply)
+	}
+	if len(bridge.ensureCalls) != 1 || bridge.ensureCalls[0].ChatSessionID != sessionID {
+		t.Fatalf("ensure calls = %#v, want current session", bridge.ensureCalls)
+	}
+	if len(bridge.userEpisodes) != 1 {
+		t.Fatalf("user episodes = %#v, want one", bridge.userEpisodes)
+	}
+	if bridge.userEpisodes[0].SegmentID != "segment-current" || bridge.userEpisodes[0].Content != "How are you?" || bridge.userEpisodes[0].MessageID == "" {
+		t.Fatalf("user episode = %#v, want current segment/content/message id", bridge.userEpisodes[0])
+	}
+	if len(bridge.assistEpisodes) != 1 {
+		t.Fatalf("assistant episodes = %#v, want one", bridge.assistEpisodes)
+	}
+	if bridge.assistEpisodes[0].SegmentID != "segment-current" || bridge.assistEpisodes[0].Content != "Hi there" || bridge.assistEpisodes[0].MessageID == "" {
+		t.Fatalf("assistant episode = %#v, want current segment/content/message id", bridge.assistEpisodes[0])
+	}
+}
+
+func TestEngineMemoryAppendFailureDoesNotBlockChat(t *testing.T) {
+	fakeLLM := &fakeLLMClient{
+		response: endTurnResponse("ok"),
+	}
+	engine, db, _ := newTestEngine(t, fakeLLM)
+	bridge := &fakeMemoryBridge{
+		ensureResult:    MemorySegmentRef{SegmentID: "segment-current", MemorySessionID: "memory-current"},
+		appendUserErr:   errors.New("memory user append failed"),
+		appendAssistErr: errors.New("memory assistant append failed"),
+	}
+	engine.memory = bridge
+
+	ctx := context.Background()
+	sessionID, err := engine.StartSession(ctx, "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	reply, err := engine.SendMessage(ctx, sessionID, &config.Persona{Name: "default", SystemPrompt: "system"}, "hello", nil)
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if reply != "ok" {
+		t.Fatalf("reply = %q, want ok", reply)
+	}
+
+	messages, err := db.GetAllMessages(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("GetAllMessages: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("len(messages) = %d, want 2", len(messages))
 	}
 }
 
@@ -676,6 +847,35 @@ func TestEngineResumeSessionRequiresMatchingPersona(t *testing.T) {
 
 	if _, err := db.GetSession(ctx, sessionID); err != nil {
 		t.Fatalf("GetSession: %v", err)
+	}
+}
+
+func TestEngineResumeSessionRollsOverMemorySegment(t *testing.T) {
+	engine, _, _ := newTestEngine(t, &fakeLLMClient{})
+	bridge := &fakeMemoryBridge{
+		rolloverResult: MemorySegmentRef{SegmentID: "segment-2", MemorySessionID: "memory-2"},
+	}
+	engine.memory = bridge
+
+	ctx := context.Background()
+	sessionID, err := engine.StartSession(ctx, "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	bridge.rolloverCalls = nil
+
+	resumedID, ok, err := engine.ResumeSession(ctx, sessionID, "default")
+	if err != nil {
+		t.Fatalf("ResumeSession: %v", err)
+	}
+	if !ok || resumedID != sessionID {
+		t.Fatalf("ResumeSession = (%q, %v), want (%q, true)", resumedID, ok, sessionID)
+	}
+	if len(bridge.rolloverCalls) != 1 {
+		t.Fatalf("rollover calls = %#v, want one", bridge.rolloverCalls)
+	}
+	if bridge.rolloverCalls[0].ChatSessionID != sessionID || bridge.rolloverCalls[0].PersonaID != "default" || bridge.rolloverCalls[0].Reason != "session_resume" {
+		t.Fatalf("rollover call = %#v, want session/default/session_resume", bridge.rolloverCalls[0])
 	}
 }
 
