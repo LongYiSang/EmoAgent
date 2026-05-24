@@ -18,6 +18,7 @@ type Config struct {
 	LLMProviders []LLMProvider      `yaml:"llm_providers"`
 	AgentConfigs []AgentConfig      `yaml:"agent_configs"`
 	Agent        AgentRuntimeConfig `yaml:"agent"`
+	Memory       MemoryConfig       `yaml:"memory"`
 	DB           DBConfig           `yaml:"db"`
 	Log          LogConfig          `yaml:"log"`
 	Personas     PersonasConfig     `yaml:"personas"`
@@ -39,6 +40,10 @@ type LLMProvider struct {
 
 type AgentRuntimeConfig struct {
 	ActiveConfig string `yaml:"active_config" json:"active_config"`
+}
+
+type MemoryConfig struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
 }
 
 type AgentConfig struct {
@@ -272,6 +277,9 @@ func DefaultConfig() *Config {
 		},
 		DB: DBConfig{
 			Path: "./data/emo.db",
+		},
+		Memory: MemoryConfig{
+			Enabled: false,
 		},
 		Log: LogConfig{
 			Level:  "info",

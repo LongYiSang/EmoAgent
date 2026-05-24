@@ -72,6 +72,9 @@ agent_configs:
 agent:
   active_config: "default"
 
+memory:
+  enabled: false
+
 work:
   max_tool_rounds: 24
   max_input_tokens: 100000

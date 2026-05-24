@@ -22,6 +22,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Chat.RealtimeStreaming {
 		t.Error("default chat.realtime_streaming = true, want false")
 	}
+	if cfg.Memory.Enabled {
+		t.Error("default memory.enabled = true, want false")
+	}
 	if cfg.Context.InputBudgetTokens <= 0 {
 		t.Errorf("default context.input_budget_tokens = %d, want > 0", cfg.Context.InputBudgetTokens)
 	}
@@ -121,6 +124,8 @@ agent_configs:
       reserve_output_tokens: 1024
 agent:
   active_config: default
+memory:
+  enabled: true
 `), 0o644)
 
 	cfg, err := Load(path)
@@ -164,6 +169,9 @@ agent:
 	}
 	if cfg.Agent.ActiveConfig != "default" {
 		t.Fatalf("agent.active_config = %q, want default", cfg.Agent.ActiveConfig)
+	}
+	if !cfg.Memory.Enabled {
+		t.Fatal("memory.enabled = false, want true")
 	}
 	// Default should still apply for unset fields.
 	if cfg.DB.Path != "./data/emo.db" {
