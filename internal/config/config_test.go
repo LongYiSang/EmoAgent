@@ -52,6 +52,21 @@ func TestDefaultConfig(t *testing.T) {
 	if !cfg.Memory.Retrieval.FailOpen {
 		t.Error("default memory.retrieval.fail_open = false, want true")
 	}
+	if cfg.Memory.Extraction.Enabled {
+		t.Error("default memory.extraction.enabled = true, want false")
+	}
+	if cfg.Memory.Extraction.Mode != "dry_run" {
+		t.Errorf("default memory.extraction.mode = %q, want dry_run", cfg.Memory.Extraction.Mode)
+	}
+	if !cfg.Memory.Extraction.TriggerOnFinalizeSegment {
+		t.Error("default memory.extraction.trigger_on_finalize_segment = false, want true")
+	}
+	if cfg.Memory.Extraction.AllowSensitiveExtraction {
+		t.Error("default memory.extraction.allow_sensitive_extraction = true, want false")
+	}
+	if cfg.Memory.Extraction.Provider.APIKeyEnv != "MEMORYCORE_LLM_API_KEY" {
+		t.Errorf("default memory.extraction.provider.api_key_env = %q, want MEMORYCORE_LLM_API_KEY", cfg.Memory.Extraction.Provider.APIKeyEnv)
+	}
 	if cfg.Context.InputBudgetTokens <= 0 {
 		t.Errorf("default context.input_budget_tokens = %d, want > 0", cfg.Context.InputBudgetTokens)
 	}
@@ -163,6 +178,32 @@ memory:
     final_memory_count: 3
     context_budget_tokens: 600
     fail_open: false
+  extraction:
+    enabled: true
+    mode: apply
+    trigger_on_finalize_segment: true
+    limit: 25
+    timezone: Asia/Shanghai
+    allow_inference: false
+    allow_sensitive_extraction: false
+    max_facts: 5
+    max_links: 7
+    raw_log:
+      enabled: true
+      directory: ./debug/memory_extraction_raw
+    provider:
+      kind: openai-compatible
+      id: memory_extractor
+      base_url: https://api.example.test
+      api_key_env: MEMORY_EXTRACT_KEY
+      model: memory-extractor
+      timeout_seconds: 45
+      max_tokens: 2048
+      temperature: 0.2
+      thinking:
+        type: disabled
+    repair_enabled: false
+    audit_enabled: true
 `), 0o644)
 
 	cfg, err := Load(path)
@@ -228,6 +269,27 @@ memory:
 	if cfg.Memory.Retrieval.FailOpen {
 		t.Fatal("memory.retrieval.fail_open = true, want false")
 	}
+	if !cfg.Memory.Extraction.Enabled || cfg.Memory.Extraction.Mode != "apply" {
+		t.Fatalf("memory.extraction enabled/mode = %v/%q, want true/apply", cfg.Memory.Extraction.Enabled, cfg.Memory.Extraction.Mode)
+	}
+	if cfg.Memory.Extraction.Limit != 25 || cfg.Memory.Extraction.MaxFacts != 5 || cfg.Memory.Extraction.MaxLinks != 7 {
+		t.Fatalf("memory.extraction limits = %#v", cfg.Memory.Extraction)
+	}
+	if cfg.Memory.Extraction.AllowInference {
+		t.Fatal("memory.extraction.allow_inference = true, want false")
+	}
+	if cfg.Memory.Extraction.Provider.BaseURL != "https://api.example.test" || cfg.Memory.Extraction.Provider.APIKeyEnv != "MEMORY_EXTRACT_KEY" {
+		t.Fatalf("memory.extraction.provider = %#v", cfg.Memory.Extraction.Provider)
+	}
+	if cfg.Memory.Extraction.Provider.TimeoutSeconds != 45 || cfg.Memory.Extraction.Provider.MaxTokens != 2048 {
+		t.Fatalf("memory.extraction.provider timeout/max_tokens = %#v", cfg.Memory.Extraction.Provider)
+	}
+	if cfg.Memory.Extraction.Provider.Thinking.Type != "disabled" {
+		t.Fatalf("memory.extraction.provider.thinking.type = %q, want disabled", cfg.Memory.Extraction.Provider.Thinking.Type)
+	}
+	if !cfg.Memory.Extraction.RawLog.Enabled || cfg.Memory.Extraction.RawLog.Directory != "./debug/memory_extraction_raw" {
+		t.Fatalf("memory.extraction.raw_log = %#v", cfg.Memory.Extraction.RawLog)
+	}
 	// Default should still apply for unset fields.
 	if cfg.DB.Path != "./data/emo.db" {
 		t.Errorf("db.path = %q, want default", cfg.DB.Path)
@@ -275,6 +337,20 @@ func TestValidateMemoryRetrievalLimits(t *testing.T) {
 				t.Fatalf("Validate error = %v, want %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestValidateMemoryExtractionRawLogRequiresDirectory(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Memory.Enabled = true
+	cfg.Memory.Extraction.Enabled = true
+	cfg.Memory.Extraction.Provider.BaseURL = "https://api.example.test"
+	cfg.Memory.Extraction.Provider.Model = "memory-extractor"
+	cfg.Memory.Extraction.RawLog.Enabled = true
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "raw_log.directory is required when raw_log.enabled is true") {
+		t.Fatalf("Validate error = %v", err)
 	}
 }
 

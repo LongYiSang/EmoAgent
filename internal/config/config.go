@@ -43,10 +43,11 @@ type AgentRuntimeConfig struct {
 }
 
 type MemoryConfig struct {
-	Enabled         bool                  `yaml:"enabled" json:"enabled"`
-	ConfigPath      string                `yaml:"config_path" json:"config_path"`
-	ManualRulesPath string                `yaml:"manual_rules_path" json:"manual_rules_path"`
-	Retrieval       MemoryRetrievalConfig `yaml:"retrieval" json:"retrieval"`
+	Enabled         bool                   `yaml:"enabled" json:"enabled"`
+	ConfigPath      string                 `yaml:"config_path" json:"config_path"`
+	ManualRulesPath string                 `yaml:"manual_rules_path" json:"manual_rules_path"`
+	Retrieval       MemoryRetrievalConfig  `yaml:"retrieval" json:"retrieval"`
+	Extraction      MemoryExtractionConfig `yaml:"extraction" json:"extraction"`
 }
 
 type MemoryRetrievalConfig struct {
@@ -57,6 +58,43 @@ type MemoryRetrievalConfig struct {
 	FinalMemoryCount    int  `yaml:"final_memory_count" json:"final_memory_count"`
 	ContextBudgetTokens int  `yaml:"context_budget_tokens" json:"context_budget_tokens"`
 	FailOpen            bool `yaml:"fail_open" json:"fail_open"`
+}
+
+type MemoryExtractionConfig struct {
+	Enabled                  bool                           `yaml:"enabled" json:"enabled"`
+	Mode                     string                         `yaml:"mode" json:"mode"`
+	TriggerOnFinalizeSegment bool                           `yaml:"trigger_on_finalize_segment" json:"trigger_on_finalize_segment"`
+	Limit                    int                            `yaml:"limit" json:"limit"`
+	Timezone                 string                         `yaml:"timezone" json:"timezone"`
+	AllowInference           bool                           `yaml:"allow_inference" json:"allow_inference"`
+	AllowSensitiveExtraction bool                           `yaml:"allow_sensitive_extraction" json:"allow_sensitive_extraction"`
+	MaxFacts                 int                            `yaml:"max_facts" json:"max_facts"`
+	MaxLinks                 int                            `yaml:"max_links" json:"max_links"`
+	RawLog                   MemoryExtractionRawLogConfig   `yaml:"raw_log" json:"raw_log"`
+	Provider                 MemoryExtractionProviderConfig `yaml:"provider" json:"provider"`
+	RepairEnabled            bool                           `yaml:"repair_enabled" json:"repair_enabled"`
+	AuditEnabled             bool                           `yaml:"audit_enabled" json:"audit_enabled"`
+}
+
+type MemoryExtractionRawLogConfig struct {
+	Enabled   bool   `yaml:"enabled" json:"enabled"`
+	Directory string `yaml:"directory" json:"directory"`
+}
+
+type MemoryExtractionProviderConfig struct {
+	Kind           string                         `yaml:"kind" json:"kind"`
+	ID             string                         `yaml:"id" json:"id"`
+	BaseURL        string                         `yaml:"base_url" json:"base_url"`
+	APIKeyEnv      string                         `yaml:"api_key_env" json:"api_key_env"`
+	Model          string                         `yaml:"model" json:"model"`
+	TimeoutSeconds int                            `yaml:"timeout_seconds" json:"timeout_seconds"`
+	MaxTokens      int                            `yaml:"max_tokens" json:"max_tokens"`
+	Temperature    float64                        `yaml:"temperature" json:"temperature"`
+	Thinking       MemoryExtractionThinkingConfig `yaml:"thinking" json:"thinking"`
+}
+
+type MemoryExtractionThinkingConfig struct {
+	Type string `yaml:"type" json:"type"`
 }
 
 type AgentConfig struct {
@@ -304,6 +342,26 @@ func DefaultConfig() *Config {
 				ContextBudgetTokens: 700,
 				FailOpen:            true,
 			},
+			Extraction: MemoryExtractionConfig{
+				Enabled:                  false,
+				Mode:                     "dry_run",
+				TriggerOnFinalizeSegment: true,
+				Limit:                    50,
+				Timezone:                 "Asia/Shanghai",
+				AllowInference:           true,
+				AllowSensitiveExtraction: false,
+				MaxFacts:                 12,
+				MaxLinks:                 20,
+				Provider: MemoryExtractionProviderConfig{
+					Kind:           "openai-compatible",
+					ID:             "memory_extractor",
+					APIKeyEnv:      "MEMORYCORE_LLM_API_KEY",
+					TimeoutSeconds: 60,
+					MaxTokens:      4096,
+				},
+				RepairEnabled: true,
+				AuditEnabled:  true,
+			},
 		},
 		Log: LogConfig{
 			Level:  "info",
@@ -358,6 +416,7 @@ func Load(path string) (*Config, error) {
 	cfg.Work.ApplyDefaults()
 	cfg.WebFetch.applyDefaults()
 	cfg.Bash.applyDefaults()
+	cfg.Memory.Extraction.applyDefaults()
 	for i := range cfg.LLMProviders {
 		provider, err := cfg.LLMProviders[i].WithPresetDefaults()
 		if err != nil {
@@ -391,6 +450,9 @@ func (c *Config) Validate() error {
 		if c.Memory.Retrieval.ContextBudgetTokens <= 0 {
 			return fmt.Errorf("memory.retrieval.context_budget_tokens must be > 0")
 		}
+	}
+	if err := c.Memory.Extraction.Validate(); err != nil {
+		return fmt.Errorf("memory.extraction: %w", err)
 	}
 	if err := c.Context.Validate(); err != nil {
 		return fmt.Errorf("context: %w", err)
@@ -461,6 +523,106 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("work.tool_snip_soft_tokens must be < work.tool_snip_hard_tokens")
 	}
 	return nil
+}
+
+func (c *MemoryExtractionConfig) applyDefaults() {
+	if c.Mode == "" {
+		c.Mode = "dry_run"
+	}
+	if c.Limit == 0 {
+		c.Limit = 50
+	}
+	if c.Timezone == "" {
+		c.Timezone = "Asia/Shanghai"
+	}
+	if c.MaxFacts == 0 {
+		c.MaxFacts = 12
+	}
+	if c.MaxLinks == 0 {
+		c.MaxLinks = 20
+	}
+	if c.Provider.Kind == "" {
+		c.Provider.Kind = "openai-compatible"
+	}
+	if c.Provider.ID == "" {
+		c.Provider.ID = "memory_extractor"
+	}
+	if c.Provider.APIKeyEnv == "" {
+		c.Provider.APIKeyEnv = "MEMORYCORE_LLM_API_KEY"
+	}
+	if c.Provider.TimeoutSeconds == 0 {
+		c.Provider.TimeoutSeconds = 60
+	}
+	if c.Provider.MaxTokens == 0 {
+		c.Provider.MaxTokens = 4096
+	}
+}
+
+func (c MemoryExtractionConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	switch normalizeMemoryExtractionMode(c.Mode) {
+	case "validate", "dry-run", "apply":
+	default:
+		return fmt.Errorf("mode must be validate, dry_run, or apply")
+	}
+	if c.Limit <= 0 {
+		return fmt.Errorf("limit must be > 0")
+	}
+	if strings.TrimSpace(c.Timezone) == "" {
+		return fmt.Errorf("timezone is required")
+	}
+	if c.MaxFacts <= 0 {
+		return fmt.Errorf("max_facts must be > 0")
+	}
+	if c.MaxLinks <= 0 {
+		return fmt.Errorf("max_links must be > 0")
+	}
+	if c.RawLog.Enabled && strings.TrimSpace(c.RawLog.Directory) == "" {
+		return fmt.Errorf("raw_log.directory is required when raw_log.enabled is true")
+	}
+	switch strings.TrimSpace(c.Provider.Kind) {
+	case "openai-compatible", "openai_compatible":
+	default:
+		return fmt.Errorf("provider.kind must be openai-compatible")
+	}
+	if strings.TrimSpace(c.Provider.ID) == "" {
+		return fmt.Errorf("provider.id is required")
+	}
+	if strings.TrimSpace(c.Provider.BaseURL) == "" {
+		return fmt.Errorf("provider.base_url is required")
+	}
+	if strings.TrimSpace(c.Provider.APIKeyEnv) == "" {
+		return fmt.Errorf("provider.api_key_env is required")
+	}
+	if strings.TrimSpace(c.Provider.Model) == "" {
+		return fmt.Errorf("provider.model is required")
+	}
+	if c.Provider.TimeoutSeconds <= 0 {
+		return fmt.Errorf("provider.timeout_seconds must be > 0")
+	}
+	if c.Provider.MaxTokens <= 0 {
+		return fmt.Errorf("provider.max_tokens must be > 0")
+	}
+	if c.Provider.Temperature < 0 || c.Provider.Temperature > 2 {
+		return fmt.Errorf("provider.temperature must be between 0 and 2")
+	}
+	switch strings.TrimSpace(c.Provider.Thinking.Type) {
+	case "", "enabled", "disabled":
+	default:
+		return fmt.Errorf("provider.thinking.type must be enabled or disabled")
+	}
+	return nil
+}
+
+func normalizeMemoryExtractionMode(mode string) string {
+	switch strings.TrimSpace(mode) {
+	case "dry_run":
+		return "dry-run"
+	default:
+		return strings.TrimSpace(mode)
+	}
 }
 
 func (p LLMProvider) Validate() error {

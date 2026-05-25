@@ -11,11 +11,12 @@ import (
 )
 
 type Host struct {
-	Service         memorycore.Service
-	Source          string
-	DBPath          string
-	retrievalPolicy memorycore.RetrievalPolicy
-	logger          *slog.Logger
+	Service          memorycore.Service
+	Source           string
+	DBPath           string
+	retrievalPolicy  memorycore.RetrievalPolicy
+	extractionRunner *ExtractionRunner
+	logger           *slog.Logger
 }
 
 func OpenFromConfig(ctx context.Context, path string, logger *slog.Logger) (*Host, error) {
@@ -50,17 +51,54 @@ func OpenWithOptions(ctx context.Context, opts memorycore.Options, logger *slog.
 }
 
 func (h *Host) Close() error {
-	if h == nil || h.Service == nil {
+	if h == nil {
 		return nil
 	}
+	var closeErr error
+	if h.extractionRunner != nil {
+		if err := h.extractionRunner.Close(); err != nil {
+			closeErr = err
+		}
+		h.extractionRunner = nil
+	}
+	if h.Service == nil {
+		return closeErr
+	}
 	if err := h.Service.Close(); err != nil {
-		return err
+		if closeErr == nil {
+			closeErr = err
+		}
 	}
 	if h.logger != nil {
 		h.logger.Info("memorycore stopped", "db_path", h.DBPath)
 	}
 	h.Service = nil
-	return nil
+	return closeErr
+}
+
+func (h *Host) SetExtractionRunner(runner *ExtractionRunner) {
+	if h == nil {
+		return
+	}
+	if h.extractionRunner != nil && h.extractionRunner != runner {
+		_ = h.extractionRunner.Close()
+	}
+	h.extractionRunner = runner
+}
+
+func (h *Host) ExtractionEnabled() bool {
+	return h != nil && h.extractionRunner != nil && h.extractionRunner.enabled()
+}
+
+func (h *Host) extractionTriggerOnFinalizeSegment() bool {
+	return h != nil && h.extractionRunner != nil && h.extractionRunner.triggerOnFinalizeSegment()
+}
+
+func (h *Host) ExtractSessionEnd(ctx context.Context, personaID string, memorySessionID string) (*memorycore.ExtractionRunResult, error) {
+	if !h.ExtractionEnabled() {
+		return nil, nil
+	}
+	return h.extractionRunner.ExtractSessionEnd(ctx, personaID, memorySessionID)
 }
 
 func open(ctx context.Context, opts memorycore.Options, retrievalPolicy memorycore.RetrievalPolicy, logger *slog.Logger, source string) (*Host, error) {

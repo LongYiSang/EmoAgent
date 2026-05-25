@@ -137,8 +137,9 @@ func (b *Bridge) FinalizeSegment(ctx context.Context, segmentID string, reason s
 		summaryCopy := summary
 		summaryPtr = &summaryCopy
 	}
+	personaID := defaultPersonaID(segmentPersona(segment, b.db, ctx))
 	if _, err := b.host.Service.EndSession(ctx, memorycore.EndSessionRequest{
-		PersonaID: defaultPersonaID(segmentPersona(segment, b.db, ctx)),
+		PersonaID: personaID,
 		SessionID: segment.MemorySessionID,
 		EndedAt:   time.Now().UTC(),
 		Summary:   summaryPtr,
@@ -151,6 +152,7 @@ func (b *Bridge) FinalizeSegment(ctx context.Context, segmentID string, reason s
 	if b.logger != nil {
 		b.logger.Info("memory segment finalized", "chat_session_id", segment.ChatSessionID, "segment_id", segment.ID, "memory_session_id", segment.MemorySessionID, "reason", reason)
 	}
+	b.extractFinalizedSegment(ctx, segment, personaID)
 	return nil
 }
 
@@ -227,6 +229,7 @@ func (b *Bridge) applyManualMemoryIntent(ctx context.Context, segmentID string, 
 	case ManualMemoryIntentNone:
 		return nil
 	case ManualMemoryIntentForget:
+		b.logManualForgetDetected(ctx, segmentID)
 		return nil
 	case ManualMemoryIntentPin:
 	default:
@@ -289,6 +292,56 @@ func (b *Bridge) logManualMemoryWarning(action string, chatSessionID string, err
 		return
 	}
 	b.logger.Warn(action+" failed", "chat_session_id", chatSessionID, "error", err)
+}
+
+func (b *Bridge) extractFinalizedSegment(ctx context.Context, segment *storage.MemorySegment, personaID string) {
+	if b == nil || b.host == nil || !b.host.ExtractionEnabled() || !b.host.extractionTriggerOnFinalizeSegment() || segment == nil {
+		return
+	}
+	result, err := b.host.ExtractSessionEnd(ctx, personaID, segment.MemorySessionID)
+	if err != nil {
+		if b.logger != nil {
+			status := ""
+			if result != nil {
+				status = string(result.Status)
+			}
+			b.logger.Warn("memory extraction failed",
+				"chat_session_id", segment.ChatSessionID,
+				"segment_id", segment.ID,
+				"memory_session_id", segment.MemorySessionID,
+				"status", status,
+				"error", err,
+			)
+		}
+		return
+	}
+	if b.logger != nil && result != nil {
+		b.logger.Info("memory extraction completed",
+			"chat_session_id", segment.ChatSessionID,
+			"segment_id", segment.ID,
+			"memory_session_id", segment.MemorySessionID,
+			"status", result.Status,
+			"accepted", result.AcceptedCount,
+			"applied", result.AppliedCount,
+		)
+	}
+}
+
+func (b *Bridge) logManualForgetDetected(ctx context.Context, segmentID string) {
+	if b == nil || b.logger == nil || b.db == nil {
+		return
+	}
+	segment, err := b.db.GetMemorySegment(ctx, segmentID)
+	if err != nil || segment == nil {
+		b.logger.Info("manual memory forget detected", "segment_id", segmentID, "status", "resolver_not_implemented")
+		return
+	}
+	b.logger.Info("manual memory forget detected",
+		"chat_session_id", segment.ChatSessionID,
+		"segment_id", segment.ID,
+		"memory_session_id", segment.MemorySessionID,
+		"status", "resolver_not_implemented",
+	)
 }
 
 func firstNonEmptyString(values ...string) string {

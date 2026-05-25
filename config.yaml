@@ -84,6 +84,37 @@ memory:
     context_budget_tokens: 700
     fail_open: true
 
+  extraction:
+    enabled: true
+    mode: apply
+    trigger_on_finalize_segment: true
+    limit: 50
+    timezone: Asia/Shanghai
+    allow_inference: true
+    allow_sensitive_extraction: true
+    max_facts: 12
+    max_links: 20
+
+    raw_log:
+      enabled: true
+      directory: ./logs/memory_extraction_raw
+
+    provider:
+      kind: openai-compatible
+      id: memory_extractor
+      base_url: https://api.deepseek.com
+      api_key_env: MEMORYCORE_LLM_API_KEY
+      model: deepseek-v4-flash
+      timeout_seconds: 30
+      max_tokens: 4096
+      temperature: 0
+      thinking:
+        type: disabled
+
+    repair_enabled: true
+    audit_enabled: true
+
+
 work:
   max_tool_rounds: 24
   max_input_tokens: 100000

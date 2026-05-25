@@ -168,6 +168,14 @@ func (a *App) Init(ctx context.Context, configPath string) error {
 		if err != nil {
 			return fmt.Errorf("open memorycore: %w", err)
 		}
+		if cfg.Memory.Extraction.Enabled {
+			extractor, err := memoryhost.NewExtractionRunner(ctx, memoryHost, memoryExtractionHostConfig(cfg.Memory.Extraction), a.Logger)
+			if err != nil {
+				_ = memoryHost.Close()
+				return fmt.Errorf("configure memory extraction: %w", err)
+			}
+			memoryHost.SetExtractionRunner(extractor)
+		}
 		a.Memory = memoryHost
 		a.ManualMemoryRules = manualRules
 	}
