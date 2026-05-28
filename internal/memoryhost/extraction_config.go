@@ -1,12 +1,23 @@
 package memoryhost
 
 import (
-	"fmt"
 	"strings"
 	"time"
 
 	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
+
+type ExtractionHostPolicy struct {
+	Enabled                  bool
+	TriggerOnFinalizeSegment bool
+	TriggerOnManualPin       bool
+	TriggerOnManualForget    bool
+	SessionEndMode           memorycore.ExtractionRunMode
+	ManualPinMode            memorycore.ExtractionRunMode
+	ManualForgetMode         memorycore.ExtractionRunMode
+	Timezone                 string
+	Limit                    int
+}
 
 type ExtractionConfig struct {
 	Enabled                  bool
@@ -82,55 +93,83 @@ func (c ExtractionConfig) normalized() ExtractionConfig {
 	return c
 }
 
-func (c ExtractionConfig) validateForRunner(llm memorycore.ExtractionLLM) error {
-	if !c.Enabled {
-		return nil
+func (p ExtractionHostPolicy) normalized() ExtractionHostPolicy {
+	if p.SessionEndMode == "" {
+		p.SessionEndMode = memorycore.ExtractionRunModeApply
 	}
-	switch c.Mode {
-	case memorycore.ExtractionRunModeValidate, memorycore.ExtractionRunModeDryRun, memorycore.ExtractionRunModeApply:
-	default:
-		return fmt.Errorf("mode must be validate, dry_run, or apply")
+	if p.SessionEndMode == "dry_run" {
+		p.SessionEndMode = memorycore.ExtractionRunModeDryRun
 	}
-	if c.Limit <= 0 {
-		return fmt.Errorf("limit must be > 0")
+	if p.ManualPinMode == "" {
+		p.ManualPinMode = memorycore.ExtractionRunModeApply
 	}
-	if strings.TrimSpace(c.Timezone) == "" {
-		return fmt.Errorf("timezone is required")
+	if p.ManualPinMode == "dry_run" {
+		p.ManualPinMode = memorycore.ExtractionRunModeDryRun
 	}
-	if c.MaxFacts <= 0 {
-		return fmt.Errorf("max_facts must be > 0")
+	if p.ManualForgetMode == "" {
+		p.ManualForgetMode = memorycore.ExtractionRunModeDryRun
 	}
-	if c.MaxLinks <= 0 {
-		return fmt.Errorf("max_links must be > 0")
+	if p.ManualForgetMode == "dry_run" {
+		p.ManualForgetMode = memorycore.ExtractionRunModeDryRun
 	}
-	if c.RawLog.Enabled && strings.TrimSpace(c.RawLog.Directory) == "" {
-		return fmt.Errorf("raw_log.directory is required when raw_log.enabled is true")
+	if strings.TrimSpace(p.Timezone) == "" {
+		p.Timezone = "Asia/Shanghai"
 	}
-	if llm != nil {
-		return nil
+	if p.Limit == 0 {
+		p.Limit = 50
 	}
-	switch strings.TrimSpace(c.Provider.Kind) {
-	case "openai-compatible", "openai_compatible":
-	default:
-		return fmt.Errorf("provider.kind must be openai-compatible")
-	}
-	if strings.TrimSpace(c.Provider.BaseURL) == "" {
-		return fmt.Errorf("provider.base_url is required")
-	}
-	if strings.TrimSpace(c.Provider.Model) == "" {
-		return fmt.Errorf("provider.model is required")
-	}
-	switch strings.TrimSpace(c.Provider.Thinking.Type) {
-	case "", "enabled", "disabled":
-	default:
-		return fmt.Errorf("provider.thinking.type must be enabled or disabled")
-	}
-	return nil
+	return p
 }
 
-func (c ExtractionConfig) auditMode() string {
-	if c.AuditEnabled {
-		return memorycore.ExtractionAuditOn
+func (p ExtractionHostPolicy) sessionEndModeOrDefault() memorycore.ExtractionRunMode {
+	return p.normalized().SessionEndMode
+}
+
+func (p ExtractionHostPolicy) manualPinModeOrDefault() memorycore.ExtractionRunMode {
+	return p.normalized().ManualPinMode
+}
+
+func (p ExtractionHostPolicy) manualForgetModeOrDefault() memorycore.ExtractionRunMode {
+	return p.normalized().ManualForgetMode
+}
+
+func (p ExtractionHostPolicy) timezoneOrDefault() string {
+	return p.normalized().Timezone
+}
+
+func (p ExtractionHostPolicy) limitOrDefault() int {
+	return p.normalized().Limit
+}
+
+func extractionHostPolicyFromConfig(c ExtractionConfig) ExtractionHostPolicy {
+	c = c.normalized()
+	return ExtractionHostPolicy{
+		Enabled:                  c.Enabled,
+		TriggerOnFinalizeSegment: c.TriggerOnFinalizeSegment,
+		TriggerOnManualPin:       true,
+		TriggerOnManualForget:    true,
+		SessionEndMode:           c.Mode,
+		ManualPinMode:            memorycore.ExtractionRunModeApply,
+		ManualForgetMode:         memorycore.ExtractionRunModeDryRun,
+		Timezone:                 c.Timezone,
+		Limit:                    c.Limit,
+	}.normalized()
+}
+
+func extractionHostPolicyFromOptions(opts memorycore.ExtractionOptions) ExtractionHostPolicy {
+	mode := opts.Defaults.Mode
+	if mode == "" {
+		mode = memorycore.ExtractionRunModeApply
 	}
-	return memorycore.ExtractionAuditOff
+	return ExtractionHostPolicy{
+		Enabled:                  opts.Enabled,
+		TriggerOnFinalizeSegment: true,
+		TriggerOnManualPin:       true,
+		TriggerOnManualForget:    true,
+		SessionEndMode:           mode,
+		ManualPinMode:            memorycore.ExtractionRunModeApply,
+		ManualForgetMode:         memorycore.ExtractionRunModeDryRun,
+		Timezone:                 opts.Defaults.Timezone,
+		Limit:                    50,
+	}.normalized()
 }

@@ -1,43 +1,22 @@
 package app
 
 import (
-	"time"
-
 	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/memoryhost"
 )
 
-func memoryExtractionHostConfig(cfg config.MemoryExtractionConfig) memoryhost.ExtractionConfig {
-	return memoryhost.ExtractionConfig{
+func memoryExtractionHostConfig(cfg config.MemoryExtractionConfig) memoryhost.ExtractionHostPolicy {
+	return memoryhost.ExtractionHostPolicy{
 		Enabled:                  cfg.Enabled,
-		Mode:                     memoryExtractionMode(cfg.Mode),
 		TriggerOnFinalizeSegment: cfg.TriggerOnFinalizeSegment,
+		TriggerOnManualPin:       cfg.TriggerOnManualPin,
+		TriggerOnManualForget:    cfg.TriggerOnManualForget,
+		SessionEndMode:           memoryExtractionMode(firstMemoryExtractionMode(cfg.SessionEndMode, cfg.Mode)),
+		ManualPinMode:            memoryExtractionMode(firstMemoryExtractionMode(cfg.ManualPinMode, "apply")),
+		ManualForgetMode:         memoryExtractionMode(firstMemoryExtractionMode(cfg.ManualForgetMode, "dry-run")),
 		Limit:                    cfg.Limit,
 		Timezone:                 cfg.Timezone,
-		AllowInference:           cfg.AllowInference,
-		AllowSensitiveExtraction: cfg.AllowSensitiveExtraction,
-		MaxFacts:                 cfg.MaxFacts,
-		MaxLinks:                 cfg.MaxLinks,
-		RawLog: memoryhost.ExtractionRawLogConfig{
-			Enabled:   cfg.RawLog.Enabled,
-			Directory: cfg.RawLog.Directory,
-		},
-		Provider: memoryhost.ExtractionProviderConfig{
-			Kind:        cfg.Provider.Kind,
-			ID:          cfg.Provider.ID,
-			BaseURL:     cfg.Provider.BaseURL,
-			APIKeyEnv:   cfg.Provider.APIKeyEnv,
-			Model:       cfg.Provider.Model,
-			Timeout:     time.Duration(cfg.Provider.TimeoutSeconds) * time.Second,
-			MaxTokens:   cfg.Provider.MaxTokens,
-			Temperature: cfg.Provider.Temperature,
-			Thinking: memoryhost.ExtractionThinkingConfig{
-				Type: cfg.Provider.Thinking.Type,
-			},
-		},
-		RepairEnabled: cfg.RepairEnabled,
-		AuditEnabled:  cfg.AuditEnabled,
 	}
 }
 
@@ -52,4 +31,13 @@ func memoryExtractionMode(mode string) memorycore.ExtractionRunMode {
 	default:
 		return memorycore.ExtractionRunMode(mode)
 	}
+}
+
+func firstMemoryExtractionMode(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

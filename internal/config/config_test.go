@@ -61,6 +61,18 @@ func TestDefaultConfig(t *testing.T) {
 	if !cfg.Memory.Extraction.TriggerOnFinalizeSegment {
 		t.Error("default memory.extraction.trigger_on_finalize_segment = false, want true")
 	}
+	if !cfg.Memory.Extraction.TriggerOnManualPin {
+		t.Error("default memory.extraction.trigger_on_manual_pin = false, want true")
+	}
+	if !cfg.Memory.Extraction.TriggerOnManualForget {
+		t.Error("default memory.extraction.trigger_on_manual_forget = false, want true")
+	}
+	if cfg.Memory.Extraction.ManualPinMode != "apply" {
+		t.Errorf("default memory.extraction.manual_pin_mode = %q, want apply", cfg.Memory.Extraction.ManualPinMode)
+	}
+	if cfg.Memory.Extraction.ManualForgetMode != "dry_run" {
+		t.Errorf("default memory.extraction.manual_forget_mode = %q, want dry_run", cfg.Memory.Extraction.ManualForgetMode)
+	}
 	if cfg.Memory.Extraction.AllowSensitiveExtraction {
 		t.Error("default memory.extraction.allow_sensitive_extraction = true, want false")
 	}
@@ -272,6 +284,9 @@ memory:
 	if !cfg.Memory.Extraction.Enabled || cfg.Memory.Extraction.Mode != "apply" {
 		t.Fatalf("memory.extraction enabled/mode = %v/%q, want true/apply", cfg.Memory.Extraction.Enabled, cfg.Memory.Extraction.Mode)
 	}
+	if cfg.Memory.Extraction.SessionEndMode != "apply" {
+		t.Fatalf("memory.extraction.session_end_mode = %q, want apply", cfg.Memory.Extraction.SessionEndMode)
+	}
 	if cfg.Memory.Extraction.Limit != 25 || cfg.Memory.Extraction.MaxFacts != 5 || cfg.Memory.Extraction.MaxLinks != 7 {
 		t.Fatalf("memory.extraction limits = %#v", cfg.Memory.Extraction)
 	}
@@ -340,16 +355,14 @@ func TestValidateMemoryRetrievalLimits(t *testing.T) {
 	}
 }
 
-func TestValidateMemoryExtractionRawLogRequiresDirectory(t *testing.T) {
+func TestValidateMemoryExtractionHostModes(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Memory.Enabled = true
 	cfg.Memory.Extraction.Enabled = true
-	cfg.Memory.Extraction.Provider.BaseURL = "https://api.example.test"
-	cfg.Memory.Extraction.Provider.Model = "memory-extractor"
-	cfg.Memory.Extraction.RawLog.Enabled = true
+	cfg.Memory.Extraction.ManualForgetMode = "invalid"
 
 	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "raw_log.directory is required when raw_log.enabled is true") {
+	if err == nil || !strings.Contains(err.Error(), "manual_forget_mode must be validate, dry_run, or apply") {
 		t.Fatalf("Validate error = %v", err)
 	}
 }

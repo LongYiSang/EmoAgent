@@ -15,7 +15,7 @@ type Host struct {
 	Source           string
 	DBPath           string
 	retrievalPolicy  memorycore.RetrievalPolicy
-	extractionRunner *ExtractionRunner
+	extractionPolicy ExtractionHostPolicy
 	logger           *slog.Logger
 }
 
@@ -55,12 +55,6 @@ func (h *Host) Close() error {
 		return nil
 	}
 	var closeErr error
-	if h.extractionRunner != nil {
-		if err := h.extractionRunner.Close(); err != nil {
-			closeErr = err
-		}
-		h.extractionRunner = nil
-	}
 	if h.Service == nil {
 		return closeErr
 	}
@@ -80,25 +74,55 @@ func (h *Host) SetExtractionRunner(runner *ExtractionRunner) {
 	if h == nil {
 		return
 	}
-	if h.extractionRunner != nil && h.extractionRunner != runner {
-		_ = h.extractionRunner.Close()
+	if runner == nil {
+		h.extractionPolicy.Enabled = false
+		return
 	}
-	h.extractionRunner = runner
+	h.extractionPolicy = extractionHostPolicyFromConfig(runner.cfg)
+}
+
+func (h *Host) ConfigureExtractionPolicy(policy ExtractionHostPolicy) {
+	if h == nil {
+		return
+	}
+	memoryCoreEnabled := h.extractionPolicy.Enabled
+	policy = policy.normalized()
+	policy.Enabled = memoryCoreEnabled && policy.Enabled
+	h.extractionPolicy = policy
 }
 
 func (h *Host) ExtractionEnabled() bool {
-	return h != nil && h.extractionRunner != nil && h.extractionRunner.enabled()
+	return h != nil && h.Service != nil && h.extractionPolicy.Enabled
 }
 
 func (h *Host) extractionTriggerOnFinalizeSegment() bool {
-	return h != nil && h.extractionRunner != nil && h.extractionRunner.triggerOnFinalizeSegment()
+	return h != nil && h.ExtractionEnabled() && h.extractionPolicy.TriggerOnFinalizeSegment
 }
 
 func (h *Host) ExtractSessionEnd(ctx context.Context, personaID string, memorySessionID string) (*memorycore.ExtractionRunResult, error) {
 	if !h.ExtractionEnabled() {
 		return nil, nil
 	}
-	return h.extractionRunner.ExtractSessionEnd(ctx, personaID, memorySessionID)
+	memorySessionID = strings.TrimSpace(memorySessionID)
+	if memorySessionID == "" {
+		return nil, sanitizedExtractionError("missing_session", "")
+	}
+	personaID = defaultPersonaID(personaID)
+	result, err := h.Service.RunExtraction(ctx, memorycore.RunExtractionRequest{
+		PersonaID: personaID,
+		SessionID: &memorySessionID,
+		Trigger:   memorycore.ExtractionTriggerSessionEnd,
+		Timezone:  h.extractionPolicy.timezoneOrDefault(),
+		Mode:      h.extractionPolicy.sessionEndModeOrDefault(),
+		Build: &memorycore.ExtractionBuildSelector{
+			SessionID: &memorySessionID,
+			Limit:     h.extractionPolicy.limitOrDefault(),
+		},
+	})
+	if err != nil {
+		return result, sanitizedExtractionError(extractionErrorCode(result, err), "")
+	}
+	return result, nil
 }
 
 func open(ctx context.Context, opts memorycore.Options, retrievalPolicy memorycore.RetrievalPolicy, logger *slog.Logger, source string) (*Host, error) {
@@ -115,11 +139,12 @@ func open(ctx context.Context, opts memorycore.Options, retrievalPolicy memoryco
 	}
 
 	host := &Host{
-		Service:         svc,
-		Source:          source,
-		DBPath:          opts.DBPath,
-		retrievalPolicy: retrievalPolicy,
-		logger:          logger,
+		Service:          svc,
+		Source:           source,
+		DBPath:           opts.DBPath,
+		retrievalPolicy:  retrievalPolicy,
+		extractionPolicy: extractionHostPolicyFromOptions(opts.Extraction),
+		logger:           logger,
 	}
 	if logger != nil {
 		logger.Info("memorycore opened", "source", source, "db_path", opts.DBPath)

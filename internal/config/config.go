@@ -64,6 +64,11 @@ type MemoryExtractionConfig struct {
 	Enabled                  bool                           `yaml:"enabled" json:"enabled"`
 	Mode                     string                         `yaml:"mode" json:"mode"`
 	TriggerOnFinalizeSegment bool                           `yaml:"trigger_on_finalize_segment" json:"trigger_on_finalize_segment"`
+	TriggerOnManualPin       bool                           `yaml:"trigger_on_manual_pin" json:"trigger_on_manual_pin"`
+	TriggerOnManualForget    bool                           `yaml:"trigger_on_manual_forget" json:"trigger_on_manual_forget"`
+	SessionEndMode           string                         `yaml:"session_end_mode" json:"session_end_mode"`
+	ManualPinMode            string                         `yaml:"manual_pin_mode" json:"manual_pin_mode"`
+	ManualForgetMode         string                         `yaml:"manual_forget_mode" json:"manual_forget_mode"`
 	Limit                    int                            `yaml:"limit" json:"limit"`
 	Timezone                 string                         `yaml:"timezone" json:"timezone"`
 	AllowInference           bool                           `yaml:"allow_inference" json:"allow_inference"`
@@ -346,6 +351,10 @@ func DefaultConfig() *Config {
 				Enabled:                  false,
 				Mode:                     "dry_run",
 				TriggerOnFinalizeSegment: true,
+				TriggerOnManualPin:       true,
+				TriggerOnManualForget:    true,
+				ManualPinMode:            "apply",
+				ManualForgetMode:         "dry_run",
 				Limit:                    50,
 				Timezone:                 "Asia/Shanghai",
 				AllowInference:           true,
@@ -529,6 +538,15 @@ func (c *MemoryExtractionConfig) applyDefaults() {
 	if c.Mode == "" {
 		c.Mode = "dry_run"
 	}
+	if c.SessionEndMode == "" {
+		c.SessionEndMode = c.Mode
+	}
+	if c.ManualPinMode == "" {
+		c.ManualPinMode = "apply"
+	}
+	if c.ManualForgetMode == "" {
+		c.ManualForgetMode = "dry_run"
+	}
 	if c.Limit == 0 {
 		c.Limit = 50
 	}
@@ -567,51 +585,26 @@ func (c MemoryExtractionConfig) Validate() error {
 	default:
 		return fmt.Errorf("mode must be validate, dry_run, or apply")
 	}
+	sessionEndMode := c.SessionEndMode
+	if strings.TrimSpace(sessionEndMode) == "" {
+		sessionEndMode = c.Mode
+	}
+	for name, mode := range map[string]string{
+		"session_end_mode":   sessionEndMode,
+		"manual_pin_mode":    c.ManualPinMode,
+		"manual_forget_mode": c.ManualForgetMode,
+	} {
+		switch normalizeMemoryExtractionMode(mode) {
+		case "validate", "dry-run", "apply":
+		default:
+			return fmt.Errorf("%s must be validate, dry_run, or apply", name)
+		}
+	}
 	if c.Limit <= 0 {
 		return fmt.Errorf("limit must be > 0")
 	}
 	if strings.TrimSpace(c.Timezone) == "" {
 		return fmt.Errorf("timezone is required")
-	}
-	if c.MaxFacts <= 0 {
-		return fmt.Errorf("max_facts must be > 0")
-	}
-	if c.MaxLinks <= 0 {
-		return fmt.Errorf("max_links must be > 0")
-	}
-	if c.RawLog.Enabled && strings.TrimSpace(c.RawLog.Directory) == "" {
-		return fmt.Errorf("raw_log.directory is required when raw_log.enabled is true")
-	}
-	switch strings.TrimSpace(c.Provider.Kind) {
-	case "openai-compatible", "openai_compatible":
-	default:
-		return fmt.Errorf("provider.kind must be openai-compatible")
-	}
-	if strings.TrimSpace(c.Provider.ID) == "" {
-		return fmt.Errorf("provider.id is required")
-	}
-	if strings.TrimSpace(c.Provider.BaseURL) == "" {
-		return fmt.Errorf("provider.base_url is required")
-	}
-	if strings.TrimSpace(c.Provider.APIKeyEnv) == "" {
-		return fmt.Errorf("provider.api_key_env is required")
-	}
-	if strings.TrimSpace(c.Provider.Model) == "" {
-		return fmt.Errorf("provider.model is required")
-	}
-	if c.Provider.TimeoutSeconds <= 0 {
-		return fmt.Errorf("provider.timeout_seconds must be > 0")
-	}
-	if c.Provider.MaxTokens <= 0 {
-		return fmt.Errorf("provider.max_tokens must be > 0")
-	}
-	if c.Provider.Temperature < 0 || c.Provider.Temperature > 2 {
-		return fmt.Errorf("provider.temperature must be between 0 and 2")
-	}
-	switch strings.TrimSpace(c.Provider.Thinking.Type) {
-	case "", "enabled", "disabled":
-	default:
-		return fmt.Errorf("provider.thinking.type must be enabled or disabled")
 	}
 	return nil
 }

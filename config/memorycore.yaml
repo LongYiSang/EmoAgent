@@ -6,3 +6,108 @@ core:
   persona_id: default
   auto_migrate: true
   enable_fts: true
+
+providers:
+  llm:
+    - id: llm_main
+      provider: deepseek
+      protocol: openai_compatible
+      base_url: https://api.deepseek.com
+      api_key_env: MEMORYCORE_LLM_API_KEY
+      enabled: true
+      timeout_ms: 30000
+      retry:
+        max_attempts: 5
+        backoff_ms: 20000
+
+pipelines:
+  prefilter:
+    enabled: false
+    provider_id: llm_main
+    model: deepseek-v4-flash
+    params:
+      temperature: 0
+      top_p: 1
+      max_output_tokens: 4096
+      response_format: json_object
+      timeout_ms: 30000
+    thinking:
+      type: disabled
+    retry_on_schema_failure: 1
+
+  extraction:
+    enabled: true
+    provider_id: llm_main
+    model: deepseek-v4-flash
+    mode: apply
+    params:
+      temperature: 0
+      top_p: 1
+      max_output_tokens: 4096
+      response_format: json_object
+      stream: false
+      timeout_ms: 30000
+    thinking:
+      type: disabled
+    retry_on_schema_failure: 1
+    audit:
+      enabled: true
+      force: false
+    raw_log:
+      enabled: true
+      directory: "./data/raw_log_extraction"
+
+  extraction_repair:
+    enabled: true
+    provider_id: llm_main
+    model: deepseek-v4-flash
+    params:
+      temperature: 0
+      top_p: 1
+      max_output_tokens: 8192
+      response_format: json_object
+      timeout_ms: 30000
+    thinking:
+      type: disabled
+
+  query_analysis:
+    enabled: true
+    mode: rule_then_llm
+    runtime_mode: adaptive_safe
+    fallback_mode: rule_only
+    provider_id: llm_main
+    model: deepseek-v4-flash
+    timeout_ms: 32000
+    params:
+      temperature: 0
+      top_p: 1
+      max_output_tokens: 4096
+      response_format: json_object
+    thinking:
+      type: disabled
+
+retrieval:
+  use_fts: true
+  use_mirror: false
+  allow_historical: false
+  allow_deep_archive: false
+  sensitivity_permission: normal
+  final_memory_count: 8
+  context_budget_tokens: 4096
+
+write_policy:
+  triggers:
+    session_end:
+      enabled: true
+    manual_pin:
+      enabled: true
+    manual_forget:
+      enabled: true
+  extraction:
+    allow_inference: true
+    allow_sensitive_extraction: true
+    max_facts_per_request: 12
+    max_links_per_request: 20
+  prefilter:
+    keep_manual_pin_always: true
+    route_manual_forget_always: true

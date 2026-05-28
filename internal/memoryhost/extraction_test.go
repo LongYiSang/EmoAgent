@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -120,12 +119,10 @@ func TestBridgeFinalizeSegmentExtractionFailureDoesNotFailFinalize(t *testing.T)
 		Mode:                     memorycore.ExtractionRunModeApply,
 		TriggerOnFinalizeSegment: true,
 		Provider: ExtractionProviderConfig{
-			Kind:  "fake",
-			ID:    "fake",
-			Model: "fake-model",
+			Kind: memorycore.ExtractionProviderDisabled,
 		},
 		AuditEnabled: false,
-	}, &fakeExtractionLLM{err: errors.New("raw provider failed with user text 我喜欢手冲咖啡")})
+	}, nil)
 
 	if _, err := fixture.bridge.AppendUserEpisode(fixture.ctx, fixture.segment.SegmentID, "msg-user", "我喜欢手冲咖啡。"); err != nil {
 		t.Fatalf("AppendUserEpisode: %v", err)
@@ -142,12 +139,10 @@ func TestExtractSessionEndReturnsSanitizedProviderError(t *testing.T) {
 		Mode:                     memorycore.ExtractionRunModeApply,
 		TriggerOnFinalizeSegment: true,
 		Provider: ExtractionProviderConfig{
-			Kind:  "fake",
-			ID:    "fake",
-			Model: "fake-model",
+			Kind: memorycore.ExtractionProviderDisabled,
 		},
 		AuditEnabled: false,
-	}, &fakeExtractionLLM{err: errors.New("raw provider failed with user text 我喜欢手冲咖啡")})
+	}, nil)
 
 	if _, err := fixture.bridge.AppendUserEpisode(fixture.ctx, fixture.segment.SegmentID, "msg-user", "我喜欢手冲咖啡。"); err != nil {
 		t.Fatalf("AppendUserEpisode: %v", err)
@@ -156,13 +151,12 @@ func TestExtractSessionEndReturnsSanitizedProviderError(t *testing.T) {
 	if err == nil {
 		t.Fatal("ExtractSessionEnd error = nil, want sanitized provider error")
 	}
-	if strings.Contains(err.Error(), "手冲咖啡") || strings.Contains(err.Error(), "raw provider failed") {
+	if strings.Contains(err.Error(), "手冲咖啡") || strings.Contains(err.Error(), "raw provider failed") || strings.Contains(err.Error(), "provider disabled") {
 		t.Fatalf("error leaked provider text: %v", err)
 	}
 }
 
 func TestBridgeFinalizeSegmentRepeatedCallDoesNotRepeatExtraction(t *testing.T) {
-	llm := &fakeExtractionLLM{}
 	fixture := openExtractionBridgeFixture(t, "chat-extract-repeat", ExtractionConfig{
 		Enabled:                  true,
 		Mode:                     memorycore.ExtractionRunModeApply,
@@ -173,7 +167,7 @@ func TestBridgeFinalizeSegmentRepeatedCallDoesNotRepeatExtraction(t *testing.T) 
 			Model: "fake-model",
 		},
 		AuditEnabled: true,
-	}, llm)
+	}, nil)
 
 	if _, err := fixture.bridge.AppendUserEpisode(fixture.ctx, fixture.segment.SegmentID, "msg-user", "我喜欢手冲咖啡。"); err != nil {
 		t.Fatalf("AppendUserEpisode: %v", err)
@@ -185,19 +179,16 @@ func TestBridgeFinalizeSegmentRepeatedCallDoesNotRepeatExtraction(t *testing.T) 
 		t.Fatalf("FinalizeSegment(second): %v", err)
 	}
 
-	if llm.extractCalls != 1 {
-		t.Fatalf("extract calls = %d, want 1", llm.extractCalls)
-	}
+	requireMemoryExtractionAuditCount(t, fixture.memoryDBPath, 1)
 	requireMemoryFactCount(t, fixture.memoryDBPath, "likes", 1)
 }
 
 func TestBridgeFinalizeSegmentExtractionDisabledDoesNotCallLLM(t *testing.T) {
-	llm := &fakeExtractionLLM{}
 	fixture := openExtractionBridgeFixture(t, "chat-extract-disabled", ExtractionConfig{
 		Enabled:                  false,
 		Mode:                     memorycore.ExtractionRunModeApply,
 		TriggerOnFinalizeSegment: true,
-	}, llm)
+	}, nil)
 
 	if _, err := fixture.bridge.AppendUserEpisode(fixture.ctx, fixture.segment.SegmentID, "msg-user", "我喜欢手冲咖啡。"); err != nil {
 		t.Fatalf("AppendUserEpisode: %v", err)
@@ -205,9 +196,7 @@ func TestBridgeFinalizeSegmentExtractionDisabledDoesNotCallLLM(t *testing.T) {
 	if err := fixture.bridge.FinalizeSegment(fixture.ctx, fixture.segment.SegmentID, "session_end", ""); err != nil {
 		t.Fatalf("FinalizeSegment: %v", err)
 	}
-	if llm.extractCalls != 0 {
-		t.Fatalf("extract calls = %d, want 0", llm.extractCalls)
-	}
+	requireMemoryExtractionAuditCount(t, fixture.memoryDBPath, 0)
 	requireMemoryFactCount(t, fixture.memoryDBPath, "", 0)
 }
 
@@ -230,6 +219,7 @@ func openExtractionBridgeFixture(t *testing.T, chatSessionID string, cfg Extract
 	}
 
 	memoryDBPath := filepath.Join(t.TempDir(), "memory.db")
+	cfg = cfg.normalized()
 	host, err := OpenWithOptions(ctx, memorycore.Options{
 		DBPath:      memoryDBPath,
 		PersonaID:   "default",
@@ -238,19 +228,41 @@ func openExtractionBridgeFixture(t *testing.T, chatSessionID string, cfg Extract
 		Now: func() time.Time {
 			return time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
 		},
+		Extraction: memorycore.ExtractionOptions{
+			Enabled: cfg.Enabled,
+			Provider: memorycore.ExtractionProviderOptions{
+				Kind:  extractionProviderKindForTest(cfg.Provider.Kind),
+				ID:    cfg.Provider.ID,
+				Model: cfg.Provider.Model,
+			},
+			Defaults: memorycore.ExtractionDefaults{
+				Configured:               true,
+				Mode:                     cfg.Mode,
+				Timezone:                 cfg.Timezone,
+				AllowSensitiveExtraction: cfg.AllowSensitiveExtraction,
+				AllowInference:           cfg.AllowInference,
+				MaxFacts:                 cfg.MaxFacts,
+				MaxLinks:                 cfg.MaxLinks,
+				ApplyAcceptedFacts:       true,
+			},
+			Runtime: memorycore.ExtractionRuntimeOptions{
+				Configured:    true,
+				RepairEnabled: cfg.RepairEnabled,
+			},
+			Audit: memorycore.ExtractionAuditOptions{
+				Configured: true,
+				Enabled:    cfg.AuditEnabled,
+			},
+			RawLog: memorycore.ExtractionRawLogOptions{
+				Enabled:   cfg.RawLog.Enabled,
+				Directory: cfg.RawLog.Directory,
+			},
+		},
 	}, logger)
 	if err != nil {
 		t.Fatalf("OpenWithOptions: %v", err)
 	}
 	t.Cleanup(func() { _ = host.Close() })
-
-	if cfg.Enabled {
-		runner, err := NewExtractionRunnerWithLLM(ctx, host, cfg, logger, llm)
-		if err != nil {
-			t.Fatalf("NewExtractionRunnerWithLLM: %v", err)
-		}
-		host.SetExtractionRunner(runner)
-	}
 
 	bridge := NewBridge(host, chatDB, logger, DefaultManualRules())
 	segment, err := bridge.EnsureSegment(ctx, chatSessionID, "default")
@@ -264,6 +276,15 @@ func openExtractionBridgeFixture(t *testing.T, chatSessionID string, cfg Extract
 		bridge:       bridge,
 		segment:      segment,
 		memoryDBPath: memoryDBPath,
+	}
+}
+
+func extractionProviderKindForTest(kind string) string {
+	switch strings.TrimSpace(kind) {
+	case "", "fake":
+		return memorycore.ExtractionProviderMock
+	default:
+		return kind
 	}
 }
 
@@ -369,5 +390,23 @@ func requireMemoryExtractionAuditStatus(t *testing.T, dbPath string, want memory
 	}
 	if got != string(want) {
 		t.Fatalf("extraction audit status = %q, want %q", got, want)
+	}
+}
+
+func requireMemoryExtractionAuditCount(t *testing.T, dbPath string, want int) {
+	t.Helper()
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open(memory): %v", err)
+	}
+	defer db.Close()
+
+	var got int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM extraction_runs`).Scan(&got); err != nil {
+		t.Fatalf("count extraction audit: %v", err)
+	}
+	if got != want {
+		t.Fatalf("extraction audit count = %d, want %d", got, want)
 	}
 }

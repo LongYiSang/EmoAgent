@@ -225,14 +225,7 @@ func (b *Bridge) applyManualMemoryIntent(ctx context.Context, segmentID string, 
 		return nil
 	}
 	intent := b.manualRules.Match(content)
-	switch intent.Kind {
-	case ManualMemoryIntentNone:
-		return nil
-	case ManualMemoryIntentForget:
-		b.logManualForgetDetected(ctx, segmentID)
-		return nil
-	case ManualMemoryIntentPin:
-	default:
+	if intent.Kind == ManualMemoryIntentNone {
 		return nil
 	}
 
@@ -245,44 +238,94 @@ func (b *Bridge) applyManualMemoryIntent(ctx context.Context, segmentID string, 
 	}
 	sourceEpisodeID := strings.TrimSpace(segment.LastUserEpisodeID)
 	if sourceEpisodeID == "" {
+		return fmt.Errorf("last user episode id is required for manual memory intent")
+	}
+
+	switch intent.Kind {
+	case ManualMemoryIntentPin:
+		return b.applyManualPinIntent(ctx, segment, sourceEpisodeID)
+	case ManualMemoryIntentForget:
+		return b.applyManualForgetIntent(ctx, segment, sourceEpisodeID)
+	default:
+		return nil
+	}
+}
+
+func (b *Bridge) applyManualPinIntent(ctx context.Context, segment *storage.MemorySegment, sourceEpisodeID string) error {
+	if b == nil || b.host == nil || b.host.Service == nil || segment == nil {
+		return nil
+	}
+	if !b.host.ExtractionEnabled() || !b.host.extractionPolicy.TriggerOnManualPin {
+		return nil
+	}
+	sourceEpisodeID = strings.TrimSpace(sourceEpisodeID)
+	if sourceEpisodeID == "" {
 		return fmt.Errorf("last user episode id is required for manual pin")
 	}
-
 	personaID := defaultPersonaID(segmentPersona(segment, b.db, ctx))
-	user, err := b.host.Service.EnsureEntity(ctx, memorycore.EnsureEntityRequest{
-		PersonaID:        personaID,
-		CanonicalName:    "用户",
-		EntityType:       memorycore.EntityTypeUser,
-		SensitivityLevel: memorycore.SensitivityNormal,
-	})
-	if err != nil {
-		return err
-	}
-
-	candidate := intent.Candidate
-	candidate.SubjectEntityID = user.ID
-	candidate.SourceEpisodeIDs = []string{sourceEpisodeID}
 	memorySessionID := segment.MemorySessionID
-	result, err := b.host.Service.ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
+	result, err := b.host.Service.RunExtraction(ctx, memorycore.RunExtractionRequest{
 		PersonaID: personaID,
 		SessionID: &memorySessionID,
-		Trigger:   memorycore.ConsolidationTriggerManual,
-		Candidate: candidate,
-		Policy: memorycore.ConsolidationPolicy{
-			Approved: true,
+		Trigger:   memorycore.ExtractionTriggerManualPin,
+		Timezone:  b.host.extractionPolicy.timezoneOrDefault(),
+		Mode:      b.host.extractionPolicy.manualPinModeOrDefault(),
+		Build: &memorycore.ExtractionBuildSelector{
+			EpisodeIDs: []string{sourceEpisodeID},
+			SessionID:  &memorySessionID,
+			Limit:      1,
+		},
+		Policy: memorycore.ExtractionPolicyOverride{
+			ManualPin:      boolPtr(true),
+			AllowInference: boolPtr(true),
 		},
 	})
+	b.logExtractionResult("manual memory pin extraction", segment, result, err, memorycore.ExtractionTriggerManualPin)
 	if err != nil {
-		return err
+		return sanitizedExtractionError(extractionErrorCode(result, err), "")
 	}
-	if result == nil || result.Fact == nil {
-		status := ""
-		reason := ""
-		if result != nil {
-			status = result.Status
-			reason = firstNonEmptyString(result.RejectedReason, result.NeedsReviewReason)
-		}
-		return fmt.Errorf("manual pin not applied: status=%s reason=%s", status, reason)
+	if result == nil || result.AppliedCount == 0 {
+		return fmt.Errorf("manual pin not applied: status=%s accepted=%d review=%d rejected=%d", safeExtractionStatus(result), safeExtractionCount(result, "accepted"), safeExtractionCount(result, "review"), safeExtractionCount(result, "rejected"))
+	}
+	return nil
+}
+
+func (b *Bridge) applyManualForgetIntent(ctx context.Context, segment *storage.MemorySegment, sourceEpisodeID string) error {
+	if b == nil || b.host == nil || b.host.Service == nil || segment == nil {
+		return nil
+	}
+	if !b.host.ExtractionEnabled() || !b.host.extractionPolicy.TriggerOnManualForget {
+		return nil
+	}
+	sourceEpisodeID = strings.TrimSpace(sourceEpisodeID)
+	if sourceEpisodeID == "" {
+		return fmt.Errorf("last user episode id is required for manual forget")
+	}
+	personaID := defaultPersonaID(segmentPersona(segment, b.db, ctx))
+	memorySessionID := segment.MemorySessionID
+	result, err := b.host.Service.RunExtraction(ctx, memorycore.RunExtractionRequest{
+		PersonaID: personaID,
+		SessionID: &memorySessionID,
+		Trigger:   memorycore.ExtractionTriggerManualForget,
+		Timezone:  b.host.extractionPolicy.timezoneOrDefault(),
+		Mode:      b.host.extractionPolicy.manualForgetModeOrDefault(),
+		Build: &memorycore.ExtractionBuildSelector{
+			EpisodeIDs: []string{sourceEpisodeID},
+			SessionID:  &memorySessionID,
+			Limit:      1,
+		},
+		Policy: memorycore.ExtractionPolicyOverride{
+			ManualForget:           boolPtr(true),
+			ApplyAcceptedFacts:     boolPtr(false),
+			ExecuteDeletionIntents: boolPtr(false),
+		},
+	})
+	b.logExtractionResult("manual memory forget extraction", segment, result, err, memorycore.ExtractionTriggerManualForget)
+	if err != nil {
+		return sanitizedExtractionError(extractionErrorCode(result, err), "")
+	}
+	if result == nil || (result.RoutedCount == 0 && len(result.RoutedDeletionIntents) == 0) {
+		return fmt.Errorf("manual forget not routed: status=%s", safeExtractionStatus(result))
 	}
 	return nil
 }
@@ -291,7 +334,7 @@ func (b *Bridge) logManualMemoryWarning(action string, chatSessionID string, err
 	if b == nil || b.logger == nil || err == nil {
 		return
 	}
-	b.logger.Warn(action+" failed", "chat_session_id", chatSessionID, "error", err)
+	b.logger.Warn(action+" failed", "chat_session_id", chatSessionID, "error_code", safeErrorCode(nil, err))
 }
 
 func (b *Bridge) extractFinalizedSegment(ctx context.Context, segment *storage.MemorySegment, personaID string) {
@@ -299,58 +342,77 @@ func (b *Bridge) extractFinalizedSegment(ctx context.Context, segment *storage.M
 		return
 	}
 	result, err := b.host.ExtractSessionEnd(ctx, personaID, segment.MemorySessionID)
-	if err != nil {
-		if b.logger != nil {
-			status := ""
-			if result != nil {
-				status = string(result.Status)
-			}
-			b.logger.Warn("memory extraction failed",
-				"chat_session_id", segment.ChatSessionID,
-				"segment_id", segment.ID,
-				"memory_session_id", segment.MemorySessionID,
-				"status", status,
-				"error", err,
-			)
-		}
-		return
-	}
-	if b.logger != nil && result != nil {
-		b.logger.Info("memory extraction completed",
-			"chat_session_id", segment.ChatSessionID,
-			"segment_id", segment.ID,
-			"memory_session_id", segment.MemorySessionID,
-			"status", result.Status,
-			"accepted", result.AcceptedCount,
-			"applied", result.AppliedCount,
-		)
-	}
+	b.logExtractionResult("memory extraction", segment, result, err, memorycore.ExtractionTriggerSessionEnd)
 }
 
-func (b *Bridge) logManualForgetDetected(ctx context.Context, segmentID string) {
-	if b == nil || b.logger == nil || b.db == nil {
+func (b *Bridge) logExtractionResult(action string, segment *storage.MemorySegment, result *memorycore.ExtractionRunResult, err error, trigger string) {
+	if b == nil || b.logger == nil || segment == nil {
 		return
 	}
-	segment, err := b.db.GetMemorySegment(ctx, segmentID)
-	if err != nil || segment == nil {
-		b.logger.Info("manual memory forget detected", "segment_id", segmentID, "status", "resolver_not_implemented")
-		return
-	}
-	b.logger.Info("manual memory forget detected",
+	fields := []any{
 		"chat_session_id", segment.ChatSessionID,
 		"segment_id", segment.ID,
 		"memory_session_id", segment.MemorySessionID,
-		"status", "resolver_not_implemented",
-	)
+		"trigger", trigger,
+		"status", safeExtractionStatus(result),
+		"accepted", safeExtractionCount(result, "accepted"),
+		"review", safeExtractionCount(result, "review"),
+		"rejected", safeExtractionCount(result, "rejected"),
+		"routed", safeExtractionCount(result, "routed"),
+		"not_applied", safeExtractionCount(result, "not_applied"),
+		"applied", safeExtractionCount(result, "applied"),
+		"failure", safeExtractionCount(result, "failure"),
+		"skipped_by_fingerprint", result != nil && result.SkippedByFingerprint,
+	}
+	if err != nil {
+		fields = append(fields, "error_code", safeErrorCode(result, err))
+		b.logger.Warn(action+" failed", fields...)
+		return
+	}
+	b.logger.Info(action+" completed", fields...)
 }
 
-func firstNonEmptyString(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
+func safeExtractionStatus(result *memorycore.ExtractionRunResult) string {
+	if result == nil {
+		return ""
 	}
-	return ""
+	return string(result.Status)
+}
+
+func safeExtractionCount(result *memorycore.ExtractionRunResult, field string) int {
+	if result == nil {
+		return 0
+	}
+	switch field {
+	case "accepted":
+		return result.AcceptedCount
+	case "review":
+		return result.ReviewCount
+	case "rejected":
+		return result.RejectedCount
+	case "routed":
+		return result.RoutedCount
+	case "not_applied":
+		return result.NotAppliedCount
+	case "applied":
+		return result.AppliedCount
+	case "failure":
+		return result.FailureCount
+	default:
+		return 0
+	}
+}
+
+func safeErrorCode(result *memorycore.ExtractionRunResult, err error) string {
+	code := extractionErrorCode(result, err)
+	if code == "" {
+		return "unknown"
+	}
+	return code
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }
 
 func FormatMemoryContext(mc *memorycore.MemoryContext, excludedEpisodeIDs ...string) string {

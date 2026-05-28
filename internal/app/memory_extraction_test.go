@@ -6,26 +6,25 @@ import (
 	"github.com/longyisang/emoagent/internal/config"
 )
 
-func TestMemoryExtractionHostConfigMapsProviderThinking(t *testing.T) {
+func TestMemoryExtractionHostConfigMapsTriggerPolicy(t *testing.T) {
 	hostCfg := memoryExtractionHostConfig(config.MemoryExtractionConfig{
-		Enabled: true,
-		RawLog: config.MemoryExtractionRawLogConfig{
-			Enabled:   true,
-			Directory: "./debug/memory_extraction_raw",
-		},
-		Provider: config.MemoryExtractionProviderConfig{
-			Kind:  "openai-compatible",
-			Model: "memory-extractor",
-			Thinking: config.MemoryExtractionThinkingConfig{
-				Type: "disabled",
-			},
-		},
+		Enabled:                  true,
+		TriggerOnFinalizeSegment: true,
+		TriggerOnManualPin:       true,
+		TriggerOnManualForget:    false,
+		Mode:                     "apply",
+		ManualForgetMode:         "dry_run",
+		Limit:                    25,
+		Timezone:                 "Asia/Shanghai",
 	})
 
-	if hostCfg.Provider.Thinking.Type != "disabled" {
-		t.Fatalf("thinking.type = %q, want disabled", hostCfg.Provider.Thinking.Type)
+	if !hostCfg.Enabled || !hostCfg.TriggerOnFinalizeSegment || !hostCfg.TriggerOnManualPin || hostCfg.TriggerOnManualForget {
+		t.Fatalf("trigger policy = %#v", hostCfg)
 	}
-	if !hostCfg.RawLog.Enabled || hostCfg.RawLog.Directory != "./debug/memory_extraction_raw" {
-		t.Fatalf("raw_log = %#v", hostCfg.RawLog)
+	if hostCfg.SessionEndMode != "apply" || hostCfg.ManualPinMode != "apply" || hostCfg.ManualForgetMode != "dry-run" {
+		t.Fatalf("modes = %#v", hostCfg)
+	}
+	if hostCfg.Limit != 25 || hostCfg.Timezone != "Asia/Shanghai" {
+		t.Fatalf("limit/timezone = %#v", hostCfg)
 	}
 }

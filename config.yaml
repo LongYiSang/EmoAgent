@@ -81,7 +81,7 @@ memory:
     use_fts: true
     use_mirror: false
     final_memory_count: 4
-    context_budget_tokens: 700
+    context_budget_tokens: 1024
     fail_open: true
 
   extraction:

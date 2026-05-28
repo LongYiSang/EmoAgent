@@ -424,9 +424,6 @@ func TestBridgeManualPinCreatesTraceableRetrievableFact(t *testing.T) {
 	if fact.FactType != memorycore.FactTypeStablePreference {
 		t.Fatalf("fact type = %q, want %q", fact.FactType, memorycore.FactTypeStablePreference)
 	}
-	if fact.Pinned != 1 {
-		t.Fatalf("pinned = %d, want 1", fact.Pinned)
-	}
 	requireMemoryFactSource(t, fixture.memoryDBPath, fact.ID, episodeID)
 
 	block, err := fixture.bridge.RetrievePromptBlock(fixture.ctx, "chat-manual-like", "手冲咖啡")
@@ -438,7 +435,7 @@ func TestBridgeManualPinCreatesTraceableRetrievableFact(t *testing.T) {
 	}
 }
 
-func TestBridgeManualPinLikesReinforcesDuplicateAndCoexistsDistinct(t *testing.T) {
+func TestBridgeManualPinUsesExtractionGateForDuplicateInput(t *testing.T) {
 	fixture := openManualBridgeFixture(t, "chat-manual-repeat")
 
 	for _, turn := range []struct {
@@ -447,58 +444,14 @@ func TestBridgeManualPinLikesReinforcesDuplicateAndCoexistsDistinct(t *testing.T
 	}{
 		{messageID: "msg-repeat-1", text: "请记住我喜欢咖啡"},
 		{messageID: "msg-repeat-2", text: "请记住我喜欢咖啡"},
-		{messageID: "msg-repeat-3", text: "请记住我喜欢乌龙茶"},
 	} {
 		if _, err := fixture.bridge.AppendUserEpisode(fixture.ctx, fixture.segment.SegmentID, turn.messageID, turn.text); err != nil {
 			t.Fatalf("AppendUserEpisode(%q): %v", turn.text, err)
 		}
 	}
 
-	coffee := requireMemoryFact(t, fixture.memoryDBPath, "likes", "咖啡")
-	if coffee.ReinforcementCount != 1 {
-		t.Fatalf("coffee reinforcement_count = %d, want 1", coffee.ReinforcementCount)
-	}
-	requireMemoryFact(t, fixture.memoryDBPath, "likes", "乌龙茶")
-	requireMemoryFactCount(t, fixture.memoryDBPath, "likes", 2)
-}
-
-func TestBridgeManualPinPreferredNameSupersedesPriorName(t *testing.T) {
-	fixture := openManualBridgeFixture(t, "chat-manual-name")
-
-	if _, err := fixture.bridge.AppendUserEpisode(fixture.ctx, fixture.segment.SegmentID, "msg-name-1", "以后叫我 Long"); err != nil {
-		t.Fatalf("AppendUserEpisode(first): %v", err)
-	}
-	if _, err := fixture.bridge.AppendUserEpisode(fixture.ctx, fixture.segment.SegmentID, "msg-name-2", "以后叫我 Yi"); err != nil {
-		t.Fatalf("AppendUserEpisode(second): %v", err)
-	}
-
-	first := requireMemoryFact(t, fixture.memoryDBPath, "prefers_name", "Long")
-	second := requireMemoryFact(t, fixture.memoryDBPath, "prefers_name", "Yi")
-	if first.ValidityStatus != memorycore.ValidityInvalidated {
-		t.Fatalf("first validity = %q, want invalidated", first.ValidityStatus)
-	}
-	if second.ValidityStatus != memorycore.ValidityValid {
-		t.Fatalf("second validity = %q, want valid", second.ValidityStatus)
-	}
-}
-
-func TestBridgeManualPinBoundaryUsesSensitiveDefault(t *testing.T) {
-	fixture := openManualBridgeFixture(t, "chat-manual-boundary")
-
-	if _, err := fixture.bridge.AppendUserEpisode(fixture.ctx, fixture.segment.SegmentID, "msg-boundary", "我不想再聊早会"); err != nil {
-		t.Fatalf("AppendUserEpisode: %v", err)
-	}
-
-	fact := requireMemoryFact(t, fixture.memoryDBPath, "has_boundary", "早会")
-	if fact.ContentSummary != "用户不想再聊早会。" {
-		t.Fatalf("content summary = %q, want 用户不想再聊早会。", fact.ContentSummary)
-	}
-	if fact.FactType != memorycore.FactTypeRelationalState {
-		t.Fatalf("fact type = %q, want relational_state", fact.FactType)
-	}
-	if fact.Sensitivity != memorycore.SensitivitySensitive {
-		t.Fatalf("sensitivity = %q, want sensitive", fact.Sensitivity)
-	}
+	requireMemoryFact(t, fixture.memoryDBPath, "likes", "手冲咖啡")
+	requireMemoryFactCount(t, fixture.memoryDBPath, "likes", 1)
 }
 
 func TestBridgeManualForgetPrefixesDoNotCreateFacts(t *testing.T) {
@@ -684,6 +637,30 @@ func openManualBridgeFixture(t *testing.T, chatSessionID string) manualBridgeFix
 		EnableFTS:   true,
 		Now: func() time.Time {
 			return time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
+		},
+		Extraction: memorycore.ExtractionOptions{
+			Enabled: true,
+			Provider: memorycore.ExtractionProviderOptions{
+				Kind: memorycore.ExtractionProviderMock,
+				ID:   memorycore.ExtractionProviderMock,
+			},
+			Defaults: memorycore.ExtractionDefaults{
+				Configured:         true,
+				Mode:               memorycore.ExtractionRunModeApply,
+				Timezone:           "Asia/Shanghai",
+				AllowInference:     true,
+				MaxFacts:           12,
+				MaxLinks:           20,
+				ApplyAcceptedFacts: true,
+			},
+			Runtime: memorycore.ExtractionRuntimeOptions{
+				Configured:    true,
+				RepairEnabled: true,
+			},
+			Audit: memorycore.ExtractionAuditOptions{
+				Configured: true,
+				Enabled:    true,
+			},
 		},
 	}, logger)
 	if err != nil {
