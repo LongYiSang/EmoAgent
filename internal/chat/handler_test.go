@@ -211,6 +211,41 @@ func TestHandlerStreamsAssistantResponse(t *testing.T) {
 	}
 }
 
+func TestHandlerManualMemoryNoticeStreamsReturnedReply(t *testing.T) {
+	handler, engine := newTestHandler()
+	engine.sendReply = "Manual memory saved."
+
+	conn := dialTestWS(t, handler)
+	defer conn.Close(websocket.StatusNormalClosure, "bye")
+
+	var msg WSMessage
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(session_ready): %v", err)
+	}
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(greeting): %v", err)
+	}
+
+	if err := wsjson.Write(context.Background(), conn, WSMessage{Type: "message", Content: "remember this manually"}); err != nil {
+		t.Fatalf("Write(message): %v", err)
+	}
+
+	want := []WSMessage{
+		{Type: "stream_start"},
+		{Type: "stream_delta", Content: "Manual memory saved."},
+		{Type: "stream_end"},
+	}
+	for i := range want {
+		msg = WSMessage{}
+		if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+			t.Fatalf("Read(stream %d): %v", i, err)
+		}
+		if msg.Type != want[i].Type || msg.Content != want[i].Content {
+			t.Fatalf("message[%d] = %#v, want %#v", i, msg, want[i])
+		}
+	}
+}
+
 func TestHandlerStreamsToolCallEvents(t *testing.T) {
 	handler, engine := newTestHandler()
 	engine.deltas = []string{"done"}
@@ -514,7 +549,8 @@ func TestHandlerForwardsWorkProgressMessages(t *testing.T) {
 
 	var types []string
 	var progressText string
-	for len(types) < 4 {
+	var deltaText string
+	for len(types) < 5 {
 		if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
 			t.Fatalf("Read(stream): %v", err)
 		}
@@ -522,9 +558,12 @@ func TestHandlerForwardsWorkProgressMessages(t *testing.T) {
 		if msg.Type == "work_progress" {
 			progressText = msg.Content
 		}
+		if msg.Type == "stream_delta" {
+			deltaText = msg.Content
+		}
 	}
 
-	want := []string{"stream_start", "work_progress", "work_progress_end", "stream_end"}
+	want := []string{"stream_start", "work_progress", "work_progress_end", "stream_delta", "stream_end"}
 	for i := range want {
 		if types[i] != want[i] {
 			t.Fatalf("types[%d]=%q, want %q (all=%#v)", i, types[i], want[i], types)
@@ -532,6 +571,9 @@ func TestHandlerForwardsWorkProgressMessages(t *testing.T) {
 	}
 	if progressText != "processing..." {
 		t.Fatalf("progress text = %q, want processing...", progressText)
+	}
+	if deltaText != "done" {
+		t.Fatalf("delta text = %q, want done", deltaText)
 	}
 }
 

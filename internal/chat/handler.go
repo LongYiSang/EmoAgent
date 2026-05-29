@@ -174,10 +174,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 			})
 
-			_, err := h.engine.SendMessage(msgCtx, sessionID, persona, msg.Content, func(delta string) {
+			streamedDelta := false
+			reply, err := h.engine.SendMessage(msgCtx, sessionID, persona, msg.Content, func(delta string) {
 				if delta == "" {
 					return
 				}
+				streamedDelta = true
 				if writeErr := writeWSMessage(ctx, conn, WSMessage{Type: "stream_delta", Content: delta}, &writeMu); writeErr != nil {
 					if !errors.Is(ctx.Err(), context.Canceled) {
 						h.logger.Warn("ws stream write failed", "session", sessionID, "error", writeErr)
@@ -190,6 +192,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				continue
+			}
+			if err == nil && !streamedDelta && reply != "" {
+				if writeErr := writeWSMessage(ctx, conn, WSMessage{Type: "stream_delta", Content: reply}, &writeMu); writeErr != nil {
+					if !errors.Is(ctx.Err(), context.Canceled) {
+						h.logger.Warn("ws stream write failed", "session", sessionID, "error", writeErr)
+					}
+					cancel()
+					return
+				}
 			}
 			if err := writeWSMessage(ctx, conn, WSMessage{Type: "stream_end"}, &writeMu); err != nil {
 				cancel()

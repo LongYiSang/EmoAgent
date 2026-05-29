@@ -72,7 +72,7 @@ pipelines:
 
   query_analysis:
     enabled: true
-    mode: rule_then_llm
+    mode: sidecar
     runtime_mode: adaptive_safe
     fallback_mode: rule_only
     provider_id: llm_main
@@ -88,12 +88,49 @@ pipelines:
 
 retrieval:
   use_fts: true
-  use_mirror: false
+  use_mirror: true
   allow_historical: false
   allow_deep_archive: false
   sensitivity_permission: normal
   final_memory_count: 8
   context_budget_tokens: 4096
+
+semantic_ops:
+  semantic_mirror_meta_enabled: true
+  semantic_sidecar_auth_token_enabled: false
+  dedup:
+    enabled: true
+    shadow: false
+    enforce: true
+    candidate_limit: 12
+    threshold_profile: default_v0
+  forget:
+    preview_enabled: true
+    execute_enabled: true
+
+sidecar:
+  enabled: true
+  url: http://127.0.0.1:8765
+  adapter: trivium
+  total_timeout_ms: 45000
+  mirror_timeout_ms: 18000
+  activation_timeout_ms: 15000
+  rerank_timeout_ms: 18000
+  circuit_breaker:
+    enabled: true
+    window: 20
+    failure_threshold: 3
+    open_ms: 60000
+  activation_budget:
+    max_edges_scanned_per_request: 10000
+    max_neighbors_per_node: 100
+    max_wall_ms: 120
+
+mirror:
+  enabled: true
+  sync_limit: 100
+  rebuild_on_start: false
+  stale_lag_threshold_ms: 30000
 
 write_policy:
   triggers:

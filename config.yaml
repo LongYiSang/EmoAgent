@@ -79,9 +79,9 @@ memory:
     enabled: true
     inject_prompt: true
     use_fts: true
-    use_mirror: false
+    use_mirror: true
     final_memory_count: 4
-    context_budget_tokens: 1024
+    context_budget_tokens: 2048
     fail_open: true
 
   extraction:
@@ -94,6 +94,13 @@ memory:
     allow_sensitive_extraction: true
     max_facts: 12
     max_links: 20
+
+    semantic_dedup:
+      enabled: true
+      shadow: false
+      enforce: true
+      candidate_limit: 12
+      threshold_profile: default_v0
 
     raw_log:
       enabled: true
