@@ -23,7 +23,3 @@ pin_rules:
     predicate: has_boundary
     fact_type: relational_state
     content_summary: 用户不想再聊{object}。
-forget_prefixes:
-  - 忘记
-  - 别再提
-  - 删除

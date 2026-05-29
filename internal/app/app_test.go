@@ -812,8 +812,6 @@ pin_rules:
     predicate: likes
     fact_type: stable_preference
     content_summary: 用户喜欢{object}。
-forget_prefixes:
-  - 忘记
 `
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("WriteFile manual rules: %v", err)

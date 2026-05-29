@@ -65,10 +65,8 @@ type MemoryExtractionConfig struct {
 	Mode                     string                         `yaml:"mode" json:"mode"`
 	TriggerOnFinalizeSegment bool                           `yaml:"trigger_on_finalize_segment" json:"trigger_on_finalize_segment"`
 	TriggerOnManualPin       bool                           `yaml:"trigger_on_manual_pin" json:"trigger_on_manual_pin"`
-	TriggerOnManualForget    bool                           `yaml:"trigger_on_manual_forget" json:"trigger_on_manual_forget"`
 	SessionEndMode           string                         `yaml:"session_end_mode" json:"session_end_mode"`
 	ManualPinMode            string                         `yaml:"manual_pin_mode" json:"manual_pin_mode"`
-	ManualForgetMode         string                         `yaml:"manual_forget_mode" json:"manual_forget_mode"`
 	Limit                    int                            `yaml:"limit" json:"limit"`
 	Timezone                 string                         `yaml:"timezone" json:"timezone"`
 	AllowInference           bool                           `yaml:"allow_inference" json:"allow_inference"`
@@ -352,9 +350,7 @@ func DefaultConfig() *Config {
 				Mode:                     "dry_run",
 				TriggerOnFinalizeSegment: true,
 				TriggerOnManualPin:       true,
-				TriggerOnManualForget:    true,
 				ManualPinMode:            "apply",
-				ManualForgetMode:         "dry_run",
 				Limit:                    50,
 				Timezone:                 "Asia/Shanghai",
 				AllowInference:           true,
@@ -544,9 +540,6 @@ func (c *MemoryExtractionConfig) applyDefaults() {
 	if c.ManualPinMode == "" {
 		c.ManualPinMode = "apply"
 	}
-	if c.ManualForgetMode == "" {
-		c.ManualForgetMode = "dry_run"
-	}
 	if c.Limit == 0 {
 		c.Limit = 50
 	}
@@ -590,9 +583,8 @@ func (c MemoryExtractionConfig) Validate() error {
 		sessionEndMode = c.Mode
 	}
 	for name, mode := range map[string]string{
-		"session_end_mode":   sessionEndMode,
-		"manual_pin_mode":    c.ManualPinMode,
-		"manual_forget_mode": c.ManualForgetMode,
+		"session_end_mode": sessionEndMode,
+		"manual_pin_mode":  c.ManualPinMode,
 	} {
 		switch normalizeMemoryExtractionMode(mode) {
 		case "validate", "dry-run", "apply":

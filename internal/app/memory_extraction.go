@@ -11,10 +11,8 @@ func memoryExtractionHostConfig(cfg config.MemoryExtractionConfig) memoryhost.Ex
 		Enabled:                  cfg.Enabled,
 		TriggerOnFinalizeSegment: cfg.TriggerOnFinalizeSegment,
 		TriggerOnManualPin:       cfg.TriggerOnManualPin,
-		TriggerOnManualForget:    cfg.TriggerOnManualForget,
 		SessionEndMode:           memoryExtractionMode(firstMemoryExtractionMode(cfg.SessionEndMode, cfg.Mode)),
 		ManualPinMode:            memoryExtractionMode(firstMemoryExtractionMode(cfg.ManualPinMode, "apply")),
-		ManualForgetMode:         memoryExtractionMode(firstMemoryExtractionMode(cfg.ManualForgetMode, "dry-run")),
 		Limit:                    cfg.Limit,
 		Timezone:                 cfg.Timezone,
 	}

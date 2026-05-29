@@ -244,8 +244,6 @@ func (b *Bridge) applyManualMemoryIntent(ctx context.Context, segmentID string, 
 	switch intent.Kind {
 	case ManualMemoryIntentPin:
 		return b.applyManualPinIntent(ctx, segment, sourceEpisodeID)
-	case ManualMemoryIntentForget:
-		return b.applyManualForgetIntent(ctx, segment, sourceEpisodeID)
 	default:
 		return nil
 	}
@@ -286,46 +284,6 @@ func (b *Bridge) applyManualPinIntent(ctx context.Context, segment *storage.Memo
 	}
 	if result == nil || result.AppliedCount == 0 {
 		return fmt.Errorf("manual pin not applied: status=%s accepted=%d review=%d rejected=%d", safeExtractionStatus(result), safeExtractionCount(result, "accepted"), safeExtractionCount(result, "review"), safeExtractionCount(result, "rejected"))
-	}
-	return nil
-}
-
-func (b *Bridge) applyManualForgetIntent(ctx context.Context, segment *storage.MemorySegment, sourceEpisodeID string) error {
-	if b == nil || b.host == nil || b.host.Service == nil || segment == nil {
-		return nil
-	}
-	if !b.host.ExtractionEnabled() || !b.host.extractionPolicy.TriggerOnManualForget {
-		return nil
-	}
-	sourceEpisodeID = strings.TrimSpace(sourceEpisodeID)
-	if sourceEpisodeID == "" {
-		return fmt.Errorf("last user episode id is required for manual forget")
-	}
-	personaID := defaultPersonaID(segmentPersona(segment, b.db, ctx))
-	memorySessionID := segment.MemorySessionID
-	result, err := b.host.Service.RunExtraction(ctx, memorycore.RunExtractionRequest{
-		PersonaID: personaID,
-		SessionID: &memorySessionID,
-		Trigger:   memorycore.ExtractionTriggerManualForget,
-		Timezone:  b.host.extractionPolicy.timezoneOrDefault(),
-		Mode:      b.host.extractionPolicy.manualForgetModeOrDefault(),
-		Build: &memorycore.ExtractionBuildSelector{
-			EpisodeIDs: []string{sourceEpisodeID},
-			SessionID:  &memorySessionID,
-			Limit:      1,
-		},
-		Policy: memorycore.ExtractionPolicyOverride{
-			ManualForget:           boolPtr(true),
-			ApplyAcceptedFacts:     boolPtr(false),
-			ExecuteDeletionIntents: boolPtr(false),
-		},
-	})
-	b.logExtractionResult("manual memory forget extraction", segment, result, err, memorycore.ExtractionTriggerManualForget)
-	if err != nil {
-		return sanitizedExtractionError(extractionErrorCode(result, err), "")
-	}
-	if result == nil || (result.RoutedCount == 0 && len(result.RoutedDeletionIntents) == 0) {
-		return fmt.Errorf("manual forget not routed: status=%s", safeExtractionStatus(result))
 	}
 	return nil
 }

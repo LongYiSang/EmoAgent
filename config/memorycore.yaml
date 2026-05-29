@@ -22,7 +22,7 @@ providers:
 
 pipelines:
   prefilter:
-    enabled: false
+    enabled: true
     provider_id: llm_main
     model: deepseek-v4-flash
     params:

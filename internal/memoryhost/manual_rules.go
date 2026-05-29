@@ -13,14 +13,12 @@ import (
 type ManualMemoryIntentKind string
 
 const (
-	ManualMemoryIntentNone   ManualMemoryIntentKind = ""
-	ManualMemoryIntentPin    ManualMemoryIntentKind = "pin"
-	ManualMemoryIntentForget ManualMemoryIntentKind = "forget"
+	ManualMemoryIntentNone ManualMemoryIntentKind = ""
+	ManualMemoryIntentPin  ManualMemoryIntentKind = "pin"
 )
 
 type ManualRules struct {
-	PinRules       []ManualPinRule `yaml:"pin_rules"`
-	ForgetPrefixes []string        `yaml:"forget_prefixes"`
+	PinRules []ManualPinRule `yaml:"pin_rules"`
 }
 
 type ManualPinRule struct {
@@ -75,7 +73,6 @@ func DefaultManualRules() *ManualRules {
 				ContentSummary: "用户不想再聊{object}。",
 			},
 		},
-		ForgetPrefixes: []string{"忘记", "别再提", "删除"},
 	}
 }
 
@@ -102,8 +99,8 @@ func (r *ManualRules) Validate() error {
 	if r == nil {
 		return fmt.Errorf("manual rules are required")
 	}
-	if len(r.PinRules) == 0 && len(r.ForgetPrefixes) == 0 {
-		return fmt.Errorf("at least one pin rule or forget prefix is required")
+	if len(r.PinRules) == 0 {
+		return fmt.Errorf("at least one pin rule is required")
 	}
 	for i := range r.PinRules {
 		rule := r.PinRules[i]
@@ -123,11 +120,6 @@ func (r *ManualRules) Validate() error {
 			return fmt.Errorf("pin_rules[%d].content_summary must contain {object}", i)
 		}
 	}
-	for i, prefix := range r.ForgetPrefixes {
-		if strings.TrimSpace(prefix) == "" {
-			return fmt.Errorf("forget_prefixes[%d] is required", i)
-		}
-	}
 	return nil
 }
 
@@ -139,12 +131,6 @@ func (r *ManualRules) Match(text string) ManualMemoryIntent {
 	if normalized == "" {
 		return ManualMemoryIntent{}
 	}
-	for _, prefix := range sortedPrefixes(r.ForgetPrefixes) {
-		if strings.HasPrefix(normalized, prefix) {
-			return ManualMemoryIntent{Kind: ManualMemoryIntentForget}
-		}
-	}
-
 	for _, rule := range sortedPinRules(r.PinRules) {
 		if !strings.HasPrefix(normalized, rule.Prefix) {
 			continue
@@ -185,20 +171,6 @@ func validateManualFactType(value string) error {
 	default:
 		return fmt.Errorf("unsupported fact type %q", value)
 	}
-}
-
-func sortedPrefixes(prefixes []string) []string {
-	out := make([]string, 0, len(prefixes))
-	for _, prefix := range prefixes {
-		prefix = strings.TrimSpace(prefix)
-		if prefix != "" {
-			out = append(out, prefix)
-		}
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		return len([]rune(out[i])) > len([]rune(out[j]))
-	})
-	return out
 }
 
 func sortedPinRules(rules []ManualPinRule) []ManualPinRule {

@@ -136,42 +136,6 @@ func TestManualPinUsesRunExtractionAndAppendDoesNotFailOnExtractionError(t *test
 	}
 }
 
-func TestManualForgetUsesRunExtraction(t *testing.T) {
-	fixture := openFacadeBridgeFixture(t, "chat-manual-forget", &fakeMemoryService{
-		runExtractionResult: &memorycore.ExtractionRunResult{
-			Status:      memorycore.ExtractionRunStatusDryRun,
-			RoutedCount: 1,
-		},
-	})
-
-	episodeID, err := fixture.bridge.AppendUserEpisode(fixture.ctx, fixture.segment.SegmentID, "msg-user", "忘记我喜欢手冲咖啡")
-	if err != nil {
-		t.Fatalf("AppendUserEpisode: %v", err)
-	}
-	if len(fixture.service.runExtractionCalls) != 1 {
-		t.Fatalf("RunExtraction calls = %d, want 1", len(fixture.service.runExtractionCalls))
-	}
-	req := fixture.service.runExtractionCalls[0]
-	if req.Trigger != memorycore.ExtractionTriggerManualForget {
-		t.Fatalf("trigger = %q, want manual_forget", req.Trigger)
-	}
-	if req.Mode != memorycore.ExtractionRunModeDryRun {
-		t.Fatalf("mode = %q, want dry-run", req.Mode)
-	}
-	if req.Build == nil || len(req.Build.EpisodeIDs) != 1 || req.Build.EpisodeIDs[0] != episodeID {
-		t.Fatalf("episode ids = %#v, want %q", req.Build, episodeID)
-	}
-	if req.Policy.ManualForget == nil || !*req.Policy.ManualForget {
-		t.Fatalf("manual forget policy = %#v", req.Policy)
-	}
-	if req.Policy.ApplyAcceptedFacts == nil || *req.Policy.ApplyAcceptedFacts {
-		t.Fatalf("apply accepted facts policy = %#v", req.Policy)
-	}
-	if fixture.service.consolidateCalls != 0 {
-		t.Fatalf("ConsolidateCandidate calls = %d, want 0", fixture.service.consolidateCalls)
-	}
-}
-
 func TestExtractionWarningsDoNotLogRawProviderText(t *testing.T) {
 	var sink strings.Builder
 	logger := slog.New(slog.NewTextHandler(&sink, nil))
@@ -228,10 +192,8 @@ func openFacadeBridgeFixtureWithLogger(t *testing.T, chatSessionID string, logge
 			Enabled:                  true,
 			TriggerOnFinalizeSegment: true,
 			TriggerOnManualPin:       true,
-			TriggerOnManualForget:    true,
 			SessionEndMode:           memorycore.ExtractionRunModeApply,
 			ManualPinMode:            memorycore.ExtractionRunModeApply,
-			ManualForgetMode:         memorycore.ExtractionRunModeDryRun,
 			Timezone:                 "Asia/Shanghai",
 			Limit:                    50,
 		},

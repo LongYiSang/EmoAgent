@@ -11,10 +11,8 @@ type ExtractionHostPolicy struct {
 	Enabled                  bool
 	TriggerOnFinalizeSegment bool
 	TriggerOnManualPin       bool
-	TriggerOnManualForget    bool
 	SessionEndMode           memorycore.ExtractionRunMode
 	ManualPinMode            memorycore.ExtractionRunMode
-	ManualForgetMode         memorycore.ExtractionRunMode
 	Timezone                 string
 	Limit                    int
 }
@@ -106,12 +104,6 @@ func (p ExtractionHostPolicy) normalized() ExtractionHostPolicy {
 	if p.ManualPinMode == "dry_run" {
 		p.ManualPinMode = memorycore.ExtractionRunModeDryRun
 	}
-	if p.ManualForgetMode == "" {
-		p.ManualForgetMode = memorycore.ExtractionRunModeDryRun
-	}
-	if p.ManualForgetMode == "dry_run" {
-		p.ManualForgetMode = memorycore.ExtractionRunModeDryRun
-	}
 	if strings.TrimSpace(p.Timezone) == "" {
 		p.Timezone = "Asia/Shanghai"
 	}
@@ -129,10 +121,6 @@ func (p ExtractionHostPolicy) manualPinModeOrDefault() memorycore.ExtractionRunM
 	return p.normalized().ManualPinMode
 }
 
-func (p ExtractionHostPolicy) manualForgetModeOrDefault() memorycore.ExtractionRunMode {
-	return p.normalized().ManualForgetMode
-}
-
 func (p ExtractionHostPolicy) timezoneOrDefault() string {
 	return p.normalized().Timezone
 }
@@ -147,10 +135,8 @@ func extractionHostPolicyFromConfig(c ExtractionConfig) ExtractionHostPolicy {
 		Enabled:                  c.Enabled,
 		TriggerOnFinalizeSegment: c.TriggerOnFinalizeSegment,
 		TriggerOnManualPin:       true,
-		TriggerOnManualForget:    true,
 		SessionEndMode:           c.Mode,
 		ManualPinMode:            memorycore.ExtractionRunModeApply,
-		ManualForgetMode:         memorycore.ExtractionRunModeDryRun,
 		Timezone:                 c.Timezone,
 		Limit:                    c.Limit,
 	}.normalized()
@@ -165,10 +151,8 @@ func extractionHostPolicyFromOptions(opts memorycore.ExtractionOptions) Extracti
 		Enabled:                  opts.Enabled,
 		TriggerOnFinalizeSegment: true,
 		TriggerOnManualPin:       true,
-		TriggerOnManualForget:    true,
 		SessionEndMode:           mode,
 		ManualPinMode:            memorycore.ExtractionRunModeApply,
-		ManualForgetMode:         memorycore.ExtractionRunModeDryRun,
 		Timezone:                 opts.Defaults.Timezone,
 		Limit:                    50,
 	}.normalized()

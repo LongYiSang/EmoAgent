@@ -509,10 +509,10 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 		state = &defaultState
 	}
 
-	summaryCtx, cancelSummary := context.WithTimeout(ctx, 8*time.Second)
 	if !hasRequestParams(summaryParams) {
 		summaryParams = summaryParamsFromLegacy(summaryMaxTokens, summaryTemperature)
 	}
+	summaryCtx, cancelSummary := context.WithTimeout(ctx, 8*time.Second)
 	if nextState, report, updateErr := contextutil.UpdateRunningSummaryWithParams(summaryCtx, summaryClient, effectiveSummaryModel(model, summaryModel), summaryParams, persona, history, state, contextCfg); updateErr != nil {
 		cancelSummary()
 		if nextState != nil {

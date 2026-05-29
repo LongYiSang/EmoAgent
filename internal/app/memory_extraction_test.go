@@ -11,17 +11,15 @@ func TestMemoryExtractionHostConfigMapsTriggerPolicy(t *testing.T) {
 		Enabled:                  true,
 		TriggerOnFinalizeSegment: true,
 		TriggerOnManualPin:       true,
-		TriggerOnManualForget:    false,
 		Mode:                     "apply",
-		ManualForgetMode:         "dry_run",
 		Limit:                    25,
 		Timezone:                 "Asia/Shanghai",
 	})
 
-	if !hostCfg.Enabled || !hostCfg.TriggerOnFinalizeSegment || !hostCfg.TriggerOnManualPin || hostCfg.TriggerOnManualForget {
+	if !hostCfg.Enabled || !hostCfg.TriggerOnFinalizeSegment || !hostCfg.TriggerOnManualPin {
 		t.Fatalf("trigger policy = %#v", hostCfg)
 	}
-	if hostCfg.SessionEndMode != "apply" || hostCfg.ManualPinMode != "apply" || hostCfg.ManualForgetMode != "dry-run" {
+	if hostCfg.SessionEndMode != "apply" || hostCfg.ManualPinMode != "apply" {
 		t.Fatalf("modes = %#v", hostCfg)
 	}
 	if hostCfg.Limit != 25 || hostCfg.Timezone != "Asia/Shanghai" {

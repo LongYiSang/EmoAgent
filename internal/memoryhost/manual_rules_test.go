@@ -108,21 +108,6 @@ func TestManualRulesTrimObjectPunctuationAndRejectEmptyObject(t *testing.T) {
 	}
 }
 
-func TestManualRulesForgetPrefixTakesPrecedenceOverPin(t *testing.T) {
-	rules := DefaultManualRules()
-
-	for _, input := range []string{
-		"忘记我喜欢手冲咖啡",
-		"别再提请记住我喜欢手冲咖啡",
-		"删除请记住我喜欢手冲咖啡",
-	} {
-		intent := rules.Match(input)
-		if intent.Kind != ManualMemoryIntentForget {
-			t.Fatalf("input %q intent kind = %q, want forget", input, intent.Kind)
-		}
-	}
-}
-
 func TestLoadManualRulesValidatesRuleFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "rules.yaml")
@@ -132,8 +117,6 @@ pin_rules:
     predicate: likes
     fact_type: stable_preference
     content_summary: 用户喜欢 {object}。
-forget_prefixes:
-  - 忘记
 `), 0o644); err != nil {
 		t.Fatalf("WriteFile rules: %v", err)
 	}

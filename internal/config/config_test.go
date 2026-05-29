@@ -64,14 +64,8 @@ func TestDefaultConfig(t *testing.T) {
 	if !cfg.Memory.Extraction.TriggerOnManualPin {
 		t.Error("default memory.extraction.trigger_on_manual_pin = false, want true")
 	}
-	if !cfg.Memory.Extraction.TriggerOnManualForget {
-		t.Error("default memory.extraction.trigger_on_manual_forget = false, want true")
-	}
 	if cfg.Memory.Extraction.ManualPinMode != "apply" {
 		t.Errorf("default memory.extraction.manual_pin_mode = %q, want apply", cfg.Memory.Extraction.ManualPinMode)
-	}
-	if cfg.Memory.Extraction.ManualForgetMode != "dry_run" {
-		t.Errorf("default memory.extraction.manual_forget_mode = %q, want dry_run", cfg.Memory.Extraction.ManualForgetMode)
 	}
 	if cfg.Memory.Extraction.AllowSensitiveExtraction {
 		t.Error("default memory.extraction.allow_sensitive_extraction = true, want false")
@@ -359,10 +353,10 @@ func TestValidateMemoryExtractionHostModes(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Memory.Enabled = true
 	cfg.Memory.Extraction.Enabled = true
-	cfg.Memory.Extraction.ManualForgetMode = "invalid"
+	cfg.Memory.Extraction.ManualPinMode = "invalid"
 
 	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "manual_forget_mode must be validate, dry_run, or apply") {
+	if err == nil || !strings.Contains(err.Error(), "manual_pin_mode must be validate, dry_run, or apply") {
 		t.Fatalf("Validate error = %v", err)
 	}
 }
