@@ -123,7 +123,7 @@ func (b *Bridge) RetrievePromptBlock(ctx context.Context, chatSessionID string, 
 	if err != nil {
 		return "", err
 	}
-	return FormatMemoryContext(contextResult, excludedEpisodeIDs...), nil
+	return FormatMemoryContextForPrompt(contextResult, excludedEpisodeIDs...), nil
 }
 
 func (b *Bridge) FinalizeSegment(ctx context.Context, segmentID string, reason string, summary string) error {
@@ -657,6 +657,155 @@ func FormatMemoryContext(mc *memorycore.MemoryContext, excludedEpisodeIDs ...str
 	b.WriteString("不要主动说明“我记得”，除非用户正在询问记忆或来源。\n\n")
 	b.WriteString(strings.Join(items, "\n"))
 	return strings.TrimSpace(b.String())
+}
+
+func FormatMemoryContextForPrompt(mc *memorycore.MemoryContext, excludedEpisodeIDs ...string) string {
+	if mc == nil || len(mc.Blocks) == 0 {
+		return ""
+	}
+	excluded := excludedEpisodeIDSet(excludedEpisodeIDs)
+	sections := map[string][]string{
+		"[核心身份与边界]":  {},
+		"[当前相关记忆]":   {},
+		"[因果/历史上下文]": {},
+	}
+	usageLines := []string{
+		"不要主动说明“我记得”，除非用户询问来源。",
+		"历史事实不能当当前事实说。",
+		"低置信度记忆只可柔和使用。",
+	}
+	seenGuidance := make(map[string]struct{}, len(usageLines))
+	for _, line := range usageLines {
+		seenGuidance[line] = struct{}{}
+	}
+	summaryByNodeID := make(map[string]string)
+	suppressedNodeIDs := make(map[string]struct{}, len(mc.DoNotMention))
+	for _, suppression := range mc.DoNotMention {
+		nodeID := strings.TrimSpace(suppression.NodeID)
+		if nodeID != "" {
+			suppressedNodeIDs[nodeID] = struct{}{}
+		}
+	}
+	validItems := 0
+
+	for _, block := range mc.Blocks {
+		section := promptSectionTitle(block.BlockType)
+		for _, item := range block.Items {
+			if itemOnlyFromExcludedEpisodes(item, excluded) {
+				continue
+			}
+			summary := strings.TrimSpace(item.Summary)
+			if summary == "" {
+				continue
+			}
+			nodeID := strings.TrimSpace(item.NodeID)
+			if nodeID != "" {
+				summaryByNodeID[nodeID] = summary
+			}
+			if guidance := strings.TrimSpace(item.UsageGuidance); guidance != "" {
+				if _, ok := seenGuidance[guidance]; !ok {
+					seenGuidance[guidance] = struct{}{}
+					usageLines = append(usageLines, guidance)
+				}
+			}
+			if _, suppressed := suppressedNodeIDs[nodeID]; suppressed {
+				continue
+			}
+			validItems++
+			sections[section] = append(sections[section], "- "+formatPromptMemoryItem(item, summary))
+		}
+	}
+
+	var doNotMention []string
+	for _, suppression := range mc.DoNotMention {
+		summary := summaryByNodeID[strings.TrimSpace(suppression.NodeID)]
+		if summary == "" {
+			continue
+		}
+		reason := strings.TrimSpace(suppression.Reason)
+		if reason != "" {
+			doNotMention = append(doNotMention, "- "+summary+" ("+promptSuppressionReason(reason)+")")
+			continue
+		}
+		doNotMention = append(doNotMention, "- "+summary)
+	}
+
+	if validItems == 0 && len(doNotMention) == 0 {
+		return ""
+	}
+
+	usageItems := make([]string, 0, len(usageLines))
+	for _, line := range usageLines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			usageItems = append(usageItems, "- "+line)
+		}
+	}
+
+	var b strings.Builder
+	writePromptSection(&b, "[长期记忆上下文：使用约束]", usageItems)
+	for _, title := range []string{"[核心身份与边界]", "[当前相关记忆]", "[因果/历史上下文]"} {
+		writePromptSection(&b, title, sections[title])
+	}
+	writePromptSection(&b, "[不要主动提及]", doNotMention)
+	return strings.TrimSpace(b.String())
+}
+
+func promptSectionTitle(blockType string) string {
+	switch strings.TrimSpace(blockType) {
+	case memorycore.MemoryBlockTypeFacts, memorycore.MemoryBlockTypeRelationshipArcMemory:
+		return "[核心身份与边界]"
+	case memorycore.MemoryBlockTypeHistoricalTransitionMemory, memorycore.MemoryBlockTypeProvenanceMemory, memorycore.MemoryBlockTypePremiseCheckMemory:
+		return "[因果/历史上下文]"
+	default:
+		return "[当前相关记忆]"
+	}
+}
+
+func formatPromptMemoryItem(item memorycore.MemoryContextItem, summary string) string {
+	line := summary
+	switch strings.TrimSpace(item.HistoricalStatus) {
+	case memorycore.MemoryHistoricalStatusHistorical:
+		line += " [historical]"
+	case memorycore.MemoryHistoricalStatusSuperseded:
+		line += " [superseded]"
+	}
+	var notes []string
+	if guidance := strings.TrimSpace(item.UsageGuidance); guidance != "" {
+		notes = append(notes, guidance)
+	}
+	if item.DoNotOverstate {
+		notes = append(notes, "不要夸大")
+	}
+	if len(notes) > 0 {
+		line += " (" + strings.Join(notes, "；") + ")"
+	}
+	return line
+}
+
+func promptSuppressionReason(reason string) string {
+	switch strings.TrimSpace(reason) {
+	case memorycore.MemorySuppressionReasonFatigue:
+		return "近期已多次使用，避免主动提及"
+	case memorycore.MemorySuppressionReasonMMRDuplicate:
+		return "与已选记忆重复，避免主动提及"
+	case memorycore.MemorySuppressionReasonContextBudget:
+		return "受上下文预算限制，避免主动提及"
+	default:
+		return "避免主动提及"
+	}
+}
+
+func writePromptSection(b *strings.Builder, title string, lines []string) {
+	if len(lines) == 0 {
+		return
+	}
+	if b.Len() > 0 {
+		b.WriteString("\n\n")
+	}
+	b.WriteString(title)
+	b.WriteString("\n")
+	b.WriteString(strings.Join(lines, "\n"))
 }
 
 func excludedEpisodeIDSet(ids []string) map[string]struct{} {

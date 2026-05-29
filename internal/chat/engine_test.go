@@ -585,7 +585,7 @@ func TestEngineSendMessageSkipsMemoryRetrieveWhenPromptInjectionDisabled(t *test
 	engine, _, _ := newTestEngine(t, fakeLLM)
 	bridge := &fakeMemoryBridge{
 		ensureResult:  MemorySegmentRef{SegmentID: "segment-current", MemorySessionID: "memory-current"},
-		retrieveBlock: "[长期记忆上下文]\n\n- 用户喜欢手冲咖啡。",
+		retrieveBlock: "[长期记忆上下文：使用约束]\n\n- 用户喜欢手冲咖啡。",
 	}
 	engine.memory = bridge
 	engine.memoryRetrieval = config.MemoryRetrievalConfig{
@@ -609,7 +609,7 @@ func TestEngineSendMessageSkipsMemoryRetrieveWhenPromptInjectionDisabled(t *test
 	if len(bridge.retrieveCalls) != 0 {
 		t.Fatalf("retrieve calls = %#v, want none", bridge.retrieveCalls)
 	}
-	if strings.Contains(fakeLLM.lastRequest.System, "[长期记忆上下文]") {
+	if strings.Contains(fakeLLM.lastRequest.System, "[长期记忆上下文：使用约束]") {
 		t.Fatalf("system = %q, want no long-term memory block", fakeLLM.lastRequest.System)
 	}
 }
@@ -621,7 +621,7 @@ func TestEngineSendMessageInjectsRetrievedMemoryPromptBlock(t *testing.T) {
 	engine, _, _ := newTestEngine(t, fakeLLM)
 	bridge := &fakeMemoryBridge{
 		ensureResult:  MemorySegmentRef{SegmentID: "segment-current", MemorySessionID: "memory-current"},
-		retrieveBlock: "[长期记忆上下文]\n\n- 用户喜欢手冲咖啡。",
+		retrieveBlock: "[长期记忆上下文：使用约束]\n\n- 用户喜欢手冲咖啡。",
 	}
 	engine.memory = bridge
 	engine.memoryRetrieval = config.MemoryRetrievalConfig{
@@ -653,7 +653,7 @@ func TestEngineSendMessageInjectsRetrievedMemoryPromptBlock(t *testing.T) {
 	if len(call.ExcludedEpisodeIDs) != 1 || call.ExcludedEpisodeIDs[0] != "episode-user" {
 		t.Fatalf("excluded episode ids = %#v, want current user episode", call.ExcludedEpisodeIDs)
 	}
-	if !strings.Contains(fakeLLM.lastRequest.System, "[长期记忆上下文]") || !strings.Contains(fakeLLM.lastRequest.System, "- 用户喜欢手冲咖啡。") {
+	if !strings.Contains(fakeLLM.lastRequest.System, "[长期记忆上下文：使用约束]") || !strings.Contains(fakeLLM.lastRequest.System, "- 用户喜欢手冲咖啡。") {
 		t.Fatalf("system = %q, want long-term memory block", fakeLLM.lastRequest.System)
 	}
 }

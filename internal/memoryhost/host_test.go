@@ -327,6 +327,12 @@ func TestBridgeRetrievePromptBlockReturnsSeededFact(t *testing.T) {
 	if !strings.Contains(block, "用户喜欢咖啡。") {
 		t.Fatalf("prompt block = %q, want seeded fact summary", block)
 	}
+	if !strings.Contains(block, "[长期记忆上下文：使用约束]") {
+		t.Fatalf("prompt block = %q, want prompt usage constraint title", block)
+	}
+	if strings.Contains(block, "[长期记忆上下文]\n") {
+		t.Fatalf("prompt block = %q, want new prompt titles", block)
+	}
 	for _, forbidden := range []string{
 		result.Fact.ID,
 		"QueryAnalysis",
@@ -471,6 +477,218 @@ func TestBridgeManualForgetPrefixesDoNotCreateFacts(t *testing.T) {
 	}
 
 	requireMemoryFactCount(t, fixture.memoryDBPath, "", 0)
+}
+
+func TestFormatMemoryContextForPromptSectionsGuidanceAndSafety(t *testing.T) {
+	contextResult := &memorycore.MemoryContext{
+		Blocks: []memorycore.MemoryBlock{
+			{
+				BlockType: memorycore.MemoryBlockTypeFacts,
+				Items: []memorycore.MemoryContextItem{
+					{
+						NodeID:        "fact-user-name",
+						Summary:       "用户名叫 Long。",
+						UsageGuidance: "用于称呼回应",
+						SourceRefs: []memorycore.MemorySourceRef{
+							{EpisodeID: "episode-safe"},
+						},
+					},
+				},
+			},
+			{
+				BlockType: memorycore.MemoryBlockTypeRelationshipArcMemory,
+				Items: []memorycore.MemoryContextItem{
+					{
+						NodeID:           "arc-trust",
+						Summary:          "用户偏好直接指出风险边界。",
+						UsageGuidance:    "用于称呼回应",
+						DoNotOverstate:   true,
+						HistoricalStatus: memorycore.MemoryHistoricalStatusSuperseded,
+					},
+				},
+			},
+			{
+				BlockType: memorycore.MemoryBlockTypeRelevantCausalMemory,
+				Items: []memorycore.MemoryContextItem{
+					{
+						NodeID:           "causal-deadline",
+						Summary:          "用户赶在周五前完成长期记忆提示词改造。",
+						HistoricalStatus: memorycore.MemoryHistoricalStatusHistorical,
+					},
+				},
+			},
+			{
+				BlockType: memorycore.MemoryBlockTypeSupportiveMemory,
+				Items: []memorycore.MemoryContextItem{
+					{
+						NodeID:        "supportive-style",
+						Summary:       "用户喜欢先看失败测试再实现。",
+						UsageGuidance: "用于工作流回应",
+					},
+				},
+			},
+			{
+				BlockType: memorycore.MemoryBlockTypeExperienceContext,
+				Items: []memorycore.MemoryContextItem{
+					{NodeID: "experience-review", Summary: "用户上次要求最终报告列出 concerns。"},
+				},
+			},
+			{
+				BlockType: "future_block_type",
+				Items: []memorycore.MemoryContextItem{
+					{NodeID: "unknown-safe", Summary: "未知分区条目应保守放入当前相关记忆。"},
+				},
+			},
+			{
+				BlockType: memorycore.MemoryBlockTypeHistoricalTransitionMemory,
+				Items: []memorycore.MemoryContextItem{
+					{NodeID: "transition-old-city", Summary: "用户以前住在上海。"},
+				},
+			},
+			{
+				BlockType: memorycore.MemoryBlockTypeProvenanceMemory,
+				Items: []memorycore.MemoryContextItem{
+					{NodeID: "provenance-source", Summary: "这个偏好来自用户主动说明。"},
+				},
+			},
+			{
+				BlockType: memorycore.MemoryBlockTypePremiseCheckMemory,
+				Items: []memorycore.MemoryContextItem{
+					{NodeID: "premise-counter", Summary: "用户不是每次都要求完整重构。"},
+				},
+			},
+			{
+				BlockType: memorycore.MemoryBlockTypeFacts,
+				Items: []memorycore.MemoryContextItem{
+					{
+						NodeID:  "excluded-current-only",
+						Summary: "这条只来自当前回合，应被过滤。",
+						SourceRefs: []memorycore.MemorySourceRef{
+							{EpisodeID: "episode-current"},
+						},
+					},
+					{
+						NodeID:  "mixed-source",
+						Summary: "混合来源记忆应保留。",
+						SourceRefs: []memorycore.MemorySourceRef{
+							{EpisodeID: "episode-current"},
+							{EpisodeID: "episode-safe"},
+						},
+					},
+				},
+			},
+		},
+		DoNotMention: []memorycore.MemorySuppression{
+			{NodeType: "fact", NodeID: "supportive-style", Reason: "fatigue"},
+			{NodeType: "fact", NodeID: "missing-summary-id", Reason: "context_budget"},
+		},
+		QueryAnalysis: &memorycore.QueryAnalysis{Raw: "diagnostic-query"},
+		Mirror:        &memorycore.MirrorRetrievalDiagnostics{Status: "diagnostic-mirror"},
+		RetrievalConfidence: &memorycore.RetrievalConfidence{
+			Overall:           0.42,
+			HardFailureReason: "diagnostic-confidence",
+		},
+	}
+
+	block := FormatMemoryContextForPrompt(contextResult, "episode-current")
+	for _, want := range []string{
+		"[长期记忆上下文：使用约束]",
+		"- 不要主动说明“我记得”，除非用户询问来源。",
+		"- 历史事实不能当当前事实说。",
+		"- 低置信度记忆只可柔和使用。",
+		"- 用于称呼回应",
+		"- 用于工作流回应",
+		"[核心身份与边界]",
+		"- 用户名叫 Long。 (用于称呼回应)",
+		"- 用户偏好直接指出风险边界。 [superseded] (用于称呼回应；不要夸大)",
+		"- 混合来源记忆应保留。",
+		"[当前相关记忆]",
+		"- 用户赶在周五前完成长期记忆提示词改造。 [historical]",
+		"- 用户上次要求最终报告列出 concerns。",
+		"- 未知分区条目应保守放入当前相关记忆。",
+		"[因果/历史上下文]",
+		"- 用户以前住在上海。",
+		"- 这个偏好来自用户主动说明。",
+		"- 用户不是每次都要求完整重构。",
+		"[不要主动提及]",
+		"- 用户喜欢先看失败测试再实现。 (近期已多次使用，避免主动提及)",
+	} {
+		if !strings.Contains(block, want) {
+			t.Fatalf("prompt block = %q, want %q", block, want)
+		}
+	}
+	if strings.Count(block, "用户喜欢先看失败测试再实现。") != 1 {
+		t.Fatalf("prompt block = %q, want suppressed item only in do-not-mention section", block)
+	}
+	if strings.Count(block, "- 用于称呼回应") != 1 {
+		t.Fatalf("prompt block = %q, want deduplicated usage guidance", block)
+	}
+	for _, forbidden := range []string{
+		"fact-user-name",
+		"arc-trust",
+		"causal-deadline",
+		"supportive-style",
+		"missing-summary-id",
+		"future_block_type",
+		"excluded-current-only",
+		"这条只来自当前回合，应被过滤。",
+		"episode-current",
+		"episode-safe",
+		"EpisodeID",
+		"NodeID",
+		"GraphActivation",
+		"QueryAnalysis",
+		"RetrievalConfidence",
+		"Mirror",
+		"diagnostic-query",
+		"diagnostic-mirror",
+		"diagnostic-confidence",
+		"0.42",
+		"confidence",
+		"fatigue",
+		"context_budget",
+		"mmr_duplicate",
+		"[facts]",
+		"[relationship_arc_memory]",
+		"[relevant_causal_memory]",
+		"[historical_transition_memory]",
+		"[provenance_memory]",
+		"[premise_check_memory]",
+		"[supportive_memory]",
+		"[experience_context]",
+	} {
+		if strings.Contains(block, forbidden) {
+			t.Fatalf("prompt block leaked %q: %s", forbidden, block)
+		}
+	}
+}
+
+func TestFormatMemoryContextForPromptEmptyReturnsEmptyString(t *testing.T) {
+	if got := FormatMemoryContextForPrompt(nil); got != "" {
+		t.Fatalf("FormatMemoryContextForPrompt(nil) = %q, want empty", got)
+	}
+	if got := FormatMemoryContextForPrompt(&memorycore.MemoryContext{}); got != "" {
+		t.Fatalf("FormatMemoryContextForPrompt(empty) = %q, want empty", got)
+	}
+	got := FormatMemoryContextForPrompt(&memorycore.MemoryContext{
+		Blocks: []memorycore.MemoryBlock{
+			{
+				BlockType: memorycore.MemoryBlockTypeFacts,
+				Items: []memorycore.MemoryContextItem{
+					{Summary: "   "},
+					{
+						Summary: "只来自被排除来源。",
+						SourceRefs: []memorycore.MemorySourceRef{
+							{EpisodeID: "episode-current"},
+						},
+					},
+				},
+			},
+		},
+	}, "episode-current")
+	if got != "" {
+		t.Fatalf("FormatMemoryContextForPrompt(no valid items) = %q, want empty", got)
+	}
 }
 
 func TestFormatMemoryContextUsesOnlyBlocks(t *testing.T) {
