@@ -37,6 +37,10 @@ type MemoryBridge interface {
 	FinalizeSegment(ctx context.Context, segmentID string, reason string, summary string) error
 }
 
+type manualMemoryNoticeBridge interface {
+	TakeManualMemoryNotice(chatSessionID string) (string, bool)
+}
+
 // EngineConfig defines the dependencies for Engine.
 type EngineConfig struct {
 	LLM                llm.Client
@@ -489,6 +493,18 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 			if err := e.db.UpdateSessionTitle(ctx, sessionID, title); err != nil {
 				e.logger.Warn("failed to set session title", "session", sessionID, "error", err)
 			}
+		}
+		if notice, ok := e.takeManualMemoryNotice(sessionID); ok {
+			assistantMessageID := uuid.NewString()
+			if err := e.db.AddMessageWithMetadata(ctx, assistantMessageID, sessionID, "assistant", notice, visibleMessageMetadata("assistant", notice)); err != nil {
+				e.logger.Error("failed to store assistant message", "session", sessionID, "error", err)
+				return "", err
+			}
+			if err := e.db.UpdateSessionTimestamp(ctx, sessionID); err != nil {
+				e.logger.Error("failed to update session timestamp", "session", sessionID, "error", err)
+				return "", err
+			}
+			return notice, nil
 		}
 	}
 
@@ -1080,6 +1096,17 @@ func (e *Engine) ensureMemorySegment(ctx context.Context, sessionID string) (Mem
 		return MemorySegmentRef{}, false
 	}
 	return segment, true
+}
+
+func (e *Engine) takeManualMemoryNotice(sessionID string) (string, bool) {
+	if e == nil || e.memory == nil {
+		return "", false
+	}
+	bridge, ok := e.memory.(manualMemoryNoticeBridge)
+	if !ok {
+		return "", false
+	}
+	return bridge.TakeManualMemoryNotice(sessionID)
 }
 
 func (e *Engine) memoryPersonaID(ctx context.Context, sessionID string) (string, error) {

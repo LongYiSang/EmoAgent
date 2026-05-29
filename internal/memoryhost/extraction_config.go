@@ -15,6 +15,7 @@ type ExtractionHostPolicy struct {
 	ManualPinMode            memorycore.ExtractionRunMode
 	Timezone                 string
 	Limit                    int
+	SemanticDedup            memorycore.SemanticDedupOptions
 }
 
 type ExtractionConfig struct {
@@ -31,6 +32,7 @@ type ExtractionConfig struct {
 	Provider                 ExtractionProviderConfig
 	RepairEnabled            bool
 	AuditEnabled             bool
+	SemanticDedup            memorycore.SemanticDedupOptions
 }
 
 type ExtractionRawLogConfig struct {
@@ -139,21 +141,23 @@ func extractionHostPolicyFromConfig(c ExtractionConfig) ExtractionHostPolicy {
 		ManualPinMode:            memorycore.ExtractionRunModeApply,
 		Timezone:                 c.Timezone,
 		Limit:                    c.Limit,
+		SemanticDedup:            c.SemanticDedup,
 	}.normalized()
 }
 
-func extractionHostPolicyFromOptions(opts memorycore.ExtractionOptions) ExtractionHostPolicy {
-	mode := opts.Defaults.Mode
+func extractionHostPolicyFromOptions(opts memorycore.Options) ExtractionHostPolicy {
+	mode := opts.Extraction.Defaults.Mode
 	if mode == "" {
 		mode = memorycore.ExtractionRunModeApply
 	}
 	return ExtractionHostPolicy{
-		Enabled:                  opts.Enabled,
+		Enabled:                  opts.Extraction.Enabled,
 		TriggerOnFinalizeSegment: true,
 		TriggerOnManualPin:       true,
 		SessionEndMode:           mode,
 		ManualPinMode:            memorycore.ExtractionRunModeApply,
-		Timezone:                 opts.Defaults.Timezone,
+		Timezone:                 opts.Extraction.Defaults.Timezone,
 		Limit:                    50,
+		SemanticDedup:            opts.SemanticOps.Dedup,
 	}.normalized()
 }

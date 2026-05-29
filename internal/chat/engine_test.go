@@ -65,6 +65,8 @@ type fakeMemoryBridge struct {
 	appendAssistErr error
 	retrieveBlock   string
 	retrieveErr     error
+	manualNotice    string
+	manualNoticeOK  bool
 
 	ensureCalls    []memoryEnsureCall
 	rolloverCalls  []memoryRolloverCall
@@ -148,6 +150,14 @@ func (f *fakeMemoryBridge) RetrievePromptBlock(_ context.Context, chatSessionID 
 
 func (f *fakeMemoryBridge) FinalizeSegment(context.Context, string, string, string) error {
 	return nil
+}
+
+func (f *fakeMemoryBridge) TakeManualMemoryNotice(chatSessionID string) (string, bool) {
+	if !f.manualNoticeOK {
+		return "", false
+	}
+	f.manualNoticeOK = false
+	return f.manualNotice, true
 }
 
 func engineSummaryContent(goal string) string {
@@ -527,6 +537,44 @@ func TestEngineSendMessageAppendsMemoryEpisodes(t *testing.T) {
 	}
 	if bridge.assistEpisodes[0].SegmentID != "segment-current" || bridge.assistEpisodes[0].Content != "Hi there" || bridge.assistEpisodes[0].MessageID == "" {
 		t.Fatalf("assistant episode = %#v, want current segment/content/message id", bridge.assistEpisodes[0])
+	}
+}
+
+func TestEngineSendMessageReturnsManualMemoryNoticeWithoutLLM(t *testing.T) {
+	fakeLLM := &fakeLLMClient{
+		response: &llm.ChatResponse{ID: "resp-1", Content: "should not call"},
+	}
+	engine, db, _ := newTestEngine(t, fakeLLM)
+	bridge := &fakeMemoryBridge{
+		ensureResult:   MemorySegmentRef{SegmentID: "segment-1", MemorySessionID: "memory-1"},
+		manualNotice:   "我找到了以下可删除候选，尚未执行删除：\n- 用户喜欢手冲咖啡。\n\n确认删除请回复“确认删除”；取消请回复“取消”。",
+		manualNoticeOK: true,
+	}
+	engine.memory = bridge
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	reply, err := engine.SendMessage(context.Background(), sessionID, &config.Persona{Name: "default", SystemPrompt: "system"}, "忘记我喜欢手冲咖啡", nil)
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if !strings.Contains(reply, "用户喜欢手冲咖啡。") || !strings.Contains(reply, "确认删除") {
+		t.Fatalf("reply = %q, want manual forget confirmation notice", reply)
+	}
+	if len(fakeLLM.chatRequests) != 0 || fakeLLM.lastRequest.Model != "" {
+		t.Fatalf("LLM was called for manual memory notice: chat=%d stream_model=%q", len(fakeLLM.chatRequests), fakeLLM.lastRequest.Model)
+	}
+	if len(bridge.assistEpisodes) != 0 {
+		t.Fatalf("assistant memory episodes = %d, want 0 for pending forget notice", len(bridge.assistEpisodes))
+	}
+	messages, err := db.GetAllMessages(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("GetAllMessages: %v", err)
+	}
+	if len(messages) != 2 || messages[1].Role != "assistant" || messages[1].Content != reply {
+		t.Fatalf("messages = %#v, want persisted user and confirmation notice", messages)
 	}
 }
 

@@ -28,6 +28,11 @@ func TestHostExtractSessionEndUsesServiceRunExtraction(t *testing.T) {
 			SessionEndMode:           memorycore.ExtractionRunModeApply,
 			Timezone:                 "Asia/Shanghai",
 			Limit:                    7,
+			SemanticDedup: memorycore.SemanticDedupOptions{
+				Enabled:        true,
+				Shadow:         true,
+				CandidateLimit: 5,
+			},
 		},
 	}
 
@@ -55,6 +60,9 @@ func TestHostExtractSessionEndUsesServiceRunExtraction(t *testing.T) {
 	if req.Build == nil || req.Build.SessionID == nil || *req.Build.SessionID != sessionID || req.Build.Limit != 7 {
 		t.Fatalf("build selector = %#v", req.Build)
 	}
+	if !req.SemanticDedup.Enabled || !req.SemanticDedup.Shadow || req.SemanticDedup.CandidateLimit != 5 {
+		t.Fatalf("semantic dedup = %#v", req.SemanticDedup)
+	}
 }
 
 func TestHostExtractSessionEndDisabledDoesNotCallRunExtraction(t *testing.T) {
@@ -76,6 +84,29 @@ func TestHostExtractSessionEndDisabledDoesNotCallRunExtraction(t *testing.T) {
 	}
 	if len(fake.runExtractionCalls) != 0 {
 		t.Fatalf("RunExtraction calls = %d, want 0", len(fake.runExtractionCalls))
+	}
+}
+
+func TestHostConfigureExtractionPolicyPreservesMemoryCoreSemanticDedup(t *testing.T) {
+	host := &Host{
+		Service: &fakeMemoryService{},
+		extractionPolicy: ExtractionHostPolicy{
+			Enabled: true,
+			SemanticDedup: memorycore.SemanticDedupOptions{
+				Enabled:        true,
+				Shadow:         true,
+				CandidateLimit: 8,
+			},
+		},
+	}
+
+	host.ConfigureExtractionPolicy(ExtractionHostPolicy{
+		Enabled:                  true,
+		TriggerOnFinalizeSegment: true,
+	})
+
+	if !host.extractionPolicy.SemanticDedup.Enabled || !host.extractionPolicy.SemanticDedup.Shadow || host.extractionPolicy.SemanticDedup.CandidateLimit != 8 {
+		t.Fatalf("semantic dedup = %#v, want preserved MemoryCore policy", host.extractionPolicy.SemanticDedup)
 	}
 }
 
@@ -133,6 +164,94 @@ func TestManualPinUsesRunExtractionAndAppendDoesNotFailOnExtractionError(t *test
 	}
 	if fixture.service.consolidateCalls != 0 {
 		t.Fatalf("ConsolidateCandidate calls = %d, want 0", fixture.service.consolidateCalls)
+	}
+}
+
+func TestManualForgetPreviewQueuesConfirmationNoticeWithoutExecute(t *testing.T) {
+	fixture := openFacadeBridgeFixture(t, "chat-manual-forget-preview", &fakeMemoryService{
+		previewForgetResult: &memorycore.ForgetPreviewResult{
+			PersonaID:            "default",
+			RequestID:            "manual-forget-1",
+			PreviewHash:          "hash-1",
+			RequestedLevel:       memorycore.ForgetLevelSoft,
+			ScopeMode:            memorycore.ForgetScopeSemanticQuery,
+			RequiresConfirmation: true,
+			Targets: []memorycore.ForgetResolvedTarget{
+				{
+					NodeType:    memorycore.ForgetNodeFact,
+					NodeID:      "fact-coffee",
+					SafeSummary: "用户喜欢手冲咖啡。",
+				},
+			},
+		},
+	})
+
+	if _, err := fixture.bridge.AppendUserEpisode(fixture.ctx, fixture.segment.SegmentID, "msg-forget", "忘记我喜欢手冲咖啡"); err != nil {
+		t.Fatalf("AppendUserEpisode: %v", err)
+	}
+	if len(fixture.service.previewForgetCalls) != 1 {
+		t.Fatalf("PreviewForget calls = %d, want 1", len(fixture.service.previewForgetCalls))
+	}
+	req := fixture.service.previewForgetCalls[0]
+	if req.ScopeMode != memorycore.ForgetScopeSemanticQuery || req.SemanticQuery == nil || *req.SemanticQuery != "我喜欢手冲咖啡" {
+		t.Fatalf("PreviewForget request = %#v", req)
+	}
+	if len(fixture.service.executeForgetCalls) != 0 {
+		t.Fatalf("ExecuteForget calls = %d, want 0", len(fixture.service.executeForgetCalls))
+	}
+	notice, ok := fixture.bridge.TakeManualMemoryNotice("chat-manual-forget-preview")
+	if !ok {
+		t.Fatal("manual memory notice missing")
+	}
+	if !strings.Contains(notice, "用户喜欢手冲咖啡。") || !strings.Contains(notice, "确认") {
+		t.Fatalf("notice = %q, want safe candidate summary and confirmation prompt", notice)
+	}
+}
+
+func TestManualForgetConfirmationExecutesExactTargetsWithPreviewHash(t *testing.T) {
+	fixture := openFacadeBridgeFixture(t, "chat-manual-forget-confirm", &fakeMemoryService{
+		previewForgetResult: &memorycore.ForgetPreviewResult{
+			PersonaID:            "default",
+			RequestID:            "manual-forget-1",
+			PreviewHash:          "hash-1",
+			RequestedLevel:       memorycore.ForgetLevelSoft,
+			ScopeMode:            memorycore.ForgetScopeSemanticQuery,
+			RequiresConfirmation: true,
+			Targets: []memorycore.ForgetResolvedTarget{
+				{
+					NodeType:    memorycore.ForgetNodeFact,
+					NodeID:      "fact-coffee",
+					SafeSummary: "用户喜欢手冲咖啡。",
+				},
+			},
+		},
+		executeForgetResult: &memorycore.ForgetExecuteResult{
+			PersonaID:   "default",
+			Executed:    1,
+			PreviewHash: "hash-1",
+		},
+	})
+
+	if _, err := fixture.bridge.AppendUserEpisode(fixture.ctx, fixture.segment.SegmentID, "msg-forget", "忘记我喜欢手冲咖啡"); err != nil {
+		t.Fatalf("AppendUserEpisode(forget): %v", err)
+	}
+	_, _ = fixture.bridge.TakeManualMemoryNotice("chat-manual-forget-confirm")
+	if _, err := fixture.bridge.AppendUserEpisode(fixture.ctx, fixture.segment.SegmentID, "msg-confirm", "确认删除"); err != nil {
+		t.Fatalf("AppendUserEpisode(confirm): %v", err)
+	}
+	if len(fixture.service.executeForgetCalls) != 1 {
+		t.Fatalf("ExecuteForget calls = %d, want 1", len(fixture.service.executeForgetCalls))
+	}
+	req := fixture.service.executeForgetCalls[0]
+	if req.PreviewHash != "hash-1" || req.Level != memorycore.ForgetLevelSoft || !req.Confirmed {
+		t.Fatalf("ExecuteForget request = %#v", req)
+	}
+	if len(req.ConfirmedTargets) != 1 || req.ConfirmedTargets[0] != (memorycore.ExactNodeRef{NodeType: memorycore.ForgetNodeFact, NodeID: "fact-coffee"}) {
+		t.Fatalf("confirmed targets = %#v", req.ConfirmedTargets)
+	}
+	notice, ok := fixture.bridge.TakeManualMemoryNotice("chat-manual-forget-confirm")
+	if !ok || !strings.Contains(notice, "已删除") {
+		t.Fatalf("notice = %q ok=%v, want executed notice", notice, ok)
 	}
 }
 
@@ -223,6 +342,12 @@ type fakeMemoryService struct {
 	runExtractionResult *memorycore.ExtractionRunResult
 	runExtractionErr    error
 	consolidateCalls    int
+	previewForgetCalls  []memorycore.ForgetPreviewRequest
+	previewForgetResult *memorycore.ForgetPreviewResult
+	previewForgetErr    error
+	executeForgetCalls  []memorycore.ForgetExecuteRequest
+	executeForgetResult *memorycore.ForgetExecuteResult
+	executeForgetErr    error
 }
 
 func (f *fakeMemoryService) StartSession(context.Context, memorycore.StartSessionRequest) (*memorycore.Session, error) {
@@ -258,4 +383,20 @@ func (f *fakeMemoryService) RunExtraction(_ context.Context, req memorycore.RunE
 		return f.runExtractionResult, f.runExtractionErr
 	}
 	return &memorycore.ExtractionRunResult{Status: memorycore.ExtractionRunStatusApplied, AppliedCount: 1}, nil
+}
+
+func (f *fakeMemoryService) PreviewForget(_ context.Context, req memorycore.ForgetPreviewRequest) (*memorycore.ForgetPreviewResult, error) {
+	f.previewForgetCalls = append(f.previewForgetCalls, req)
+	if f.previewForgetResult != nil || f.previewForgetErr != nil {
+		return f.previewForgetResult, f.previewForgetErr
+	}
+	return &memorycore.ForgetPreviewResult{PersonaID: req.PersonaID, RequestID: req.RequestID, PreviewHash: "hash-1", RequestedLevel: req.RequestedLevel}, nil
+}
+
+func (f *fakeMemoryService) ExecuteForget(_ context.Context, req memorycore.ForgetExecuteRequest) (*memorycore.ForgetExecuteResult, error) {
+	f.executeForgetCalls = append(f.executeForgetCalls, req)
+	if f.executeForgetResult != nil || f.executeForgetErr != nil {
+		return f.executeForgetResult, f.executeForgetErr
+	}
+	return &memorycore.ForgetExecuteResult{PersonaID: req.PersonaID, Executed: len(req.ConfirmedTargets), PreviewHash: req.PreviewHash}, nil
 }

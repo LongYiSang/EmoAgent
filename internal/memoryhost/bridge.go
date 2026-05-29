@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +19,14 @@ type Bridge struct {
 	logger          *slog.Logger
 	manualRules     *ManualRules
 	retrievalPolicy memorycore.RetrievalPolicy
+	manualMu        sync.Mutex
+	pendingForgets  map[string]manualForgetPreview
+	manualNotices   map[string]string
+}
+
+type manualForgetPreview struct {
+	Request memorycore.ForgetPreviewRequest
+	Preview memorycore.ForgetPreviewResult
 }
 
 func NewBridge(host *Host, db *storage.DB, logger *slog.Logger, manualRules *ManualRules, retrievalPolicy ...memorycore.RetrievalPolicy) *Bridge {
@@ -224,17 +233,19 @@ func (b *Bridge) applyManualMemoryIntent(ctx context.Context, segmentID string, 
 	if b == nil || b.manualRules == nil || b.host == nil || b.host.Service == nil || b.db == nil {
 		return nil
 	}
-	intent := b.manualRules.Match(content)
-	if intent.Kind == ManualMemoryIntentNone {
-		return nil
-	}
-
 	segment, err := b.db.GetMemorySegment(ctx, segmentID)
 	if err != nil {
 		return err
 	}
 	if segment == nil {
 		return fmt.Errorf("memory segment not found: %s", segmentID)
+	}
+	if handled, err := b.applyPendingManualForgetDecision(ctx, segment, content); handled || err != nil {
+		return err
+	}
+	intent := b.manualRules.Match(content)
+	if intent.Kind == ManualMemoryIntentNone {
+		return nil
 	}
 	sourceEpisodeID := strings.TrimSpace(segment.LastUserEpisodeID)
 	if sourceEpisodeID == "" {
@@ -244,6 +255,8 @@ func (b *Bridge) applyManualMemoryIntent(ctx context.Context, segmentID string, 
 	switch intent.Kind {
 	case ManualMemoryIntentPin:
 		return b.applyManualPinIntent(ctx, segment, sourceEpisodeID)
+	case ManualMemoryIntentForget:
+		return b.applyManualForgetIntent(ctx, segment, intent.ForgetQuery)
 	default:
 		return nil
 	}
@@ -277,6 +290,7 @@ func (b *Bridge) applyManualPinIntent(ctx context.Context, segment *storage.Memo
 			ManualPin:      boolPtr(true),
 			AllowInference: boolPtr(true),
 		},
+		SemanticDedup: b.host.extractionPolicy.SemanticDedup,
 	})
 	b.logExtractionResult("manual memory pin extraction", segment, result, err, memorycore.ExtractionTriggerManualPin)
 	if err != nil {
@@ -286,6 +300,243 @@ func (b *Bridge) applyManualPinIntent(ctx context.Context, segment *storage.Memo
 		return fmt.Errorf("manual pin not applied: status=%s accepted=%d review=%d rejected=%d", safeExtractionStatus(result), safeExtractionCount(result, "accepted"), safeExtractionCount(result, "review"), safeExtractionCount(result, "rejected"))
 	}
 	return nil
+}
+
+func (b *Bridge) applyManualForgetIntent(ctx context.Context, segment *storage.MemorySegment, query string) error {
+	if b == nil || b.host == nil || b.host.Service == nil || segment == nil {
+		return nil
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil
+	}
+	personaID := defaultPersonaID(segmentPersona(segment, b.db, ctx))
+	requestID := "manual_forget_" + uuid.NewString()
+	previewReq := memorycore.ForgetPreviewRequest{
+		RequestID:           requestID,
+		PersonaID:           personaID,
+		Actor:               memorycore.ForgetActorUser,
+		RequestedLevel:      memorycore.ForgetLevelSoft,
+		ScopeMode:           memorycore.ForgetScopeSemanticQuery,
+		SessionID:           segment.MemorySessionID,
+		Limit:               5,
+		SemanticQuery:       &query,
+		RequireConfirmation: true,
+	}
+	preview, err := b.host.Service.PreviewForget(ctx, previewReq)
+	if err != nil {
+		b.queueManualMemoryNotice(segment.ChatSessionID, "我暂时无法生成可删除候选，未执行删除。")
+		return nil
+	}
+	if preview == nil || len(preview.Targets) == 0 {
+		b.clearPendingForget(segment.ChatSessionID)
+		b.queueManualMemoryNotice(segment.ChatSessionID, "我没有找到可安全删除的候选，未执行删除。")
+		return nil
+	}
+	if strings.TrimSpace(preview.PreviewHash) == "" {
+		b.clearPendingForget(segment.ChatSessionID)
+		b.queueManualMemoryNotice(segment.ChatSessionID, "删除预览缺少校验信息，未执行删除。")
+		return nil
+	}
+	if strings.TrimSpace(preview.RequestID) == "" {
+		preview.RequestID = requestID
+	}
+	if strings.TrimSpace(preview.RequestedLevel) == "" {
+		preview.RequestedLevel = memorycore.ForgetLevelSoft
+	}
+	if strings.TrimSpace(preview.ScopeMode) == "" {
+		preview.ScopeMode = memorycore.ForgetScopeSemanticQuery
+	}
+	b.storePendingForget(segment.ChatSessionID, manualForgetPreview{
+		Request: previewReq,
+		Preview: *preview,
+	})
+	b.queueManualMemoryNotice(segment.ChatSessionID, buildManualForgetPreviewNotice(*preview))
+	return nil
+}
+
+func (b *Bridge) applyPendingManualForgetDecision(ctx context.Context, segment *storage.MemorySegment, content string) (bool, error) {
+	if b == nil || segment == nil {
+		return false, nil
+	}
+	text := strings.TrimSpace(content)
+	if text == "" || !b.hasPendingForget(segment.ChatSessionID) {
+		return false, nil
+	}
+	if isManualForgetCancel(text) {
+		b.clearPendingForget(segment.ChatSessionID)
+		b.queueManualMemoryNotice(segment.ChatSessionID, "已取消删除，未更改长期记忆。")
+		return true, nil
+	}
+	if !isManualForgetConfirm(text) {
+		return false, nil
+	}
+	pending, ok := b.pendingForget(segment.ChatSessionID)
+	if !ok {
+		return false, nil
+	}
+	targets := exactForgetTargets(pending.Preview.Targets)
+	if len(targets) == 0 {
+		b.clearPendingForget(segment.ChatSessionID)
+		b.queueManualMemoryNotice(segment.ChatSessionID, "没有可执行的 exact-node 删除目标，未更改长期记忆。")
+		return true, nil
+	}
+	level := strings.TrimSpace(pending.Preview.RequestedLevel)
+	if level == "" {
+		level = memorycore.ForgetLevelSoft
+	}
+	personaID := defaultPersonaID(segmentPersona(segment, b.db, ctx))
+	result, err := b.host.Service.ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
+		PersonaID:        personaID,
+		Actor:            memorycore.ForgetActorUser,
+		ReasonCode:       memorycore.ForgetReasonUserRequested,
+		Level:            level,
+		PreviewRequest:   pending.Request,
+		Preview:          pending.Preview,
+		PreviewHash:      pending.Preview.PreviewHash,
+		ConfirmedTargets: targets,
+		Confirmed:        true,
+	})
+	if err != nil {
+		b.queueManualMemoryNotice(segment.ChatSessionID, "删除执行失败，长期记忆未确认更改。")
+		return true, nil
+	}
+	b.clearPendingForget(segment.ChatSessionID)
+	b.queueManualMemoryNotice(segment.ChatSessionID, buildManualForgetExecutedNotice(result))
+	return true, nil
+}
+
+func (b *Bridge) TakeManualMemoryNotice(chatSessionID string) (string, bool) {
+	if b == nil {
+		return "", false
+	}
+	chatSessionID = strings.TrimSpace(chatSessionID)
+	if chatSessionID == "" {
+		return "", false
+	}
+	b.manualMu.Lock()
+	defer b.manualMu.Unlock()
+	if len(b.manualNotices) == 0 {
+		return "", false
+	}
+	notice := strings.TrimSpace(b.manualNotices[chatSessionID])
+	if notice == "" {
+		return "", false
+	}
+	delete(b.manualNotices, chatSessionID)
+	return notice, true
+}
+
+func (b *Bridge) storePendingForget(chatSessionID string, pending manualForgetPreview) {
+	chatSessionID = strings.TrimSpace(chatSessionID)
+	if b == nil || chatSessionID == "" {
+		return
+	}
+	b.manualMu.Lock()
+	defer b.manualMu.Unlock()
+	if b.pendingForgets == nil {
+		b.pendingForgets = make(map[string]manualForgetPreview)
+	}
+	b.pendingForgets[chatSessionID] = pending
+}
+
+func (b *Bridge) pendingForget(chatSessionID string) (manualForgetPreview, bool) {
+	chatSessionID = strings.TrimSpace(chatSessionID)
+	if b == nil || chatSessionID == "" {
+		return manualForgetPreview{}, false
+	}
+	b.manualMu.Lock()
+	defer b.manualMu.Unlock()
+	pending, ok := b.pendingForgets[chatSessionID]
+	return pending, ok
+}
+
+func (b *Bridge) hasPendingForget(chatSessionID string) bool {
+	_, ok := b.pendingForget(chatSessionID)
+	return ok
+}
+
+func (b *Bridge) clearPendingForget(chatSessionID string) {
+	chatSessionID = strings.TrimSpace(chatSessionID)
+	if b == nil || chatSessionID == "" {
+		return
+	}
+	b.manualMu.Lock()
+	defer b.manualMu.Unlock()
+	delete(b.pendingForgets, chatSessionID)
+}
+
+func (b *Bridge) queueManualMemoryNotice(chatSessionID string, notice string) {
+	chatSessionID = strings.TrimSpace(chatSessionID)
+	notice = strings.TrimSpace(notice)
+	if b == nil || chatSessionID == "" || notice == "" {
+		return
+	}
+	b.manualMu.Lock()
+	defer b.manualMu.Unlock()
+	if b.manualNotices == nil {
+		b.manualNotices = make(map[string]string)
+	}
+	b.manualNotices[chatSessionID] = notice
+}
+
+func exactForgetTargets(targets []memorycore.ForgetResolvedTarget) []memorycore.ExactNodeRef {
+	out := make([]memorycore.ExactNodeRef, 0, len(targets))
+	seen := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		nodeType := strings.TrimSpace(target.NodeType)
+		nodeID := strings.TrimSpace(target.NodeID)
+		if nodeType == "" || nodeID == "" {
+			continue
+		}
+		key := nodeType + "\x00" + nodeID
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, memorycore.ExactNodeRef{NodeType: nodeType, NodeID: nodeID})
+	}
+	return out
+}
+
+func buildManualForgetPreviewNotice(preview memorycore.ForgetPreviewResult) string {
+	var lines []string
+	for _, target := range preview.Targets {
+		summary := strings.TrimSpace(target.SafeSummary)
+		if summary == "" {
+			continue
+		}
+		lines = append(lines, "- "+summary)
+	}
+	if len(lines) == 0 {
+		return "我找到了候选，但没有可展示的安全摘要。未执行删除。"
+	}
+	return "我找到了以下可删除候选，尚未执行删除：\n" + strings.Join(lines, "\n") + "\n\n确认删除请回复“确认删除”；取消请回复“取消”。"
+}
+
+func buildManualForgetExecutedNotice(result *memorycore.ForgetExecuteResult) string {
+	if result == nil || result.Executed == 0 {
+		return "没有执行删除。"
+	}
+	return fmt.Sprintf("已删除 %d 条确认的长期记忆。", result.Executed)
+}
+
+func isManualForgetConfirm(text string) bool {
+	switch strings.TrimSpace(text) {
+	case "确认", "确认删除", "删除", "是的", "对", "可以":
+		return true
+	default:
+		return false
+	}
+}
+
+func isManualForgetCancel(text string) bool {
+	switch strings.TrimSpace(text) {
+	case "取消", "不要", "不用了", "先别删", "别删":
+		return true
+	default:
+		return false
+	}
 }
 
 func (b *Bridge) logManualMemoryWarning(action string, chatSessionID string, err error) {

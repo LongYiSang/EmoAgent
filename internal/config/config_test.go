@@ -208,6 +208,11 @@ memory:
       temperature: 0.2
       thinking:
         type: disabled
+    semantic_dedup:
+      enabled: true
+      shadow: true
+      candidate_limit: 9
+      threshold_profile: default_v0
     repair_enabled: false
     audit_enabled: true
 `), 0o644)
@@ -295,6 +300,9 @@ memory:
 	}
 	if cfg.Memory.Extraction.Provider.Thinking.Type != "disabled" {
 		t.Fatalf("memory.extraction.provider.thinking.type = %q, want disabled", cfg.Memory.Extraction.Provider.Thinking.Type)
+	}
+	if !cfg.Memory.Extraction.SemanticDedup.Enabled || !cfg.Memory.Extraction.SemanticDedup.Shadow || cfg.Memory.Extraction.SemanticDedup.CandidateLimit != 9 || cfg.Memory.Extraction.SemanticDedup.ThresholdProfile != "default_v0" {
+		t.Fatalf("memory.extraction.semantic_dedup = %#v", cfg.Memory.Extraction.SemanticDedup)
 	}
 	if !cfg.Memory.Extraction.RawLog.Enabled || cfg.Memory.Extraction.RawLog.Directory != "./debug/memory_extraction_raw" {
 		t.Fatalf("memory.extraction.raw_log = %#v", cfg.Memory.Extraction.RawLog)

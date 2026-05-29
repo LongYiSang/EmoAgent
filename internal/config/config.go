@@ -75,8 +75,17 @@ type MemoryExtractionConfig struct {
 	MaxLinks                 int                            `yaml:"max_links" json:"max_links"`
 	RawLog                   MemoryExtractionRawLogConfig   `yaml:"raw_log" json:"raw_log"`
 	Provider                 MemoryExtractionProviderConfig `yaml:"provider" json:"provider"`
+	SemanticDedup            MemorySemanticDedupConfig      `yaml:"semantic_dedup" json:"semantic_dedup"`
 	RepairEnabled            bool                           `yaml:"repair_enabled" json:"repair_enabled"`
 	AuditEnabled             bool                           `yaml:"audit_enabled" json:"audit_enabled"`
+}
+
+type MemorySemanticDedupConfig struct {
+	Enabled          bool   `yaml:"enabled" json:"enabled"`
+	Shadow           bool   `yaml:"shadow" json:"shadow"`
+	Enforce          bool   `yaml:"enforce" json:"enforce"`
+	CandidateLimit   int    `yaml:"candidate_limit" json:"candidate_limit"`
+	ThresholdProfile string `yaml:"threshold_profile" json:"threshold_profile"`
 }
 
 type MemoryExtractionRawLogConfig struct {

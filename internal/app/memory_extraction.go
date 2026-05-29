@@ -15,6 +15,13 @@ func memoryExtractionHostConfig(cfg config.MemoryExtractionConfig) memoryhost.Ex
 		ManualPinMode:            memoryExtractionMode(firstMemoryExtractionMode(cfg.ManualPinMode, "apply")),
 		Limit:                    cfg.Limit,
 		Timezone:                 cfg.Timezone,
+		SemanticDedup: memorycore.SemanticDedupOptions{
+			Enabled:          cfg.SemanticDedup.Enabled,
+			Shadow:           cfg.SemanticDedup.Shadow,
+			Enforce:          cfg.SemanticDedup.Enforce,
+			CandidateLimit:   cfg.SemanticDedup.CandidateLimit,
+			ThresholdProfile: cfg.SemanticDedup.ThresholdProfile,
+		},
 	}
 }
 

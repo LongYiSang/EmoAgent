@@ -13,12 +13,14 @@ import (
 type ManualMemoryIntentKind string
 
 const (
-	ManualMemoryIntentNone ManualMemoryIntentKind = ""
-	ManualMemoryIntentPin  ManualMemoryIntentKind = "pin"
+	ManualMemoryIntentNone   ManualMemoryIntentKind = ""
+	ManualMemoryIntentPin    ManualMemoryIntentKind = "pin"
+	ManualMemoryIntentForget ManualMemoryIntentKind = "forget"
 )
 
 type ManualRules struct {
-	PinRules []ManualPinRule `yaml:"pin_rules"`
+	PinRules       []ManualPinRule `yaml:"pin_rules"`
+	ForgetPrefixes []string        `yaml:"forget_prefixes"`
 }
 
 type ManualPinRule struct {
@@ -29,12 +31,14 @@ type ManualPinRule struct {
 }
 
 type ManualMemoryIntent struct {
-	Kind      ManualMemoryIntentKind
-	Candidate memorycore.ManualFactCandidate
+	Kind        ManualMemoryIntentKind
+	Candidate   memorycore.ManualFactCandidate
+	ForgetQuery string
 }
 
 func DefaultManualRules() *ManualRules {
 	return &ManualRules{
+		ForgetPrefixes: defaultManualForgetPrefixes(),
 		PinRules: []ManualPinRule{
 			{
 				Prefix:         "请记住我喜欢",
@@ -89,6 +93,7 @@ func LoadManualRules(path string) (*ManualRules, error) {
 	if err := yaml.Unmarshal(data, &rules); err != nil {
 		return nil, fmt.Errorf("parse %q: %w", path, err)
 	}
+	rules.applyDefaults()
 	if err := rules.Validate(); err != nil {
 		return nil, fmt.Errorf("validate %q: %w", path, err)
 	}
@@ -131,6 +136,19 @@ func (r *ManualRules) Match(text string) ManualMemoryIntent {
 	if normalized == "" {
 		return ManualMemoryIntent{}
 	}
+	for _, prefix := range sortedForgetPrefixes(r.ForgetPrefixes) {
+		if !strings.HasPrefix(normalized, prefix) {
+			continue
+		}
+		query := trimManualObject(strings.TrimPrefix(normalized, prefix))
+		if query == "" {
+			return ManualMemoryIntent{}
+		}
+		return ManualMemoryIntent{
+			Kind:        ManualMemoryIntentForget,
+			ForgetQuery: query,
+		}
+	}
 	for _, rule := range sortedPinRules(r.PinRules) {
 		if !strings.HasPrefix(normalized, rule.Prefix) {
 			continue
@@ -156,6 +174,19 @@ func (r *ManualRules) Match(text string) ManualMemoryIntent {
 		}
 	}
 	return ManualMemoryIntent{}
+}
+
+func (r *ManualRules) applyDefaults() {
+	if r == nil {
+		return
+	}
+	if len(sortedForgetPrefixes(r.ForgetPrefixes)) == 0 {
+		r.ForgetPrefixes = defaultManualForgetPrefixes()
+	}
+}
+
+func defaultManualForgetPrefixes() []string {
+	return []string{"不要再提", "别再提", "忘记", "删除"}
 }
 
 func validateManualFactType(value string) error {
@@ -186,6 +217,20 @@ func sortedPinRules(rules []ManualPinRule) []ManualPinRule {
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		return len([]rune(out[i].Prefix)) > len([]rune(out[j].Prefix))
+	})
+	return out
+}
+
+func sortedForgetPrefixes(prefixes []string) []string {
+	out := make([]string, 0, len(prefixes))
+	for _, prefix := range prefixes {
+		prefix = strings.TrimSpace(prefix)
+		if prefix != "" {
+			out = append(out, prefix)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return len([]rune(out[i])) > len([]rune(out[j]))
 	})
 	return out
 }

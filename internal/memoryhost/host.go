@@ -86,6 +86,9 @@ func (h *Host) ConfigureExtractionPolicy(policy ExtractionHostPolicy) {
 		return
 	}
 	memoryCoreEnabled := h.extractionPolicy.Enabled
+	if policy.SemanticDedup == (memorycore.SemanticDedupOptions{}) {
+		policy.SemanticDedup = h.extractionPolicy.SemanticDedup
+	}
 	policy = policy.normalized()
 	policy.Enabled = memoryCoreEnabled && policy.Enabled
 	h.extractionPolicy = policy
@@ -118,6 +121,7 @@ func (h *Host) ExtractSessionEnd(ctx context.Context, personaID string, memorySe
 			SessionID: &memorySessionID,
 			Limit:     h.extractionPolicy.limitOrDefault(),
 		},
+		SemanticDedup: h.extractionPolicy.SemanticDedup,
 	})
 	if err != nil {
 		return result, sanitizedExtractionError(extractionErrorCode(result, err), "")
@@ -143,7 +147,7 @@ func open(ctx context.Context, opts memorycore.Options, retrievalPolicy memoryco
 		Source:           source,
 		DBPath:           opts.DBPath,
 		retrievalPolicy:  retrievalPolicy,
-		extractionPolicy: extractionHostPolicyFromOptions(opts.Extraction),
+		extractionPolicy: extractionHostPolicyFromOptions(opts),
 		logger:           logger,
 	}
 	if logger != nil {
