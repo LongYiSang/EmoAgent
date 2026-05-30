@@ -66,6 +66,53 @@ func TestApprovalService_CreateApproveRejectAndConsume(t *testing.T) {
 	}
 }
 
+func TestApprovalService_RoundTripsToolApprovalBinding(t *testing.T) {
+	svc := newSQLiteApprovalService(t)
+	packet := sampleApprovalPacket("task-binding")
+	packet.Category = protocol.CatToolApproval
+	packet.ToolApprovalBinding = &protocol.ToolApprovalBinding{
+		ToolName:            "write_file",
+		NormalizedInputHash: "sha256:input",
+		PathDigest:          "sha256:path",
+		InputPreview:        "path=docs/a.md, content_bytes=12",
+	}
+
+	req, err := svc.CreateRequestFromDecision("session-1", packet, time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("CreateRequestFromDecision: %v", err)
+	}
+	if req.ToolApprovalBinding == nil {
+		t.Fatal("created request missing ToolApprovalBinding")
+	}
+	if *req.ToolApprovalBinding != *packet.ToolApprovalBinding {
+		t.Fatalf("created binding = %#v, want %#v", req.ToolApprovalBinding, packet.ToolApprovalBinding)
+	}
+
+	got, err := svc.GetRequest("session-1", req.ID)
+	if err != nil {
+		t.Fatalf("GetRequest: %v", err)
+	}
+	if got == nil || got.ToolApprovalBinding == nil || *got.ToolApprovalBinding != *packet.ToolApprovalBinding {
+		t.Fatalf("get binding = %#v, want %#v", got, packet.ToolApprovalBinding)
+	}
+
+	list := svc.ListSessionApprovals("session-1", nil)
+	if len(list) != 1 || list[0].ToolApprovalBinding == nil || *list[0].ToolApprovalBinding != *packet.ToolApprovalBinding {
+		t.Fatalf("list = %#v, want binding round-trip", list)
+	}
+
+	if _, err := svc.ApproveRequest("session-1", req.ID, "confirm_delete", "web", ""); err != nil {
+		t.Fatalf("ApproveRequest: %v", err)
+	}
+	consumed, err := svc.ConsumeApprovedRequestForResume("session-1", "task-binding", req.ID)
+	if err != nil {
+		t.Fatalf("ConsumeApprovedRequestForResume: %v", err)
+	}
+	if consumed.ToolApprovalBinding == nil || *consumed.ToolApprovalBinding != *packet.ToolApprovalBinding {
+		t.Fatalf("consumed binding = %#v, want %#v", consumed.ToolApprovalBinding, packet.ToolApprovalBinding)
+	}
+}
+
 func TestApprovalService_RejectUsesRejectOptionAndCanBeConsumed(t *testing.T) {
 	svc := newSQLiteApprovalService(t)
 	packet := sampleApprovalPacket("task-1")

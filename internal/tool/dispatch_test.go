@@ -85,6 +85,39 @@ func setupDestructiveRegistry() *Registry {
 	return registry
 }
 
+func setupDestructiveWriteRegistry(executed *int) *Registry {
+	registry := NewRegistry()
+	registry.Register(Spec{
+		Name:                  "write_file",
+		Description:           "Write file",
+		Parameters:            json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}`),
+		Scope:                 ScopeWork,
+		Permission:            PermWorkspaceWrite,
+		DestructiveClassifier: func(json.RawMessage) (bool, string) { return true, "test destructive file write" },
+	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		if executed != nil {
+			(*executed)++
+		}
+		return json.RawMessage(`{"status":"ok"}`), nil
+	})
+	return registry
+}
+
+func mustApprovalContextForCall(t *testing.T, call Call, requestID string) ApprovalContext {
+	t.Helper()
+	binding, err := BuildApprovalBinding(call, requestID)
+	if err != nil {
+		t.Fatalf("BuildApprovalBinding: %v", err)
+	}
+	return ApprovalContext{
+		RequestID:           binding.RequestID,
+		AllowDestructive:    true,
+		ToolName:            binding.ToolName,
+		NormalizedInputHash: binding.NormalizedInputHash,
+		PathDigest:          binding.PathDigest,
+	}
+}
+
 func TestDispatcherExecute_Success(t *testing.T) {
 	d := NewDispatcher(setupTestRegistry(), &mockValidator{}, slog.Default())
 
@@ -212,10 +245,7 @@ func TestDispatcherExecute_DestructiveCommandRequiresApprovalContext(t *testing.
 		t.Fatal("expected destructive bash command denial to mark needs approval")
 	}
 
-	result = d.Execute(WithApproval(context.Background(), ApprovalContext{
-		RequestID:        "req-1",
-		AllowDestructive: true,
-	}), call, PermApprovedDestructive)
+	result = d.Execute(WithApproval(context.Background(), mustApprovalContextForCall(t, call, "req-1")), call, PermApprovedDestructive)
 	if result.IsError {
 		t.Fatalf("expected destructive bash command with approval to succeed, got: %s", result.Content)
 	}
@@ -261,11 +291,8 @@ func TestDispatcherClassifyCall(t *testing.T) {
 			wantRequired: PermApprovedDestructive,
 		},
 		{
-			name: "approved destructive with active approval executes",
-			ctx: WithApproval(context.Background(), ApprovalContext{
-				RequestID:        "req-1",
-				AllowDestructive: true,
-			}),
+			name:         "approved destructive with active approval executes",
+			ctx:          WithApproval(context.Background(), mustApprovalContextForCall(t, destructive, "req-1")),
 			call:         destructive,
 			permission:   PermApprovedDestructive,
 			wantAction:   CallActionExecute,
@@ -333,6 +360,110 @@ func TestDispatcherClassifyCall(t *testing.T) {
 				t.Fatalf("RequiredPermission = %q, want %q", got.RequiredPermission, tt.wantRequired)
 			}
 		})
+	}
+}
+
+func TestDispatcherClassifyCall_RequiresMatchingApprovalBinding(t *testing.T) {
+	call := Call{
+		ID:    "call_write",
+		Name:  "write_file",
+		Input: json.RawMessage(`{"path":"docs/a.txt","content":"hello"}`),
+	}
+	binding, err := BuildApprovalBinding(call, "approval-1")
+	if err != nil {
+		t.Fatalf("BuildApprovalBinding: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		ctx  ApprovalContext
+	}{
+		{
+			name: "missing request id",
+			ctx: ApprovalContext{
+				AllowDestructive:    true,
+				ToolName:            binding.ToolName,
+				NormalizedInputHash: binding.NormalizedInputHash,
+				PathDigest:          binding.PathDigest,
+			},
+		},
+		{
+			name: "missing binding",
+			ctx: ApprovalContext{
+				RequestID:        binding.RequestID,
+				AllowDestructive: true,
+			},
+		},
+		{
+			name: "tool name mismatch",
+			ctx: ApprovalContext{
+				RequestID:           binding.RequestID,
+				AllowDestructive:    true,
+				ToolName:            "edit_file",
+				NormalizedInputHash: binding.NormalizedInputHash,
+				PathDigest:          binding.PathDigest,
+			},
+		},
+		{
+			name: "input hash mismatch",
+			ctx: ApprovalContext{
+				RequestID:           binding.RequestID,
+				AllowDestructive:    true,
+				ToolName:            binding.ToolName,
+				NormalizedInputHash: "sha256:wrong",
+				PathDigest:          binding.PathDigest,
+			},
+		},
+		{
+			name: "path digest mismatch",
+			ctx: ApprovalContext{
+				RequestID:           binding.RequestID,
+				AllowDestructive:    true,
+				ToolName:            binding.ToolName,
+				NormalizedInputHash: binding.NormalizedInputHash,
+				PathDigest:          "sha256:wrong",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := NewDispatcher(setupDestructiveWriteRegistry(nil), MinimalSchemaValidator{}, slog.Default())
+			got := d.ClassifyCall(WithApproval(context.Background(), tt.ctx), call, PermApprovedDestructive)
+			if got.Action != CallActionToolApprovalRequired {
+				t.Fatalf("Action = %q, want %q; reason=%s", got.Action, CallActionToolApprovalRequired, got.Reason)
+			}
+			if !strings.Contains(got.Reason, "approval binding mismatch") {
+				t.Fatalf("Reason = %q, want binding mismatch", got.Reason)
+			}
+		})
+	}
+}
+
+func TestDispatcherExecute_DoesNotRunHandlerWhenApprovalBindingMismatches(t *testing.T) {
+	call := Call{
+		ID:    "call_write",
+		Name:  "write_file",
+		Input: json.RawMessage(`{"path":"docs/a.txt","content":"hello"}`),
+	}
+	binding, err := BuildApprovalBinding(call, "approval-1")
+	if err != nil {
+		t.Fatalf("BuildApprovalBinding: %v", err)
+	}
+	var executed int
+	d := NewDispatcher(setupDestructiveWriteRegistry(&executed), MinimalSchemaValidator{}, slog.Default())
+	result := d.Execute(WithApproval(context.Background(), ApprovalContext{
+		RequestID:           binding.RequestID,
+		AllowDestructive:    true,
+		ToolName:            binding.ToolName,
+		NormalizedInputHash: "sha256:wrong",
+		PathDigest:          binding.PathDigest,
+	}), call, PermApprovedDestructive)
+	if !result.IsError || !result.NeedsApproval {
+		t.Fatalf("result = %#v, want approval-required error", result)
+	}
+	if executed != 0 {
+		t.Fatalf("handler executed %d times, want 0", executed)
 	}
 }
 

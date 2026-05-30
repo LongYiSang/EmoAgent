@@ -509,16 +509,16 @@ func buildManualForgetPreviewNotice(preview memorycore.ForgetPreviewResult) stri
 		lines = append(lines, "- "+summary)
 	}
 	if len(lines) == 0 {
-		return "我找到了候选，但没有可展示的安全摘要。未执行删除。"
+		return "我准备执行一次长期记忆删除，尚未执行。\n\n候选：没有可展示的安全摘要。\n\n影响：确认后只会删除本次预览解析出的 exact-node 目标。\n确认删除请回复“确认删除”；取消请回复“取消”。"
 	}
-	return "我找到了以下可删除候选，尚未执行删除：\n" + strings.Join(lines, "\n") + "\n\n确认删除请回复“确认删除”；取消请回复“取消”。"
+	return "我准备执行一次长期记忆删除，尚未执行。\n\n候选：\n" + strings.Join(lines, "\n") + "\n\n影响：确认后只会删除上面列出的 exact-node 目标。\n确认删除请回复“确认删除”；取消请回复“取消”。"
 }
 
 func buildManualForgetExecutedNotice(result *memorycore.ForgetExecuteResult) string {
 	if result == nil || result.Executed == 0 {
 		return "没有执行删除。"
 	}
-	return fmt.Sprintf("已删除 %d 条确认的长期记忆。", result.Executed)
+	return fmt.Sprintf("已执行长期记忆删除：%d 条。", result.Executed)
 }
 
 func isManualForgetConfirm(text string) bool {

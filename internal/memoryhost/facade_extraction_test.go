@@ -203,6 +203,17 @@ func TestManualForgetPreviewQueuesConfirmationNoticeWithoutExecute(t *testing.T)
 	if !ok {
 		t.Fatal("manual memory notice missing")
 	}
+	for _, snippet := range []string{
+		"我准备执行一次长期记忆删除，尚未执行。",
+		"候选：",
+		"用户喜欢手冲咖啡。",
+		"影响：确认后只会删除上面列出的 exact-node 目标。",
+		"确认删除请回复“确认删除”；取消请回复“取消”。",
+	} {
+		if !strings.Contains(notice, snippet) {
+			t.Fatalf("notice = %q, missing %q", notice, snippet)
+		}
+	}
 	if !strings.Contains(notice, "用户喜欢手冲咖啡。") || !strings.Contains(notice, "确认") {
 		t.Fatalf("notice = %q, want safe candidate summary and confirmation prompt", notice)
 	}
@@ -250,7 +261,7 @@ func TestManualForgetConfirmationExecutesExactTargetsWithPreviewHash(t *testing.
 		t.Fatalf("confirmed targets = %#v", req.ConfirmedTargets)
 	}
 	notice, ok := fixture.bridge.TakeManualMemoryNotice("chat-manual-forget-confirm")
-	if !ok || !strings.Contains(notice, "已删除") {
+	if !ok || !strings.Contains(notice, "已执行长期记忆删除：1 条。") {
 		t.Fatalf("notice = %q ok=%v, want executed notice", notice, ok)
 	}
 }

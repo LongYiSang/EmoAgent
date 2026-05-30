@@ -126,10 +126,7 @@ func NewResumeToolWithFactory(runtimeFactory func() (*Runtime, error), pending *
 			}
 			if approval.PreviousStatus == protocol.ApprovalStatusApproved {
 				paused.Brief.PermissionScope = "approved-destructive"
-				resumeCtx = tool.WithApproval(resumeCtx, tool.ApprovalContext{
-					RequestID:        approval.Request.ID,
-					AllowDestructive: true,
-				})
+				resumeCtx = tool.WithApproval(resumeCtx, approvalContextFromRequest(approval.Request))
 			}
 		} else if req.Decision == "" {
 			return nil, fmt.Errorf("resume_work: decision is required when approval_request_id is absent")
@@ -140,10 +137,18 @@ func NewResumeToolWithFactory(runtimeFactory func() (*Runtime, error), pending *
 						return nil, fmt.Errorf("resume_work: permission_scope_override=\"approved-destructive\" is required when approving permission escalation")
 					}
 					paused.Brief.PermissionScope = req.PermissionScopeOverride
-					resumeCtx = tool.WithApproval(resumeCtx, tool.ApprovalContext{
+					approvalCtx := tool.ApprovalContext{
 						RequestID:        fmt.Sprintf("emotion-permission-escalation:%s", req.TaskID),
 						AllowDestructive: true,
-					})
+					}
+					if paused.PendingToolCall != nil {
+						if binding, err := tool.BuildApprovalBinding(*paused.PendingToolCall, approvalCtx.RequestID); err == nil {
+							approvalCtx.ToolName = binding.ToolName
+							approvalCtx.NormalizedInputHash = binding.NormalizedInputHash
+							approvalCtx.PathDigest = binding.PathDigest
+						}
+					}
+					resumeCtx = tool.WithApproval(resumeCtx, approvalCtx)
 				} else if req.PermissionScopeOverride != "" {
 					return nil, fmt.Errorf("resume_work: permission_scope_override is only valid when approving permission escalation")
 				}
@@ -170,11 +175,15 @@ func NewResumeToolWithFactory(runtimeFactory func() (*Runtime, error), pending *
 			resp.Reason = fmt.Sprintf("[STALE CONTEXT: paused %s, re-verify assumptions] %s", staleDuration, resp.Reason)
 		}
 		if journal != nil {
-			journal.Write("decision_response_emotion", paused.Round, map[string]any{
+			fields := map[string]any{
 				"task_id":  req.TaskID,
 				"decision": resp.Decision,
 				"reason":   resp.Reason,
-			})
+			}
+			if req.ApprovalRequestID != "" {
+				fields["approval_request_id"] = req.ApprovalRequestID
+			}
+			journal.Write("decision_response_emotion", paused.Round, fields)
 		}
 
 		releaseClaim = false
@@ -228,4 +237,18 @@ func NewResumeToolWithFactory(runtimeFactory func() (*Runtime, error), pending *
 	}
 
 	return spec, handler
+}
+
+func approvalContextFromRequest(req *protocol.ApprovalRequest) tool.ApprovalContext {
+	ctx := tool.ApprovalContext{AllowDestructive: true}
+	if req == nil {
+		return ctx
+	}
+	ctx.RequestID = req.ID
+	if req.ToolApprovalBinding != nil {
+		ctx.ToolName = req.ToolApprovalBinding.ToolName
+		ctx.NormalizedInputHash = req.ToolApprovalBinding.NormalizedInputHash
+		ctx.PathDigest = req.ToolApprovalBinding.PathDigest
+	}
+	return ctx
 }

@@ -607,11 +607,15 @@ func TestRuntime_AutoPausesOnApprovalBlockedTool(t *testing.T) {
 	if outcome.Paused.Packet.Category != protocol.CatToolApproval {
 		t.Fatalf("Category = %q, want %q", outcome.Paused.Packet.Category, protocol.CatToolApproval)
 	}
-	if !strings.Contains(outcome.Paused.Packet.Question, "操作：") {
-		t.Fatalf("Question = %q, want operation summary", outcome.Paused.Packet.Question)
-	}
-	if !strings.Contains(outcome.Paused.Packet.Question, "命令：rm -rf tmp") {
-		t.Fatalf("Question = %q, want bash command preview", outcome.Paused.Packet.Question)
+	for _, snippet := range []string{
+		"我准备执行一个受限命令，尚未执行。",
+		"操作：执行 bash 命令",
+		"命令：rm -rf tmp",
+		"确认执行请点击“允许执行”；取消请点击“拒绝”。",
+	} {
+		if !strings.Contains(outcome.Paused.Packet.Question, snippet) {
+			t.Fatalf("Question = %q, missing %q", outcome.Paused.Packet.Question, snippet)
+		}
 	}
 	if outcome.Paused.Packet.WhyBlocked != `Tool "bash" requires explicit human approval before execution.` {
 		t.Fatalf("WhyBlocked = %q", outcome.Paused.Packet.WhyBlocked)
@@ -719,14 +723,53 @@ func TestBuildToolApprovalPacket_NonBashUsesReadableCallSummary(t *testing.T) {
 	if packet.Category != protocol.CatToolApproval {
 		t.Fatalf("Category = %q, want %q", packet.Category, protocol.CatToolApproval)
 	}
+	if !strings.Contains(packet.Question, "尚未执行") {
+		t.Fatalf("Question = %q, want pending execution wording", packet.Question)
+	}
 	if !strings.Contains(packet.Question, "操作：") {
 		t.Fatalf("Question = %q, want operation summary", packet.Question)
 	}
-	if !strings.Contains(packet.Question, "调用：dangerous_delete") {
+	if !strings.Contains(packet.Question, "目标：dangerous_delete") {
 		t.Fatalf("Question = %q, want tool call preview", packet.Question)
 	}
 	if strings.Contains(packet.Question, "{") {
 		t.Fatalf("Question = %q, should avoid raw JSON", packet.Question)
+	}
+}
+
+func TestBuildToolApprovalPacket_IncludesBindingWithoutRawWriteContent(t *testing.T) {
+	brief := protocol.TaskBrief{
+		TaskID:          "task-approval-write",
+		Goal:            "update config",
+		PermissionScope: "approved-destructive",
+	}
+	call := tool.Call{
+		ID:    "write-1",
+		Name:  "write_file",
+		Input: json.RawMessage(`{"path":"config/.env","content":"SECRET=value","create_dirs":false}`),
+	}
+
+	packet := buildToolApprovalPacket(brief, call)
+	if !strings.Contains(packet.Question, "尚未执行") {
+		t.Fatalf("Question = %q, want pending execution wording", packet.Question)
+	}
+	if strings.Contains(packet.Question, "SECRET=value") {
+		t.Fatalf("Question leaks write_file content: %q", packet.Question)
+	}
+	if packet.ToolApprovalBinding == nil {
+		t.Fatal("ToolApprovalBinding is nil")
+	}
+	if packet.ToolApprovalBinding.ToolName != "write_file" {
+		t.Fatalf("ToolName = %q, want write_file", packet.ToolApprovalBinding.ToolName)
+	}
+	if packet.ToolApprovalBinding.NormalizedInputHash == "" {
+		t.Fatal("NormalizedInputHash should be set")
+	}
+	if packet.ToolApprovalBinding.PathDigest == "" {
+		t.Fatal("PathDigest should be set")
+	}
+	if strings.Contains(packet.ToolApprovalBinding.InputPreview, "SECRET=value") {
+		t.Fatalf("InputPreview leaks write_file content: %q", packet.ToolApprovalBinding.InputPreview)
 	}
 }
 
@@ -777,9 +820,16 @@ func TestRuntime_AutoPausesOnApprovalBlockedToolFiltersSiblingToolCalls(t *testi
 		}
 	}
 
+	binding, err := tool.BuildApprovalBinding(*outcome.Paused.PendingToolCall, "req-1")
+	if err != nil {
+		t.Fatalf("BuildApprovalBinding: %v", err)
+	}
 	resumed := runtime.Resume(tool.WithApproval(context.Background(), tool.ApprovalContext{
-		RequestID:        "req-1",
-		AllowDestructive: true,
+		RequestID:           binding.RequestID,
+		AllowDestructive:    true,
+		ToolName:            binding.ToolName,
+		NormalizedInputHash: binding.NormalizedInputHash,
+		PathDigest:          binding.PathDigest,
 	}), outcome.Paused, protocol.DecisionResponse{TaskID: brief.TaskID}, nil)
 	if resumed.Report == nil || resumed.Report.Status != "completed" {
 		t.Fatalf("expected completed report after resume, got %#v", resumed)
@@ -1012,9 +1062,16 @@ func TestRuntime_ResumeReExecutesApprovedToolCall(t *testing.T) {
 		EscalationCount: 1,
 	}
 
+	binding, err := tool.BuildApprovalBinding(call, "req-1")
+	if err != nil {
+		t.Fatalf("BuildApprovalBinding: %v", err)
+	}
 	outcome := runtime.Resume(tool.WithApproval(context.Background(), tool.ApprovalContext{
-		RequestID:        "req-1",
-		AllowDestructive: true,
+		RequestID:           binding.RequestID,
+		AllowDestructive:    true,
+		ToolName:            binding.ToolName,
+		NormalizedInputHash: binding.NormalizedInputHash,
+		PathDigest:          binding.PathDigest,
 	}), paused, protocol.DecisionResponse{TaskID: brief.TaskID}, nil)
 	if outcome.Report == nil {
 		t.Fatalf("expected report outcome, got %#v", outcome)

@@ -72,18 +72,28 @@ func (s *ApprovalService) CreateRequestFromDecision(sessionID string, packet pro
 		CreatedAt:            formatTime(now),
 		UpdatedAt:            formatTime(now),
 	}
+	if packet.ToolApprovalBinding != nil {
+		binding := *packet.ToolApprovalBinding
+		req.ToolApprovalBinding = &binding
+	}
 
 	_, err = s.db.Exec(`
 		INSERT INTO approval_requests (
 			id, session_id, task_id, category, risk_level, goal_summary, question,
 			options_json, recommended_option, recommendation_reason, reject_option_id,
 			status, selected_option_id, actor_channel, actor_ref,
-			expires_at, decided_at, consumed_at, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', '', ?, NULL, NULL, ?, ?)
+			expires_at, decided_at, consumed_at, tool_name, normalized_input_hash,
+			path_digest, input_preview, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', '', ?, NULL, NULL, ?, ?, ?, ?, ?, ?)
 	`,
 		req.ID, req.SessionID, req.TaskID, req.Category, req.RiskLevel, req.GoalSummary, req.Question,
 		string(optionsJSON), req.RecommendedOption, req.RecommendationReason, req.RejectOptionID,
-		req.Status, req.ExpiresAt, req.CreatedAt, req.UpdatedAt,
+		req.Status, req.ExpiresAt,
+		approvalToolName(req.ToolApprovalBinding),
+		approvalNormalizedInputHash(req.ToolApprovalBinding),
+		approvalPathDigest(req.ToolApprovalBinding),
+		approvalInputPreview(req.ToolApprovalBinding),
+		req.CreatedAt, req.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -167,7 +177,8 @@ func (s *ApprovalService) consumeRequestForResume(sessionID, taskID, requestID s
 		SELECT id, session_id, task_id, category, risk_level, goal_summary, question,
 		       options_json, recommended_option, recommendation_reason, reject_option_id,
 		       status, selected_option_id, actor_channel, actor_ref,
-		       expires_at, decided_at, consumed_at, created_at, updated_at
+		       expires_at, decided_at, consumed_at, tool_name, normalized_input_hash,
+		       path_digest, input_preview, created_at, updated_at
 		FROM approval_requests
 		WHERE id = ? AND session_id = ? AND task_id = ?
 	`, requestID, sessionID, taskID)
@@ -234,7 +245,8 @@ func (s *ApprovalService) ListSessionApprovals(sessionID string, statuses []prot
 		SELECT id, session_id, task_id, category, risk_level, goal_summary, question,
 		       options_json, recommended_option, recommendation_reason, reject_option_id,
 		       status, selected_option_id, actor_channel, actor_ref,
-		       expires_at, decided_at, consumed_at, created_at, updated_at
+		       expires_at, decided_at, consumed_at, tool_name, normalized_input_hash,
+		       path_digest, input_preview, created_at, updated_at
 		FROM approval_requests
 		WHERE session_id = ?
 	`
@@ -271,7 +283,8 @@ func (s *ApprovalService) GetRequest(sessionID, requestID string) (*protocol.App
 		SELECT id, session_id, task_id, category, risk_level, goal_summary, question,
 		       options_json, recommended_option, recommendation_reason, reject_option_id,
 		       status, selected_option_id, actor_channel, actor_ref,
-		       expires_at, decided_at, consumed_at, created_at, updated_at
+		       expires_at, decided_at, consumed_at, tool_name, normalized_input_hash,
+		       path_digest, input_preview, created_at, updated_at
 		FROM approval_requests
 		WHERE id = ? AND session_id = ?
 	`, requestID, sessionID)
@@ -291,16 +304,21 @@ type approvalScanner interface {
 
 func scanApprovalRequest(scanner approvalScanner) (protocol.ApprovalRequest, error) {
 	var (
-		req         protocol.ApprovalRequest
-		optionsJSON string
-		decidedAt   sql.NullString
-		consumedAt  sql.NullString
+		req          protocol.ApprovalRequest
+		optionsJSON  string
+		decidedAt    sql.NullString
+		consumedAt   sql.NullString
+		toolName     string
+		inputHash    string
+		pathDigest   string
+		inputPreview string
 	)
 	err := scanner.Scan(
 		&req.ID, &req.SessionID, &req.TaskID, &req.Category, &req.RiskLevel, &req.GoalSummary, &req.Question,
 		&optionsJSON, &req.RecommendedOption, &req.RecommendationReason, &req.RejectOptionID,
 		&req.Status, &req.SelectedOptionID, &req.ActorChannel, &req.ActorRef,
-		&req.ExpiresAt, &decidedAt, &consumedAt, &req.CreatedAt, &req.UpdatedAt,
+		&req.ExpiresAt, &decidedAt, &consumedAt, &toolName, &inputHash,
+		&pathDigest, &inputPreview, &req.CreatedAt, &req.UpdatedAt,
 	)
 	if err != nil {
 		return protocol.ApprovalRequest{}, err
@@ -314,7 +332,43 @@ func scanApprovalRequest(scanner approvalScanner) (protocol.ApprovalRequest, err
 	if consumedAt.Valid {
 		req.ConsumedAt = consumedAt.String
 	}
+	if toolName != "" || inputHash != "" || pathDigest != "" || inputPreview != "" {
+		req.ToolApprovalBinding = &protocol.ToolApprovalBinding{
+			ToolName:            toolName,
+			NormalizedInputHash: inputHash,
+			PathDigest:          pathDigest,
+			InputPreview:        inputPreview,
+		}
+	}
 	return req, nil
+}
+
+func approvalToolName(binding *protocol.ToolApprovalBinding) string {
+	if binding == nil {
+		return ""
+	}
+	return binding.ToolName
+}
+
+func approvalNormalizedInputHash(binding *protocol.ToolApprovalBinding) string {
+	if binding == nil {
+		return ""
+	}
+	return binding.NormalizedInputHash
+}
+
+func approvalPathDigest(binding *protocol.ToolApprovalBinding) string {
+	if binding == nil {
+		return ""
+	}
+	return binding.PathDigest
+}
+
+func approvalInputPreview(binding *protocol.ToolApprovalBinding) string {
+	if binding == nil {
+		return ""
+	}
+	return binding.InputPreview
 }
 
 func placeholders(n int) string {

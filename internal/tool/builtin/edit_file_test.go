@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -109,6 +110,22 @@ func TestEditFile_IdenticalStrings(t *testing.T) {
 	})
 	if _, err := handler(context.Background(), input); err == nil {
 		t.Fatal("expected error when old_string == new_string")
+	}
+}
+
+func TestEditFile_RejectsEmptyOldString(t *testing.T) {
+	root := t.TempDir()
+	writeTemp(t, root, "f.txt", "hello")
+	_, handler := NewEditFileTool(root)
+	input, _ := json.Marshal(map[string]any{
+		"path":       "f.txt",
+		"old_string": "",
+		"new_string": "x",
+	})
+	if _, err := handler(context.Background(), input); err == nil {
+		t.Fatal("expected error when old_string is empty")
+	} else if !strings.Contains(err.Error(), "old_string must not be empty") {
+		t.Fatalf("error = %q, want old_string must not be empty", err.Error())
 	}
 }
 

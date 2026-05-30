@@ -638,6 +638,61 @@ func TestHandlerProcessesApprovalActionAndStreamsContinuation(t *testing.T) {
 	}
 }
 
+func TestHandlerEmitsApprovalRequiredWithBindingPreviewWithoutRawContent(t *testing.T) {
+	handler, engine := newTestHandler()
+	engine.sendErr = errApprovalPending
+	engine.approvals = []protocol.ApprovalRequest{
+		{
+			ID:             "approval-1",
+			SessionID:      "session-test",
+			TaskID:         "task-1",
+			Status:         string(protocol.ApprovalStatusPending),
+			RejectOptionID: "deny",
+			Options:        []protocol.DecisionOption{{ID: "allow", Summary: "允许执行"}, {ID: "deny", Summary: "拒绝"}},
+			ToolApprovalBinding: &protocol.ToolApprovalBinding{
+				ToolName:            "write_file",
+				NormalizedInputHash: "sha256:input",
+				PathDigest:          "sha256:path",
+				InputPreview:        "path=config/.env, content_bytes=12",
+			},
+		},
+	}
+
+	conn := dialTestWS(t, handler)
+	defer conn.Close(websocket.StatusNormalClosure, "bye")
+
+	var msg WSMessage
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(session_ready): %v", err)
+	}
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(greeting): %v", err)
+	}
+	if err := wsjson.Write(context.Background(), conn, WSMessage{Type: "message", Content: "请写入 SECRET=value"}); err != nil {
+		t.Fatalf("Write(message): %v", err)
+	}
+
+	var approval *protocol.ApprovalRequest
+	for i := 0; i < 3; i++ {
+		if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+			t.Fatalf("Read(stream): %v", err)
+		}
+		if msg.Type == "approval_required" {
+			approval = msg.Approval
+			break
+		}
+	}
+	if approval == nil || approval.ToolApprovalBinding == nil {
+		t.Fatalf("approval event = %#v, want binding", msg)
+	}
+	if approval.ToolApprovalBinding.ToolName != "write_file" || approval.ToolApprovalBinding.NormalizedInputHash == "" || approval.ToolApprovalBinding.PathDigest == "" {
+		t.Fatalf("binding = %#v, want tool/hash/path digest", approval.ToolApprovalBinding)
+	}
+	if strings.Contains(approval.ToolApprovalBinding.InputPreview, "SECRET=value") {
+		t.Fatalf("input preview leaks raw content: %q", approval.ToolApprovalBinding.InputPreview)
+	}
+}
+
 func newTestHandler() (*Handler, *fakeConversationEngine) {
 	return newTestHandlerWithApp(&fakeAppProvider{
 		defaultPersona: "default",

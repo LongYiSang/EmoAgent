@@ -5,8 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"sort"
-	"strconv"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -120,7 +119,12 @@ func (r *Runtime) Resume(ctx context.Context, paused *PausedWork, resp protocol.
 			result = errorToolResult(paused.PendingToolCall.ID, "approval denied: tool not executed")
 		} else {
 			permission := tool.Permission(paused.Brief.PermissionScope)
+			classification := r.cfg.Dispatcher.ClassifyCall(ctx, *paused.PendingToolCall, permission)
 			result = r.cfg.Dispatcher.Execute(ctx, *paused.PendingToolCall, permission)
+			writeToolApprovalResumeEvent(ctx, journal, paused.Round, *paused.PendingToolCall, result, classification.DestructiveReason)
+			if result.NeedsApproval && journal != nil && isApprovalBindingMismatchResult(result) {
+				writeApprovalBindingMismatchEvent(ctx, journal, paused.Round, *paused.PendingToolCall)
+			}
 		}
 		messages = append(messages, tool.ResultsToMessages(r.cfg.Provider, []tool.Result{result})...)
 	} else {
@@ -144,6 +148,52 @@ func (r *Runtime) Resume(ctx context.Context, paused *PausedWork, resp protocol.
 	}
 
 	return r.runLoop(ctx, paused.Brief, messages, paused.Progress, paused.Round+1, paused.EscalationCount, journal)
+}
+
+func isApprovalBindingMismatchResult(result tool.Result) bool {
+	return strings.Contains(string(result.Content), "approval binding mismatch")
+}
+
+func writeToolApprovalResumeEvent(ctx context.Context, journal *Journal, round int, call tool.Call, result tool.Result, destructiveReason string) {
+	if journal == nil {
+		return
+	}
+	approval, ok := tool.ApprovalFromContext(ctx)
+	if !ok || !approval.AllowDestructive {
+		return
+	}
+	actual, _ := tool.BuildApprovalBinding(call, approval.RequestID)
+	bindingMatch := approval.RequestID != "" &&
+		approval.ToolName == actual.ToolName &&
+		approval.NormalizedInputHash == actual.NormalizedInputHash &&
+		approval.PathDigest == actual.PathDigest
+	journal.Write("tool_approval_resume", round, map[string]any{
+		"approval_request_id":   approval.RequestID,
+		"tool_name":             call.Name,
+		"normalized_input_hash": actual.NormalizedInputHash,
+		"path_digest":           actual.PathDigest,
+		"destructive_reason":    destructiveReason,
+		"binding_match":         bindingMatch,
+		"executed":              bindingMatch && !result.NeedsApproval,
+	})
+}
+
+func writeApprovalBindingMismatchEvent(ctx context.Context, journal *Journal, round int, call tool.Call) {
+	if journal == nil {
+		return
+	}
+	approval, _ := tool.ApprovalFromContext(ctx)
+	actual, _ := tool.BuildApprovalBinding(call, approval.RequestID)
+	journal.Write("tool_approval_binding_mismatch", round, map[string]any{
+		"approval_request_id":            approval.RequestID,
+		"tool_name":                      call.Name,
+		"expected_tool_name":             approval.ToolName,
+		"actual_tool_name":               actual.ToolName,
+		"expected_normalized_input_hash": approval.NormalizedInputHash,
+		"actual_normalized_input_hash":   actual.NormalizedInputHash,
+		"expected_path_digest":           approval.PathDigest,
+		"actual_path_digest":             actual.PathDigest,
+	})
 }
 
 func (r *Runtime) runLoop(
@@ -401,19 +451,27 @@ func (r *Runtime) runLoop(
 			if blocked, ok := firstClassificationByAction(classifications, tool.CallActionToolApprovalRequired); ok {
 				blockedCall := blocked.Call
 				messages[len(messages)-1] = filterAssistantMessageForBlockedCallPause(messages[len(messages)-1], blockedCall.ID)
+				packet := buildToolApprovalPacket(brief, blockedCall)
 				if journal != nil {
-					journal.Write("tool_approval_intercepted", round, map[string]any{
-						"task_id": brief.TaskID,
-						"call_id": blockedCall.ID,
-						"name":    blockedCall.Name,
-						"input":   string(blockedCall.Input),
-					})
+					fields := map[string]any{
+						"task_id":             brief.TaskID,
+						"call_id":             blockedCall.ID,
+						"name":                blockedCall.Name,
+						"input":               string(blockedCall.Input),
+						"approval_request_id": "",
+						"destructive_reason":  blocked.DestructiveReason,
+					}
+					if packet.ToolApprovalBinding != nil {
+						fields["tool_name"] = packet.ToolApprovalBinding.ToolName
+						fields["normalized_input_hash"] = packet.ToolApprovalBinding.NormalizedInputHash
+						fields["path_digest"] = packet.ToolApprovalBinding.PathDigest
+					}
+					journal.Write("tool_approval_intercepted", round, fields)
 				}
 				if escalationCount >= r.cfg.MaxEscalations {
 					report := failedReport(brief, fmt.Sprintf("max escalations exceeded (%d)", r.cfg.MaxEscalations))
 					return RunOutcome{Report: &report}, true
 				}
-				packet := buildToolApprovalPacket(brief, blockedCall)
 				outcome, _ := r.routeDecision(ctx, brief, blockedCall.ID, packet, messages, workProgress, round, escalationCount, journal)
 				if outcome.Paused != nil {
 					callCopy := blockedCall
@@ -589,17 +647,27 @@ func firstClassificationByAction(classifications []tool.CallClassification, acti
 }
 
 func buildToolApprovalPacket(brief protocol.TaskBrief, call tool.Call) protocol.DecisionPacket {
+	var packetBinding *protocol.ToolApprovalBinding
+	if binding, err := tool.BuildApprovalBinding(call, ""); err == nil {
+		packetBinding = &protocol.ToolApprovalBinding{
+			ToolName:            binding.ToolName,
+			NormalizedInputHash: binding.NormalizedInputHash,
+			PathDigest:          binding.PathDigest,
+			InputPreview:        binding.InputPreview,
+		}
+	}
 	return protocol.DecisionPacket{
 		TaskID:               brief.TaskID,
 		Category:             protocol.CatToolApproval,
 		GoalSummary:          brief.Goal,
 		Question:             toolApprovalQuestion(call),
 		WhyBlocked:           fmt.Sprintf(`Tool %q requires explicit human approval before execution.`, call.Name),
-		Options:              []protocol.DecisionOption{{ID: "allow", Summary: "Allow execution"}, {ID: "deny", Summary: "Deny execution"}},
+		Options:              []protocol.DecisionOption{{ID: "allow", Summary: "允许执行"}, {ID: "deny", Summary: "拒绝"}},
 		RejectOptionID:       "deny",
 		RecommendedOption:    "allow",
 		RecommendationReason: toolApprovalRecommendation(brief),
 		SuggestsUserInput:    false,
+		ToolApprovalBinding:  packetBinding,
 		CreatedAt:            time.Now().UTC(),
 	}
 }
@@ -619,13 +687,63 @@ func buildPermissionEscalationPacket(brief protocol.TaskBrief, call tool.Call) p
 }
 
 func toolApprovalQuestion(call tool.Call) string {
-	lines := []string{"操作：" + toolApprovalOperation(call)}
-	if command := bashCommandPreview(call.Input); command != "" {
-		lines = append(lines, "命令："+command)
-		return strings.Join(lines, "\n")
+	switch strings.TrimSpace(call.Name) {
+	case "bash":
+		command := bashCommandPreview(call.Input)
+		if command == "" {
+			command = "<empty>"
+		}
+		return strings.Join([]string{
+			"我准备执行一个受限命令，尚未执行。",
+			"",
+			"操作：执行 bash 命令",
+			"命令：" + command,
+			"风险：命令可能删除、覆盖、移动或重置文件。",
+			"",
+			"确认执行请点击“允许执行”；取消请点击“拒绝”。",
+		}, "\n")
+	case "write_file":
+		target := toolApprovalPathTarget(call)
+		return strings.Join([]string{
+			"我准备执行一个受限文件操作，尚未执行。",
+			"",
+			"操作：写入文件",
+			"目标：" + target,
+			"风险：这可能覆盖已有文件或触碰敏感路径。",
+			"影响：文件内容将被替换为本次工具输入中的新内容。",
+			"",
+			"确认执行请点击“允许执行”；取消请点击“拒绝”。",
+		}, "\n")
+	case "edit_file":
+		target := toolApprovalPathTarget(call)
+		risk := "这会修改敏感路径或大范围文件内容。"
+		impact := "匹配的 old_string 会被替换为 new_string。"
+		if editFileReplaceAll(call.Input) {
+			risk = "replace_all=true，可能同时修改多个位置。"
+			impact = "所有匹配的 old_string 都会被替换。"
+		}
+		return strings.Join([]string{
+			"我准备执行一个受限文件编辑，尚未执行。",
+			"",
+			"操作：编辑文件",
+			"目标：" + target,
+			"风险：" + risk,
+			"影响：" + impact,
+			"",
+			"确认执行请点击“允许执行”；取消请点击“拒绝”。",
+		}, "\n")
+	default:
+		return strings.Join([]string{
+			"我准备执行一个受限操作，尚未执行。",
+			"",
+			"操作：" + toolApprovalOperation(call),
+			"目标：" + toolApprovalCallPreview(call),
+			"风险：该工具调用需要显式批准。",
+			"影响：批准后才会执行这一次工具输入对应的操作。",
+			"",
+			"确认执行请点击“允许执行”；取消请点击“拒绝”。",
+		}, "\n")
 	}
-	lines = append(lines, "调用："+toolApprovalCallPreview(call))
-	return strings.Join(lines, "\n")
 }
 
 func permissionEscalationQuestion(call tool.Call) string {
@@ -658,12 +776,33 @@ func toolApprovalCallPreview(call tool.Call) string {
 	if name == "" {
 		name = "unknown_tool"
 	}
-	if summary := summarizeToolApprovalInput(call.Input); summary != "" {
+	if summary := tool.InputPreviewForCall(call); summary != "" {
 		preview, _ := truncateContent(name+" ("+summary+")", 320)
 		return preview
 	}
 	preview, _ := truncateContent(name, 320)
 	return preview
+}
+
+func toolApprovalPathTarget(call tool.Call) string {
+	var payload struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(call.Input, &payload); err == nil && strings.TrimSpace(payload.Path) != "" {
+		preview, _ := truncateContent(filepath.ToSlash(filepath.Clean(strings.TrimSpace(payload.Path))), 320)
+		return preview
+	}
+	return toolApprovalCallPreview(call)
+}
+
+func editFileReplaceAll(input json.RawMessage) bool {
+	var payload struct {
+		ReplaceAll bool `json:"replace_all"`
+	}
+	if err := json.Unmarshal(input, &payload); err != nil {
+		return false
+	}
+	return payload.ReplaceAll
 }
 
 func toolApprovalRecommendation(brief protocol.TaskBrief) string {
@@ -688,82 +827,6 @@ func bashCommandPreview(input json.RawMessage) string {
 	}
 	preview, _ := truncateContent(command, 320)
 	return preview
-}
-
-func summarizeToolApprovalInput(input json.RawMessage) string {
-	if len(input) == 0 {
-		return ""
-	}
-
-	var object map[string]any
-	if err := json.Unmarshal(input, &object); err == nil && len(object) > 0 {
-		keys := make([]string, 0, len(object))
-		for key := range object {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-
-		parts := make([]string, 0, minInt(len(keys), 4))
-		for i, key := range keys {
-			if i >= 4 {
-				parts = append(parts, "...")
-				break
-			}
-			parts = append(parts, key+"="+formatToolApprovalValue(object[key]))
-		}
-		preview, _ := truncateContent(strings.Join(parts, ", "), 240)
-		return preview
-	}
-
-	var scalar any
-	if err := json.Unmarshal(input, &scalar); err == nil {
-		preview, _ := truncateContent(formatToolApprovalValue(scalar), 240)
-		return preview
-	}
-	return ""
-}
-
-func formatToolApprovalValue(value any) string {
-	switch typed := value.(type) {
-	case nil:
-		return "null"
-	case string:
-		if typed == "" {
-			return `""`
-		}
-		return typed
-	case bool:
-		return strconv.FormatBool(typed)
-	case float64:
-		if typed == float64(int64(typed)) {
-			return strconv.FormatInt(int64(typed), 10)
-		}
-		return strconv.FormatFloat(typed, 'f', -1, 64)
-	case []any:
-		if len(typed) == 0 {
-			return "[]"
-		}
-		parts := make([]string, 0, minInt(len(typed), 3))
-		for i, item := range typed {
-			if i >= 3 {
-				parts = append(parts, "...")
-				break
-			}
-			parts = append(parts, formatToolApprovalValue(item))
-		}
-		return "[" + strings.Join(parts, ", ") + "]"
-	case map[string]any:
-		return "<object>"
-	default:
-		return fmt.Sprint(typed)
-	}
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 func filterAssistantMessageForBlockedCallPause(message llm.Message, blockedCallID string) llm.Message {

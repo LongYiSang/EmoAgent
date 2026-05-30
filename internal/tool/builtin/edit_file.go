@@ -28,8 +28,9 @@ func NewEditFileTool(projectRoot string) (tool.Spec, tool.Handler) {
 			"required":["path","old_string","new_string"],
 			"additionalProperties":false
 		}`),
-		Scope:      tool.ScopeWork,
-		Permission: tool.PermWorkspaceWrite,
+		Scope:                 tool.ScopeWork,
+		Permission:            tool.PermWorkspaceWrite,
+		DestructiveClassifier: classifyEditFileDestructive(projectRoot),
 	}
 
 	handler := func(_ context.Context, input json.RawMessage) (json.RawMessage, error) {
@@ -44,6 +45,9 @@ func NewEditFileTool(projectRoot string) (tool.Spec, tool.Handler) {
 		}
 		if in.Path == "" {
 			return nil, fmt.Errorf("edit_file: path is required")
+		}
+		if in.OldString == "" {
+			return nil, fmt.Errorf("edit_file: old_string must not be empty")
 		}
 		if in.OldString == in.NewString {
 			return nil, fmt.Errorf("edit_file: old_string and new_string are identical")

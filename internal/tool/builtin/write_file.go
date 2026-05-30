@@ -27,8 +27,9 @@ func NewWriteFileTool(projectRoot string) (tool.Spec, tool.Handler) {
 			"required":["path","content"],
 			"additionalProperties":false
 		}`),
-		Scope:      tool.ScopeWork,
-		Permission: tool.PermWorkspaceWrite,
+		Scope:                 tool.ScopeWork,
+		Permission:            tool.PermWorkspaceWrite,
+		DestructiveClassifier: classifyWriteFileDestructive(projectRoot),
 	}
 
 	handler := func(_ context.Context, input json.RawMessage) (json.RawMessage, error) {

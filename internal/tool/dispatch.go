@@ -40,6 +40,7 @@ type CallClassification struct {
 	RequiredPermission Permission
 	Action             CallAction
 	Reason             string
+	DestructiveReason  string
 }
 
 // NewDispatcher creates a Dispatcher. If a tool declares a schema, Execute
@@ -85,8 +86,9 @@ func (d *Dispatcher) ClassifyCall(ctx context.Context, call Call, maxPermission 
 		}
 	}
 
-	requiredPermission := effectivePermission(spec, call.Input)
+	requiredPermission, destructiveReason := effectivePermission(spec, call.Input)
 	classification.RequiredPermission = requiredPermission
+	classification.DestructiveReason = destructiveReason
 	if !PermissionSatisfied(maxPermission, requiredPermission) {
 		if requiredPermission == PermApprovedDestructive && maxPermission == PermWorkspaceWrite {
 			classification.Action = CallActionPermissionEscalationRequired
@@ -111,10 +113,28 @@ func (d *Dispatcher) ClassifyCall(ctx context.Context, call Call, maxPermission 
 			classification.Reason = fmt.Sprintf("approval required: tool %q needs an active approved request", call.Name)
 			return classification
 		}
+		binding, err := BuildApprovalBinding(call, approval.RequestID)
+		if err != nil {
+			classification.Action = CallActionToolApprovalRequired
+			classification.Reason = fmt.Sprintf("approval required: failed to bind tool %q input: %v", call.Name, err)
+			return classification
+		}
+		if !approvalBindingMatches(approval, binding) {
+			classification.Action = CallActionToolApprovalRequired
+			classification.Reason = fmt.Sprintf("approval binding mismatch: approved request does not match current tool call %q", call.Name)
+			return classification
+		}
 	}
 
 	classification.Action = CallActionExecute
 	return classification
+}
+
+func approvalBindingMatches(approval ApprovalContext, binding ApprovalBinding) bool {
+	return approval.RequestID != "" &&
+		approval.ToolName == binding.ToolName &&
+		approval.NormalizedInputHash == binding.NormalizedInputHash &&
+		approval.PathDigest == binding.PathDigest
 }
 
 // Execute runs a single tool call through the fail-closed pipeline:
@@ -167,13 +187,13 @@ func (d *Dispatcher) Execute(ctx context.Context, call Call, maxPermission Permi
 	}
 }
 
-func effectivePermission(spec Spec, input json.RawMessage) Permission {
+func effectivePermission(spec Spec, input json.RawMessage) (Permission, string) {
 	if spec.Permission == PermWorkspaceWrite && spec.DestructiveClassifier != nil {
-		if destructive, _ := spec.DestructiveClassifier(input); destructive {
-			return PermApprovedDestructive
+		if destructive, reason := spec.DestructiveClassifier(input); destructive {
+			return PermApprovedDestructive, reason
 		}
 	}
-	return spec.Permission
+	return spec.Permission, ""
 }
 
 // ExecuteAll runs multiple tool calls sequentially.

@@ -547,7 +547,7 @@ func TestEngineSendMessageReturnsManualMemoryNoticeWithoutLLM(t *testing.T) {
 	engine, db, _ := newTestEngine(t, fakeLLM)
 	bridge := &fakeMemoryBridge{
 		ensureResult:   MemorySegmentRef{SegmentID: "segment-1", MemorySessionID: "memory-1"},
-		manualNotice:   "我找到了以下可删除候选，尚未执行删除：\n- 用户喜欢手冲咖啡。\n\n确认删除请回复“确认删除”；取消请回复“取消”。",
+		manualNotice:   "我准备执行一次长期记忆删除，尚未执行。\n\n候选：\n- 用户喜欢手冲咖啡。\n\n影响：确认后只会删除上面列出的 exact-node 目标。\n确认删除请回复“确认删除”；取消请回复“取消”。",
 		manualNoticeOK: true,
 	}
 	engine.memory = bridge
@@ -560,7 +560,7 @@ func TestEngineSendMessageReturnsManualMemoryNoticeWithoutLLM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
-	if !strings.Contains(reply, "用户喜欢手冲咖啡。") || !strings.Contains(reply, "确认删除") {
+	if !strings.Contains(reply, "尚未执行") || !strings.Contains(reply, "用户喜欢手冲咖啡。") || !strings.Contains(reply, "确认删除") || !strings.Contains(reply, "取消") {
 		t.Fatalf("reply = %q, want manual forget confirmation notice", reply)
 	}
 	if len(fakeLLM.chatRequests) != 0 || fakeLLM.lastRequest.Model != "" {

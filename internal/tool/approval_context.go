@@ -3,8 +3,11 @@ package tool
 import "context"
 
 type ApprovalContext struct {
-	RequestID        string
-	AllowDestructive bool
+	RequestID           string
+	AllowDestructive    bool
+	ToolName            string
+	NormalizedInputHash string
+	PathDigest          string
 }
 
 type approvalContextKey struct{}

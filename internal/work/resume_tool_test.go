@@ -587,3 +587,143 @@ func TestResumeTool_ConsumesApprovedRequestAndUsesSelectedOption(t *testing.T) {
 		t.Fatalf("approval request = %#v, want consumed", req)
 	}
 }
+
+func TestResumeTool_ApprovedRequestSuppliesApprovalBindingAndExecutesPendingToolCall(t *testing.T) {
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			textResp(`{"status":"completed","summary":"done"}`),
+		},
+	}
+	var executed []string
+	runtime := newApprovalTestRuntime(t, client, &executed)
+	pending := newSQLitePendingRegistry(t)
+	paused := makePausedForResume(t, "task-bound-approval")
+	paused.Brief.PermissionScope = "approved-destructive"
+	call := tool.Call{
+		ID:    "bash-1",
+		Name:  "bash",
+		Input: json.RawMessage(`{"command":"rm -rf tmp"}`),
+	}
+	paused.PendingToolCall = &call
+	paused.Packet = buildToolApprovalPacket(paused.Brief, call)
+	if err := pending.Put("session-1", paused.TaskID, paused); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	list := pending.ListInjectable("session-1")
+	if len(list) != 1 || list[0].Approval == nil || list[0].Approval.RequestID == "" {
+		t.Fatalf("ListInjectable = %#v, want approval request id", list)
+	}
+	requestID := list[0].Approval.RequestID
+	if _, err := pending.approvals.ApproveRequest("session-1", requestID, "allow", "web", ""); err != nil {
+		t.Fatalf("ApproveRequest: %v", err)
+	}
+
+	_, handler := NewResumeTool(runtime, pending, t.TempDir(), testLogger())
+	raw, err := handler(WithSessionID(context.Background(), "session-1"), json.RawMessage(`{"task_id":"task-bound-approval","approval_request_id":"`+requestID+`"}`))
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	var report protocol.TaskReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatalf("unmarshal report: %v", err)
+	}
+	if report.Status != "completed" {
+		t.Fatalf("status = %q, want completed", report.Status)
+	}
+	if len(executed) != 1 || executed[0] != "rm -rf tmp" {
+		t.Fatalf("executed = %#v, want original pending tool call", executed)
+	}
+}
+
+func TestResumeTool_ApprovedRequestWithMutatedPendingToolCallDoesNotExecute(t *testing.T) {
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			textResp(`{"status":"completed","summary":"blocked"}`),
+		},
+	}
+	var executed []string
+	runtime := newApprovalTestRuntime(t, client, &executed)
+	pending := newSQLitePendingRegistry(t)
+	paused := makePausedForResume(t, "task-mutated-approval")
+	paused.Brief.PermissionScope = "approved-destructive"
+	original := tool.Call{
+		ID:    "bash-1",
+		Name:  "bash",
+		Input: json.RawMessage(`{"command":"rm -rf tmp"}`),
+	}
+	paused.PendingToolCall = &original
+	paused.Packet = buildToolApprovalPacket(paused.Brief, original)
+	if err := pending.Put("session-1", paused.TaskID, paused); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	list := pending.ListInjectable("session-1")
+	requestID := list[0].Approval.RequestID
+	if _, err := pending.approvals.ApproveRequest("session-1", requestID, "allow", "web", ""); err != nil {
+		t.Fatalf("ApproveRequest: %v", err)
+	}
+
+	mutated := *paused
+	mutatedCall := tool.Call{
+		ID:    original.ID,
+		Name:  original.Name,
+		Input: json.RawMessage(`{"command":"rm -rf other"}`),
+	}
+	mutated.PendingToolCall = &mutatedCall
+	payload, err := json.Marshal(resumeBlobFromPaused(&mutated))
+	if err != nil {
+		t.Fatalf("marshal resume blob: %v", err)
+	}
+	if _, err := pending.db.Exec(`
+		UPDATE pending_decisions
+		SET resume_blob_json = ?
+		WHERE session_id = ? AND task_id = ?
+	`, string(payload), "session-1", paused.TaskID); err != nil {
+		t.Fatalf("mutate resume blob: %v", err)
+	}
+
+	journalRoot := t.TempDir()
+	_, handler := NewResumeTool(runtime, pending, journalRoot, testLogger())
+	raw, err := handler(WithSessionID(context.Background(), "session-1"), json.RawMessage(`{"task_id":"task-mutated-approval","approval_request_id":"`+requestID+`"}`))
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	var report protocol.TaskReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatalf("unmarshal report: %v", err)
+	}
+	if report.Status != "completed" {
+		t.Fatalf("status = %q, want completed", report.Status)
+	}
+	if len(executed) != 0 {
+		t.Fatalf("mutated pending tool call must not execute, got %#v", executed)
+	}
+	if len(client.calls) != 1 {
+		t.Fatalf("runtime llm calls = %d, want 1", len(client.calls))
+	}
+	last := client.calls[0].Messages[len(client.calls[0].Messages)-1]
+	if !strings.Contains(last.Content, "approval binding mismatch") {
+		t.Fatalf("tool result = %q, want binding mismatch error", last.Content)
+	}
+
+	var journalText string
+	err = filepath.WalkDir(journalRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() && strings.HasSuffix(path, ".jsonl") {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			journalText += string(data)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk journal: %v", err)
+	}
+	if !strings.Contains(journalText, `"kind":"tool_approval_binding_mismatch"`) {
+		t.Fatalf("journal missing tool_approval_binding_mismatch: %s", journalText)
+	}
+}

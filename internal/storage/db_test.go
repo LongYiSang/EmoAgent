@@ -142,6 +142,7 @@ func TestOpenAndMigrate_CreatesApprovalRequestsTableAndColumns(t *testing.T) {
 		"options_json", "recommended_option", "recommendation_reason", "reject_option_id",
 		"status", "selected_option_id", "actor_channel", "actor_ref", "expires_at",
 		"decided_at", "consumed_at", "created_at", "updated_at",
+		"tool_name", "normalized_input_hash", "path_digest", "input_preview",
 	} {
 		if !columns[required] {
 			t.Fatalf("approval_requests missing column %q", required)

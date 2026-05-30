@@ -307,6 +307,41 @@ CREATE INDEX IF NOT EXISTS idx_memory_segments_chat
     ON memory_segments(chat_session_id, segment_index);
 `,
 	},
+	{
+		Version: 14,
+		SQL: `
+CREATE TABLE IF NOT EXISTS approval_requests (
+    id                    TEXT PRIMARY KEY,
+    session_id            TEXT NOT NULL,
+    task_id               TEXT NOT NULL,
+    category              TEXT NOT NULL,
+    risk_level            TEXT NOT NULL,
+    goal_summary          TEXT NOT NULL,
+    question              TEXT NOT NULL,
+    options_json          TEXT NOT NULL,
+    recommended_option    TEXT NOT NULL DEFAULT '',
+    recommendation_reason TEXT NOT NULL DEFAULT '',
+    reject_option_id      TEXT NOT NULL,
+    status                TEXT NOT NULL,
+    selected_option_id    TEXT NOT NULL DEFAULT '',
+    actor_channel         TEXT NOT NULL DEFAULT '',
+    actor_ref             TEXT NOT NULL DEFAULT '',
+    expires_at            TEXT NOT NULL,
+    decided_at            TEXT,
+    consumed_at           TEXT,
+    created_at            TEXT NOT NULL,
+    updated_at            TEXT NOT NULL
+);
+
+ALTER TABLE approval_requests ADD COLUMN tool_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE approval_requests ADD COLUMN normalized_input_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE approval_requests ADD COLUMN path_digest TEXT NOT NULL DEFAULT '';
+ALTER TABLE approval_requests ADD COLUMN input_preview TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX IF NOT EXISTS idx_approval_requests_binding
+    ON approval_requests(session_id, task_id, tool_name, normalized_input_hash, path_digest);
+`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.

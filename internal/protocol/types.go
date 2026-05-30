@@ -56,23 +56,31 @@ type DecisionTradeoff struct {
 	Note      string `json:"note"`
 }
 
+type ToolApprovalBinding struct {
+	ToolName            string `json:"tool_name"`
+	NormalizedInputHash string `json:"normalized_input_hash"`
+	PathDigest          string `json:"path_digest,omitempty"`
+	InputPreview        string `json:"input_preview,omitempty"`
+}
+
 // DecisionPacket is the structured escalation payload from Work to Emotion.
 // It carries summarized context without leaking raw Work traces.
 type DecisionPacket struct {
-	TaskID               string             `json:"task_id"`
-	Category             EscalationCategory `json:"category"`
-	RiskLevel            string             `json:"-"`
-	GoalSummary          string             `json:"goal_summary"`
-	Question             string             `json:"question"`
-	WhyBlocked           string             `json:"why_blocked"`
-	Options              []DecisionOption   `json:"options"`
-	RelevantFindings     []DecisionEvidence `json:"relevant_findings,omitempty"`
-	KeyTradeoffs         []DecisionTradeoff `json:"key_tradeoffs,omitempty"`
-	RecommendedOption    string             `json:"recommended_option,omitempty"`
-	RecommendationReason string             `json:"recommendation_reason,omitempty"`
-	RejectOptionID       string             `json:"reject_option_id,omitempty"`
-	SuggestsUserInput    bool               `json:"suggests_user_input"`
-	CreatedAt            time.Time          `json:"created_at"`
+	TaskID               string               `json:"task_id"`
+	Category             EscalationCategory   `json:"category"`
+	RiskLevel            string               `json:"-"`
+	GoalSummary          string               `json:"goal_summary"`
+	Question             string               `json:"question"`
+	WhyBlocked           string               `json:"why_blocked"`
+	Options              []DecisionOption     `json:"options"`
+	RelevantFindings     []DecisionEvidence   `json:"relevant_findings,omitempty"`
+	KeyTradeoffs         []DecisionTradeoff   `json:"key_tradeoffs,omitempty"`
+	RecommendedOption    string               `json:"recommended_option,omitempty"`
+	RecommendationReason string               `json:"recommendation_reason,omitempty"`
+	RejectOptionID       string               `json:"reject_option_id,omitempty"`
+	SuggestsUserInput    bool                 `json:"suggests_user_input"`
+	ToolApprovalBinding  *ToolApprovalBinding `json:"tool_approval_binding,omitempty"`
+	CreatedAt            time.Time            `json:"created_at"`
 }
 
 type ApprovalStatus string
@@ -94,26 +102,27 @@ type ApprovalSummary struct {
 }
 
 type ApprovalRequest struct {
-	ID                   string           `json:"id"`
-	SessionID            string           `json:"session_id"`
-	TaskID               string           `json:"task_id"`
-	Category             string           `json:"category"`
-	RiskLevel            string           `json:"risk_level"`
-	GoalSummary          string           `json:"goal_summary"`
-	Question             string           `json:"question"`
-	Options              []DecisionOption `json:"options"`
-	RecommendedOption    string           `json:"recommended_option,omitempty"`
-	RecommendationReason string           `json:"recommendation_reason,omitempty"`
-	RejectOptionID       string           `json:"reject_option_id"`
-	Status               string           `json:"status"`
-	SelectedOptionID     string           `json:"selected_option_id,omitempty"`
-	ActorChannel         string           `json:"actor_channel,omitempty"`
-	ActorRef             string           `json:"actor_ref,omitempty"`
-	ExpiresAt            string           `json:"expires_at"`
-	DecidedAt            string           `json:"decided_at,omitempty"`
-	ConsumedAt           string           `json:"consumed_at,omitempty"`
-	CreatedAt            string           `json:"created_at"`
-	UpdatedAt            string           `json:"updated_at"`
+	ID                   string               `json:"id"`
+	SessionID            string               `json:"session_id"`
+	TaskID               string               `json:"task_id"`
+	Category             string               `json:"category"`
+	RiskLevel            string               `json:"risk_level"`
+	GoalSummary          string               `json:"goal_summary"`
+	Question             string               `json:"question"`
+	Options              []DecisionOption     `json:"options"`
+	RecommendedOption    string               `json:"recommended_option,omitempty"`
+	RecommendationReason string               `json:"recommendation_reason,omitempty"`
+	RejectOptionID       string               `json:"reject_option_id"`
+	Status               string               `json:"status"`
+	SelectedOptionID     string               `json:"selected_option_id,omitempty"`
+	ActorChannel         string               `json:"actor_channel,omitempty"`
+	ActorRef             string               `json:"actor_ref,omitempty"`
+	ExpiresAt            string               `json:"expires_at"`
+	DecidedAt            string               `json:"decided_at,omitempty"`
+	ConsumedAt           string               `json:"consumed_at,omitempty"`
+	ToolApprovalBinding  *ToolApprovalBinding `json:"tool_approval_binding,omitempty"`
+	CreatedAt            string               `json:"created_at"`
+	UpdatedAt            string               `json:"updated_at"`
 }
 
 // DecisionSummary is the Emotion-facing persisted view of one paused decision.
