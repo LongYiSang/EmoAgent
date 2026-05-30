@@ -46,6 +46,9 @@ type AdminApp interface {
 	GetSessionDetail(ctx context.Context, id string) (*storage.SessionRecord, []storage.MessageRecord, error)
 	DeleteSession(ctx context.Context, id string) error
 	ListSessionApprovals(ctx context.Context, sessionID string) ([]protocol.ApprovalRequest, error)
+	QueueMemoryExtraction(ctx context.Context, req MemoryExtractionRequest) (MemoryExtractionQueueResponse, error)
+	ListMemoryExtractions(ctx context.Context, req MemoryExtractionListRequest) ([]storage.MemoryExtractionJob, error)
+	ListMemorySegments(ctx context.Context, sessionID string) ([]storage.MemorySegment, error)
 	GetChatSettings() config.ChatConfig
 	UpdateChatSettings(settings config.ChatConfig) error
 }
@@ -119,6 +122,29 @@ type progressPhrasesResponse struct {
 
 type progressPhrasesRequest struct {
 	Phrases map[string][]string `json:"phrases"`
+}
+
+type MemoryExtractionRequest struct {
+	SessionID string `json:"session_id"`
+	SegmentID string `json:"segment_id"`
+	PersonaID string `json:"persona_id"`
+	Scope     string `json:"scope"`
+	Force     bool   `json:"force"`
+	Mode      string `json:"mode"`
+}
+
+type MemoryExtractionListRequest struct {
+	SessionID string
+	SegmentID string
+	Status    string
+	Limit     int
+}
+
+type MemoryExtractionQueueResponse struct {
+	Status        string                        `json:"status"`
+	EnqueuedCount int                           `json:"enqueued_count"`
+	SkippedCount  int                           `json:"skipped_count"`
+	Jobs          []storage.MemoryExtractionJob `json:"jobs"`
 }
 
 func NewAPIHandler(app AdminApp, logger *slog.Logger) *APIHandler {
@@ -495,6 +521,56 @@ func (h *APIHandler) HandleListSessionApprovals(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, map[string]any{"approvals": approvals})
 }
 
+func (h *APIHandler) HandleQueueMemoryExtraction(w http.ResponseWriter, r *http.Request) {
+	var req MemoryExtractionRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	normalizeMemoryExtractionRequest(&req)
+	resp, err := h.app.QueueMemoryExtraction(r.Context(), req)
+	if err != nil {
+		h.writeMemoryExtractionError(w, err)
+		return
+	}
+	if resp.Status == "" {
+		resp.Status = "queued"
+	}
+	writeJSON(w, http.StatusAccepted, resp)
+}
+
+func (h *APIHandler) HandleListMemoryExtractions(w http.ResponseWriter, r *http.Request) {
+	limit := 20
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid limit")
+			return
+		}
+		limit = parsed
+	}
+	jobs, err := h.app.ListMemoryExtractions(r.Context(), MemoryExtractionListRequest{
+		SessionID: strings.TrimSpace(r.URL.Query().Get("session_id")),
+		SegmentID: strings.TrimSpace(r.URL.Query().Get("segment_id")),
+		Status:    strings.TrimSpace(r.URL.Query().Get("status")),
+		Limit:     limit,
+	})
+	if err != nil {
+		h.writeMemoryExtractionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"jobs": jobs})
+}
+
+func (h *APIHandler) HandleListMemorySegments(w http.ResponseWriter, r *http.Request) {
+	segments, err := h.app.ListMemorySegments(r.Context(), strings.TrimSpace(r.URL.Query().Get("session_id")))
+	if err != nil {
+		h.writeMemoryExtractionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"segments": segments})
+}
+
 func (h *APIHandler) writeLLMProviderError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, apperrors.ErrLLMProviderExists):
@@ -547,6 +623,18 @@ func (h *APIHandler) writeSessionError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, err.Error())
 	default:
 		h.logger.Error("session internal error", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+	}
+}
+
+func (h *APIHandler) writeMemoryExtractionError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, apperrors.ErrSessionNotFound):
+		writeError(w, http.StatusNotFound, err.Error())
+	case isMemoryExtractionValidationError(err):
+		writeError(w, http.StatusBadRequest, err.Error())
+	default:
+		h.logger.Error("memory extraction internal error", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
 	}
 }
@@ -605,6 +693,29 @@ func isPersonaValidationError(err error) bool {
 	default:
 		return false
 	}
+}
+
+func isMemoryExtractionValidationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "session_id") ||
+		strings.Contains(message, "segment_id") ||
+		strings.Contains(message, "scope") ||
+		strings.Contains(message, "mode") ||
+		strings.Contains(message, "memory extraction")
+}
+
+func normalizeMemoryExtractionRequest(req *MemoryExtractionRequest) {
+	if req == nil {
+		return
+	}
+	req.SessionID = strings.TrimSpace(req.SessionID)
+	req.SegmentID = strings.TrimSpace(req.SegmentID)
+	req.PersonaID = strings.TrimSpace(req.PersonaID)
+	req.Scope = strings.TrimSpace(req.Scope)
+	req.Mode = strings.TrimSpace(req.Mode)
 }
 
 func normalizeQuirks(quirks []string) []string {

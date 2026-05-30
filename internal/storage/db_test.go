@@ -32,7 +32,7 @@ func TestOpenAndMigrate(t *testing.T) {
 	db := testDB(t)
 
 	// Verify tables exist by querying them.
-	tables := []string{"sessions", "messages", "personas", "config_runtime", "llm_providers", "agent_configs", "schema_version", "pending_decisions", "archived_decisions", "memory_chat_links", "memory_segments"}
+	tables := []string{"sessions", "messages", "personas", "config_runtime", "llm_providers", "agent_configs", "schema_version", "pending_decisions", "archived_decisions", "memory_chat_links", "memory_segments", "memory_extraction_jobs"}
 	for _, table := range tables {
 		var name string
 		err := db.SqlDB().QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&name)
@@ -89,6 +89,76 @@ func TestOpenAndMigrate(t *testing.T) {
 	}
 	if !keyIsPK {
 		t.Fatal("personas.key should be the primary key")
+	}
+}
+
+func TestOpenAndMigrate_CreatesMemoryExtractionJobSchema(t *testing.T) {
+	db := testDB(t)
+
+	requiredJobColumns := []string{
+		"id", "persona_id", "chat_session_id", "segment_id", "memory_session_id",
+		"trigger", "scope", "mode", "requested_by", "priority", "force",
+		"episode_ids_json", "since_at", "until_at", "episode_limit",
+		"status", "attempts", "max_attempts", "run_after", "claimed_by", "claimed_until",
+		"request_json", "result_json", "mirror_sync_result_json",
+		"error_code", "error_message", "dedupe_key",
+		"created_at", "updated_at", "started_at", "finished_at",
+	}
+	assertTableColumns(t, db, "memory_extraction_jobs", requiredJobColumns)
+	assertTableColumns(t, db, "memory_segments", []string{
+		"last_extracted_until_at",
+		"last_extracted_user_episode_id",
+		"last_extracted_assistant_episode_id",
+		"last_extraction_job_id",
+		"last_extraction_error_code",
+		"last_extraction_error_message",
+		"extraction_attempt_count",
+	})
+
+	for _, indexName := range []string{
+		"idx_memory_extraction_jobs_claim",
+		"idx_memory_extraction_jobs_segment",
+		"idx_memory_extraction_jobs_chat_session",
+		"idx_memory_extraction_jobs_dedupe_pending",
+	} {
+		var name string
+		if err := db.SqlDB().QueryRow("SELECT name FROM sqlite_master WHERE type='index' AND name=?", indexName).Scan(&name); err != nil {
+			t.Fatalf("index %q not found: %v", indexName, err)
+		}
+	}
+}
+
+func assertTableColumns(t *testing.T, db *DB, table string, required []string) {
+	t.Helper()
+
+	rows, err := db.SqlDB().Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		t.Fatalf("PRAGMA table_info(%s): %v", table, err)
+	}
+	defer rows.Close()
+
+	columns := map[string]bool{}
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal interface{}
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			t.Fatalf("Scan(table_info %s): %v", table, err)
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err(%s): %v", table, err)
+	}
+	for _, name := range required {
+		if !columns[name] {
+			t.Fatalf("%s missing column %q", table, name)
+		}
 	}
 }
 

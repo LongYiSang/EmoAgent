@@ -9,12 +9,18 @@ import (
 
 type ExtractionHostPolicy struct {
 	Enabled                  bool
+	AsyncEnabled             bool
 	TriggerOnFinalizeSegment bool
 	TriggerOnManualPin       bool
 	SessionEndMode           memorycore.ExtractionRunMode
 	ManualPinMode            memorycore.ExtractionRunMode
 	Timezone                 string
 	Limit                    int
+	MaxAttempts              int
+	AllowInference           bool
+	AllowSensitiveExtraction bool
+	MaxFacts                 int
+	MaxLinks                 int
 	SemanticDedup            memorycore.SemanticDedupOptions
 }
 
@@ -112,6 +118,15 @@ func (p ExtractionHostPolicy) normalized() ExtractionHostPolicy {
 	if p.Limit == 0 {
 		p.Limit = 50
 	}
+	if p.MaxAttempts == 0 {
+		p.MaxAttempts = 3
+	}
+	if p.MaxFacts == 0 {
+		p.MaxFacts = 12
+	}
+	if p.MaxLinks == 0 {
+		p.MaxLinks = 20
+	}
 	return p
 }
 
@@ -135,12 +150,18 @@ func extractionHostPolicyFromConfig(c ExtractionConfig) ExtractionHostPolicy {
 	c = c.normalized()
 	return ExtractionHostPolicy{
 		Enabled:                  c.Enabled,
+		AsyncEnabled:             true,
 		TriggerOnFinalizeSegment: c.TriggerOnFinalizeSegment,
 		TriggerOnManualPin:       true,
 		SessionEndMode:           c.Mode,
 		ManualPinMode:            memorycore.ExtractionRunModeApply,
 		Timezone:                 c.Timezone,
 		Limit:                    c.Limit,
+		MaxAttempts:              3,
+		AllowInference:           c.AllowInference,
+		AllowSensitiveExtraction: c.AllowSensitiveExtraction,
+		MaxFacts:                 c.MaxFacts,
+		MaxLinks:                 c.MaxLinks,
 		SemanticDedup:            c.SemanticDedup,
 	}.normalized()
 }
@@ -152,12 +173,18 @@ func extractionHostPolicyFromOptions(opts memorycore.Options) ExtractionHostPoli
 	}
 	return ExtractionHostPolicy{
 		Enabled:                  opts.Extraction.Enabled,
+		AsyncEnabled:             true,
 		TriggerOnFinalizeSegment: true,
 		TriggerOnManualPin:       true,
 		SessionEndMode:           mode,
 		ManualPinMode:            memorycore.ExtractionRunModeApply,
 		Timezone:                 opts.Extraction.Defaults.Timezone,
 		Limit:                    50,
+		MaxAttempts:              3,
+		AllowInference:           opts.Extraction.Defaults.AllowInference,
+		AllowSensitiveExtraction: opts.Extraction.Defaults.AllowSensitiveExtraction,
+		MaxFacts:                 opts.Extraction.Defaults.MaxFacts,
+		MaxLinks:                 opts.Extraction.Defaults.MaxLinks,
 		SemanticDedup:            opts.SemanticOps.Dedup,
 	}.normalized()
 }

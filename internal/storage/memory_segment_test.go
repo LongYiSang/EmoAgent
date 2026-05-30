@@ -157,3 +157,45 @@ func TestUpdateMemorySegmentEpisodeRejectsUnsupportedRole(t *testing.T) {
 		t.Fatalf("error = %v, want unsupported role", err)
 	}
 }
+
+func TestUpdateMemorySegmentEpisodeMarksSuccessfulExtractionStale(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t)
+
+	if err := db.CreateSession(ctx, "chat-stale", "default"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	segment, err := db.CreateMemorySegment(ctx, CreateMemorySegmentParams{
+		ID:              "segment-stale",
+		ChatSessionID:   "chat-stale",
+		PersonaID:       "default",
+		MemorySessionID: "memory-stale",
+	})
+	if err != nil {
+		t.Fatalf("CreateMemorySegment: %v", err)
+	}
+	untilAt := segment.LastActivityAt
+	if err := db.UpdateMemorySegmentExtractionCompleted(ctx, "segment-stale", MemorySegmentExtractionCompleted{
+		JobID:            "job-stale",
+		Status:           MemorySegmentExtractionStatusSucceeded,
+		ExtractedUntilAt: untilAt,
+	}); err != nil {
+		t.Fatalf("UpdateMemorySegmentExtractionCompleted: %v", err)
+	}
+
+	time.Sleep(time.Millisecond)
+	if err := db.UpdateMemorySegmentEpisode(ctx, "segment-stale", "user", "episode-new"); err != nil {
+		t.Fatalf("UpdateMemorySegmentEpisode: %v", err)
+	}
+
+	got, err := db.GetMemorySegment(ctx, "segment-stale")
+	if err != nil {
+		t.Fatalf("GetMemorySegment: %v", err)
+	}
+	if got.ExtractionStatus != MemorySegmentExtractionStatusStale {
+		t.Fatalf("ExtractionStatus = %q, want stale", got.ExtractionStatus)
+	}
+	if got.LastExtractedUntilAt != untilAt {
+		t.Fatalf("LastExtractedUntilAt = %q, want %q", got.LastExtractedUntilAt, untilAt)
+	}
+}

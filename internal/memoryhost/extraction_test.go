@@ -36,6 +36,7 @@ func TestBridgeFinalizeSegmentDryRunExtractionDoesNotWriteFacts(t *testing.T) {
 	if err := fixture.bridge.FinalizeSegment(fixture.ctx, fixture.segment.SegmentID, "session_end", ""); err != nil {
 		t.Fatalf("FinalizeSegment: %v", err)
 	}
+	drainExtractionWorker(t, fixture.ctx, fixture.host, fixture.chatDB, 1)
 
 	requireMemoryFactCount(t, fixture.memoryDBPath, "", 0)
 	requireMemoryExtractionAuditStatus(t, fixture.memoryDBPath, memorycore.ExtractionRunStatusDryRun)
@@ -65,6 +66,7 @@ func TestBridgeFinalizeSegmentExtractionWritesRawLogWhenEnabled(t *testing.T) {
 	if err := fixture.bridge.FinalizeSegment(fixture.ctx, fixture.segment.SegmentID, "session_end", ""); err != nil {
 		t.Fatalf("FinalizeSegment: %v", err)
 	}
+	drainExtractionWorker(t, fixture.ctx, fixture.host, fixture.chatDB, 1)
 
 	entries, err := os.ReadDir(rawLogDir)
 	if err != nil {
@@ -94,6 +96,7 @@ func TestBridgeFinalizeSegmentApplyExtractionWritesRetrievableFact(t *testing.T)
 	if err := fixture.bridge.FinalizeSegment(fixture.ctx, fixture.segment.SegmentID, "session_end", ""); err != nil {
 		t.Fatalf("FinalizeSegment: %v", err)
 	}
+	drainExtractionWorker(t, fixture.ctx, fixture.host, fixture.chatDB, 1)
 
 	fact := requireMemoryFact(t, fixture.memoryDBPath, "likes", "手冲咖啡")
 	if fact.ContentSummary != "用户喜欢手冲咖啡。" {
@@ -130,10 +133,11 @@ func TestBridgeFinalizeSegmentExtractionFailureDoesNotFailFinalize(t *testing.T)
 	if err := fixture.bridge.FinalizeSegment(fixture.ctx, fixture.segment.SegmentID, "session_end", ""); err != nil {
 		t.Fatalf("FinalizeSegment returned extraction error: %v", err)
 	}
+	drainExtractionWorker(t, fixture.ctx, fixture.host, fixture.chatDB, 1)
 	requireMemoryFactCount(t, fixture.memoryDBPath, "", 0)
 }
 
-func TestExtractSessionEndReturnsSanitizedProviderError(t *testing.T) {
+func TestExtractSessionEndDoesNotRunExtractionDirectly(t *testing.T) {
 	fixture := openExtractionBridgeFixture(t, "chat-extract-sanitize", ExtractionConfig{
 		Enabled:                  true,
 		Mode:                     memorycore.ExtractionRunModeApply,
@@ -149,7 +153,10 @@ func TestExtractSessionEndReturnsSanitizedProviderError(t *testing.T) {
 	}
 	_, err := fixture.host.ExtractSessionEnd(fixture.ctx, "default", fixture.segment.MemorySessionID)
 	if err == nil {
-		t.Fatal("ExtractSessionEnd error = nil, want sanitized provider error")
+		t.Fatal("ExtractSessionEnd error = nil, want async-only guard")
+	}
+	if !strings.Contains(err.Error(), "async_extraction_required") {
+		t.Fatalf("ExtractSessionEnd error = %v, want async_extraction_required", err)
 	}
 	if strings.Contains(err.Error(), "手冲咖啡") || strings.Contains(err.Error(), "raw provider failed") || strings.Contains(err.Error(), "provider disabled") {
 		t.Fatalf("error leaked provider text: %v", err)
@@ -178,6 +185,7 @@ func TestBridgeFinalizeSegmentRepeatedCallDoesNotRepeatExtraction(t *testing.T) 
 	if err := fixture.bridge.FinalizeSegment(fixture.ctx, fixture.segment.SegmentID, "session_end", ""); err != nil {
 		t.Fatalf("FinalizeSegment(second): %v", err)
 	}
+	drainExtractionWorker(t, fixture.ctx, fixture.host, fixture.chatDB, 1)
 
 	requireMemoryExtractionAuditCount(t, fixture.memoryDBPath, 1)
 	requireMemoryFactCount(t, fixture.memoryDBPath, "likes", 1)
@@ -203,6 +211,7 @@ func TestBridgeFinalizeSegmentExtractionDisabledDoesNotCallLLM(t *testing.T) {
 type extractionBridgeFixture struct {
 	ctx          context.Context
 	host         *Host
+	chatDB       *storage.DB
 	bridge       *Bridge
 	segment      storage.MemorySegmentRef
 	memoryDBPath string
@@ -273,9 +282,28 @@ func openExtractionBridgeFixture(t *testing.T, chatSessionID string, cfg Extract
 	return extractionBridgeFixture{
 		ctx:          ctx,
 		host:         host,
+		chatDB:       chatDB,
 		bridge:       bridge,
 		segment:      segment,
 		memoryDBPath: memoryDBPath,
+	}
+}
+
+func drainExtractionWorker(t *testing.T, ctx context.Context, host *Host, db *storage.DB, want int) {
+	t.Helper()
+	worker := NewExtractionWorker(host, db, testMemoryLogger(), ExtractionWorkerConfig{
+		WorkerID:       "test-worker",
+		ClaimLimit:     10,
+		ClaimTTL:       time.Minute,
+		RetryBaseDelay: time.Millisecond,
+		RetryMaxDelay:  time.Millisecond,
+	})
+	got, err := worker.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunOnce extraction worker: %v", err)
+	}
+	if got != want {
+		t.Fatalf("RunOnce processed = %d, want %d", got, want)
 	}
 }
 

@@ -111,6 +111,15 @@ func (a *routeTestAdminApp) DeleteSession(ctx context.Context, id string) error 
 func (a *routeTestAdminApp) ListSessionApprovals(ctx context.Context, sessionID string) ([]protocol.ApprovalRequest, error) {
 	return nil, nil
 }
+func (a *routeTestAdminApp) QueueMemoryExtraction(ctx context.Context, req web.MemoryExtractionRequest) (web.MemoryExtractionQueueResponse, error) {
+	return web.MemoryExtractionQueueResponse{}, nil
+}
+func (a *routeTestAdminApp) ListMemoryExtractions(ctx context.Context, req web.MemoryExtractionListRequest) ([]storage.MemoryExtractionJob, error) {
+	return nil, nil
+}
+func (a *routeTestAdminApp) ListMemorySegments(ctx context.Context, sessionID string) ([]storage.MemorySegment, error) {
+	return nil, nil
+}
 func (a *routeTestAdminApp) GetChatSettings() config.ChatConfig {
 	return config.ChatConfig{}
 }
@@ -443,6 +452,138 @@ func TestUpdateChatSettingsPersistsRuntimeOverrideAndHotUpdatesEngine(t *testing
 	}
 	if !engine.RuntimeConfig().RealtimeStreaming {
 		t.Fatal("engine realtime streaming = false, want true")
+	}
+}
+
+func TestQueueMemoryExtractionEnqueuesSessionSegmentsImmediately(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	if err := db.CreateSession(ctx, "chat-memory", "default"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	segment, err := db.CreateMemorySegment(ctx, storage.CreateMemorySegmentParams{
+		ID:              "segment-memory",
+		ChatSessionID:   "chat-memory",
+		PersonaID:       "default",
+		MemorySessionID: "memory-session",
+	})
+	if err != nil {
+		t.Fatalf("CreateMemorySegment: %v", err)
+	}
+	if err := db.UpdateMemorySegmentEpisode(ctx, segment.ID, "user", "episode-user"); err != nil {
+		t.Fatalf("UpdateMemorySegmentEpisode(user): %v", err)
+	}
+	cfg := config.DefaultConfig()
+	cfg.Memory.Extraction.Enabled = true
+	a := &App{Config: cfg, DB: db, Logger: logger}
+
+	resp, err := a.QueueMemoryExtraction(ctx, web.MemoryExtractionRequest{SessionID: "chat-memory", Scope: "session", Mode: "apply"})
+	if err != nil {
+		t.Fatalf("QueueMemoryExtraction: %v", err)
+	}
+	if resp.EnqueuedCount != 1 || len(resp.Jobs) != 1 {
+		t.Fatalf("resp = %#v, want one enqueued job", resp)
+	}
+	if resp.Jobs[0].Trigger != storage.MemoryExtractionTriggerManualScan || resp.Jobs[0].Status != storage.MemoryExtractionJobStatusPending {
+		t.Fatalf("job = %#v, want pending manual_scan", resp.Jobs[0])
+	}
+}
+
+func TestQueueMemoryExtractionSkipsSucceededSegmentUnlessForced(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	if err := db.CreateSession(ctx, "chat-memory-force", "default"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	segment, err := db.CreateMemorySegment(ctx, storage.CreateMemorySegmentParams{
+		ID:              "segment-memory-force",
+		ChatSessionID:   "chat-memory-force",
+		PersonaID:       "default",
+		MemorySessionID: "memory-session-force",
+	})
+	if err != nil {
+		t.Fatalf("CreateMemorySegment: %v", err)
+	}
+	if err := db.UpdateMemorySegmentExtractionCompleted(ctx, segment.ID, storage.MemorySegmentExtractionCompleted{
+		JobID:            "job-old",
+		Status:           storage.MemorySegmentExtractionStatusSucceeded,
+		ExtractedUntilAt: segment.LastActivityAt,
+	}); err != nil {
+		t.Fatalf("UpdateMemorySegmentExtractionCompleted: %v", err)
+	}
+	cfg := config.DefaultConfig()
+	cfg.Memory.Extraction.Enabled = true
+	a := &App{Config: cfg, DB: db, Logger: logger}
+
+	resp, err := a.QueueMemoryExtraction(ctx, web.MemoryExtractionRequest{SessionID: "chat-memory-force", Scope: "session", Mode: "apply"})
+	if err != nil {
+		t.Fatalf("QueueMemoryExtraction(skip): %v", err)
+	}
+	if resp.EnqueuedCount != 0 || resp.SkippedCount != 1 {
+		t.Fatalf("skip resp = %#v, want skipped succeeded segment", resp)
+	}
+	resp, err = a.QueueMemoryExtraction(ctx, web.MemoryExtractionRequest{SessionID: "chat-memory-force", Scope: "session", Mode: "apply", Force: true})
+	if err != nil {
+		t.Fatalf("QueueMemoryExtraction(force): %v", err)
+	}
+	if resp.EnqueuedCount != 1 || len(resp.Jobs) != 1 {
+		t.Fatalf("force resp = %#v, want one job", resp)
+	}
+}
+
+func TestQueueMemoryExtractionRespectsManualConfig(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	cfg := config.DefaultConfig()
+	cfg.Memory.Extraction.Enabled = true
+	a := &App{Config: cfg, DB: db, Logger: logger}
+
+	if _, err := a.QueueMemoryExtraction(ctx, web.MemoryExtractionRequest{Scope: "invalid"}); err == nil || !strings.Contains(err.Error(), "scope") {
+		t.Fatalf("QueueMemoryExtraction invalid scope error = %v", err)
+	}
+	cfg.Memory.Extraction.Enabled = false
+	if _, err := a.QueueMemoryExtraction(ctx, web.MemoryExtractionRequest{Scope: "all"}); err == nil || !strings.Contains(err.Error(), "memory extraction is disabled") {
+		t.Fatalf("QueueMemoryExtraction disabled extraction error = %v", err)
+	}
+	cfg.Memory.Extraction.Enabled = true
+	cfg.Memory.Extraction.Async.Enabled = false
+	if _, err := a.QueueMemoryExtraction(ctx, web.MemoryExtractionRequest{Scope: "all"}); err == nil || !strings.Contains(err.Error(), "async queue is disabled") {
+		t.Fatalf("QueueMemoryExtraction disabled async error = %v", err)
+	}
+	cfg.Memory.Extraction.Async.Enabled = true
+	cfg.Memory.Extraction.Async.WorkerEnabled = false
+	if _, err := a.QueueMemoryExtraction(ctx, web.MemoryExtractionRequest{Scope: "all"}); err == nil || !strings.Contains(err.Error(), "worker is disabled") {
+		t.Fatalf("QueueMemoryExtraction disabled worker error = %v", err)
+	}
+	cfg.Memory.Extraction.Async.WorkerEnabled = true
+	cfg.Memory.Extraction.Manual.Enabled = false
+	if _, err := a.QueueMemoryExtraction(ctx, web.MemoryExtractionRequest{Scope: "all"}); err == nil || !strings.Contains(err.Error(), "manual trigger is disabled") {
+		t.Fatalf("QueueMemoryExtraction disabled manual error = %v", err)
+	}
+	cfg.Memory.Extraction.Manual.Enabled = true
+	cfg.Memory.Extraction.Manual.AllowForce = false
+	if _, err := a.QueueMemoryExtraction(ctx, web.MemoryExtractionRequest{Scope: "all", Force: true}); err == nil || !strings.Contains(err.Error(), "force is disabled") {
+		t.Fatalf("QueueMemoryExtraction disabled force error = %v", err)
+	}
+	cfg.Memory.Extraction.Manual.AllowForce = true
+	cfg.Memory.Extraction.Manual.AllowSegmentSelection = false
+	if _, err := a.QueueMemoryExtraction(ctx, web.MemoryExtractionRequest{Scope: "segment", SegmentID: "segment-1"}); err == nil || !strings.Contains(err.Error(), "segment selection is disabled") {
+		t.Fatalf("QueueMemoryExtraction disabled segment selection error = %v", err)
 	}
 }
 

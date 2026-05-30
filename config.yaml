@@ -88,12 +88,45 @@ memory:
     enabled: true
     mode: apply
     trigger_on_finalize_segment: true
+    trigger_on_manual_pin: true
+    manual_pin_mode: apply
     limit: 50
     timezone: Asia/Shanghai
     allow_inference: true
     allow_sensitive_extraction: true
     max_facts: 12
     max_links: 20
+
+    async:
+      enabled: true
+      worker_enabled: true
+      worker_concurrency: 1
+      queue_claim_ttl_seconds: 300
+      max_attempts: 3
+      retry_base_delay_seconds: 30
+      retry_max_delay_seconds: 900
+
+    idle:
+      enabled: true
+      idle_after_seconds: 900
+      sweep_interval_seconds: 60
+      min_episode_count: 2
+      max_segments_per_sweep: 20
+      include_finalized_segments: true
+      include_active_segments: true
+
+    manual:
+      enabled: true
+      mode: apply
+      allow_force: true
+      allow_segment_selection: true
+
+    mirror_sync:
+      after_apply: true
+      periodic_enabled: true
+      interval_seconds: 60
+      limit: 100
+      fail_extraction_on_sync_error: false
 
     semantic_dedup:
       enabled: true

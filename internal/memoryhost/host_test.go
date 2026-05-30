@@ -422,6 +422,7 @@ func TestBridgeManualPinCreatesTraceableRetrievableFact(t *testing.T) {
 	if stored.LastUserEpisodeID != episodeID {
 		t.Fatalf("LastUserEpisodeID = %q, want %q", stored.LastUserEpisodeID, episodeID)
 	}
+	drainExtractionWorker(t, fixture.ctx, fixture.host, fixture.chatDB, 1)
 
 	fact := requireMemoryFact(t, fixture.memoryDBPath, "likes", "手冲咖啡")
 	if fact.ContentSummary != "用户喜欢手冲咖啡。" {
@@ -454,6 +455,7 @@ func TestBridgeManualPinUsesExtractionGateForDuplicateInput(t *testing.T) {
 		if _, err := fixture.bridge.AppendUserEpisode(fixture.ctx, fixture.segment.SegmentID, turn.messageID, turn.text); err != nil {
 			t.Fatalf("AppendUserEpisode(%q): %v", turn.text, err)
 		}
+		drainExtractionWorker(t, fixture.ctx, fixture.host, fixture.chatDB, 1)
 	}
 
 	requireMemoryFact(t, fixture.memoryDBPath, "likes", "手冲咖啡")

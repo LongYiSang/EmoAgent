@@ -42,6 +42,11 @@ type fakeAdminApp struct {
 	lastPhrasesKey      string
 	lastPhrasesValue    map[string][]string
 	lastApprovalSession string
+	lastExtractionReq   MemoryExtractionRequest
+	lastExtractionList  MemoryExtractionListRequest
+	extractionJobs      []storage.MemoryExtractionJob
+	lastSegmentSession  string
+	memorySegments      []storage.MemorySegment
 	chatSettings        config.ChatConfig
 	lastChatSettings    config.ChatConfig
 	updateChatErr       error
@@ -178,6 +183,18 @@ func (f *fakeAdminApp) DeleteSession(_ context.Context, id string) error {
 func (f *fakeAdminApp) ListSessionApprovals(_ context.Context, sessionID string) ([]protocol.ApprovalRequest, error) {
 	f.lastApprovalSession = sessionID
 	return append([]protocol.ApprovalRequest(nil), f.approvals...), nil
+}
+func (f *fakeAdminApp) QueueMemoryExtraction(_ context.Context, req MemoryExtractionRequest) (MemoryExtractionQueueResponse, error) {
+	f.lastExtractionReq = req
+	return MemoryExtractionQueueResponse{Status: "queued", EnqueuedCount: len(f.extractionJobs), Jobs: append([]storage.MemoryExtractionJob(nil), f.extractionJobs...)}, nil
+}
+func (f *fakeAdminApp) ListMemoryExtractions(_ context.Context, req MemoryExtractionListRequest) ([]storage.MemoryExtractionJob, error) {
+	f.lastExtractionList = req
+	return append([]storage.MemoryExtractionJob(nil), f.extractionJobs...), nil
+}
+func (f *fakeAdminApp) ListMemorySegments(_ context.Context, sessionID string) ([]storage.MemorySegment, error) {
+	f.lastSegmentSession = sessionID
+	return append([]storage.MemorySegment(nil), f.memorySegments...), nil
 }
 func (f *fakeAdminApp) GetChatSettings() config.ChatConfig {
 	return f.chatSettings
@@ -539,5 +556,85 @@ func TestHandleListSessionApprovals(t *testing.T) {
 	}
 	if len(payload.Approvals) != 1 || payload.Approvals[0].ID != "approval-1" {
 		t.Fatalf("payload.Approvals = %#v, want approval-1", payload.Approvals)
+	}
+}
+
+func TestHandleQueueMemoryExtraction(t *testing.T) {
+	app := &fakeAdminApp{
+		extractionJobs: []storage.MemoryExtractionJob{{ID: "job-1", SegmentID: "segment-1", Status: storage.MemoryExtractionJobStatusPending}},
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	body := bytes.NewBufferString(`{"session_id":"chat-1","scope":"session","force":true,"mode":"apply"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/memory/extractions", body)
+	rec := httptest.NewRecorder()
+	handler.HandleQueueMemoryExtraction(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", rec.Code)
+	}
+	if app.lastExtractionReq.SessionID != "chat-1" || app.lastExtractionReq.Scope != "session" || !app.lastExtractionReq.Force {
+		t.Fatalf("lastExtractionReq = %#v", app.lastExtractionReq)
+	}
+	var payload MemoryExtractionQueueResponse
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if payload.Status != "queued" || len(payload.Jobs) != 1 || payload.Jobs[0].ID != "job-1" {
+		t.Fatalf("payload = %#v, want queued job-1", payload)
+	}
+}
+
+func TestHandleListMemoryExtractions(t *testing.T) {
+	app := &fakeAdminApp{
+		extractionJobs: []storage.MemoryExtractionJob{{ID: "job-1", ChatSessionID: "chat-1"}},
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/memory/extractions?session_id=chat-1&limit=5", nil)
+	rec := httptest.NewRecorder()
+	handler.HandleListMemoryExtractions(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if app.lastExtractionList.SessionID != "chat-1" || app.lastExtractionList.Limit != 5 {
+		t.Fatalf("lastExtractionList = %#v", app.lastExtractionList)
+	}
+	var payload struct {
+		Jobs []storage.MemoryExtractionJob `json:"jobs"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(payload.Jobs) != 1 || payload.Jobs[0].ID != "job-1" {
+		t.Fatalf("payload.Jobs = %#v, want job-1", payload.Jobs)
+	}
+}
+
+func TestHandleListMemorySegments(t *testing.T) {
+	app := &fakeAdminApp{
+		memorySegments: []storage.MemorySegment{{ID: "segment-1", ChatSessionID: "chat-1"}},
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/memory/segments?session_id=chat-1", nil)
+	rec := httptest.NewRecorder()
+	handler.HandleListMemorySegments(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if app.lastSegmentSession != "chat-1" {
+		t.Fatalf("lastSegmentSession = %q, want chat-1", app.lastSegmentSession)
+	}
+	var payload struct {
+		Segments []storage.MemorySegment `json:"segments"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(payload.Segments) != 1 || payload.Segments[0].ID != "segment-1" {
+		t.Fatalf("payload.Segments = %#v, want segment-1", payload.Segments)
 	}
 }

@@ -110,23 +110,7 @@ func (h *Host) ExtractSessionEnd(ctx context.Context, personaID string, memorySe
 	if memorySessionID == "" {
 		return nil, sanitizedExtractionError("missing_session", "")
 	}
-	personaID = defaultPersonaID(personaID)
-	result, err := h.Service.RunExtraction(ctx, memorycore.RunExtractionRequest{
-		PersonaID: personaID,
-		SessionID: &memorySessionID,
-		Trigger:   memorycore.ExtractionTriggerSessionEnd,
-		Timezone:  h.extractionPolicy.timezoneOrDefault(),
-		Mode:      h.extractionPolicy.sessionEndModeOrDefault(),
-		Build: &memorycore.ExtractionBuildSelector{
-			SessionID: &memorySessionID,
-			Limit:     h.extractionPolicy.limitOrDefault(),
-		},
-		SemanticDedup: h.extractionPolicy.SemanticDedup,
-	})
-	if err != nil {
-		return result, sanitizedExtractionError(extractionErrorCode(result, err), "")
-	}
-	return result, nil
+	return nil, sanitizedExtractionError("async_extraction_required", "")
 }
 
 func open(ctx context.Context, opts memorycore.Options, retrievalPolicy memorycore.RetrievalPolicy, logger *slog.Logger, source string) (*Host, error) {

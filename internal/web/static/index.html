@@ -106,6 +106,37 @@
       display: flex; align-items: center; gap: 8px;
     }
     .conv-sub .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--mint-ink); flex-shrink: 0; }
+    .conv-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+    .memory-scan {
+      min-height: 34px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--hair);
+      background: #fff; color: var(--ink-2); font-size: 12px; font-weight: 700;
+      display: inline-flex; align-items: center; gap: 7px; transition: all .15s var(--ease-out);
+    }
+    .memory-scan:hover { border-color: var(--lavender); color: var(--lavender-ink); }
+    .memory-scan:disabled { opacity: .55; cursor: not-allowed; }
+    .memory-status-panel {
+      display: none; border-bottom: 1px solid var(--hair); background: rgba(255,253,251,.76);
+      padding: 10px 28px; gap: 10px; grid-template-columns: minmax(0,1fr) minmax(0,1fr);
+      font-size: 12px; color: var(--ink-2);
+    }
+    .memory-status-panel.visible { display: grid; }
+    .memory-status-block { min-width: 0; display: grid; gap: 5px; }
+    .memory-status-title {
+      font-size: 10.5px; font-weight: 800; color: var(--muted);
+      text-transform: uppercase; letter-spacing: .08em;
+    }
+    .memory-status-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      min-height: 24px; padding: 4px 8px; border-radius: 8px; background: rgba(255,255,255,.74);
+      border: 1px solid rgba(42,34,48,.05);
+    }
+    .memory-status-row span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .memory-badge {
+      flex-shrink: 0; padding: 2px 7px; border-radius: 999px; font-size: 10.5px; font-weight: 800;
+      background: var(--lavender-soft); color: var(--lavender-ink); text-transform: uppercase;
+    }
+    .memory-badge.succeeded, .memory-badge.skipped { background: var(--mint-soft); color: var(--mint-ink); }
+    .memory-badge.failed { background: #FFF1F4; color: var(--rose-ink); }
 
     /* ── Thread ── */
     .thread {
@@ -478,10 +509,16 @@
             <div class="conv-sub"><span class="dot"></span><span id="subtitle">loading...</span></div>
           </div>
         </div>
-        <div>
+        <div class="conv-actions">
+          <button class="memory-scan" id="memory-scan" type="button" disabled>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="M5 8a4 4 0 0 1 7-2.6A4 4 0 0 1 19 8c0 4-7 8-7 8S5 12 5 8Z"/></svg>
+            <span>扫描记忆</span>
+          </button>
           <div class="status-chip"><span class="dot"></span><span id="status">Connecting...</span></div>
         </div>
       </header>
+
+      <div class="memory-status-panel" id="memory-status-panel"></div>
 
       <div class="thread" id="messages"></div>
 
@@ -518,6 +555,8 @@
   const newChatButton = document.getElementById('new-chat');
   const refreshSessionsButton = document.getElementById('refresh-sessions');
   const toggleSidebarButton = document.getElementById('toggle-sidebar');
+  const memoryScanButton = document.getElementById('memory-scan');
+  const memoryStatusPanel = document.getElementById('memory-status-panel');
 
   let socket = null;
   let reconnectDelay = 1000;
@@ -531,6 +570,8 @@
   let currentPersonaKey = '';
   let sessionList = [];
   let approvals = [];
+  let memorySegments = [];
+  let memoryJobs = [];
   const pendingApprovalActions = new Set();
   const dismissedApprovalIDs = new Set();
   let workProgressNode = null;
@@ -944,6 +985,7 @@
     currentSessionId ? url.searchParams.set('session_id', currentSessionId) : url.searchParams.delete('session_id');
     history.replaceState({}, '', url);
     document.getElementById('session-hint').textContent = currentSessionId ? `Session · ${currentSessionId.substring(0,13)}` : 'No active session';
+    memoryScanButton.disabled = !currentSessionId;
   }
   function formatSessionTime(raw) {
     if (!raw) return 'Unknown time'; const d = new Date(raw);
@@ -975,6 +1017,72 @@
       row.addEventListener('click', async () => { if (sessionID && sessionID !== currentSessionId) await switchSession(sessionID, sessionPersonaOf(item) || currentPersonaKey); });
       row.addEventListener('keydown', async e => { if (e.key !== 'Enter' && e.key !== ' ') return; e.preventDefault(); if (sessionID && sessionID !== currentSessionId) await switchSession(sessionID, sessionPersonaOf(item) || currentPersonaKey); });
       sessionListEl.appendChild(row);
+    }
+  }
+
+  function memoryStatusOf(item) { return item.ExtractionStatus || item.extraction_status || item.Status || item.status || 'never'; }
+  function memorySegmentLabel(item) {
+    const idx = item.SegmentIndex ?? item.segment_index ?? '';
+    const id = item.ID || item.id || '';
+    return idx ? `Segment ${idx}` : (id ? `Segment · ${String(id).slice(0, 8)}` : 'Segment');
+  }
+  function renderMemoryStatus() {
+    memoryStatusPanel.innerHTML = '';
+    if (!currentSessionId || (!memorySegments.length && !memoryJobs.length)) {
+      memoryStatusPanel.classList.remove('visible'); return;
+    }
+    const segBlock = document.createElement('div'); segBlock.className = 'memory-status-block';
+    segBlock.innerHTML = '<div class="memory-status-title">Segments</div>';
+    for (const item of memorySegments.slice(0, 4)) {
+      const row = document.createElement('div'); row.className = 'memory-status-row';
+      const st = memoryStatusOf(item);
+      row.innerHTML = `<span>${escapeHTML(memorySegmentLabel(item))}</span><span class="memory-badge ${escapeHTML(st)}">${escapeHTML(st)}</span>`;
+      segBlock.appendChild(row);
+    }
+    const jobBlock = document.createElement('div'); jobBlock.className = 'memory-status-block';
+    jobBlock.innerHTML = '<div class="memory-status-title">Jobs</div>';
+    for (const item of memoryJobs.slice(0, 4)) {
+      const row = document.createElement('div'); row.className = 'memory-status-row';
+      const st = memoryStatusOf(item);
+      const id = item.ID || item.id || '';
+      const trigger = item.Trigger || item.trigger || 'extraction';
+      row.innerHTML = `<span>${escapeHTML(trigger)} · ${escapeHTML(String(id).slice(0, 8))}</span><span class="memory-badge ${escapeHTML(st)}">${escapeHTML(st)}</span>`;
+      jobBlock.appendChild(row);
+    }
+    if (!memorySegments.length) segBlock.insertAdjacentHTML('beforeend', '<div class="memory-status-row"><span>暂无 segment</span><span class="memory-badge">empty</span></div>');
+    if (!memoryJobs.length) jobBlock.insertAdjacentHTML('beforeend', '<div class="memory-status-row"><span>暂无 job</span><span class="memory-badge">empty</span></div>');
+    memoryStatusPanel.appendChild(segBlock); memoryStatusPanel.appendChild(jobBlock);
+    memoryStatusPanel.classList.add('visible');
+  }
+
+  async function loadMemoryStatus(sessionID = currentSessionId) {
+    if (!sessionID) { memorySegments = []; memoryJobs = []; renderMemoryStatus(); return; }
+    try {
+      const [segments, jobs] = await Promise.all([
+        requestJSON(`/api/memory/segments?session_id=${encodeURIComponent(sessionID)}`),
+        requestJSON(`/api/memory/extractions?session_id=${encodeURIComponent(sessionID)}&limit=10`)
+      ]);
+      memorySegments = segments.segments || [];
+      memoryJobs = jobs.jobs || [];
+      renderMemoryStatus();
+    } catch (_) {}
+  }
+
+  async function queueMemoryExtraction() {
+    if (!currentSessionId || memoryScanButton.disabled) return;
+    memoryScanButton.disabled = true;
+    try {
+      await requestJSON('/api/memory/extractions', {
+        method: 'POST',
+        headers: {'Accept':'application/json','Content-Type':'application/json'},
+        body: JSON.stringify({session_id: currentSessionId, scope: 'session', mode: 'apply'})
+      });
+      setStatus('记忆扫描已提交');
+      await loadMemoryStatus(currentSessionId);
+    } catch (e) {
+      setStatus(e.message || 'Failed to queue memory extraction');
+    } finally {
+      memoryScanButton.disabled = !currentSessionId;
     }
   }
 
@@ -1020,7 +1128,7 @@
           currentPersonaKey = payload.persona || payload.Persona || currentPersonaKey;
           syncURL(); updateSubtitle();
           if (connectAttempt?.awaitingSessionReady) resolveConnectAttempt();
-          await loadSessionList(); await loadApprovals(currentSessionId); break;
+          await loadSessionList(); await loadApprovals(currentSessionId); await loadMemoryStatus(currentSessionId); break;
         case 'greeting': appendMessage('assistant', payload.content || ''); break;
         case 'stream_start': pendingAssistant = null; toolActivityNodes.clear(); reasoningActivityNodes.clear(); setSending(true); break;
         case 'reasoning_start': pendingAssistant = null; upsertReasoningActivity(payload.reasoning || payload.Reasoning, false, false); break;
@@ -1031,13 +1139,13 @@
           setMessageContent(pendingAssistant, `${messageTextOf(pendingAssistant)}${payload.content || ''}`); break;
         case 'stream_end':
           pendingAssistant = null; collapseReasoningActivities(); clearWorkProgress(); pendingApprovalActions.clear(); setSending(false);
-          await loadSessionList(); await loadApprovals(currentSessionId); break;
+          await loadSessionList(); await loadApprovals(currentSessionId); await loadMemoryStatus(currentSessionId); break;
         case 'tool_call_start': pendingAssistant = null; upsertToolActivity(payload.tool || payload.Tool, false); break;
         case 'tool_call_end': pendingAssistant = null; upsertToolActivity(payload.tool || payload.Tool, true); break;
         case 'error':
           appendMessage('error', payload.content || 'Unknown error');
           pendingAssistant = null; clearWorkProgress(); pendingApprovalActions.clear(); setSending(false);
-          await loadSessionList(); await loadApprovals(currentSessionId); break;
+          await loadSessionList(); await loadApprovals(currentSessionId); await loadMemoryStatus(currentSessionId); break;
         case 'approval_required': case 'approval_updated': upsertApproval(payload.approval || payload.Approval); break;
         case 'work_progress': showWorkProgress(payload.content || ''); break;
         case 'work_progress_end': clearWorkProgress(); break;
@@ -1053,7 +1161,7 @@
       if (pendingHS) { setStatus('Failed to connect'); return; }
       setStatus(`Disconnected, retrying in ${Math.round(reconnectDelay/1000)}s`);
       reconnectTimer = setTimeout(async () => {
-        if (currentSessionId) { try { const d = await loadSessionDetail(currentSessionId); renderHistory(d.messages || []); await loadApprovals(currentSessionId); } catch (_) {} }
+        if (currentSessionId) { try { const d = await loadSessionDetail(currentSessionId); renderHistory(d.messages || []); await loadApprovals(currentSessionId); await loadMemoryStatus(currentSessionId); } catch (_) {} }
         connect();
       }, reconnectDelay);
       reconnectDelay = Math.min(reconnectDelay * 2, 30000);
@@ -1089,10 +1197,10 @@
     currentPersonaKey = params.get('persona') || ''; currentSessionId = params.get('session_id') || '';
     clearApprovalState();
     if (currentSessionId) {
-      try { const d = await loadSessionDetail(currentSessionId); currentPersonaKey = d.persona || d.Persona || currentPersonaKey; renderHistory(d.messages || []); await loadApprovals(currentSessionId); }
+      try { const d = await loadSessionDetail(currentSessionId); currentPersonaKey = d.persona || d.Persona || currentPersonaKey; renderHistory(d.messages || []); await loadApprovals(currentSessionId); await loadMemoryStatus(currentSessionId); }
       catch (_) { currentSessionId = ''; }
     }
-    if (!currentSessionId) { currentPersonaKey = currentPersonaKey || await loadDefaultPersona(); clearMessages(); renderApprovals(); }
+    if (!currentSessionId) { currentPersonaKey = currentPersonaKey || await loadDefaultPersona(); clearMessages(); renderApprovals(); await loadMemoryStatus(''); }
     updateSubtitle(); syncURL(); await loadSessionList(); setStatus('Ready');
   }
   async function switchSession(sessionID, personaKey) {
@@ -1100,12 +1208,12 @@
     try {
       const d = await loadSessionDetail(sessionID); await closeSocket(); clearApprovalState();
       currentSessionId = sessionID; currentPersonaKey = d.persona || d.Persona || personaKey || currentPersonaKey;
-      renderHistory(d.messages || []); await loadApprovals(currentSessionId);
+      renderHistory(d.messages || []); await loadApprovals(currentSessionId); await loadMemoryStatus(currentSessionId);
       updateSubtitle(); syncURL(); renderSessionList(); closeMobileDrawer(); setStatus('Ready');
     } catch (e) { setStatus(e.message || 'Failed to load session'); renderSessionList(); }
   }
   async function startNewChat() {
-    await closeSocket(); clearApprovalState(); currentSessionId = ''; clearMessages(); renderApprovals();
+    await closeSocket(); clearApprovalState(); currentSessionId = ''; clearMessages(); renderApprovals(); await loadMemoryStatus('');
     updateSubtitle(); syncURL(); renderSessionList(); closeMobileDrawer(); setStatus('Ready');
   }
   async function deleteSession(sessionID) {
@@ -1140,6 +1248,7 @@
   newChatButton.addEventListener('click', async () => { await startNewChat(); });
   refreshSessionsButton.addEventListener('click', async () => { await loadSessionList(); });
   toggleSidebarButton.addEventListener('click', toggleDrawer);
+  memoryScanButton.addEventListener('click', queueMemoryExtraction);
   input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } });
   input.addEventListener('input', () => { input.style.height = '44px'; input.style.height = `${Math.min(input.scrollHeight, 140)}px`; });
   window.addEventListener('beforeunload', () => { manuallyClosed = true; clearTimeout(reconnectTimer); if (socket?.readyState < WebSocket.CLOSING) socket.close(); });

@@ -21,19 +21,26 @@ type MemoryChatLink struct {
 }
 
 type MemorySegment struct {
-	ID                     string
-	ChatSessionID          string
-	MemorySessionID        string
-	SegmentIndex           int
-	StartedAt              string
-	LastActivityAt         string
-	FinalizedAt            string
-	FinalizeReason         string
-	Summary                string
-	LastUserEpisodeID      string
-	LastAssistantEpisodeID string
-	LastExtractedAt        string
-	ExtractionStatus       string
+	ID                              string
+	ChatSessionID                   string
+	MemorySessionID                 string
+	SegmentIndex                    int
+	StartedAt                       string
+	LastActivityAt                  string
+	FinalizedAt                     string
+	FinalizeReason                  string
+	Summary                         string
+	LastUserEpisodeID               string
+	LastAssistantEpisodeID          string
+	LastExtractedAt                 string
+	LastExtractedUntilAt            string
+	LastExtractedUserEpisodeID      string
+	LastExtractedAssistantEpisodeID string
+	LastExtractionJobID             string
+	LastExtractionErrorCode         string
+	LastExtractionErrorMessage      string
+	ExtractionAttemptCount          int
+	ExtractionStatus                string
 }
 
 type CreateMemorySegmentParams struct {
@@ -130,7 +137,11 @@ func (d *DB) GetCurrentMemorySegment(ctx context.Context, chatSessionID string) 
 		       started_at, last_activity_at, COALESCE(finalized_at, ''),
 		       COALESCE(finalize_reason, ''), COALESCE(summary, ''),
 		       COALESCE(last_user_episode_id, ''), COALESCE(last_assistant_episode_id, ''),
-		       COALESCE(last_extracted_at, ''), COALESCE(extraction_status, '')
+		       COALESCE(last_extracted_at, ''), COALESCE(last_extracted_until_at, ''),
+		       COALESCE(last_extracted_user_episode_id, ''), COALESCE(last_extracted_assistant_episode_id, ''),
+		       COALESCE(last_extraction_job_id, ''), COALESCE(last_extraction_error_code, ''),
+		       COALESCE(last_extraction_error_message, ''), COALESCE(extraction_attempt_count, 0),
+		       COALESCE(extraction_status, 'never')
 		FROM memory_segments
 		WHERE chat_session_id = ? AND finalized_at IS NULL
 	`, chatSessionID)
@@ -143,7 +154,11 @@ func (d *DB) GetMemorySegment(ctx context.Context, segmentID string) (*MemorySeg
 		       started_at, last_activity_at, COALESCE(finalized_at, ''),
 		       COALESCE(finalize_reason, ''), COALESCE(summary, ''),
 		       COALESCE(last_user_episode_id, ''), COALESCE(last_assistant_episode_id, ''),
-		       COALESCE(last_extracted_at, ''), COALESCE(extraction_status, '')
+		       COALESCE(last_extracted_at, ''), COALESCE(last_extracted_until_at, ''),
+		       COALESCE(last_extracted_user_episode_id, ''), COALESCE(last_extracted_assistant_episode_id, ''),
+		       COALESCE(last_extraction_job_id, ''), COALESCE(last_extraction_error_code, ''),
+		       COALESCE(last_extraction_error_message, ''), COALESCE(extraction_attempt_count, 0),
+		       COALESCE(extraction_status, 'never')
 		FROM memory_segments
 		WHERE id = ?
 	`, segmentID)
@@ -218,11 +233,59 @@ func (d *DB) UpdateMemorySegmentEpisode(ctx context.Context, segmentID string, r
 		return fmt.Errorf("unsupported memory episode role: %s", role)
 	}
 
+	now := nowUTC()
 	result, err := d.db.ExecContext(ctx, fmt.Sprintf(`
 		UPDATE memory_segments
-		SET %s = ?, last_activity_at = ?
+		SET %s = ?,
+		    last_activity_at = ?,
+		    extraction_status = CASE
+		        WHEN extraction_status IN ('succeeded', 'skipped')
+		         AND COALESCE(last_extracted_until_at, '') <> ''
+		         AND last_extracted_until_at < ?
+		        THEN 'stale'
+		        ELSE extraction_status
+		    END
 		WHERE id = ?
-	`, column), episodeID, nowUTC(), segmentID)
+	`, column), episodeID, now, now, segmentID)
+	if err != nil {
+		return err
+	}
+	if rows, err := result.RowsAffected(); err == nil && rows == 0 {
+		return fmt.Errorf("memory segment not found: %s", segmentID)
+	}
+	return nil
+}
+
+type MemorySegmentExtractionCompleted struct {
+	JobID                       string
+	Status                      string
+	ExtractedUntilAt            string
+	ExtractedUserEpisodeID      string
+	ExtractedAssistantEpisodeID string
+}
+
+func (d *DB) UpdateMemorySegmentExtractionCompleted(ctx context.Context, segmentID string, completed MemorySegmentExtractionCompleted) error {
+	if segmentID == "" {
+		return errors.New("memory segment id is required")
+	}
+	status := completed.Status
+	if status == "" {
+		status = MemorySegmentExtractionStatusSucceeded
+	}
+	now := nowUTC()
+	result, err := d.db.ExecContext(ctx, `
+		UPDATE memory_segments
+		SET last_extracted_at = ?,
+		    last_extracted_until_at = NULLIF(?, ''),
+		    last_extracted_user_episode_id = NULLIF(?, ''),
+		    last_extracted_assistant_episode_id = NULLIF(?, ''),
+		    last_extraction_job_id = NULLIF(?, ''),
+		    last_extraction_error_code = NULL,
+		    last_extraction_error_message = NULL,
+		    extraction_status = ?,
+		    extraction_attempt_count = 0
+		WHERE id = ?
+	`, now, completed.ExtractedUntilAt, completed.ExtractedUserEpisodeID, completed.ExtractedAssistantEpisodeID, completed.JobID, status, segmentID)
 	if err != nil {
 		return err
 	}
@@ -251,6 +314,13 @@ func scanMemorySegment(row memorySegmentScanner) (*MemorySegment, error) {
 		&segment.LastUserEpisodeID,
 		&segment.LastAssistantEpisodeID,
 		&segment.LastExtractedAt,
+		&segment.LastExtractedUntilAt,
+		&segment.LastExtractedUserEpisodeID,
+		&segment.LastExtractedAssistantEpisodeID,
+		&segment.LastExtractionJobID,
+		&segment.LastExtractionErrorCode,
+		&segment.LastExtractionErrorMessage,
+		&segment.ExtractionAttemptCount,
 		&segment.ExtractionStatus,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

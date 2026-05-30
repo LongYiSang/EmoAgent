@@ -351,6 +351,65 @@ CREATE INDEX IF NOT EXISTS idx_approval_requests_kind_binding
     ON approval_requests(session_id, task_id, approval_kind, tool_name, normalized_input_hash, path_digest);
 `,
 	},
+	{
+		Version: 16,
+		SQL: `
+ALTER TABLE memory_segments ADD COLUMN last_extracted_until_at TEXT;
+ALTER TABLE memory_segments ADD COLUMN last_extracted_user_episode_id TEXT;
+ALTER TABLE memory_segments ADD COLUMN last_extracted_assistant_episode_id TEXT;
+ALTER TABLE memory_segments ADD COLUMN last_extraction_job_id TEXT;
+ALTER TABLE memory_segments ADD COLUMN last_extraction_error_code TEXT;
+ALTER TABLE memory_segments ADD COLUMN last_extraction_error_message TEXT;
+ALTER TABLE memory_segments ADD COLUMN extraction_attempt_count INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS memory_extraction_jobs (
+    id                         TEXT PRIMARY KEY,
+    persona_id                 TEXT NOT NULL,
+    chat_session_id             TEXT,
+    segment_id                  TEXT,
+    memory_session_id           TEXT,
+    trigger                     TEXT NOT NULL,
+    scope                       TEXT NOT NULL DEFAULT 'segment',
+    mode                        TEXT NOT NULL DEFAULT 'apply',
+    requested_by                TEXT NOT NULL DEFAULT 'system',
+    priority                    INTEGER NOT NULL DEFAULT 100,
+    force                       INTEGER NOT NULL DEFAULT 0,
+    episode_ids_json            TEXT NOT NULL DEFAULT '[]',
+    since_at                    TEXT,
+    until_at                    TEXT,
+    episode_limit               INTEGER NOT NULL DEFAULT 50,
+    status                      TEXT NOT NULL DEFAULT 'pending',
+    attempts                    INTEGER NOT NULL DEFAULT 0,
+    max_attempts                INTEGER NOT NULL DEFAULT 3,
+    run_after                   TEXT NOT NULL,
+    claimed_by                  TEXT,
+    claimed_until               TEXT,
+    request_json                TEXT,
+    result_json                 TEXT,
+    mirror_sync_result_json      TEXT,
+    error_code                  TEXT,
+    error_message               TEXT,
+    dedupe_key                  TEXT NOT NULL,
+    created_at                  TEXT NOT NULL,
+    updated_at                  TEXT NOT NULL,
+    started_at                  TEXT,
+    finished_at                 TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_extraction_jobs_claim
+    ON memory_extraction_jobs(status, run_after, priority, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_memory_extraction_jobs_segment
+    ON memory_extraction_jobs(segment_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_memory_extraction_jobs_chat_session
+    ON memory_extraction_jobs(chat_session_id, created_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_extraction_jobs_dedupe_pending
+    ON memory_extraction_jobs(dedupe_key)
+    WHERE status IN ('pending', 'running');
+`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.

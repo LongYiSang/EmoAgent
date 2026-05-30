@@ -161,7 +161,11 @@ func (b *Bridge) FinalizeSegment(ctx context.Context, segmentID string, reason s
 	if b.logger != nil {
 		b.logger.Info("memory segment finalized", "chat_session_id", segment.ChatSessionID, "segment_id", segment.ID, "memory_session_id", segment.MemorySessionID, "reason", reason)
 	}
-	b.extractFinalizedSegment(ctx, segment, personaID)
+	finalizedSegment, err := b.db.GetMemorySegment(ctx, segmentID)
+	if err != nil || finalizedSegment == nil {
+		finalizedSegment = segment
+	}
+	b.extractFinalizedSegment(ctx, finalizedSegment, personaID)
 	return nil
 }
 
@@ -274,30 +278,22 @@ func (b *Bridge) applyManualPinIntent(ctx context.Context, segment *storage.Memo
 		return fmt.Errorf("last user episode id is required for manual pin")
 	}
 	personaID := defaultPersonaID(segmentPersona(segment, b.db, ctx))
-	memorySessionID := segment.MemorySessionID
-	result, err := b.host.Service.RunExtraction(ctx, memorycore.RunExtractionRequest{
-		PersonaID: personaID,
-		SessionID: &memorySessionID,
-		Trigger:   memorycore.ExtractionTriggerManualPin,
-		Timezone:  b.host.extractionPolicy.timezoneOrDefault(),
-		Mode:      b.host.extractionPolicy.manualPinModeOrDefault(),
-		Build: &memorycore.ExtractionBuildSelector{
-			EpisodeIDs: []string{sourceEpisodeID},
-			SessionID:  &memorySessionID,
-			Limit:      1,
-		},
-		Policy: memorycore.ExtractionPolicyOverride{
-			ManualPin:      boolPtr(true),
-			AllowInference: boolPtr(true),
-		},
-		SemanticDedup: b.host.extractionPolicy.SemanticDedup,
+	job, enqueued, err := b.queueExtraction(ctx, segment, storage.EnqueueMemoryExtractionJobParams{
+		PersonaID:    personaID,
+		Trigger:      storage.MemoryExtractionTriggerManualPin,
+		Mode:         string(b.host.extractionPolicy.manualPinModeOrDefault()),
+		Priority:     10,
+		EpisodeIDs:   []string{sourceEpisodeID},
+		UntilAt:      segment.LastActivityAt,
+		EpisodeLimit: 1,
+		RequestedBy:  "user",
 	})
-	b.logExtractionResult("manual memory pin extraction", segment, result, err, memorycore.ExtractionTriggerManualPin)
 	if err != nil {
-		return sanitizedExtractionError(extractionErrorCode(result, err), "")
+		return sanitizedExtractionError("enqueue_failed", "")
 	}
-	if result == nil || result.AppliedCount == 0 {
-		return fmt.Errorf("manual pin not applied: status=%s accepted=%d review=%d rejected=%d", safeExtractionStatus(result), safeExtractionCount(result, "accepted"), safeExtractionCount(result, "review"), safeExtractionCount(result, "rejected"))
+	b.logExtractionQueued("manual memory pin extraction", segment, job, enqueued)
+	if job != nil {
+		b.queueManualMemoryNotice(segment.ChatSessionID, "好，我会记住的！")
 	}
 	return nil
 }
@@ -550,8 +546,55 @@ func (b *Bridge) extractFinalizedSegment(ctx context.Context, segment *storage.M
 	if b == nil || b.host == nil || !b.host.ExtractionEnabled() || !b.host.extractionTriggerOnFinalizeSegment() || segment == nil {
 		return
 	}
-	result, err := b.host.ExtractSessionEnd(ctx, personaID, segment.MemorySessionID)
-	b.logExtractionResult("memory extraction", segment, result, err, memorycore.ExtractionTriggerSessionEnd)
+	job, enqueued, err := b.queueExtraction(ctx, segment, storage.EnqueueMemoryExtractionJobParams{
+		PersonaID:    defaultPersonaID(personaID),
+		Trigger:      storage.MemoryExtractionTriggerSessionEnd,
+		Mode:         string(b.host.extractionPolicy.sessionEndModeOrDefault()),
+		Priority:     50,
+		UntilAt:      segment.LastActivityAt,
+		EpisodeLimit: b.host.extractionPolicy.limitOrDefault(),
+		RequestedBy:  "system",
+	})
+	if err != nil {
+		if b.logger != nil {
+			b.logger.Warn("memory extraction enqueue failed", "chat_session_id", segment.ChatSessionID, "segment_id", segment.ID, "error_code", "enqueue_failed")
+		}
+		return
+	}
+	b.logExtractionQueued("memory extraction", segment, job, enqueued)
+}
+
+func (b *Bridge) queueExtraction(ctx context.Context, segment *storage.MemorySegment, params storage.EnqueueMemoryExtractionJobParams) (*storage.MemoryExtractionJob, bool, error) {
+	if b == nil || b.host == nil || b.db == nil || segment == nil {
+		return nil, false, fmt.Errorf("memory bridge is not configured")
+	}
+	if !b.host.ExtractionEnabled() || !b.host.extractionPolicy.AsyncEnabled {
+		return nil, false, nil
+	}
+	params.PersonaID = defaultPersonaID(params.PersonaID)
+	params.ChatSessionID = segment.ChatSessionID
+	params.SegmentID = segment.ID
+	params.MemorySessionID = segment.MemorySessionID
+	if params.Scope == "" {
+		params.Scope = storage.MemoryExtractionScopeSegment
+	}
+	if params.Mode == "" {
+		params.Mode = string(b.host.extractionPolicy.sessionEndModeOrDefault())
+	}
+	if params.EpisodeLimit == 0 {
+		params.EpisodeLimit = b.host.extractionPolicy.limitOrDefault()
+	}
+	if params.MaxAttempts == 0 {
+		params.MaxAttempts = b.host.extractionPolicy.normalized().MaxAttempts
+	}
+	return b.db.EnqueueMemoryExtractionJob(ctx, params)
+}
+
+func (b *Bridge) logExtractionQueued(action string, segment *storage.MemorySegment, job *storage.MemoryExtractionJob, enqueued bool) {
+	if b == nil || b.logger == nil || segment == nil || job == nil {
+		return
+	}
+	b.logger.Info(action+" queued", "chat_session_id", segment.ChatSessionID, "segment_id", segment.ID, "memory_session_id", segment.MemorySessionID, "job_id", job.ID, "trigger", job.Trigger, "enqueued", enqueued)
 }
 
 func (b *Bridge) logExtractionResult(action string, segment *storage.MemorySegment, result *memorycore.ExtractionRunResult, err error, trigger string) {

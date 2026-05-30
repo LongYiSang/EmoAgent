@@ -313,6 +313,7 @@ func (a *App) Run(ctx context.Context) error {
 		MemoryRetrieval:    cfg.Memory.Retrieval,
 	})
 	a.approvalService = approvalService
+	startMemoryExtractionBackground(ctx, a.Memory, a.DB, a.Logger, cfg.Memory.Extraction)
 	chatHandler := chat.NewHandler(a.engine, a, a.Logger)
 
 	staticSub, err := fs.Sub(web.StaticFS, "static")
@@ -384,6 +385,9 @@ func registerRoutes(mux *http.ServeMux, api *web.APIHandler, chatHandler http.Ha
 	mux.HandleFunc("GET /api/sessions/{id}", api.HandleGetSession)
 	mux.HandleFunc("GET /api/sessions/{id}/approvals", api.HandleListSessionApprovals)
 	mux.HandleFunc("DELETE /api/sessions/{id}", api.HandleDeleteSession)
+	mux.HandleFunc("POST /api/memory/extractions", api.HandleQueueMemoryExtraction)
+	mux.HandleFunc("GET /api/memory/extractions", api.HandleListMemoryExtractions)
+	mux.HandleFunc("GET /api/memory/segments", api.HandleListMemorySegments)
 	mux.Handle("/ws", chatHandler)
 	mux.Handle("/", staticHandler)
 }
@@ -863,6 +867,212 @@ func (a *App) ListSessionApprovals(ctx context.Context, sessionID string) ([]pro
 		return []protocol.ApprovalRequest{}, nil
 	}
 	return a.approvalService.ListSessionApprovals(sessionID, nil), nil
+}
+
+func (a *App) QueueMemoryExtraction(ctx context.Context, req web.MemoryExtractionRequest) (web.MemoryExtractionQueueResponse, error) {
+	if a.DB == nil {
+		return web.MemoryExtractionQueueResponse{}, fmt.Errorf("database is not configured")
+	}
+	scope := strings.TrimSpace(req.Scope)
+	switch scope {
+	case "", "session", "segment", "eligible", "all":
+	default:
+		return web.MemoryExtractionQueueResponse{}, fmt.Errorf("scope must be session, segment, eligible, or all")
+	}
+	if scope == "session" && strings.TrimSpace(req.SessionID) == "" {
+		return web.MemoryExtractionQueueResponse{}, fmt.Errorf("session_id is required for session scope")
+	}
+	if scope == "segment" && strings.TrimSpace(req.SegmentID) == "" {
+		return web.MemoryExtractionQueueResponse{}, fmt.Errorf("segment_id is required for segment scope")
+	}
+	if a.Config != nil {
+		extraction := a.Config.Memory.Extraction
+		if !extraction.Enabled {
+			return web.MemoryExtractionQueueResponse{}, fmt.Errorf("memory extraction is disabled")
+		}
+		if !extraction.Async.Enabled {
+			return web.MemoryExtractionQueueResponse{}, fmt.Errorf("memory extraction async queue is disabled")
+		}
+		if !extraction.Async.WorkerEnabled {
+			return web.MemoryExtractionQueueResponse{}, fmt.Errorf("memory extraction worker is disabled")
+		}
+		manual := extraction.Manual
+		if !manual.Enabled {
+			return web.MemoryExtractionQueueResponse{}, fmt.Errorf("memory extraction manual trigger is disabled")
+		}
+		if req.Force && !manual.AllowForce {
+			return web.MemoryExtractionQueueResponse{}, fmt.Errorf("memory extraction force is disabled")
+		}
+		if strings.TrimSpace(req.SegmentID) != "" && !manual.AllowSegmentSelection {
+			return web.MemoryExtractionQueueResponse{}, fmt.Errorf("memory extraction segment selection is disabled")
+		}
+	}
+	mode := strings.TrimSpace(req.Mode)
+	if mode == "" && a.Config != nil {
+		mode = a.Config.Memory.Extraction.Manual.Mode
+	}
+	if mode == "" {
+		mode = "apply"
+	}
+	switch normalizeAppMemoryExtractionMode(mode) {
+	case "validate", "dry-run", "apply":
+	default:
+		return web.MemoryExtractionQueueResponse{}, fmt.Errorf("mode must be validate, dry_run, or apply")
+	}
+	mode = string(memoryExtractionMode(mode))
+
+	var segments []storage.MemorySegment
+	if strings.TrimSpace(req.SegmentID) != "" {
+		segment, err := a.DB.GetMemorySegment(ctx, req.SegmentID)
+		if err != nil {
+			return web.MemoryExtractionQueueResponse{}, err
+		}
+		if segment == nil {
+			return web.MemoryExtractionQueueResponse{}, fmt.Errorf("segment_id not found")
+		}
+		segments = []storage.MemorySegment{*segment}
+	} else if strings.TrimSpace(req.SessionID) != "" {
+		session, err := a.DB.GetSession(ctx, req.SessionID)
+		if err != nil {
+			return web.MemoryExtractionQueueResponse{}, err
+		}
+		if session == nil {
+			return web.MemoryExtractionQueueResponse{}, ErrSessionNotFound
+		}
+		list, err := a.DB.ListMemorySegments(ctx, storage.ListMemorySegmentsFilter{ChatSessionID: req.SessionID, Limit: 100})
+		if err != nil {
+			return web.MemoryExtractionQueueResponse{}, err
+		}
+		segments = list
+	} else {
+		idleAfter := 15 * time.Minute
+		limit := 20
+		minEpisodes := 1
+		includeActive := true
+		includeFinalized := true
+		if a.Config != nil {
+			idleAfter = time.Duration(a.Config.Memory.Extraction.Idle.IdleAfterSeconds) * time.Second
+			limit = a.Config.Memory.Extraction.Idle.MaxSegmentsPerSweep
+			minEpisodes = a.Config.Memory.Extraction.Idle.MinEpisodeCount
+			includeActive = a.Config.Memory.Extraction.Idle.IncludeActiveSegments
+			includeFinalized = a.Config.Memory.Extraction.Idle.IncludeFinalizedSegments
+		}
+		list, err := a.DB.ScanEligibleMemorySegments(ctx, storage.ScanEligibleMemorySegmentsParams{
+			Now:                      time.Now().UTC(),
+			IdleAfter:                idleAfter,
+			IncludeActiveSegments:    includeActive,
+			IncludeFinalizedSegments: includeFinalized,
+			MinEpisodeCount:          minEpisodes,
+			Limit:                    limit,
+		})
+		if err != nil {
+			return web.MemoryExtractionQueueResponse{}, err
+		}
+		segments = list
+	}
+
+	resp := web.MemoryExtractionQueueResponse{Status: "queued"}
+	for _, segment := range segments {
+		if !req.Force && !manualExtractionEligible(segment.ExtractionStatus) {
+			resp.SkippedCount++
+			continue
+		}
+		personaID := strings.TrimSpace(req.PersonaID)
+		if personaID == "" {
+			personaID = a.memorySegmentPersona(ctx, segment.ChatSessionID)
+		}
+		trigger := storage.MemoryExtractionTriggerManualScan
+		if strings.TrimSpace(req.SegmentID) != "" {
+			trigger = storage.MemoryExtractionTriggerManualSegmentScan
+		}
+		maxAttempts := 3
+		if a.Config != nil && a.Config.Memory.Extraction.Async.MaxAttempts > 0 {
+			maxAttempts = a.Config.Memory.Extraction.Async.MaxAttempts
+		}
+		job, enqueued, err := a.DB.EnqueueMemoryExtractionJob(ctx, storage.EnqueueMemoryExtractionJobParams{
+			PersonaID:       personaID,
+			ChatSessionID:   segment.ChatSessionID,
+			SegmentID:       segment.ID,
+			MemorySessionID: segment.MemorySessionID,
+			Trigger:         trigger,
+			Scope:           storage.MemoryExtractionScopeSegment,
+			Mode:            mode,
+			RequestedBy:     "user",
+			Priority:        20,
+			Force:           req.Force,
+			UntilAt:         segment.LastActivityAt,
+			EpisodeLimit:    extractionLimit(a.Config),
+			MaxAttempts:     maxAttempts,
+			RunAfter:        time.Now().UTC(),
+		})
+		if err != nil {
+			return resp, err
+		}
+		if enqueued {
+			resp.EnqueuedCount++
+		} else {
+			resp.SkippedCount++
+		}
+		if job != nil {
+			resp.Jobs = append(resp.Jobs, *job)
+		}
+	}
+	return resp, nil
+}
+
+func (a *App) ListMemoryExtractions(ctx context.Context, req web.MemoryExtractionListRequest) ([]storage.MemoryExtractionJob, error) {
+	if a.DB == nil {
+		return nil, fmt.Errorf("database is not configured")
+	}
+	return a.DB.ListMemoryExtractionJobs(ctx, storage.ListMemoryExtractionJobsFilter{
+		ChatSessionID: req.SessionID,
+		SegmentID:     req.SegmentID,
+		Status:        req.Status,
+		Limit:         req.Limit,
+	})
+}
+
+func (a *App) ListMemorySegments(ctx context.Context, sessionID string) ([]storage.MemorySegment, error) {
+	if a.DB == nil {
+		return nil, fmt.Errorf("database is not configured")
+	}
+	return a.DB.ListMemorySegments(ctx, storage.ListMemorySegmentsFilter{ChatSessionID: sessionID, Limit: 100})
+}
+
+func (a *App) memorySegmentPersona(ctx context.Context, chatSessionID string) string {
+	if a.DB == nil {
+		return "default"
+	}
+	link, err := a.DB.GetMemoryChatLink(ctx, chatSessionID)
+	if err != nil || link == nil || strings.TrimSpace(link.PersonaID) == "" {
+		return "default"
+	}
+	return link.PersonaID
+}
+
+func manualExtractionEligible(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "", storage.MemorySegmentExtractionStatusNever, storage.MemorySegmentExtractionStatusStale, storage.MemorySegmentExtractionStatusFailed, storage.MemorySegmentExtractionStatusSkipped:
+		return true
+	default:
+		return false
+	}
+}
+
+func extractionLimit(cfg *config.Config) int {
+	if cfg != nil && cfg.Memory.Extraction.Limit > 0 {
+		return cfg.Memory.Extraction.Limit
+	}
+	return 50
+}
+
+func normalizeAppMemoryExtractionMode(mode string) string {
+	switch strings.TrimSpace(mode) {
+	case "dry_run":
+		return "dry-run"
+	default:
+		return strings.TrimSpace(mode)
+	}
 }
 
 func (a *App) ListLLMProviders() ([]config.LLMProvider, error) {

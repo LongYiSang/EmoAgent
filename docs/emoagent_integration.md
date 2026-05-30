@@ -35,3 +35,24 @@ promptBlock := memoryhost.FormatMemoryContextForPrompt(memoryContext, excludedEp
 当前 `MemorySuppression` 不携带独立摘要；格式化器只会在同一 `MemoryContext.Blocks` 中能反查到对应摘要时输出“不要主动提及”条目，找不到摘要时会跳过该 suppression，避免泄露内部 ID。
 
 旧的 `FormatMemoryContext` 保留用于兼容历史调用；新的 prompt 注入路径应使用 `FormatMemoryContextForPrompt`。
+
+## 异步记忆抽取
+
+EmoAgent 的 chat session 是产品会话；`memory_segments` 是一个 chat session 内的记忆切片；每个 `memory_segments.memory_session_id` 对应一个底层 MemoryCore session。消息写入时只追加 MemoryCore episode 并更新 segment 的 `last_activity_at`，不会在聊天热路径里调用抽取 LLM。
+
+抽取现在由 EmoAgent 侧的 `memory_extraction_jobs` 队列驱动：
+
+- `Bridge.FinalizeSegment` 仍会 `EndSession` 并写入 `memory_segments.finalized_at`，但只入队 `trigger=session_end`，不再同步等待 `RunExtraction`。
+- 手动固定记忆和“扫描记忆”按钮/API 会入队高优先级 `manual_pin` 或 `manual_scan` job，并立即返回 job id。
+- idle scheduler 会按 `idle_after_seconds` 扫描 active/finalized segment；从未抽取、失败或新活动晚于 `last_extracted_until_at` 的 segment 会入队 `idle_detect`。
+- 后台 worker claim pending job 后才同步调用 MemoryCore `RunExtraction`，并把结果写回 `memory_extraction_jobs` 与 `memory_segments.last_extracted_at / last_extracted_until_at / extraction_status`。
+- `RunExtraction` 返回 `skipped_by_fingerprint` 时 job 记为 `skipped`；失败会记录脱敏错误并按指数退避重试，超过 `max_attempts` 后标记 `failed`。
+- apply 成功后默认调用 MemoryCore `RunMirrorSync`。mirror/sidecar 失败只写入 job 的 degraded mirror 结果，不影响 SQLite 权威抽取成功，除非显式配置 `mirror_sync.fail_extraction_on_sync_error=true`。
+
+可观察入口：
+
+- `POST /api/memory/extractions`：按 `session_id`、`segment_id` 或全局 scope 立即提交抽取 job；支持 `force` 和 `mode`。
+- `GET /api/memory/extractions`：查看 job 状态。
+- `GET /api/memory/segments?session_id=...`：查看当前 chat session 下的 segment 抽取状态。
+
+Web UI 的“扫描记忆”按钮使用 `POST /api/memory/extractions` 对当前 session 入队，并展示最近 segment/job 状态。触发抽取不再要求断开并重连 WebSocket；断线重连只负责恢复 chat session 和必要的 segment rollover。

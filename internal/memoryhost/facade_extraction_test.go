@@ -14,12 +14,8 @@ import (
 	"github.com/longyisang/emoagent/internal/storage"
 )
 
-func TestHostExtractSessionEndUsesServiceRunExtraction(t *testing.T) {
-	fake := &fakeMemoryService{
-		runExtractionResult: &memorycore.ExtractionRunResult{
-			Status: memorycore.ExtractionRunStatusApplied,
-		},
-	}
+func TestHostExtractSessionEndIsAsyncOnly(t *testing.T) {
+	fake := &fakeMemoryService{}
 	host := &Host{
 		Service: fake,
 		extractionPolicy: ExtractionHostPolicy{
@@ -38,30 +34,14 @@ func TestHostExtractSessionEndUsesServiceRunExtraction(t *testing.T) {
 
 	sessionID := "memory-session-1"
 	result, err := host.ExtractSessionEnd(context.Background(), "persona-1", sessionID)
-	if err != nil {
-		t.Fatalf("ExtractSessionEnd: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "async_extraction_required") {
+		t.Fatalf("ExtractSessionEnd error = %v, want async_extraction_required", err)
 	}
-	if result == nil || result.Status != memorycore.ExtractionRunStatusApplied {
-		t.Fatalf("result = %#v", result)
+	if result != nil {
+		t.Fatalf("result = %#v, want nil", result)
 	}
-	if len(fake.runExtractionCalls) != 1 {
-		t.Fatalf("RunExtraction calls = %d, want 1", len(fake.runExtractionCalls))
-	}
-	req := fake.runExtractionCalls[0]
-	if req.PersonaID != "persona-1" || req.SessionID == nil || *req.SessionID != sessionID {
-		t.Fatalf("RunExtraction persona/session = %#v", req)
-	}
-	if req.Trigger != memorycore.ExtractionTriggerSessionEnd {
-		t.Fatalf("trigger = %q, want %q", req.Trigger, memorycore.ExtractionTriggerSessionEnd)
-	}
-	if req.Mode != memorycore.ExtractionRunModeApply {
-		t.Fatalf("mode = %q, want apply", req.Mode)
-	}
-	if req.Build == nil || req.Build.SessionID == nil || *req.Build.SessionID != sessionID || req.Build.Limit != 7 {
-		t.Fatalf("build selector = %#v", req.Build)
-	}
-	if !req.SemanticDedup.Enabled || !req.SemanticDedup.Shadow || req.SemanticDedup.CandidateLimit != 5 {
-		t.Fatalf("semantic dedup = %#v", req.SemanticDedup)
+	if len(fake.runExtractionCalls) != 0 {
+		t.Fatalf("RunExtraction calls = %d, want 0", len(fake.runExtractionCalls))
 	}
 }
 
@@ -110,7 +90,7 @@ func TestHostConfigureExtractionPolicyPreservesMemoryCoreSemanticDedup(t *testin
 	}
 }
 
-func TestBridgeFinalizeSegmentTriggersRunExtractionAndDoesNotFailOnExtractionError(t *testing.T) {
+func TestBridgeFinalizeSegmentQueuesExtractionAndDoesNotRunSynchronously(t *testing.T) {
 	fixture := openFacadeBridgeFixture(t, "chat-finalize", &fakeMemoryService{
 		runExtractionResult: &memorycore.ExtractionRunResult{
 			Status:             memorycore.ExtractionRunStatusFailed,
@@ -125,15 +105,51 @@ func TestBridgeFinalizeSegmentTriggersRunExtractionAndDoesNotFailOnExtractionErr
 	if fixture.service.endSessionCalls != 1 {
 		t.Fatalf("EndSession calls = %d, want 1", fixture.service.endSessionCalls)
 	}
-	if len(fixture.service.runExtractionCalls) != 1 {
-		t.Fatalf("RunExtraction calls = %d, want 1", len(fixture.service.runExtractionCalls))
+	if len(fixture.service.runExtractionCalls) != 0 {
+		t.Fatalf("RunExtraction calls = %d, want 0", len(fixture.service.runExtractionCalls))
 	}
-	if fixture.service.runExtractionCalls[0].Trigger != memorycore.ExtractionTriggerSessionEnd {
-		t.Fatalf("trigger = %q", fixture.service.runExtractionCalls[0].Trigger)
+	jobs, err := fixture.db.ListMemoryExtractionJobs(fixture.ctx, storage.ListMemoryExtractionJobsFilter{SegmentID: fixture.segment.SegmentID, Limit: 10})
+	if err != nil {
+		t.Fatalf("ListMemoryExtractionJobs: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("jobs = %#v, want one queued job", jobs)
+	}
+	job := jobs[0]
+	if job.Trigger != storage.MemoryExtractionTriggerSessionEnd || job.Status != storage.MemoryExtractionJobStatusPending {
+		t.Fatalf("queued job = %#v, want pending session_end", job)
+	}
+	if job.Mode != string(memorycore.ExtractionRunModeApply) || job.MemorySessionID != fixture.segment.MemorySessionID {
+		t.Fatalf("queued job = %#v, want apply mode and memory session", job)
 	}
 }
 
-func TestManualPinUsesRunExtractionAndAppendDoesNotFailOnExtractionError(t *testing.T) {
+func TestBridgeFinalizeSegmentDoesNotBlockOnSlowExtraction(t *testing.T) {
+	blockExtraction := make(chan struct{})
+	fixture := openFacadeBridgeFixture(t, "chat-finalize-slow", &fakeMemoryService{
+		runExtractionBlock: blockExtraction,
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- fixture.bridge.FinalizeSegment(fixture.ctx, fixture.segment.SegmentID, "session_end", "summary")
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("FinalizeSegment: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		close(blockExtraction)
+		t.Fatal("FinalizeSegment blocked on RunExtraction")
+	}
+	if len(fixture.service.runExtractionCalls) != 0 {
+		t.Fatalf("RunExtraction calls = %d, want 0", len(fixture.service.runExtractionCalls))
+	}
+}
+
+func TestManualPinQueuesExtractionAndAppendDoesNotRunSynchronously(t *testing.T) {
 	fixture := openFacadeBridgeFixture(t, "chat-manual-pin", &fakeMemoryService{
 		runExtractionResult: &memorycore.ExtractionRunResult{
 			Status:             memorycore.ExtractionRunStatusFailed,
@@ -149,18 +165,25 @@ func TestManualPinUsesRunExtractionAndAppendDoesNotFailOnExtractionError(t *test
 	if episodeID == "" {
 		t.Fatal("AppendUserEpisode episode id is empty")
 	}
-	if len(fixture.service.runExtractionCalls) != 1 {
-		t.Fatalf("RunExtraction calls = %d, want 1", len(fixture.service.runExtractionCalls))
+	if len(fixture.service.runExtractionCalls) != 0 {
+		t.Fatalf("RunExtraction calls = %d, want 0", len(fixture.service.runExtractionCalls))
 	}
-	req := fixture.service.runExtractionCalls[0]
-	if req.Trigger != memorycore.ExtractionTriggerManualPin {
-		t.Fatalf("trigger = %q, want manual_pin", req.Trigger)
+	jobs, err := fixture.db.ListMemoryExtractionJobs(fixture.ctx, storage.ListMemoryExtractionJobsFilter{SegmentID: fixture.segment.SegmentID, Limit: 10})
+	if err != nil {
+		t.Fatalf("ListMemoryExtractionJobs: %v", err)
 	}
-	if req.Mode != memorycore.ExtractionRunModeApply {
-		t.Fatalf("mode = %q, want apply", req.Mode)
+	if len(jobs) != 1 {
+		t.Fatalf("jobs = %#v, want one queued job", jobs)
 	}
-	if req.Build == nil || len(req.Build.EpisodeIDs) != 1 || req.Build.EpisodeIDs[0] != episodeID {
-		t.Fatalf("episode ids = %#v, want %q", req.Build, episodeID)
+	job := jobs[0]
+	if job.Trigger != storage.MemoryExtractionTriggerManualPin || job.Priority != 10 {
+		t.Fatalf("queued job = %#v, want high-priority manual_pin", job)
+	}
+	if len(job.EpisodeIDs) != 1 || job.EpisodeIDs[0] != episodeID {
+		t.Fatalf("job episode ids = %#v, want %q", job.EpisodeIDs, episodeID)
+	}
+	if job.Mode != string(memorycore.ExtractionRunModeApply) {
+		t.Fatalf("job mode = %q, want apply", job.Mode)
 	}
 	if fixture.service.consolidateCalls != 0 {
 		t.Fatalf("ConsolidateCandidate calls = %d, want 0", fixture.service.consolidateCalls)
@@ -286,8 +309,8 @@ func TestExtractionWarningsDoNotLogRawProviderText(t *testing.T) {
 			t.Fatalf("log leaked %q: %s", forbidden, logs)
 		}
 	}
-	if !strings.Contains(logs, "error_code=provider_failed") {
-		t.Fatalf("log = %s, want sanitized error code", logs)
+	if !strings.Contains(logs, "manual memory pin extraction queued") {
+		t.Fatalf("log = %s, want queued extraction log", logs)
 	}
 }
 
@@ -295,7 +318,15 @@ type facadeBridgeFixture struct {
 	ctx     context.Context
 	service *fakeMemoryService
 	bridge  *Bridge
+	db      *storage.DB
 	segment storage.MemorySegmentRef
+}
+
+func (f facadeBridgeFixture) serviceHost() *Host {
+	if f.bridge == nil {
+		return nil
+	}
+	return f.bridge.host
 }
 
 func openFacadeBridgeFixture(t *testing.T, chatSessionID string, service *fakeMemoryService) facadeBridgeFixture {
@@ -320,6 +351,7 @@ func openFacadeBridgeFixtureWithLogger(t *testing.T, chatSessionID string, logge
 		DBPath:  filepath.Join(t.TempDir(), "memory.db"),
 		extractionPolicy: ExtractionHostPolicy{
 			Enabled:                  true,
+			AsyncEnabled:             true,
 			TriggerOnFinalizeSegment: true,
 			TriggerOnManualPin:       true,
 			SessionEndMode:           memorycore.ExtractionRunModeApply,
@@ -339,6 +371,7 @@ func openFacadeBridgeFixtureWithLogger(t *testing.T, chatSessionID string, logge
 		ctx:     ctx,
 		service: service,
 		bridge:  bridge,
+		db:      chatDB,
 		segment: segment,
 	}
 }
@@ -350,6 +383,7 @@ type fakeMemoryService struct {
 	appendEpisodeSeq    int
 	endSessionCalls     int
 	runExtractionCalls  []memorycore.RunExtractionRequest
+	runExtractionBlock  <-chan struct{}
 	runExtractionResult *memorycore.ExtractionRunResult
 	runExtractionErr    error
 	consolidateCalls    int
@@ -359,6 +393,9 @@ type fakeMemoryService struct {
 	executeForgetCalls  []memorycore.ForgetExecuteRequest
 	executeForgetResult *memorycore.ForgetExecuteResult
 	executeForgetErr    error
+	mirrorSyncCalls     int
+	mirrorSyncResult    *memorycore.RunMirrorSyncResult
+	mirrorSyncErr       error
 }
 
 func (f *fakeMemoryService) StartSession(context.Context, memorycore.StartSessionRequest) (*memorycore.Session, error) {
@@ -390,10 +427,21 @@ func (f *fakeMemoryService) ConsolidateCandidate(context.Context, memorycore.Con
 
 func (f *fakeMemoryService) RunExtraction(_ context.Context, req memorycore.RunExtractionRequest) (*memorycore.ExtractionRunResult, error) {
 	f.runExtractionCalls = append(f.runExtractionCalls, req)
+	if f.runExtractionBlock != nil {
+		<-f.runExtractionBlock
+	}
 	if f.runExtractionResult != nil || f.runExtractionErr != nil {
 		return f.runExtractionResult, f.runExtractionErr
 	}
 	return &memorycore.ExtractionRunResult{Status: memorycore.ExtractionRunStatusApplied, AppliedCount: 1}, nil
+}
+
+func (f *fakeMemoryService) RunMirrorSync(context.Context, memorycore.RunMirrorSyncRequest) (*memorycore.RunMirrorSyncResult, error) {
+	f.mirrorSyncCalls++
+	if f.mirrorSyncResult != nil || f.mirrorSyncErr != nil {
+		return f.mirrorSyncResult, f.mirrorSyncErr
+	}
+	return &memorycore.RunMirrorSyncResult{}, nil
 }
 
 func (f *fakeMemoryService) PreviewForget(_ context.Context, req memorycore.ForgetPreviewRequest) (*memorycore.ForgetPreviewResult, error) {

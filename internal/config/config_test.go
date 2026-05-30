@@ -67,6 +67,51 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Memory.Extraction.ManualPinMode != "apply" {
 		t.Errorf("default memory.extraction.manual_pin_mode = %q, want apply", cfg.Memory.Extraction.ManualPinMode)
 	}
+	if !cfg.Memory.Extraction.Async.Enabled {
+		t.Error("default memory.extraction.async.enabled = false, want true")
+	}
+	if !cfg.Memory.Extraction.Async.WorkerEnabled {
+		t.Error("default memory.extraction.async.worker_enabled = false, want true")
+	}
+	if cfg.Memory.Extraction.Async.WorkerConcurrency != 1 {
+		t.Errorf("default memory.extraction.async.worker_concurrency = %d, want 1", cfg.Memory.Extraction.Async.WorkerConcurrency)
+	}
+	if cfg.Memory.Extraction.Async.QueueClaimTTLSeconds != 300 {
+		t.Errorf("default memory.extraction.async.queue_claim_ttl_seconds = %d, want 300", cfg.Memory.Extraction.Async.QueueClaimTTLSeconds)
+	}
+	if cfg.Memory.Extraction.Async.MaxAttempts != 3 {
+		t.Errorf("default memory.extraction.async.max_attempts = %d, want 3", cfg.Memory.Extraction.Async.MaxAttempts)
+	}
+	if !cfg.Memory.Extraction.Idle.Enabled {
+		t.Error("default memory.extraction.idle.enabled = false, want true")
+	}
+	if cfg.Memory.Extraction.Idle.IdleAfterSeconds != 900 {
+		t.Errorf("default memory.extraction.idle.idle_after_seconds = %d, want 900", cfg.Memory.Extraction.Idle.IdleAfterSeconds)
+	}
+	if cfg.Memory.Extraction.Idle.SweepIntervalSeconds != 60 {
+		t.Errorf("default memory.extraction.idle.sweep_interval_seconds = %d, want 60", cfg.Memory.Extraction.Idle.SweepIntervalSeconds)
+	}
+	if cfg.Memory.Extraction.Idle.MinEpisodeCount != 2 {
+		t.Errorf("default memory.extraction.idle.min_episode_count = %d, want 2", cfg.Memory.Extraction.Idle.MinEpisodeCount)
+	}
+	if !cfg.Memory.Extraction.Manual.Enabled {
+		t.Error("default memory.extraction.manual.enabled = false, want true")
+	}
+	if cfg.Memory.Extraction.Manual.Mode != "apply" {
+		t.Errorf("default memory.extraction.manual.mode = %q, want apply", cfg.Memory.Extraction.Manual.Mode)
+	}
+	if !cfg.Memory.Extraction.MirrorSync.AfterApply {
+		t.Error("default memory.extraction.mirror_sync.after_apply = false, want true")
+	}
+	if !cfg.Memory.Extraction.MirrorSync.PeriodicEnabled {
+		t.Error("default memory.extraction.mirror_sync.periodic_enabled = false, want true")
+	}
+	if cfg.Memory.Extraction.MirrorSync.Limit != 100 {
+		t.Errorf("default memory.extraction.mirror_sync.limit = %d, want 100", cfg.Memory.Extraction.MirrorSync.Limit)
+	}
+	if cfg.Memory.Extraction.MirrorSync.FailExtractionOnSyncError {
+		t.Error("default memory.extraction.mirror_sync.fail_extraction_on_sync_error = true, want false")
+	}
 	if cfg.Memory.Extraction.AllowSensitiveExtraction {
 		t.Error("default memory.extraction.allow_sensitive_extraction = true, want false")
 	}

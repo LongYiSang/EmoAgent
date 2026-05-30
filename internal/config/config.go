@@ -73,11 +73,50 @@ type MemoryExtractionConfig struct {
 	AllowSensitiveExtraction bool                           `yaml:"allow_sensitive_extraction" json:"allow_sensitive_extraction"`
 	MaxFacts                 int                            `yaml:"max_facts" json:"max_facts"`
 	MaxLinks                 int                            `yaml:"max_links" json:"max_links"`
+	Async                    MemoryExtractionAsyncConfig    `yaml:"async" json:"async"`
+	Idle                     MemoryExtractionIdleConfig     `yaml:"idle" json:"idle"`
+	Manual                   MemoryExtractionManualConfig   `yaml:"manual" json:"manual"`
+	MirrorSync               MemoryExtractionMirrorConfig   `yaml:"mirror_sync" json:"mirror_sync"`
 	RawLog                   MemoryExtractionRawLogConfig   `yaml:"raw_log" json:"raw_log"`
 	Provider                 MemoryExtractionProviderConfig `yaml:"provider" json:"provider"`
 	SemanticDedup            MemorySemanticDedupConfig      `yaml:"semantic_dedup" json:"semantic_dedup"`
 	RepairEnabled            bool                           `yaml:"repair_enabled" json:"repair_enabled"`
 	AuditEnabled             bool                           `yaml:"audit_enabled" json:"audit_enabled"`
+}
+
+type MemoryExtractionAsyncConfig struct {
+	Enabled               bool `yaml:"enabled" json:"enabled"`
+	WorkerEnabled         bool `yaml:"worker_enabled" json:"worker_enabled"`
+	WorkerConcurrency     int  `yaml:"worker_concurrency" json:"worker_concurrency"`
+	QueueClaimTTLSeconds  int  `yaml:"queue_claim_ttl_seconds" json:"queue_claim_ttl_seconds"`
+	MaxAttempts           int  `yaml:"max_attempts" json:"max_attempts"`
+	RetryBaseDelaySeconds int  `yaml:"retry_base_delay_seconds" json:"retry_base_delay_seconds"`
+	RetryMaxDelaySeconds  int  `yaml:"retry_max_delay_seconds" json:"retry_max_delay_seconds"`
+}
+
+type MemoryExtractionIdleConfig struct {
+	Enabled                  bool `yaml:"enabled" json:"enabled"`
+	IdleAfterSeconds         int  `yaml:"idle_after_seconds" json:"idle_after_seconds"`
+	SweepIntervalSeconds     int  `yaml:"sweep_interval_seconds" json:"sweep_interval_seconds"`
+	MinEpisodeCount          int  `yaml:"min_episode_count" json:"min_episode_count"`
+	MaxSegmentsPerSweep      int  `yaml:"max_segments_per_sweep" json:"max_segments_per_sweep"`
+	IncludeFinalizedSegments bool `yaml:"include_finalized_segments" json:"include_finalized_segments"`
+	IncludeActiveSegments    bool `yaml:"include_active_segments" json:"include_active_segments"`
+}
+
+type MemoryExtractionManualConfig struct {
+	Enabled               bool   `yaml:"enabled" json:"enabled"`
+	Mode                  string `yaml:"mode" json:"mode"`
+	AllowForce            bool   `yaml:"allow_force" json:"allow_force"`
+	AllowSegmentSelection bool   `yaml:"allow_segment_selection" json:"allow_segment_selection"`
+}
+
+type MemoryExtractionMirrorConfig struct {
+	AfterApply                bool `yaml:"after_apply" json:"after_apply"`
+	PeriodicEnabled           bool `yaml:"periodic_enabled" json:"periodic_enabled"`
+	IntervalSeconds           int  `yaml:"interval_seconds" json:"interval_seconds"`
+	Limit                     int  `yaml:"limit" json:"limit"`
+	FailExtractionOnSyncError bool `yaml:"fail_extraction_on_sync_error" json:"fail_extraction_on_sync_error"`
 }
 
 type MemorySemanticDedupConfig struct {
@@ -366,6 +405,36 @@ func DefaultConfig() *Config {
 				AllowSensitiveExtraction: false,
 				MaxFacts:                 12,
 				MaxLinks:                 20,
+				Async: MemoryExtractionAsyncConfig{
+					Enabled:               true,
+					WorkerEnabled:         true,
+					WorkerConcurrency:     1,
+					QueueClaimTTLSeconds:  300,
+					MaxAttempts:           3,
+					RetryBaseDelaySeconds: 30,
+					RetryMaxDelaySeconds:  900,
+				},
+				Idle: MemoryExtractionIdleConfig{
+					Enabled:                  true,
+					IdleAfterSeconds:         900,
+					SweepIntervalSeconds:     60,
+					MinEpisodeCount:          2,
+					MaxSegmentsPerSweep:      20,
+					IncludeFinalizedSegments: true,
+					IncludeActiveSegments:    true,
+				},
+				Manual: MemoryExtractionManualConfig{
+					Enabled:               true,
+					Mode:                  "apply",
+					AllowForce:            true,
+					AllowSegmentSelection: true,
+				},
+				MirrorSync: MemoryExtractionMirrorConfig{
+					AfterApply:      true,
+					PeriodicEnabled: true,
+					IntervalSeconds: 60,
+					Limit:           100,
+				},
 				Provider: MemoryExtractionProviderConfig{
 					Kind:           "openai-compatible",
 					ID:             "memory_extractor",
@@ -576,6 +645,42 @@ func (c *MemoryExtractionConfig) applyDefaults() {
 	if c.Provider.MaxTokens == 0 {
 		c.Provider.MaxTokens = 4096
 	}
+	if c.Async.WorkerConcurrency == 0 {
+		c.Async.WorkerConcurrency = 1
+	}
+	if c.Async.QueueClaimTTLSeconds == 0 {
+		c.Async.QueueClaimTTLSeconds = 300
+	}
+	if c.Async.MaxAttempts == 0 {
+		c.Async.MaxAttempts = 3
+	}
+	if c.Async.RetryBaseDelaySeconds == 0 {
+		c.Async.RetryBaseDelaySeconds = 30
+	}
+	if c.Async.RetryMaxDelaySeconds == 0 {
+		c.Async.RetryMaxDelaySeconds = 900
+	}
+	if c.Idle.IdleAfterSeconds == 0 {
+		c.Idle.IdleAfterSeconds = 900
+	}
+	if c.Idle.SweepIntervalSeconds == 0 {
+		c.Idle.SweepIntervalSeconds = 60
+	}
+	if c.Idle.MinEpisodeCount == 0 {
+		c.Idle.MinEpisodeCount = 2
+	}
+	if c.Idle.MaxSegmentsPerSweep == 0 {
+		c.Idle.MaxSegmentsPerSweep = 20
+	}
+	if c.Manual.Mode == "" {
+		c.Manual.Mode = "apply"
+	}
+	if c.MirrorSync.IntervalSeconds == 0 {
+		c.MirrorSync.IntervalSeconds = 60
+	}
+	if c.MirrorSync.Limit == 0 {
+		c.MirrorSync.Limit = 100
+	}
 }
 
 func (c MemoryExtractionConfig) Validate() error {
@@ -606,6 +711,55 @@ func (c MemoryExtractionConfig) Validate() error {
 	}
 	if strings.TrimSpace(c.Timezone) == "" {
 		return fmt.Errorf("timezone is required")
+	}
+	if c.Async.Enabled {
+		if c.Async.WorkerConcurrency <= 0 {
+			return fmt.Errorf("async.worker_concurrency must be > 0")
+		}
+		if c.Async.QueueClaimTTLSeconds <= 0 {
+			return fmt.Errorf("async.queue_claim_ttl_seconds must be > 0")
+		}
+		if c.Async.MaxAttempts <= 0 {
+			return fmt.Errorf("async.max_attempts must be > 0")
+		}
+		if c.Async.RetryBaseDelaySeconds <= 0 {
+			return fmt.Errorf("async.retry_base_delay_seconds must be > 0")
+		}
+		if c.Async.RetryMaxDelaySeconds < c.Async.RetryBaseDelaySeconds {
+			return fmt.Errorf("async.retry_max_delay_seconds must be >= retry_base_delay_seconds")
+		}
+	}
+	if c.Idle.Enabled {
+		if c.Idle.IdleAfterSeconds <= 0 {
+			return fmt.Errorf("idle.idle_after_seconds must be > 0")
+		}
+		if c.Idle.SweepIntervalSeconds <= 0 {
+			return fmt.Errorf("idle.sweep_interval_seconds must be > 0")
+		}
+		if c.Idle.MinEpisodeCount <= 0 {
+			return fmt.Errorf("idle.min_episode_count must be > 0")
+		}
+		if c.Idle.MaxSegmentsPerSweep <= 0 {
+			return fmt.Errorf("idle.max_segments_per_sweep must be > 0")
+		}
+		if !c.Idle.IncludeActiveSegments && !c.Idle.IncludeFinalizedSegments {
+			return fmt.Errorf("idle must include active or finalized segments")
+		}
+	}
+	if c.Manual.Enabled {
+		switch normalizeMemoryExtractionMode(c.Manual.Mode) {
+		case "validate", "dry-run", "apply":
+		default:
+			return fmt.Errorf("manual.mode must be validate, dry_run, or apply")
+		}
+	}
+	if c.MirrorSync.AfterApply || c.MirrorSync.PeriodicEnabled {
+		if c.MirrorSync.IntervalSeconds <= 0 {
+			return fmt.Errorf("mirror_sync.interval_seconds must be > 0")
+		}
+		if c.MirrorSync.Limit <= 0 {
+			return fmt.Errorf("mirror_sync.limit must be > 0")
+		}
 	}
 	return nil
 }
