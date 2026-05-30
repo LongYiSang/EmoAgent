@@ -50,6 +50,20 @@ func PermissionSatisfied(granted, required Permission) bool {
 // as requiring approved-destructive permission.
 type DestructiveClassifier func(input json.RawMessage) (bool, string)
 
+type ApprovalKind string
+
+const (
+	ApprovalKindDestructiveWrite ApprovalKind = "destructive_write"
+	ApprovalKindSensitiveRead    ApprovalKind = "sensitive_read"
+)
+
+type ApprovalRequirement struct {
+	Kind   ApprovalKind
+	Reason string
+}
+
+type ApprovalClassifier func(ctx context.Context, input json.RawMessage) (ApprovalRequirement, bool)
+
 // Spec defines a tool available to the LLM.
 type Spec struct {
 	Name                  string                `json:"name"`
@@ -58,6 +72,7 @@ type Spec struct {
 	Scope                 Scope                 `json:"scope"`
 	Permission            Permission            `json:"permission"`
 	DestructiveClassifier DestructiveClassifier `json:"-"`
+	ApprovalClassifier    ApprovalClassifier    `json:"-"`
 }
 
 // ToToolDef converts a Spec to an llm.ToolDef for inclusion in ChatRequest.

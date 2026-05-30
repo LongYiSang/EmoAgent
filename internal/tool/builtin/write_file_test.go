@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/longyisang/emoagent/internal/tool"
 )
 
 func TestWriteFile_HappyPath(t *testing.T) {
@@ -89,6 +91,35 @@ func TestWriteFile_PathEscape(t *testing.T) {
 		if _, err := handler(context.Background(), input); err == nil {
 			t.Fatalf("expected error for path %q", bad)
 		}
+	}
+}
+
+func TestWriteFile_ReadScopeAllStillRejectsExternalPath(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	_, handler := NewWriteFileTool(root)
+	input, _ := json.Marshal(map[string]any{"path": outside, "content": "x"})
+
+	if _, err := handler(tool.WithReadScope(context.Background(), tool.ReadScopeAll), input); err == nil {
+		t.Fatal("write_file should reject external paths even when read_scope=all")
+	}
+}
+
+func TestWriteFile_RejectsWorkspaceSymlinkToExternalDirectory(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(root, "linked")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	_, handler := NewWriteFileTool(root)
+	input, _ := json.Marshal(map[string]any{"path": filepath.Join("linked", "outside.txt"), "content": "x"})
+
+	if _, err := handler(context.Background(), input); err == nil {
+		t.Fatal("write_file should reject writes through a workspace symlink to an external directory")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "outside.txt")); err == nil {
+		t.Fatal("external file should not be written")
 	}
 }
 

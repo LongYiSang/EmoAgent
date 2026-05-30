@@ -27,6 +27,12 @@ Permission guidance:
 - use approved-destructive when the goal includes delete/remove/move/rename/overwrite or equivalent irreversible file operations
 - approved-destructive may only be used after explicit user approval
 
+Read scope guidance:
+- read_scope defaults to workspace.
+- use read_scope=all only when the user explicitly asks to inspect local files outside the workspace, or the task cannot be completed without external local files.
+- read_scope=all affects read_file/list_dir only; write_file/edit_file still cannot modify files outside the workspace.
+- sensitive paths still require explicit approval.
+
 The result is one of:
 1. A TaskReport JSON (task completed normally)
 2. A {"status":"needs_emotion_decision","task_id":"...","decision_packet":{...}} JSON (task paused, needs your decision)
@@ -40,7 +46,8 @@ var delegateToolSchema = json.RawMessage(`{
 		"background":{"type":"string"},
 		"constraints":{"type":"array","items":{"type":"string"}},
 		"acceptance_criteria":{"type":"array","items":{"type":"string"},"minItems":1},
-		"permission_scope":{"type":"string","enum":["read-only","workspace-write","approved-destructive"]}
+		"permission_scope":{"type":"string","enum":["read-only","workspace-write","approved-destructive"]},
+		"read_scope":{"type":"string","enum":["workspace","all"]}
 	},
 	"required":["goal","acceptance_criteria","permission_scope"],
 	"additionalProperties":false

@@ -45,6 +45,10 @@ func BuildWorkSystem(brief protocol.TaskBrief, env runtimeenv.Facts) string {
 	}
 
 	shellAvailableToTask := env.BashEnabled && (brief.PermissionScope == "workspace-write" || brief.PermissionScope == "approved-destructive")
+	readScope := strings.TrimSpace(brief.ReadScope)
+	if readScope == "" {
+		readScope = "workspace"
+	}
 
 	b.WriteString("## Execution Environment\n")
 	if env.OS != "" {
@@ -55,6 +59,11 @@ func BuildWorkSystem(brief protocol.TaskBrief, env runtimeenv.Facts) string {
 	}
 	if env.PathStyle != "" {
 		fmt.Fprintf(&b, "- Path style: %s\n", env.PathStyle)
+	}
+	if readScope == "all" {
+		b.WriteString("- Read scope: all local files\n")
+	} else {
+		b.WriteString("- Read scope: workspace\n")
 	}
 	if shellAvailableToTask && env.ShellDisplay != "" {
 		fmt.Fprintf(&b, "- Shell commands: available via %s\n", env.ShellDisplay)
@@ -79,7 +88,16 @@ func BuildWorkSystem(brief protocol.TaskBrief, env runtimeenv.Facts) string {
 
 	b.WriteString("## Tool Selection Policy\n")
 	b.WriteString("- Prefer dedicated file tools for file and directory operations: list_dir before broad reads, read_file for UTF-8 text, edit_file for targeted replacements, write_file for intentional full-file writes.\n")
-	b.WriteString("- File tool paths must be workspace-relative; use \".\" for the workspace root and never pass the absolute Workspace root to file tools.\n")
+	if readScope == "all" {
+		b.WriteString("- read_file/list_dir may use absolute local paths or paths relative to the workspace.\n")
+		b.WriteString("- Use the narrowest possible path.\n")
+		b.WriteString("- Do not inspect credential, secret, browser profile, keychain, SSH, cloud credential, or system-sensitive directories unless the task explicitly requires it.\n")
+		b.WriteString("- Sensitive local reads will pause for explicit approval.\n")
+		b.WriteString("- write_file/edit_file remain workspace-only.\n")
+	} else {
+		b.WriteString("- read_file/list_dir paths must be workspace-relative.\n")
+		b.WriteString("- absolute paths and paths escaping the workspace are not allowed.\n")
+	}
 	b.WriteString("- When creating or overwriting a file in a missing directory, prefer write_file with create_dirs=true instead of shell mkdir.\n")
 	b.WriteString("- Use shell only for tests, builds, command-based verification, or operations not covered by dedicated tools.\n")
 	b.WriteString("- Use web_search to discover sources and web_fetch to read a specific source URL.\n")
@@ -140,7 +158,7 @@ func BuildWorkSystem(brief protocol.TaskBrief, env runtimeenv.Facts) string {
 	b.WriteString("- human_confirmation also requires recommendation_reason and reject_option_id.\n")
 	b.WriteString("- Never use human_confirmation to ask for tool permission escalation.\n")
 	b.WriteString("- If a workspace-write task hits a destructive tool call, runtime will pause with permission_escalation_required and Emotion must ask the user instead of deciding itself.\n")
-	b.WriteString("- Only approved-destructive tasks may enter tool_approval.\n")
+	b.WriteString("- Runtime may enter tool_approval for approved-destructive operations or sensitive reads.\n")
 	b.WriteString("- Never emit tool_approval; runtime sets that automatically.\n")
 	b.WriteString("- Choose the most specific category. If unsure between categories, prefer the more cautious one.\n\n")
 

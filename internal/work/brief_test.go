@@ -20,8 +20,42 @@ func TestValidateAndComplete_HappyPath(t *testing.T) {
 	if b.TaskID == "" {
 		t.Fatal("TaskID should be auto-filled")
 	}
+	if b.ReadScope != "workspace" {
+		t.Fatalf("ReadScope = %q, want workspace", b.ReadScope)
+	}
 	if b.CreatedAt.IsZero() {
 		t.Fatal("CreatedAt should be auto-filled")
+	}
+}
+
+func TestValidateAndComplete_ReadScopeAccepted(t *testing.T) {
+	for _, scope := range []string{"workspace", "all"} {
+		t.Run(scope, func(t *testing.T) {
+			b := &protocol.TaskBrief{
+				Goal:               "inspect local evidence",
+				AcceptanceCriteria: []string{"Evidence is reported"},
+				PermissionScope:    "read-only",
+				ReadScope:          scope,
+			}
+			if err := ValidateAndComplete(b); err != nil {
+				t.Fatalf("ValidateAndComplete should accept read_scope %q, got: %v", scope, err)
+			}
+			if b.ReadScope != scope {
+				t.Fatalf("ReadScope = %q, want %q", b.ReadScope, scope)
+			}
+		})
+	}
+}
+
+func TestValidateAndComplete_UnsupportedReadScopeRejected(t *testing.T) {
+	b := &protocol.TaskBrief{
+		Goal:               "inspect local evidence",
+		AcceptanceCriteria: []string{"Evidence is reported"},
+		PermissionScope:    "read-only",
+		ReadScope:          "home",
+	}
+	if err := ValidateAndComplete(b); err == nil {
+		t.Fatal("ValidateAndComplete should reject unsupported read_scope")
 	}
 }
 

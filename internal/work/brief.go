@@ -52,6 +52,15 @@ func ValidateAndComplete(brief *protocol.TaskBrief) error {
 	default:
 		return fmt.Errorf("unsupported permission scope %q (accepted: read-only, workspace-write, approved-destructive)", brief.PermissionScope)
 	}
+	if strings.TrimSpace(brief.ReadScope) == "" {
+		brief.ReadScope = "workspace"
+	}
+	switch brief.ReadScope {
+	case "workspace", "all":
+		// accepted
+	default:
+		return fmt.Errorf("unsupported read_scope %q (accepted: workspace, all)", brief.ReadScope)
+	}
 	if goalLikelyNeedsApprovedDestructive(brief.Goal) && brief.PermissionScope != "approved-destructive" {
 		return fmt.Errorf("task brief goal requires approved-destructive permission scope")
 	}

@@ -27,7 +27,7 @@ type dirEntry struct {
 func NewListDirTool(projectRoot string) (tool.Spec, tool.Handler) {
 	spec := tool.Spec{
 		Name:        "list_dir",
-		Description: "List files and directories under a workspace-relative path. Absolute paths and path traversal are rejected. Use max_entries to keep results focused; output includes truncated when the listing hit the limit. Returns name, type, size, and modification time for each entry.",
+		Description: "List files and directories. With read_scope=workspace, use a workspace-relative path; with read_scope=all, absolute or workspace-relative paths are allowed. Use max_entries to keep results focused; output includes truncated when the listing hit the limit. Returns path, path_scope, name, type, size, and modification time.",
 		Parameters: json.RawMessage(`{
 			"type":"object",
 			"properties":{
@@ -38,11 +38,12 @@ func NewListDirTool(projectRoot string) (tool.Spec, tool.Handler) {
 			"required":[],
 			"additionalProperties":false
 		}`),
-		Scope:      tool.ScopeWork,
-		Permission: tool.PermReadOnly,
+		Scope:              tool.ScopeWork,
+		Permission:         tool.PermReadOnly,
+		ApprovalClassifier: classifySensitiveRead(projectRoot, "list_dir"),
 	}
 
-	handler := func(_ context.Context, input json.RawMessage) (json.RawMessage, error) {
+	handler := func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 		var in struct {
 			Path       string `json:"path"`
 			Recursive  bool   `json:"recursive"`
@@ -56,12 +57,12 @@ func NewListDirTool(projectRoot string) (tool.Spec, tool.Handler) {
 		if rel == "" {
 			rel = "."
 		}
-		fullPath, err := safeJoin(projectRoot, rel)
+		resolved, err := resolveReadPath(ctx, projectRoot, rel)
 		if err != nil {
 			return nil, fmt.Errorf("list_dir: %w", err)
 		}
 
-		info, err := os.Lstat(fullPath)
+		info, err := os.Lstat(resolved.FullPath)
 		if err != nil {
 			return nil, fmt.Errorf("list_dir: stat failed: %w", err)
 		}
@@ -109,17 +110,17 @@ func NewListDirTool(projectRoot string) (tool.Spec, tool.Handler) {
 		}
 
 		if in.Recursive {
-			_ = filepath.WalkDir(fullPath, func(path string, d os.DirEntry, walkErr error) error {
+			_ = filepath.WalkDir(resolved.FullPath, func(path string, d os.DirEntry, walkErr error) error {
 				if walkErr != nil {
 					return nil
 				}
-				if path == fullPath {
+				if path == resolved.FullPath {
 					return nil // skip root itself
 				}
 				return collect(path, d)
 			})
 		} else {
-			raw, readErr := os.ReadDir(fullPath)
+			raw, readErr := os.ReadDir(resolved.FullPath)
 			if readErr != nil {
 				return nil, fmt.Errorf("list_dir: read failed: %w", readErr)
 			}
@@ -130,15 +131,11 @@ func NewListDirTool(projectRoot string) (tool.Spec, tool.Handler) {
 			}
 		}
 
-		displayPath := filepath.ToSlash(rel)
-		if rel == "." {
-			displayPath = "."
-		}
-
 		return json.Marshal(map[string]any{
-			"path":      displayPath,
-			"entries":   entries,
-			"truncated": truncated,
+			"path":       resolved.DisplayPath,
+			"path_scope": pathScopeForResolved(resolved),
+			"entries":    entries,
+			"truncated":  truncated,
 		})
 	}
 

@@ -605,7 +605,7 @@ func TestResumeTool_ApprovedRequestSuppliesApprovalBindingAndExecutesPendingTool
 		Input: json.RawMessage(`{"command":"rm -rf tmp"}`),
 	}
 	paused.PendingToolCall = &call
-	paused.Packet = buildToolApprovalPacket(paused.Brief, call)
+	paused.Packet = buildToolApprovalPacket(paused.Brief, approvalClassificationForCall(call, tool.ApprovalKindDestructiveWrite, "test destructive command"))
 	if err := pending.Put("session-1", paused.TaskID, paused); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -636,6 +636,161 @@ func TestResumeTool_ApprovedRequestSuppliesApprovalBindingAndExecutesPendingTool
 	}
 }
 
+func TestResumeTool_SensitiveReadApprovalDoesNotEscalatePermissionScope(t *testing.T) {
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			toolUseResp("finish-1", "finish_task", finishTaskPayloadJSON("completed", "done", nil, nil)),
+		},
+	}
+	var executed bool
+	registry := tool.NewRegistry()
+	registry.Register(tool.Spec{
+		Name:        "read_file",
+		Description: "read sensitive file",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`),
+		Scope:       tool.ScopeWork,
+		Permission:  tool.PermReadOnly,
+		ApprovalClassifier: func(context.Context, json.RawMessage) (tool.ApprovalRequirement, bool) {
+			return tool.ApprovalRequirement{Kind: tool.ApprovalKindSensitiveRead, Reason: "sensitive_path"}, true
+		},
+	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		executed = true
+		return json.RawMessage(`{"content":"secret"}`), nil
+	})
+	registry.Register(NewFinishTaskTool(), FinishTaskPlaceholderHandler)
+	registry.Register(NewRequestDecisionTool(), RequestDecisionPlaceholderHandler)
+	runtime := NewRuntime(RuntimeConfig{
+		LLM:                      client,
+		Provider:                 "openai",
+		Model:                    "test-model",
+		MaxTokens:                2048,
+		MaxToolRounds:            4,
+		MaxInputTokens:           100000,
+		Registry:                 registry,
+		Dispatcher:               tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, testLogger()),
+		Logger:                   testLogger(),
+		PendingSnapshotMaxTokens: 4000,
+	})
+	pending := newSQLitePendingRegistry(t)
+	paused := makePausedForResume(t, "task-sensitive-read-approval")
+	paused.Brief.ReadScope = "all"
+	call := tool.Call{
+		ID:    "read-1",
+		Name:  "read_file",
+		Input: json.RawMessage(`{"path":".env"}`),
+	}
+	paused.PendingToolCall = &call
+	paused.Packet = buildToolApprovalPacket(paused.Brief, approvalClassificationForCall(call, tool.ApprovalKindSensitiveRead, "sensitive_path"))
+	if err := pending.Put("session-1", paused.TaskID, paused); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	list := pending.ListInjectable("session-1")
+	requestID := list[0].Approval.RequestID
+	if _, err := pending.approvals.ApproveRequest("session-1", requestID, "allow", "web", ""); err != nil {
+		t.Fatalf("ApproveRequest: %v", err)
+	}
+
+	_, handler := NewResumeTool(runtime, pending, t.TempDir(), testLogger())
+	raw, err := handler(WithSessionID(context.Background(), "session-1"), json.RawMessage(`{"task_id":"task-sensitive-read-approval","approval_request_id":"`+requestID+`"}`))
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	var report protocol.TaskReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatalf("unmarshal report: %v", err)
+	}
+	if report.Status != "completed" {
+		t.Fatalf("status = %q, want completed", report.Status)
+	}
+	if !executed {
+		t.Fatal("approved sensitive read should execute the pending tool call")
+	}
+	if len(client.calls) != 1 {
+		t.Fatalf("runtime llm calls = %d, want 1", len(client.calls))
+	}
+	if strings.Contains(client.calls[0].System, "Destructive or irreversible actions are allowed") {
+		t.Fatalf("sensitive_read approval must not escalate prompt permission: %s", client.calls[0].System)
+	}
+	if !strings.Contains(client.calls[0].System, "You are limited to read-only operations.") {
+		t.Fatalf("resumed prompt should remain read-only: %s", client.calls[0].System)
+	}
+}
+
+func TestResumeTool_ApprovalContextDoesNotReplayAfterPendingToolExecutes(t *testing.T) {
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			toolUseResp("read-2", "read_file", `{"path":".env"}`),
+			toolUseResp("finish-1", "finish_task", finishTaskPayloadJSON("completed", "blocked", nil, nil)),
+		},
+	}
+	var executed int
+	registry := tool.NewRegistry()
+	registry.Register(tool.Spec{
+		Name:        "read_file",
+		Description: "read sensitive file",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`),
+		Scope:       tool.ScopeWork,
+		Permission:  tool.PermReadOnly,
+		ApprovalClassifier: func(context.Context, json.RawMessage) (tool.ApprovalRequirement, bool) {
+			return tool.ApprovalRequirement{Kind: tool.ApprovalKindSensitiveRead, Reason: "sensitive_path"}, true
+		},
+	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		executed++
+		return json.RawMessage(`{"content":"secret"}`), nil
+	})
+	registry.Register(NewFinishTaskTool(), FinishTaskPlaceholderHandler)
+	registry.Register(NewRequestDecisionTool(), RequestDecisionPlaceholderHandler)
+	runtime := NewRuntime(RuntimeConfig{
+		LLM:                      client,
+		Provider:                 "openai",
+		Model:                    "test-model",
+		MaxTokens:                2048,
+		MaxToolRounds:            4,
+		MaxInputTokens:           100000,
+		Registry:                 registry,
+		Dispatcher:               tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, testLogger()),
+		Logger:                   testLogger(),
+		PendingSnapshotMaxTokens: 4000,
+	})
+	pending := newSQLitePendingRegistry(t)
+	paused := makePausedForResume(t, "task-sensitive-read-replay")
+	paused.Brief.ReadScope = "all"
+	call := tool.Call{
+		ID:    "read-1",
+		Name:  "read_file",
+		Input: json.RawMessage(`{"path":".env"}`),
+	}
+	paused.PendingToolCall = &call
+	paused.Packet = buildToolApprovalPacket(paused.Brief, approvalClassificationForCall(call, tool.ApprovalKindSensitiveRead, "sensitive_path"))
+	if err := pending.Put("session-1", paused.TaskID, paused); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	list := pending.ListInjectable("session-1")
+	requestID := list[0].Approval.RequestID
+	if _, err := pending.approvals.ApproveRequest("session-1", requestID, "allow", "web", ""); err != nil {
+		t.Fatalf("ApproveRequest: %v", err)
+	}
+
+	_, handler := NewResumeTool(runtime, pending, t.TempDir(), testLogger())
+	raw, err := handler(WithSessionID(context.Background(), "session-1"), json.RawMessage(`{"task_id":"task-sensitive-read-replay","approval_request_id":"`+requestID+`"}`))
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	var out NeedsEmotionDecision
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal paused outcome: %v; raw=%s", err, raw)
+	}
+	if out.Status != "needs_emotion_decision" || out.DecisionPacket.Category != protocol.CatToolApproval {
+		t.Fatalf("outcome = %#v, want second sensitive read approval pause", out)
+	}
+	if executed != 1 {
+		t.Fatalf("handler executed %d times, want only original approved call", executed)
+	}
+	if out.DecisionPacket.ToolApprovalBinding == nil || out.DecisionPacket.ToolApprovalBinding.ApprovalKind != string(tool.ApprovalKindSensitiveRead) {
+		t.Fatalf("binding = %#v, want fresh sensitive_read approval", out.DecisionPacket.ToolApprovalBinding)
+	}
+}
+
 func TestResumeTool_ApprovedRequestWithMutatedPendingToolCallDoesNotExecute(t *testing.T) {
 	client := &scriptedLLM{
 		responses: []*llm.ChatResponse{
@@ -653,7 +808,7 @@ func TestResumeTool_ApprovedRequestWithMutatedPendingToolCallDoesNotExecute(t *t
 		Input: json.RawMessage(`{"command":"rm -rf tmp"}`),
 	}
 	paused.PendingToolCall = &original
-	paused.Packet = buildToolApprovalPacket(paused.Brief, original)
+	paused.Packet = buildToolApprovalPacket(paused.Brief, approvalClassificationForCall(original, tool.ApprovalKindDestructiveWrite, "test destructive command"))
 	if err := pending.Put("session-1", paused.TaskID, paused); err != nil {
 		t.Fatalf("Put: %v", err)
 	}

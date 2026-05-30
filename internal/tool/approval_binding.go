@@ -15,19 +15,24 @@ import (
 
 type ApprovalBinding struct {
 	RequestID           string `json:"request_id,omitempty"`
+	ApprovalKind        string `json:"approval_kind"`
 	ToolName            string `json:"tool_name"`
 	NormalizedInputHash string `json:"normalized_input_hash"`
 	PathDigest          string `json:"path_digest,omitempty"`
 	InputPreview        string `json:"input_preview,omitempty"`
 }
 
-func BuildApprovalBinding(call Call, requestID string) (ApprovalBinding, error) {
+func BuildApprovalBinding(call Call, requestID string, kind ApprovalKind) (ApprovalBinding, error) {
+	if kind == "" {
+		kind = ApprovalKindDestructiveWrite
+	}
 	inputHash, err := NormalizedInputHash(call.Input)
 	if err != nil {
 		return ApprovalBinding{}, err
 	}
 	return ApprovalBinding{
 		RequestID:           requestID,
+		ApprovalKind:        string(kind),
 		ToolName:            strings.TrimSpace(call.Name),
 		NormalizedInputHash: inputHash,
 		PathDigest:          PathDigestForCall(call),

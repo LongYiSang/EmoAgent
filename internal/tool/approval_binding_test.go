@@ -30,12 +30,15 @@ func TestBuildApprovalBindingIncludesFullInputInHashButPreviewOmitsWriteContent(
 		Input: json.RawMessage(`{"path":"docs/a.txt","content":"very secret body","create_dirs":false}`),
 	}
 
-	binding, err := BuildApprovalBinding(call, "approval-1")
+	binding, err := BuildApprovalBinding(call, "approval-1", ApprovalKindDestructiveWrite)
 	if err != nil {
 		t.Fatalf("BuildApprovalBinding: %v", err)
 	}
 	if binding.RequestID != "approval-1" {
 		t.Fatalf("RequestID = %q, want approval-1", binding.RequestID)
+	}
+	if binding.ApprovalKind != string(ApprovalKindDestructiveWrite) {
+		t.Fatalf("ApprovalKind = %q, want %q", binding.ApprovalKind, ApprovalKindDestructiveWrite)
 	}
 	if binding.ToolName != "write_file" {
 		t.Fatalf("ToolName = %q, want write_file", binding.ToolName)
@@ -52,7 +55,7 @@ func TestBuildApprovalBindingIncludesFullInputInHashButPreviewOmitsWriteContent(
 
 	mutated := call
 	mutated.Input = json.RawMessage(`{"path":"docs/a.txt","content":"changed","create_dirs":false}`)
-	mutatedBinding, err := BuildApprovalBinding(mutated, "approval-1")
+	mutatedBinding, err := BuildApprovalBinding(mutated, "approval-1", ApprovalKindDestructiveWrite)
 	if err != nil {
 		t.Fatalf("BuildApprovalBinding(mutated): %v", err)
 	}

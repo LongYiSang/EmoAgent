@@ -103,19 +103,49 @@ func setupDestructiveWriteRegistry(executed *int) *Registry {
 	return registry
 }
 
+func setupSensitiveReadRegistry(executed *int) *Registry {
+	registry := NewRegistry()
+	registry.Register(Spec{
+		Name:        "read_file",
+		Description: "Read file",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`),
+		Scope:       ScopeWork,
+		Permission:  PermReadOnly,
+		ApprovalClassifier: func(context.Context, json.RawMessage) (ApprovalRequirement, bool) {
+			return ApprovalRequirement{Kind: ApprovalKindSensitiveRead, Reason: "test sensitive read"}, true
+		},
+	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		if executed != nil {
+			(*executed)++
+		}
+		return json.RawMessage(`{"content":"ok"}`), nil
+	})
+	return registry
+}
+
 func mustApprovalContextForCall(t *testing.T, call Call, requestID string) ApprovalContext {
 	t.Helper()
-	binding, err := BuildApprovalBinding(call, requestID)
+	return mustApprovalContextForCallKind(t, call, requestID, ApprovalKindDestructiveWrite)
+}
+
+func mustApprovalContextForCallKind(t *testing.T, call Call, requestID string, kind ApprovalKind) ApprovalContext {
+	t.Helper()
+	binding, err := BuildApprovalBinding(call, requestID, kind)
 	if err != nil {
 		t.Fatalf("BuildApprovalBinding: %v", err)
 	}
-	return ApprovalContext{
+	ctx := ApprovalContext{
 		RequestID:           binding.RequestID,
-		AllowDestructive:    true,
+		ApprovalKind:        binding.ApprovalKind,
+		AllowToolCall:       true,
 		ToolName:            binding.ToolName,
 		NormalizedInputHash: binding.NormalizedInputHash,
 		PathDigest:          binding.PathDigest,
 	}
+	if kind == ApprovalKindDestructiveWrite {
+		ctx.AllowDestructive = true
+	}
+	return ctx
 }
 
 func TestDispatcherExecute_Success(t *testing.T) {
@@ -254,6 +284,129 @@ func TestDispatcherExecute_DestructiveCommandRequiresApprovalContext(t *testing.
 	}
 }
 
+func TestDispatcherExecute_SensitiveReadRequiresApprovalContext(t *testing.T) {
+	var executed int
+	d := NewDispatcher(setupSensitiveReadRegistry(&executed), &mockValidator{}, slog.Default())
+	call := Call{
+		ID:    "call_sensitive_read",
+		Name:  "read_file",
+		Input: json.RawMessage(`{"path":".env"}`),
+	}
+
+	result := d.Execute(context.Background(), call, PermReadOnly)
+	if !result.IsError || !result.NeedsApproval {
+		t.Fatalf("result = %#v, want approval-required error", result)
+	}
+	if executed != 0 {
+		t.Fatalf("handler executed %d times, want 0", executed)
+	}
+
+	result = d.Execute(WithApproval(context.Background(), mustApprovalContextForCallKind(t, call, "req-read-1", ApprovalKindSensitiveRead)), call, PermReadOnly)
+	if result.IsError {
+		t.Fatalf("expected sensitive read with matching approval to succeed, got: %s", result.Content)
+	}
+	if executed != 1 {
+		t.Fatalf("handler executed %d times, want 1", executed)
+	}
+}
+
+func TestDispatcherExecute_ApprovalKindCannotBeReusedAcrossKinds(t *testing.T) {
+	sensitiveCall := Call{
+		ID:    "call_sensitive_read",
+		Name:  "read_file",
+		Input: json.RawMessage(`{"path":".env"}`),
+	}
+	readDispatcher := NewDispatcher(setupSensitiveReadRegistry(nil), &mockValidator{}, slog.Default())
+	result := readDispatcher.Execute(
+		WithApproval(context.Background(), mustApprovalContextForCallKind(t, sensitiveCall, "req-cross", ApprovalKindDestructiveWrite)),
+		sensitiveCall,
+		PermReadOnly,
+	)
+	if !result.IsError || !result.NeedsApproval {
+		t.Fatalf("destructive_write approval should not satisfy sensitive_read, got %#v", result)
+	}
+
+	destructiveCall := Call{
+		ID:    "call_write",
+		Name:  "write_file",
+		Input: json.RawMessage(`{"path":"docs/a.txt","content":"hello"}`),
+	}
+	writeDispatcher := NewDispatcher(setupDestructiveWriteRegistry(nil), MinimalSchemaValidator{}, slog.Default())
+	result = writeDispatcher.Execute(
+		WithApproval(context.Background(), mustApprovalContextForCallKind(t, destructiveCall, "req-cross", ApprovalKindSensitiveRead)),
+		destructiveCall,
+		PermApprovedDestructive,
+	)
+	if !result.IsError || !result.NeedsApproval {
+		t.Fatalf("sensitive_read approval should not satisfy destructive_write, got %#v", result)
+	}
+}
+
+func TestDispatcherExecute_SensitiveReadBindingMismatchDoesNotExecute(t *testing.T) {
+	call := Call{
+		ID:    "call_sensitive_read",
+		Name:  "read_file",
+		Input: json.RawMessage(`{"path":".env"}`),
+	}
+	binding, err := BuildApprovalBinding(call, "approval-1", ApprovalKindSensitiveRead)
+	if err != nil {
+		t.Fatalf("BuildApprovalBinding: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		ctx  ApprovalContext
+	}{
+		{
+			name: "tool name mismatch",
+			ctx: ApprovalContext{
+				RequestID:           binding.RequestID,
+				ApprovalKind:        binding.ApprovalKind,
+				AllowToolCall:       true,
+				ToolName:            "list_dir",
+				NormalizedInputHash: binding.NormalizedInputHash,
+				PathDigest:          binding.PathDigest,
+			},
+		},
+		{
+			name: "input hash mismatch",
+			ctx: ApprovalContext{
+				RequestID:           binding.RequestID,
+				ApprovalKind:        binding.ApprovalKind,
+				AllowToolCall:       true,
+				ToolName:            binding.ToolName,
+				NormalizedInputHash: "sha256:wrong",
+				PathDigest:          binding.PathDigest,
+			},
+		},
+		{
+			name: "path digest mismatch",
+			ctx: ApprovalContext{
+				RequestID:           binding.RequestID,
+				ApprovalKind:        binding.ApprovalKind,
+				AllowToolCall:       true,
+				ToolName:            binding.ToolName,
+				NormalizedInputHash: binding.NormalizedInputHash,
+				PathDigest:          "sha256:wrong",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var executed int
+			d := NewDispatcher(setupSensitiveReadRegistry(&executed), &mockValidator{}, slog.Default())
+			result := d.Execute(WithApproval(context.Background(), tt.ctx), call, PermReadOnly)
+			if !result.IsError || !result.NeedsApproval {
+				t.Fatalf("result = %#v, want approval-required error", result)
+			}
+			if executed != 0 {
+				t.Fatalf("handler executed %d times, want 0", executed)
+			}
+		})
+	}
+}
+
 func TestDispatcherClassifyCall(t *testing.T) {
 	d := NewDispatcher(setupDestructiveRegistry(), MinimalSchemaValidator{}, slog.Default())
 
@@ -369,7 +522,7 @@ func TestDispatcherClassifyCall_RequiresMatchingApprovalBinding(t *testing.T) {
 		Name:  "write_file",
 		Input: json.RawMessage(`{"path":"docs/a.txt","content":"hello"}`),
 	}
-	binding, err := BuildApprovalBinding(call, "approval-1")
+	binding, err := BuildApprovalBinding(call, "approval-1", ApprovalKindDestructiveWrite)
 	if err != nil {
 		t.Fatalf("BuildApprovalBinding: %v", err)
 	}
@@ -446,7 +599,7 @@ func TestDispatcherExecute_DoesNotRunHandlerWhenApprovalBindingMismatches(t *tes
 		Name:  "write_file",
 		Input: json.RawMessage(`{"path":"docs/a.txt","content":"hello"}`),
 	}
-	binding, err := BuildApprovalBinding(call, "approval-1")
+	binding, err := BuildApprovalBinding(call, "approval-1", ApprovalKindDestructiveWrite)
 	if err != nil {
 		t.Fatalf("BuildApprovalBinding: %v", err)
 	}

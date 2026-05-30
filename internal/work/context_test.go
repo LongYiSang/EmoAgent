@@ -149,9 +149,48 @@ func TestBuildWorkSystem_IncludesEnvironmentDetails(t *testing.T) {
 		"OS: Windows",
 		`Workspace root: D:\repo`,
 		"Path style: windows",
+		"Read scope: workspace",
 		"Shell commands: available via cmd /c",
 		"Do not assume Unix tools such as ls, rm, or pwd are available.",
 		"Prefer dedicated file tools",
+	} {
+		if !strings.Contains(text, snippet) {
+			t.Fatalf("system prompt missing %q: %s", snippet, text)
+		}
+	}
+}
+
+func TestBuildWorkSystem_ReadScopeWorkspaceUsesWorkspaceRelativeRules(t *testing.T) {
+	text := BuildWorkSystem(protocol.TaskBrief{
+		Goal:            "inspect file",
+		PermissionScope: "read-only",
+		ReadScope:       "workspace",
+	}, runtimeenv.Facts{OS: "linux", WorkspaceRoot: "/repo"})
+
+	for _, snippet := range []string{
+		"Read scope: workspace",
+		"read_file/list_dir paths must be workspace-relative.",
+		"absolute paths and paths escaping the workspace are not allowed.",
+	} {
+		if !strings.Contains(text, snippet) {
+			t.Fatalf("system prompt missing %q: %s", snippet, text)
+		}
+	}
+}
+
+func TestBuildWorkSystem_ReadScopeAllExplainsExternalReadsAndWorkspaceOnlyWrites(t *testing.T) {
+	text := BuildWorkSystem(protocol.TaskBrief{
+		Goal:            "inspect external log",
+		PermissionScope: "read-only",
+		ReadScope:       "all",
+	}, runtimeenv.Facts{OS: "linux", WorkspaceRoot: "/repo"})
+
+	for _, snippet := range []string{
+		"Read scope: all local files",
+		"read_file/list_dir may use absolute local paths or paths relative to the workspace.",
+		"Use the narrowest possible path.",
+		"Sensitive local reads will pause for explicit approval.",
+		"write_file/edit_file remain workspace-only.",
 	} {
 		if !strings.Contains(text, snippet) {
 			t.Fatalf("system prompt missing %q: %s", snippet, text)
@@ -188,7 +227,7 @@ func TestBuildWorkSystem_DistinguishesPermissionEscalationFromEmotionJudgment(t 
 		"emotion_judgment: choices that require Emotion to interpret user intent, tone, preference, or relationship context",
 		"Never use human_confirmation to ask for tool permission escalation.",
 		"If a workspace-write task hits a destructive tool call, runtime will pause with permission_escalation_required and Emotion must ask the user instead of deciding itself.",
-		"Only approved-destructive tasks may enter tool_approval.",
+		"Runtime may enter tool_approval for approved-destructive operations or sensitive reads.",
 	} {
 		if !strings.Contains(text, snippet) {
 			t.Fatalf("system prompt missing %q: %s", snippet, text)
@@ -214,7 +253,7 @@ func TestBuildWorkSystem_IncludesP1ExecutionQualitySections(t *testing.T) {
 		"Understand the Goal, Background, Constraints, and Acceptance Criteria before using tools.",
 		"## Tool Selection Policy",
 		"Use web_search to discover sources and web_fetch to read a specific source URL.",
-		"File tool paths must be workspace-relative; use \".\" for the workspace root and never pass the absolute Workspace root to file tools.",
+		"read_file/list_dir paths must be workspace-relative.",
 		"When creating or overwriting a file in a missing directory, prefer write_file with create_dirs=true instead of shell mkdir.",
 		"## Verification",
 		"After any workspace-write change, run the narrowest practical verification.",

@@ -31,10 +31,10 @@ func TestDelegateTool_SchemaStaysValidatorCompatible(t *testing.T) {
 		t.Fatalf("Unmarshal returned error: %v", err)
 	}
 	props := schema["properties"].(map[string]any)
-	if len(props) != 5 {
-		t.Fatalf("schema properties = %#v, want goal/background/constraints/acceptance_criteria/permission_scope", props)
+	if len(props) != 6 {
+		t.Fatalf("schema properties = %#v, want goal/background/constraints/acceptance_criteria/permission_scope/read_scope", props)
 	}
-	for _, name := range []string{"goal", "background", "constraints", "acceptance_criteria", "permission_scope"} {
+	for _, name := range []string{"goal", "background", "constraints", "acceptance_criteria", "permission_scope", "read_scope"} {
 		if _, ok := props[name]; !ok {
 			t.Fatalf("schema missing %q: %#v", name, props)
 		}
@@ -45,6 +45,11 @@ func TestDelegateTool_SchemaStaysValidatorCompatible(t *testing.T) {
 	if len(enum) != 3 || enum[0] != "read-only" || enum[1] != "workspace-write" || enum[2] != "approved-destructive" {
 		t.Fatalf("permission_scope enum = %#v, want [read-only workspace-write approved-destructive]", enum)
 	}
+	readScope := props["read_scope"].(map[string]any)
+	readScopeEnum := readScope["enum"].([]any)
+	if len(readScopeEnum) != 2 || readScopeEnum[0] != "workspace" || readScopeEnum[1] != "all" {
+		t.Fatalf("read_scope enum = %#v, want [workspace all]", readScopeEnum)
+	}
 	acceptanceCriteria := props["acceptance_criteria"].(map[string]any)
 	if acceptanceCriteria["minItems"] != float64(1) {
 		t.Fatalf("acceptance_criteria minItems = %#v, want 1", acceptanceCriteria["minItems"])
@@ -52,6 +57,9 @@ func TestDelegateTool_SchemaStaysValidatorCompatible(t *testing.T) {
 	required := schema["required"].([]any)
 	if !containsAnyString(required, "acceptance_criteria") {
 		t.Fatalf("schema required = %#v, want acceptance_criteria", required)
+	}
+	if containsAnyString(required, "read_scope") {
+		t.Fatalf("schema required = %#v, read_scope must be optional", required)
 	}
 }
 
@@ -66,7 +74,8 @@ func TestDelegateTool_SchemaAcceptsFullBriefInput(t *testing.T) {
 		"background":"need a concise summary",
 		"constraints":["do not change files","prefer primary config"],
 		"acceptance_criteria":["list active ports","mention profile source"],
-		"permission_scope":"read-only"
+		"permission_scope":"read-only",
+		"read_scope":"all"
 	}`)
 
 	if err := (tool.MinimalSchemaValidator{}).Validate(spec.Parameters, input); err != nil {
@@ -85,6 +94,9 @@ func TestDelegateTool_DescriptionIncludesPermissionGuidance(t *testing.T) {
 		"Give Work an outcome, not a script",
 		"use approved-destructive when the goal includes delete/remove/move/rename/overwrite",
 		"use workspace-write for non-destructive writes/edits",
+		"read_scope defaults to workspace",
+		"read_scope=all affects read_file/list_dir only",
+		"write_file/edit_file still cannot modify files outside the workspace",
 	} {
 		if !strings.Contains(spec.Description, snippet) {
 			t.Fatalf("description missing %q: %s", snippet, spec.Description)

@@ -342,6 +342,15 @@ CREATE INDEX IF NOT EXISTS idx_approval_requests_binding
     ON approval_requests(session_id, task_id, tool_name, normalized_input_hash, path_digest);
 `,
 	},
+	{
+		Version: 15,
+		SQL: `
+ALTER TABLE approval_requests ADD COLUMN approval_kind TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX IF NOT EXISTS idx_approval_requests_kind_binding
+    ON approval_requests(session_id, task_id, approval_kind, tool_name, normalized_input_hash, path_digest);
+`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.

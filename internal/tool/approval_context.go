@@ -4,6 +4,8 @@ import "context"
 
 type ApprovalContext struct {
 	RequestID           string
+	ApprovalKind        string
+	AllowToolCall       bool
 	AllowDestructive    bool
 	ToolName            string
 	NormalizedInputHash string

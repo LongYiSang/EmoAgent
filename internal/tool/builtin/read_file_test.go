@@ -7,9 +7,17 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/longyisang/emoagent/internal/tool"
 )
 
 func callReadFile(t *testing.T, root, pathArg string) (json.RawMessage, error) {
+	t.Helper()
+
+	return callReadFileWithContext(t, context.Background(), root, pathArg)
+}
+
+func callReadFileWithContext(t *testing.T, ctx context.Context, root, pathArg string) (json.RawMessage, error) {
 	t.Helper()
 
 	_, handler := NewReadFileTool(root)
@@ -17,7 +25,7 @@ func callReadFile(t *testing.T, root, pathArg string) (json.RawMessage, error) {
 	if err != nil {
 		t.Fatalf("Marshal returned error: %v", err)
 	}
-	return handler(context.Background(), input)
+	return handler(ctx, input)
 }
 
 func TestReadFile_RejectsAbsolutePath(t *testing.T) {
@@ -93,9 +101,10 @@ func TestReadFile_HappyPath(t *testing.T) {
 	}
 
 	var out struct {
-		Path    string `json:"path"`
-		Content string `json:"content"`
-		Size    int    `json:"size"`
+		Path      string `json:"path"`
+		PathScope string `json:"path_scope"`
+		Content   string `json:"content"`
+		Size      int    `json:"size"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("Unmarshal returned error: %v", err)
@@ -103,10 +112,45 @@ func TestReadFile_HappyPath(t *testing.T) {
 	if out.Path != "hello.txt" {
 		t.Fatalf("Path = %q, want hello.txt", out.Path)
 	}
+	if out.PathScope != "workspace" {
+		t.Fatalf("PathScope = %q, want workspace", out.PathScope)
+	}
 	if out.Content != "hello, world" {
 		t.Fatalf("Content = %q, want hello, world", out.Content)
 	}
 	if out.Size != len("hello, world") {
 		t.Fatalf("Size = %d, want %d", out.Size, len("hello, world"))
+	}
+}
+
+func TestReadFile_AllScopeReadsExternalAbsolutePath(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	path := filepath.Join(outside, "note.txt")
+	if err := os.WriteFile(path, []byte("external note"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := callReadFileWithContext(t, tool.WithReadScope(context.Background(), tool.ReadScopeAll), root, path)
+	if err != nil {
+		t.Fatalf("read_file returned error: %v", err)
+	}
+
+	var out struct {
+		Path      string `json:"path"`
+		PathScope string `json:"path_scope"`
+		Content   string `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if out.PathScope != "external" {
+		t.Fatalf("PathScope = %q, want external", out.PathScope)
+	}
+	if out.Path != filepath.ToSlash(filepath.Clean(path)) {
+		t.Fatalf("Path = %q, want external display path", out.Path)
+	}
+	if out.Content != "external note" {
+		t.Fatalf("Content = %q, want external note", out.Content)
 	}
 }

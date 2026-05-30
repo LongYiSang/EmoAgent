@@ -142,11 +142,16 @@ func TestOpenAndMigrate_CreatesApprovalRequestsTableAndColumns(t *testing.T) {
 		"options_json", "recommended_option", "recommendation_reason", "reject_option_id",
 		"status", "selected_option_id", "actor_channel", "actor_ref", "expires_at",
 		"decided_at", "consumed_at", "created_at", "updated_at",
-		"tool_name", "normalized_input_hash", "path_digest", "input_preview",
+		"approval_kind", "tool_name", "normalized_input_hash", "path_digest", "input_preview",
 	} {
 		if !columns[required] {
 			t.Fatalf("approval_requests missing column %q", required)
 		}
+	}
+
+	var indexName string
+	if err := db.SqlDB().QueryRow("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_approval_requests_kind_binding'").Scan(&indexName); err != nil {
+		t.Fatalf("approval_requests missing kind binding index: %v", err)
 	}
 }
 

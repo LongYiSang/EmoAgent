@@ -191,6 +191,66 @@ func newValidatedBrief(t *testing.T) protocol.TaskBrief {
 	return brief
 }
 
+func approvalClassificationForCall(call tool.Call, kind tool.ApprovalKind, reason string) tool.CallClassification {
+	return tool.CallClassification{
+		Call:           call,
+		ApprovalKind:   kind,
+		ApprovalReason: reason,
+	}
+}
+
+func TestRuntimeInjectsReadScopeIntoClassifierAndHandler(t *testing.T) {
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			toolUseResp("probe-1", "scope_probe", `{}`),
+			toolUseResp("finish-1", "finish_task", finishTaskPayloadJSON("completed", "done", nil, nil)),
+		},
+	}
+	registry := tool.NewRegistry()
+	var handlerScope tool.ReadScope
+	registry.Register(tool.Spec{
+		Name:        "scope_probe",
+		Description: "records read scope",
+		Parameters:  json.RawMessage(`{"type":"object","additionalProperties":false}`),
+		Scope:       tool.ScopeWork,
+		Permission:  tool.PermReadOnly,
+		ApprovalClassifier: func(ctx context.Context, _ json.RawMessage) (tool.ApprovalRequirement, bool) {
+			if tool.ReadScopeFromContext(ctx) != tool.ReadScopeAll {
+				return tool.ApprovalRequirement{Kind: tool.ApprovalKindSensitiveRead, Reason: "missing_read_scope"}, true
+			}
+			return tool.ApprovalRequirement{}, false
+		},
+	}, func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		handlerScope = tool.ReadScopeFromContext(ctx)
+		return json.RawMessage(`{"ok":true}`), nil
+	})
+	registry.Register(NewFinishTaskTool(), FinishTaskPlaceholderHandler)
+	registry.Register(NewRequestDecisionTool(), RequestDecisionPlaceholderHandler)
+	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, testLogger())
+	runtime := NewRuntime(RuntimeConfig{
+		LLM:                      client,
+		Provider:                 "openai",
+		Model:                    "test-model",
+		MaxTokens:                2048,
+		MaxToolRounds:            4,
+		MaxInputTokens:           100000,
+		Registry:                 registry,
+		Dispatcher:               dispatcher,
+		Logger:                   testLogger(),
+		PendingSnapshotMaxTokens: 4000,
+	})
+	brief := newValidatedBrief(t)
+	brief.ReadScope = "all"
+
+	outcome := runtime.Run(context.Background(), brief, nil)
+	if outcome.Report == nil || outcome.Report.Status != "completed" {
+		t.Fatalf("expected completed report, got %#v", outcome)
+	}
+	if handlerScope != tool.ReadScopeAll {
+		t.Fatalf("handler read scope = %q, want %q", handlerScope, tool.ReadScopeAll)
+	}
+}
+
 func decisionPacketJSON(category string, includeFinding bool) string {
 	packet := map[string]any{
 		"task_id":             "task-1",
@@ -719,7 +779,7 @@ func TestBuildToolApprovalPacket_NonBashUsesReadableCallSummary(t *testing.T) {
 		}`),
 	}
 
-	packet := buildToolApprovalPacket(brief, call)
+	packet := buildToolApprovalPacket(brief, approvalClassificationForCall(call, tool.ApprovalKindDestructiveWrite, "test destructive command"))
 	if packet.Category != protocol.CatToolApproval {
 		t.Fatalf("Category = %q, want %q", packet.Category, protocol.CatToolApproval)
 	}
@@ -749,7 +809,7 @@ func TestBuildToolApprovalPacket_IncludesBindingWithoutRawWriteContent(t *testin
 		Input: json.RawMessage(`{"path":"config/.env","content":"SECRET=value","create_dirs":false}`),
 	}
 
-	packet := buildToolApprovalPacket(brief, call)
+	packet := buildToolApprovalPacket(brief, approvalClassificationForCall(call, tool.ApprovalKindDestructiveWrite, "test destructive command"))
 	if !strings.Contains(packet.Question, "尚未执行") {
 		t.Fatalf("Question = %q, want pending execution wording", packet.Question)
 	}
@@ -762,6 +822,9 @@ func TestBuildToolApprovalPacket_IncludesBindingWithoutRawWriteContent(t *testin
 	if packet.ToolApprovalBinding.ToolName != "write_file" {
 		t.Fatalf("ToolName = %q, want write_file", packet.ToolApprovalBinding.ToolName)
 	}
+	if packet.ToolApprovalBinding.ApprovalKind != string(tool.ApprovalKindDestructiveWrite) {
+		t.Fatalf("ApprovalKind = %q, want %q", packet.ToolApprovalBinding.ApprovalKind, tool.ApprovalKindDestructiveWrite)
+	}
 	if packet.ToolApprovalBinding.NormalizedInputHash == "" {
 		t.Fatal("NormalizedInputHash should be set")
 	}
@@ -770,6 +833,40 @@ func TestBuildToolApprovalPacket_IncludesBindingWithoutRawWriteContent(t *testin
 	}
 	if strings.Contains(packet.ToolApprovalBinding.InputPreview, "SECRET=value") {
 		t.Fatalf("InputPreview leaks write_file content: %q", packet.ToolApprovalBinding.InputPreview)
+	}
+}
+
+func TestBuildToolApprovalPacket_SensitiveReadWordingAndBindingKind(t *testing.T) {
+	brief := protocol.TaskBrief{
+		TaskID:          "task-sensitive-read",
+		Goal:            "inspect requested env file",
+		PermissionScope: "read-only",
+		ReadScope:       "all",
+	}
+	call := tool.Call{
+		ID:    "read-1",
+		Name:  "read_file",
+		Input: json.RawMessage(`{"path":".env"}`),
+	}
+
+	packet := buildToolApprovalPacket(brief, approvalClassificationForCall(call, tool.ApprovalKindSensitiveRead, "sensitive_path"))
+	if !strings.Contains(packet.Question, "我准备执行一次敏感读取，尚未执行。") {
+		t.Fatalf("Question = %q, want sensitive read pending wording", packet.Question)
+	}
+	if !strings.Contains(packet.Question, "操作：读取文件") {
+		t.Fatalf("Question = %q, want read operation", packet.Question)
+	}
+	if !strings.Contains(packet.Question, "目标：.env") {
+		t.Fatalf("Question = %q, want target path", packet.Question)
+	}
+	if !strings.Contains(packet.Question, "不会修改任何文件") {
+		t.Fatalf("Question = %q, want no-modification impact", packet.Question)
+	}
+	if packet.ToolApprovalBinding == nil {
+		t.Fatal("ToolApprovalBinding is nil")
+	}
+	if packet.ToolApprovalBinding.ApprovalKind != string(tool.ApprovalKindSensitiveRead) {
+		t.Fatalf("ApprovalKind = %q, want %q", packet.ToolApprovalBinding.ApprovalKind, tool.ApprovalKindSensitiveRead)
 	}
 }
 
@@ -820,7 +917,7 @@ func TestRuntime_AutoPausesOnApprovalBlockedToolFiltersSiblingToolCalls(t *testi
 		}
 	}
 
-	binding, err := tool.BuildApprovalBinding(*outcome.Paused.PendingToolCall, "req-1")
+	binding, err := tool.BuildApprovalBinding(*outcome.Paused.PendingToolCall, "req-1", tool.ApprovalKindDestructiveWrite)
 	if err != nil {
 		t.Fatalf("BuildApprovalBinding: %v", err)
 	}
@@ -1062,7 +1159,7 @@ func TestRuntime_ResumeReExecutesApprovedToolCall(t *testing.T) {
 		EscalationCount: 1,
 	}
 
-	binding, err := tool.BuildApprovalBinding(call, "req-1")
+	binding, err := tool.BuildApprovalBinding(call, "req-1", tool.ApprovalKindDestructiveWrite)
 	if err != nil {
 		t.Fatalf("BuildApprovalBinding: %v", err)
 	}
@@ -1135,7 +1232,7 @@ func TestRuntime_ResumeRejectedApprovalDoesNotExecuteBlockedTool(t *testing.T) {
 		}},
 		PendingCallID:   call.ID,
 		PendingToolCall: &call,
-		Packet:          buildToolApprovalPacket(brief, call),
+		Packet:          buildToolApprovalPacket(brief, approvalClassificationForCall(call, tool.ApprovalKindDestructiveWrite, "test destructive command")),
 		Round:           1,
 		EscalationCount: 1,
 	}

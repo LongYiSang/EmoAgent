@@ -71,6 +71,7 @@ func TestApprovalService_RoundTripsToolApprovalBinding(t *testing.T) {
 	packet := sampleApprovalPacket("task-binding")
 	packet.Category = protocol.CatToolApproval
 	packet.ToolApprovalBinding = &protocol.ToolApprovalBinding{
+		ApprovalKind:        "destructive_write",
 		ToolName:            "write_file",
 		NormalizedInputHash: "sha256:input",
 		PathDigest:          "sha256:path",

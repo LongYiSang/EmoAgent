@@ -10,6 +10,7 @@ type TaskBrief struct {
 	Constraints        []string  `json:"constraints,omitempty"`
 	AcceptanceCriteria []string  `json:"acceptance_criteria,omitempty"`
 	PermissionScope    string    `json:"permission_scope"`
+	ReadScope          string    `json:"read_scope,omitempty"`
 	CreatedAt          time.Time `json:"created_at"`
 }
 
@@ -57,6 +58,7 @@ type DecisionTradeoff struct {
 }
 
 type ToolApprovalBinding struct {
+	ApprovalKind        string `json:"approval_kind"`
 	ToolName            string `json:"tool_name"`
 	NormalizedInputHash string `json:"normalized_input_hash"`
 	PathDigest          string `json:"path_digest,omitempty"`

@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/longyisang/emoagent/internal/tool"
 )
 
 func TestListDir_HappyPath(t *testing.T) {
@@ -24,15 +26,19 @@ func TestListDir_HappyPath(t *testing.T) {
 	}
 
 	var out struct {
-		Path      string `json:"path"`
-		Entries   []dirEntry
-		Truncated bool `json:"truncated"`
+		Path      string     `json:"path"`
+		PathScope string     `json:"path_scope"`
+		Entries   []dirEntry `json:"entries"`
+		Truncated bool       `json:"truncated"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if len(out.Entries) != 2 {
 		t.Fatalf("entries = %d, want 2", len(out.Entries))
+	}
+	if out.PathScope != "workspace" {
+		t.Fatalf("path_scope = %q, want workspace", out.PathScope)
 	}
 	if out.Truncated {
 		t.Fatal("truncated should be false")
@@ -118,5 +124,38 @@ func TestListDir_NotADirectory(t *testing.T) {
 	_, err := handler(context.Background(), json.RawMessage(`{"path":"file.txt"}`))
 	if err == nil {
 		t.Fatal("expected error for file path")
+	}
+}
+
+func TestListDir_AllScopeListsExternalDirectory(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "outside.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, handler := NewListDirTool(root)
+	input, _ := json.Marshal(map[string]any{"path": outside})
+	raw, err := handler(tool.WithReadScope(context.Background(), tool.ReadScopeAll), input)
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+
+	var out struct {
+		Path      string     `json:"path"`
+		PathScope string     `json:"path_scope"`
+		Entries   []dirEntry `json:"entries"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.PathScope != "external" {
+		t.Fatalf("path_scope = %q, want external", out.PathScope)
+	}
+	if out.Path != filepath.ToSlash(filepath.Clean(outside)) {
+		t.Fatalf("path = %q, want external directory display path", out.Path)
+	}
+	if len(out.Entries) != 1 || out.Entries[0].Name != "outside.txt" {
+		t.Fatalf("entries = %#v, want outside.txt", out.Entries)
 	}
 }

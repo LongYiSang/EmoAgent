@@ -125,8 +125,11 @@ func NewResumeToolWithFactory(runtimeFactory func() (*Runtime, error), pending *
 				resp.Reason = fmt.Sprintf("approval_request %s resolved via %s", approval.Request.ID, approval.PreviousStatus)
 			}
 			if approval.PreviousStatus == protocol.ApprovalStatusApproved {
-				paused.Brief.PermissionScope = "approved-destructive"
-				resumeCtx = tool.WithApproval(resumeCtx, approvalContextFromRequest(approval.Request))
+				approvalCtx := approvalContextFromRequest(approval.Request)
+				if approvalCtx.ApprovalKind == string(tool.ApprovalKindDestructiveWrite) {
+					paused.Brief.PermissionScope = "approved-destructive"
+				}
+				resumeCtx = tool.WithApproval(resumeCtx, approvalCtx)
 			}
 		} else if req.Decision == "" {
 			return nil, fmt.Errorf("resume_work: decision is required when approval_request_id is absent")
@@ -139,10 +142,12 @@ func NewResumeToolWithFactory(runtimeFactory func() (*Runtime, error), pending *
 					paused.Brief.PermissionScope = req.PermissionScopeOverride
 					approvalCtx := tool.ApprovalContext{
 						RequestID:        fmt.Sprintf("emotion-permission-escalation:%s", req.TaskID),
+						ApprovalKind:     string(tool.ApprovalKindDestructiveWrite),
+						AllowToolCall:    true,
 						AllowDestructive: true,
 					}
 					if paused.PendingToolCall != nil {
-						if binding, err := tool.BuildApprovalBinding(*paused.PendingToolCall, approvalCtx.RequestID); err == nil {
+						if binding, err := tool.BuildApprovalBinding(*paused.PendingToolCall, approvalCtx.RequestID, tool.ApprovalKindDestructiveWrite); err == nil {
 							approvalCtx.ToolName = binding.ToolName
 							approvalCtx.NormalizedInputHash = binding.NormalizedInputHash
 							approvalCtx.PathDigest = binding.PathDigest
@@ -240,15 +245,25 @@ func NewResumeToolWithFactory(runtimeFactory func() (*Runtime, error), pending *
 }
 
 func approvalContextFromRequest(req *protocol.ApprovalRequest) tool.ApprovalContext {
-	ctx := tool.ApprovalContext{AllowDestructive: true}
+	ctx := tool.ApprovalContext{}
 	if req == nil {
 		return ctx
 	}
 	ctx.RequestID = req.ID
 	if req.ToolApprovalBinding != nil {
+		ctx.ApprovalKind = req.ToolApprovalBinding.ApprovalKind
+		ctx.AllowToolCall = true
+		if ctx.ApprovalKind == "" || ctx.ApprovalKind == string(tool.ApprovalKindDestructiveWrite) {
+			ctx.ApprovalKind = string(tool.ApprovalKindDestructiveWrite)
+			ctx.AllowDestructive = true
+		}
 		ctx.ToolName = req.ToolApprovalBinding.ToolName
 		ctx.NormalizedInputHash = req.ToolApprovalBinding.NormalizedInputHash
 		ctx.PathDigest = req.ToolApprovalBinding.PathDigest
+	} else {
+		ctx.ApprovalKind = string(tool.ApprovalKindDestructiveWrite)
+		ctx.AllowToolCall = true
+		ctx.AllowDestructive = true
 	}
 	return ctx
 }

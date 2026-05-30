@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/longyisang/emoagent/internal/tool"
 )
 
 func writeTemp(t *testing.T, root, name, content string) string {
@@ -139,5 +141,53 @@ func TestEditFile_PathEscape(t *testing.T) {
 	})
 	if _, err := handler(context.Background(), input); err == nil {
 		t.Fatal("expected error for path escape")
+	}
+}
+
+func TestEditFile_ReadScopeAllStillRejectsExternalPath(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	path := filepath.Join(outside, "outside.txt")
+	if err := os.WriteFile(path, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, handler := NewEditFileTool(root)
+	input, _ := json.Marshal(map[string]any{
+		"path":       path,
+		"old_string": "hello",
+		"new_string": "bye",
+	})
+
+	if _, err := handler(tool.WithReadScope(context.Background(), tool.ReadScopeAll), input); err == nil {
+		t.Fatal("edit_file should reject external paths even when read_scope=all")
+	}
+}
+
+func TestEditFile_RejectsWorkspaceSymlinkToExternalDirectory(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "outside.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "linked")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	_, handler := NewEditFileTool(root)
+	input, _ := json.Marshal(map[string]any{
+		"path":       filepath.Join("linked", "outside.txt"),
+		"old_string": "hello",
+		"new_string": "bye",
+	})
+
+	if _, err := handler(context.Background(), input); err == nil {
+		t.Fatal("edit_file should reject edits through a workspace symlink to an external directory")
+	}
+	data, err := os.ReadFile(filepath.Join(outside, "outside.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "hello" {
+		t.Fatalf("external file changed to %q, want hello", data)
 	}
 }

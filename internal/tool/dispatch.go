@@ -41,6 +41,8 @@ type CallClassification struct {
 	Action             CallAction
 	Reason             string
 	DestructiveReason  string
+	ApprovalKind       ApprovalKind
+	ApprovalReason     string
 }
 
 // NewDispatcher creates a Dispatcher. If a tool declares a schema, Execute
@@ -107,22 +109,25 @@ func (d *Dispatcher) ClassifyCall(ctx context.Context, call Call, maxPermission 
 	}
 
 	if requiredPermission == PermApprovedDestructive {
-		approval, ok := ApprovalFromContext(ctx)
-		if !ok || !approval.AllowDestructive {
+		classification.ApprovalKind = ApprovalKindDestructiveWrite
+		classification.ApprovalReason = destructiveReason
+		if ok, reason := approvalSatisfiedForCall(ctx, call, ApprovalKindDestructiveWrite); !ok {
 			classification.Action = CallActionToolApprovalRequired
-			classification.Reason = fmt.Sprintf("approval required: tool %q needs an active approved request", call.Name)
+			classification.Reason = reason
 			return classification
 		}
-		binding, err := BuildApprovalBinding(call, approval.RequestID)
-		if err != nil {
-			classification.Action = CallActionToolApprovalRequired
-			classification.Reason = fmt.Sprintf("approval required: failed to bind tool %q input: %v", call.Name, err)
-			return classification
-		}
-		if !approvalBindingMatches(approval, binding) {
-			classification.Action = CallActionToolApprovalRequired
-			classification.Reason = fmt.Sprintf("approval binding mismatch: approved request does not match current tool call %q", call.Name)
-			return classification
+	}
+
+	if spec.ApprovalClassifier != nil {
+		req, required := spec.ApprovalClassifier(ctx, call.Input)
+		if required {
+			classification.ApprovalKind = req.Kind
+			classification.ApprovalReason = req.Reason
+			if ok, reason := approvalSatisfiedForCall(ctx, call, req.Kind); !ok {
+				classification.Action = CallActionToolApprovalRequired
+				classification.Reason = reason
+				return classification
+			}
 		}
 	}
 
@@ -130,7 +135,35 @@ func (d *Dispatcher) ClassifyCall(ctx context.Context, call Call, maxPermission 
 	return classification
 }
 
+func approvalSatisfiedForCall(ctx context.Context, call Call, kind ApprovalKind) (bool, string) {
+	approval, ok := ApprovalFromContext(ctx)
+	if !ok || !approvalAllowsKind(approval, kind) {
+		return false, fmt.Sprintf("approval required: tool %q needs an active approved request", call.Name)
+	}
+	binding, err := BuildApprovalBinding(call, approval.RequestID, kind)
+	if err != nil {
+		return false, fmt.Sprintf("approval required: failed to bind tool %q input: %v", call.Name, err)
+	}
+	if !approvalBindingMatches(approval, binding) {
+		return false, fmt.Sprintf("approval binding mismatch: approved request does not match current tool call %q", call.Name)
+	}
+	return true, ""
+}
+
+func approvalAllowsKind(approval ApprovalContext, kind ApprovalKind) bool {
+	if approval.AllowToolCall && approval.ApprovalKind == string(kind) {
+		return true
+	}
+	return kind == ApprovalKindDestructiveWrite && approval.AllowDestructive &&
+		(approval.ApprovalKind == "" || approval.ApprovalKind == string(ApprovalKindDestructiveWrite))
+}
+
 func approvalBindingMatches(approval ApprovalContext, binding ApprovalBinding) bool {
+	if approval.ApprovalKind != binding.ApprovalKind {
+		if !(binding.ApprovalKind == string(ApprovalKindDestructiveWrite) && approval.AllowDestructive && approval.ApprovalKind == "") {
+			return false
+		}
+	}
 	return approval.RequestID != "" &&
 		approval.ToolName == binding.ToolName &&
 		approval.NormalizedInputHash == binding.NormalizedInputHash &&

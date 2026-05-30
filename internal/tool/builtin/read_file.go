@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 	"unicode/utf8"
 
 	"github.com/longyisang/emoagent/internal/tool"
@@ -18,43 +16,31 @@ const readFileMaxBytes = 1 << 20
 func NewReadFileTool(projectRoot string) (tool.Spec, tool.Handler) {
 	spec := tool.Spec{
 		Name:        "read_file",
-		Description: "Read a valid UTF-8 text file from the workspace using a workspace-relative path. Absolute paths and path traversal are rejected. Files larger than 1 MiB are rejected. Returns path, content, and size.",
+		Description: "Read a valid UTF-8 text file. With read_scope=workspace, use a workspace-relative path. Absolute paths and path traversal are rejected in workspace scope. With read_scope=all, absolute or workspace-relative paths are allowed. Files larger than 1 MiB are rejected. Returns path, path_scope, content, and size.",
 		Parameters: json.RawMessage(`{
 			"type":"object",
 			"properties":{"path":{"type":"string"}},
 			"required":["path"],
 			"additionalProperties":false
 		}`),
-		Scope:      tool.ScopeWork,
-		Permission: tool.PermReadOnly,
+		Scope:              tool.ScopeWork,
+		Permission:         tool.PermReadOnly,
+		ApprovalClassifier: classifySensitiveRead(projectRoot, "read_file"),
 	}
 
-	handler := func(_ context.Context, input json.RawMessage) (json.RawMessage, error) {
+	handler := func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 		var in struct {
 			Path string `json:"path"`
 		}
 		if err := json.Unmarshal(input, &in); err != nil {
 			return nil, fmt.Errorf("read_file: invalid input: %w", err)
 		}
-		if in.Path == "" {
-			return nil, fmt.Errorf("read_file: path is required")
-		}
-		if filepath.IsAbs(in.Path) {
-			return nil, fmt.Errorf("read_file: absolute paths are not allowed")
+		resolved, err := resolveReadPath(ctx, projectRoot, in.Path)
+		if err != nil {
+			return nil, fmt.Errorf("read_file: %w", err)
 		}
 
-		cleaned := filepath.Clean(in.Path)
-		if cleaned == "." || strings.HasPrefix(cleaned, "..") {
-			return nil, fmt.Errorf("read_file: path escapes workspace")
-		}
-
-		fullPath := filepath.Join(projectRoot, cleaned)
-		rel, err := filepath.Rel(projectRoot, fullPath)
-		if err != nil || strings.HasPrefix(rel, "..") {
-			return nil, fmt.Errorf("read_file: path escapes workspace")
-		}
-
-		info, err := os.Stat(fullPath)
+		info, err := os.Stat(resolved.FullPath)
 		if err != nil {
 			return nil, fmt.Errorf("read_file: stat failed: %w", err)
 		}
@@ -65,7 +51,7 @@ func NewReadFileTool(projectRoot string) (tool.Spec, tool.Handler) {
 			return nil, fmt.Errorf("read_file: file too large (%d bytes)", info.Size())
 		}
 
-		data, err := os.ReadFile(fullPath)
+		data, err := os.ReadFile(resolved.FullPath)
 		if err != nil {
 			return nil, fmt.Errorf("read_file: read failed: %w", err)
 		}
@@ -74,9 +60,10 @@ func NewReadFileTool(projectRoot string) (tool.Spec, tool.Handler) {
 		}
 
 		return json.Marshal(map[string]any{
-			"path":    filepath.ToSlash(cleaned),
-			"content": string(data),
-			"size":    len(data),
+			"path":       resolved.DisplayPath,
+			"path_scope": pathScopeForResolved(resolved),
+			"content":    string(data),
+			"size":       len(data),
 		})
 	}
 

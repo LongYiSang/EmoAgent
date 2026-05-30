@@ -650,6 +650,7 @@ func TestHandlerEmitsApprovalRequiredWithBindingPreviewWithoutRawContent(t *test
 			RejectOptionID: "deny",
 			Options:        []protocol.DecisionOption{{ID: "allow", Summary: "允许执行"}, {ID: "deny", Summary: "拒绝"}},
 			ToolApprovalBinding: &protocol.ToolApprovalBinding{
+				ApprovalKind:        "destructive_write",
 				ToolName:            "write_file",
 				NormalizedInputHash: "sha256:input",
 				PathDigest:          "sha256:path",
@@ -685,7 +686,7 @@ func TestHandlerEmitsApprovalRequiredWithBindingPreviewWithoutRawContent(t *test
 	if approval == nil || approval.ToolApprovalBinding == nil {
 		t.Fatalf("approval event = %#v, want binding", msg)
 	}
-	if approval.ToolApprovalBinding.ToolName != "write_file" || approval.ToolApprovalBinding.NormalizedInputHash == "" || approval.ToolApprovalBinding.PathDigest == "" {
+	if approval.ToolApprovalBinding.ApprovalKind != "destructive_write" || approval.ToolApprovalBinding.ToolName != "write_file" || approval.ToolApprovalBinding.NormalizedInputHash == "" || approval.ToolApprovalBinding.PathDigest == "" {
 		t.Fatalf("binding = %#v, want tool/hash/path digest", approval.ToolApprovalBinding)
 	}
 	if strings.Contains(approval.ToolApprovalBinding.InputPreview, "SECRET=value") {

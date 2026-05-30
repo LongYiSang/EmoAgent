@@ -106,6 +106,7 @@ func (r *Runtime) Resume(ctx context.Context, paused *PausedWork, resp protocol.
 		report := failedReport(protocol.TaskBrief{TaskID: resp.TaskID, Goal: "resume"}, "resume failed: paused task is nil")
 		return RunOutcome{Report: &report}
 	}
+	ctx = tool.WithReadScope(ctx, readScopeFromBrief(paused.Brief))
 
 	decision := resp
 	if decision.TaskID == "" {
@@ -147,7 +148,7 @@ func (r *Runtime) Resume(ctx context.Context, paused *PausedWork, resp protocol.
 		})
 	}
 
-	return r.runLoop(ctx, paused.Brief, messages, paused.Progress, paused.Round+1, paused.EscalationCount, journal)
+	return r.runLoop(tool.WithApproval(ctx, tool.ApprovalContext{}), paused.Brief, messages, paused.Progress, paused.Round+1, paused.EscalationCount, journal)
 }
 
 func isApprovalBindingMismatchResult(result tool.Result) bool {
@@ -159,23 +160,37 @@ func writeToolApprovalResumeEvent(ctx context.Context, journal *Journal, round i
 		return
 	}
 	approval, ok := tool.ApprovalFromContext(ctx)
-	if !ok || !approval.AllowDestructive {
+	if !ok || (!approval.AllowToolCall && !approval.AllowDestructive) {
 		return
 	}
-	actual, _ := tool.BuildApprovalBinding(call, approval.RequestID)
-	bindingMatch := approval.RequestID != "" &&
-		approval.ToolName == actual.ToolName &&
-		approval.NormalizedInputHash == actual.NormalizedInputHash &&
-		approval.PathDigest == actual.PathDigest
+	kind := tool.ApprovalKind(approval.ApprovalKind)
+	if kind == "" {
+		kind = tool.ApprovalKindDestructiveWrite
+	}
+	actual, _ := tool.BuildApprovalBinding(call, approval.RequestID, kind)
+	bindingMatched := approvalMatchesBindingForJournal(approval, actual)
 	journal.Write("tool_approval_resume", round, map[string]any{
 		"approval_request_id":   approval.RequestID,
+		"approval_kind":         actual.ApprovalKind,
 		"tool_name":             call.Name,
 		"normalized_input_hash": actual.NormalizedInputHash,
 		"path_digest":           actual.PathDigest,
 		"destructive_reason":    destructiveReason,
-		"binding_match":         bindingMatch,
-		"executed":              bindingMatch && !result.NeedsApproval,
+		"binding_match":         bindingMatched,
+		"executed":              bindingMatched && !result.NeedsApproval,
 	})
+}
+
+func approvalMatchesBindingForJournal(approval tool.ApprovalContext, binding tool.ApprovalBinding) bool {
+	kindMatches := approval.ApprovalKind == binding.ApprovalKind ||
+		(binding.ApprovalKind == string(tool.ApprovalKindDestructiveWrite) &&
+			approval.AllowDestructive &&
+			approval.ApprovalKind == "")
+	return approval.RequestID != "" &&
+		kindMatches &&
+		approval.ToolName == binding.ToolName &&
+		approval.NormalizedInputHash == binding.NormalizedInputHash &&
+		approval.PathDigest == binding.PathDigest
 }
 
 func writeApprovalBindingMismatchEvent(ctx context.Context, journal *Journal, round int, call tool.Call) {
@@ -183,9 +198,15 @@ func writeApprovalBindingMismatchEvent(ctx context.Context, journal *Journal, ro
 		return
 	}
 	approval, _ := tool.ApprovalFromContext(ctx)
-	actual, _ := tool.BuildApprovalBinding(call, approval.RequestID)
+	kind := tool.ApprovalKind(approval.ApprovalKind)
+	if kind == "" {
+		kind = tool.ApprovalKindDestructiveWrite
+	}
+	actual, _ := tool.BuildApprovalBinding(call, approval.RequestID, kind)
 	journal.Write("tool_approval_binding_mismatch", round, map[string]any{
 		"approval_request_id":            approval.RequestID,
+		"expected_approval_kind":         approval.ApprovalKind,
+		"actual_approval_kind":           actual.ApprovalKind,
 		"tool_name":                      call.Name,
 		"expected_tool_name":             approval.ToolName,
 		"actual_tool_name":               actual.ToolName,
@@ -205,6 +226,7 @@ func (r *Runtime) runLoop(
 	escalationCount int,
 	journal *Journal,
 ) RunOutcome {
+	ctx = tool.WithReadScope(ctx, readScopeFromBrief(brief))
 	system := BuildWorkSystem(brief, r.cfg.EnvironmentFacts)
 	tools := r.cfg.Registry.ForScope(tool.ScopeWork)
 	permission := tool.Permission(brief.PermissionScope)
@@ -451,7 +473,7 @@ func (r *Runtime) runLoop(
 			if blocked, ok := firstClassificationByAction(classifications, tool.CallActionToolApprovalRequired); ok {
 				blockedCall := blocked.Call
 				messages[len(messages)-1] = filterAssistantMessageForBlockedCallPause(messages[len(messages)-1], blockedCall.ID)
-				packet := buildToolApprovalPacket(brief, blockedCall)
+				packet := buildToolApprovalPacket(brief, blocked)
 				if journal != nil {
 					fields := map[string]any{
 						"task_id":             brief.TaskID,
@@ -459,9 +481,12 @@ func (r *Runtime) runLoop(
 						"name":                blockedCall.Name,
 						"input":               string(blockedCall.Input),
 						"approval_request_id": "",
+						"approval_kind":       blocked.ApprovalKind,
+						"approval_reason":     blocked.ApprovalReason,
 						"destructive_reason":  blocked.DestructiveReason,
 					}
 					if packet.ToolApprovalBinding != nil {
+						fields["binding_approval_kind"] = packet.ToolApprovalBinding.ApprovalKind
 						fields["tool_name"] = packet.ToolApprovalBinding.ToolName
 						fields["normalized_input_hash"] = packet.ToolApprovalBinding.NormalizedInputHash
 						fields["path_digest"] = packet.ToolApprovalBinding.PathDigest
@@ -492,6 +517,15 @@ func (r *Runtime) runLoop(
 
 	report := partialReport(brief, fmt.Sprintf("max tool rounds exhausted (%d)", r.cfg.MaxToolRounds))
 	return RunOutcome{Report: &report}
+}
+
+func readScopeFromBrief(brief protocol.TaskBrief) tool.ReadScope {
+	switch tool.ReadScope(strings.TrimSpace(brief.ReadScope)) {
+	case tool.ReadScopeAll:
+		return tool.ReadScopeAll
+	default:
+		return tool.ReadScopeWorkspace
+	}
 }
 
 func emitToolProgress(cb progress.Callback, calls []tool.Call, round int, taskID string) {
@@ -646,10 +680,16 @@ func firstClassificationByAction(classifications []tool.CallClassification, acti
 	return tool.CallClassification{}, false
 }
 
-func buildToolApprovalPacket(brief protocol.TaskBrief, call tool.Call) protocol.DecisionPacket {
+func buildToolApprovalPacket(brief protocol.TaskBrief, classification tool.CallClassification) protocol.DecisionPacket {
+	call := classification.Call
+	kind := classification.ApprovalKind
+	if kind == "" {
+		kind = tool.ApprovalKindDestructiveWrite
+	}
 	var packetBinding *protocol.ToolApprovalBinding
-	if binding, err := tool.BuildApprovalBinding(call, ""); err == nil {
+	if binding, err := tool.BuildApprovalBinding(call, "", kind); err == nil {
 		packetBinding = &protocol.ToolApprovalBinding{
+			ApprovalKind:        binding.ApprovalKind,
 			ToolName:            binding.ToolName,
 			NormalizedInputHash: binding.NormalizedInputHash,
 			PathDigest:          binding.PathDigest,
@@ -660,8 +700,8 @@ func buildToolApprovalPacket(brief protocol.TaskBrief, call tool.Call) protocol.
 		TaskID:               brief.TaskID,
 		Category:             protocol.CatToolApproval,
 		GoalSummary:          brief.Goal,
-		Question:             toolApprovalQuestion(call),
-		WhyBlocked:           fmt.Sprintf(`Tool %q requires explicit human approval before execution.`, call.Name),
+		Question:             toolApprovalQuestion(classification),
+		WhyBlocked:           toolApprovalWhyBlocked(classification),
 		Options:              []protocol.DecisionOption{{ID: "allow", Summary: "允许执行"}, {ID: "deny", Summary: "拒绝"}},
 		RejectOptionID:       "deny",
 		RecommendedOption:    "allow",
@@ -686,7 +726,11 @@ func buildPermissionEscalationPacket(brief protocol.TaskBrief, call tool.Call) p
 	}
 }
 
-func toolApprovalQuestion(call tool.Call) string {
+func toolApprovalQuestion(classification tool.CallClassification) string {
+	call := classification.Call
+	if classification.ApprovalKind == tool.ApprovalKindSensitiveRead {
+		return sensitiveReadApprovalQuestion(call)
+	}
 	switch strings.TrimSpace(call.Name) {
 	case "bash":
 		command := bashCommandPreview(call.Input)
@@ -744,6 +788,33 @@ func toolApprovalQuestion(call tool.Call) string {
 			"确认执行请点击“允许执行”；取消请点击“拒绝”。",
 		}, "\n")
 	}
+}
+
+func toolApprovalWhyBlocked(classification tool.CallClassification) string {
+	if classification.ApprovalKind == tool.ApprovalKindSensitiveRead {
+		if reason := strings.TrimSpace(classification.ApprovalReason); reason != "" {
+			return fmt.Sprintf(`Tool %q requires explicit sensitive-read approval before execution: %s.`, classification.Call.Name, reason)
+		}
+		return fmt.Sprintf(`Tool %q requires explicit sensitive-read approval before execution.`, classification.Call.Name)
+	}
+	return fmt.Sprintf(`Tool %q requires explicit human approval before execution.`, classification.Call.Name)
+}
+
+func sensitiveReadApprovalQuestion(call tool.Call) string {
+	operation := "读取文件"
+	if strings.TrimSpace(call.Name) == "list_dir" {
+		operation = "列出目录"
+	}
+	return strings.Join([]string{
+		"我准备执行一次敏感读取，尚未执行。",
+		"",
+		"操作：" + operation,
+		"目标：" + toolApprovalPathTarget(call),
+		"原因：目标位于敏感路径或可能包含凭据、密钥、令牌、账号配置等信息。",
+		"影响：确认后，我会把该文件/目录内容作为本次任务证据读取；不会修改任何文件。",
+		"",
+		"确认读取请点击“允许执行”；取消请点击“拒绝”。",
+	}, "\n")
 }
 
 func permissionEscalationQuestion(call tool.Call) string {
