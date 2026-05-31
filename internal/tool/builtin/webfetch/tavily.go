@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"unicode/utf8"
 
 	tavilyapi "github.com/longyisang/emoagent/internal/tool/builtin/tavily"
 )
@@ -139,7 +140,7 @@ func truncateText(text string, maxBytes int) (string, bool) {
 	}
 	var b strings.Builder
 	for _, r := range text {
-		if b.Len()+len(string(r)) > maxBytes {
+		if b.Len()+utf8.RuneLen(r) > maxBytes {
 			return b.String(), true
 		}
 		b.WriteRune(r)

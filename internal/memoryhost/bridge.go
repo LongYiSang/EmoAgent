@@ -273,6 +273,7 @@ func (b *Bridge) applyManualPinIntent(ctx context.Context, segment *storage.Memo
 	if !b.host.ExtractionEnabled() || !b.host.extractionPolicy.TriggerOnManualPin {
 		return nil
 	}
+	policy := b.host.extractionPolicy.normalized()
 	sourceEpisodeID = strings.TrimSpace(sourceEpisodeID)
 	if sourceEpisodeID == "" {
 		return fmt.Errorf("last user episode id is required for manual pin")
@@ -281,7 +282,7 @@ func (b *Bridge) applyManualPinIntent(ctx context.Context, segment *storage.Memo
 	job, enqueued, err := b.queueExtraction(ctx, segment, storage.EnqueueMemoryExtractionJobParams{
 		PersonaID:    personaID,
 		Trigger:      storage.MemoryExtractionTriggerManualPin,
-		Mode:         string(b.host.extractionPolicy.manualPinModeOrDefault()),
+		Mode:         string(policy.ManualPinMode),
 		Priority:     10,
 		EpisodeIDs:   []string{sourceEpisodeID},
 		UntilAt:      segment.LastActivityAt,
@@ -546,13 +547,14 @@ func (b *Bridge) extractFinalizedSegment(ctx context.Context, segment *storage.M
 	if b == nil || b.host == nil || !b.host.ExtractionEnabled() || !b.host.extractionTriggerOnFinalizeSegment() || segment == nil {
 		return
 	}
+	policy := b.host.extractionPolicy.normalized()
 	job, enqueued, err := b.queueExtraction(ctx, segment, storage.EnqueueMemoryExtractionJobParams{
 		PersonaID:    defaultPersonaID(personaID),
 		Trigger:      storage.MemoryExtractionTriggerSessionEnd,
-		Mode:         string(b.host.extractionPolicy.sessionEndModeOrDefault()),
+		Mode:         string(policy.SessionEndMode),
 		Priority:     50,
 		UntilAt:      segment.LastActivityAt,
-		EpisodeLimit: b.host.extractionPolicy.limitOrDefault(),
+		EpisodeLimit: policy.Limit,
 		RequestedBy:  "system",
 	})
 	if err != nil {
@@ -568,7 +570,8 @@ func (b *Bridge) queueExtraction(ctx context.Context, segment *storage.MemorySeg
 	if b == nil || b.host == nil || b.db == nil || segment == nil {
 		return nil, false, fmt.Errorf("memory bridge is not configured")
 	}
-	if !b.host.ExtractionEnabled() || !b.host.extractionPolicy.AsyncEnabled {
+	policy := b.host.extractionPolicy.normalized()
+	if !b.host.ExtractionEnabled() || !policy.AsyncEnabled {
 		return nil, false, nil
 	}
 	params.PersonaID = defaultPersonaID(params.PersonaID)
@@ -579,13 +582,13 @@ func (b *Bridge) queueExtraction(ctx context.Context, segment *storage.MemorySeg
 		params.Scope = storage.MemoryExtractionScopeSegment
 	}
 	if params.Mode == "" {
-		params.Mode = string(b.host.extractionPolicy.sessionEndModeOrDefault())
+		params.Mode = string(policy.SessionEndMode)
 	}
 	if params.EpisodeLimit == 0 {
-		params.EpisodeLimit = b.host.extractionPolicy.limitOrDefault()
+		params.EpisodeLimit = policy.Limit
 	}
 	if params.MaxAttempts == 0 {
-		params.MaxAttempts = b.host.extractionPolicy.normalized().MaxAttempts
+		params.MaxAttempts = policy.MaxAttempts
 	}
 	return b.db.EnqueueMemoryExtractionJob(ctx, params)
 }

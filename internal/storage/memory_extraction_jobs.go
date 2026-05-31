@@ -851,25 +851,7 @@ func memoryExtractionJobSelectSQL() string {
 		FROM memory_extraction_jobs`
 }
 
-func memorySegmentSelectSQL() string {
-	return `
-		SELECT id, chat_session_id, memory_session_id, segment_index,
-		       started_at, last_activity_at, COALESCE(finalized_at, ''),
-		       COALESCE(finalize_reason, ''), COALESCE(summary, ''),
-		       COALESCE(last_user_episode_id, ''), COALESCE(last_assistant_episode_id, ''),
-		       COALESCE(last_extracted_at, ''), COALESCE(last_extracted_until_at, ''),
-		       COALESCE(last_extracted_user_episode_id, ''), COALESCE(last_extracted_assistant_episode_id, ''),
-		       COALESCE(last_extraction_job_id, ''), COALESCE(last_extraction_error_code, ''),
-		       COALESCE(last_extraction_error_message, ''), COALESCE(extraction_attempt_count, 0),
-		       COALESCE(extraction_status, 'never')
-		FROM memory_segments`
-}
-
-type memoryExtractionJobScanner interface {
-	Scan(dest ...any) error
-}
-
-func scanMemoryExtractionJob(row memoryExtractionJobScanner) (*MemoryExtractionJob, error) {
+func scanMemoryExtractionJob(row scanner) (*MemoryExtractionJob, error) {
 	var job MemoryExtractionJob
 	var force int
 	var episodeIDsJSON string

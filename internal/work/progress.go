@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	contextutil "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/llm"
@@ -180,7 +181,7 @@ func buildProgressRepairRequest(req llm.ChatRequest, resp *llm.ChatResponse, par
 		InvalidResponse string `json:"invalid_response"`
 	}{
 		Error:           parseErr.Error(),
-		InvalidResponse: truncateProgressRepairContent(progressResponseText(resp)),
+		InvalidResponse: truncateProgressRepairContent(strings.TrimSpace(chatResponseText(resp))),
 	})
 	if err != nil {
 		return llm.ChatRequest{}, fmt.Errorf("marshal progress repair payload: %w", err)
@@ -199,22 +200,6 @@ func buildProgressRepairRequest(req llm.ChatRequest, resp *llm.ChatResponse, par
 	stream := false
 	repairReq.Params.Stream = &stream
 	return repairReq, nil
-}
-
-func progressResponseText(resp *llm.ChatResponse) string {
-	if resp == nil {
-		return ""
-	}
-	if content := strings.TrimSpace(resp.Content); content != "" {
-		return content
-	}
-	var b strings.Builder
-	for _, block := range resp.ContentBlocks {
-		if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
-			b.WriteString(block.Text)
-		}
-	}
-	return strings.TrimSpace(b.String())
 }
 
 func truncateProgressRepairContent(content string) string {
@@ -304,7 +289,7 @@ func validateWorkProgressContent(progress WorkProgress) error {
 	values = append(values, progress.ErrorsEncountered...)
 	values = append(values, progress.DecisionsReceived...)
 	for _, value := range values {
-		if len([]rune(value)) > 1000 {
+		if utf8.RuneCountInString(value) > 1000 {
 			return fmt.Errorf("work_progress text item exceeds 1000 runes")
 		}
 		if containsWorkProtocolLeak(value) {

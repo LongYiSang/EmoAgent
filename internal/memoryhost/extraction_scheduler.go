@@ -69,10 +69,13 @@ func (s *IdleExtractionScheduler) Run(ctx context.Context) {
 }
 
 func (s *IdleExtractionScheduler) RunOnce(ctx context.Context) (int, error) {
-	if s == nil || s.host == nil || s.db == nil || !s.host.ExtractionEnabled() || !s.host.extractionPolicy.AsyncEnabled {
+	if s == nil || s.host == nil || s.db == nil || !s.host.ExtractionEnabled() {
 		return 0, nil
 	}
 	policy := s.host.extractionPolicy.normalized()
+	if !policy.AsyncEnabled {
+		return 0, nil
+	}
 	segments, err := s.db.ScanEligibleMemorySegments(ctx, storage.ScanEligibleMemorySegmentsParams{
 		Now:                      time.Now().UTC(),
 		IdleAfter:                s.cfg.IdleAfter,
@@ -98,7 +101,7 @@ func (s *IdleExtractionScheduler) RunOnce(ctx context.Context) (int, error) {
 			RequestedBy:     "system",
 			Priority:        100,
 			UntilAt:         segment.LastActivityAt,
-			EpisodeLimit:    policy.limitOrDefault(),
+			EpisodeLimit:    policy.Limit,
 			MaxAttempts:     policy.MaxAttempts,
 			RunAfter:        time.Now().UTC(),
 		})

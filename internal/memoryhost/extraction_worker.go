@@ -115,7 +115,7 @@ func (w *ExtractionWorker) runJob(ctx context.Context, job storage.MemoryExtract
 	if err != nil {
 		return err
 	}
-	mirrorJSON, mirrorErr := w.runMirrorSyncAfterApply(ctx, job, result, status)
+	mirrorJSON, mirrorErr := w.runMirrorSyncAfterApply(ctx, job, status)
 	if mirrorErr != nil {
 		return w.recordJobFailure(ctx, job, result, mirrorErr)
 	}
@@ -138,7 +138,7 @@ func (w *ExtractionWorker) buildRunExtractionRequest(job storage.MemoryExtractio
 		PersonaID:     defaultPersonaID(job.PersonaID),
 		SessionID:     &memorySessionID,
 		Trigger:       mapExtractionTrigger(job.Trigger),
-		Timezone:      policy.timezoneOrDefault(),
+		Timezone:      policy.Timezone,
 		Mode:          memorycore.ExtractionRunMode(job.Mode),
 		SemanticDedup: policy.SemanticDedup,
 		Force:         job.Force,
@@ -151,10 +151,10 @@ func (w *ExtractionWorker) buildRunExtractionRequest(job storage.MemoryExtractio
 		},
 	}
 	if req.Mode == "" {
-		req.Mode = policy.sessionEndModeOrDefault()
+		req.Mode = policy.SessionEndMode
 	}
 	if req.Build.Limit == 0 {
-		req.Build.Limit = policy.limitOrDefault()
+		req.Build.Limit = policy.Limit
 	}
 	if req.Trigger == memorycore.ExtractionTriggerManualPin {
 		req.Policy.ManualPin = boolPtr(true)
@@ -204,7 +204,7 @@ func (w *ExtractionWorker) retryDelay(attempt int) time.Duration {
 	return delay
 }
 
-func (w *ExtractionWorker) runMirrorSyncAfterApply(ctx context.Context, job storage.MemoryExtractionJob, result *memorycore.ExtractionRunResult, status string) (string, error) {
+func (w *ExtractionWorker) runMirrorSyncAfterApply(ctx context.Context, job storage.MemoryExtractionJob, status string) (string, error) {
 	if !w.cfg.MirrorSyncAfterApply || status == storage.MemoryExtractionJobStatusSkipped || memorycore.ExtractionRunMode(job.Mode) != memorycore.ExtractionRunModeApply {
 		return "", nil
 	}
@@ -224,7 +224,6 @@ func (w *ExtractionWorker) runMirrorSyncAfterApply(ctx context.Context, job stor
 	if err != nil {
 		return "", err
 	}
-	_ = result
 	return string(payload), nil
 }
 

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Config holds shared Tavily HTTP client settings.
@@ -103,7 +104,7 @@ func truncateForError(text string, maxBytes int) string {
 	}
 	var b strings.Builder
 	for _, r := range text {
-		if b.Len()+len(string(r)) > maxBytes {
+		if b.Len()+utf8.RuneLen(r) > maxBytes {
 			return b.String()
 		}
 		b.WriteRune(r)

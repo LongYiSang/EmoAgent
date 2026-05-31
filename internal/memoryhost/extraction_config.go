@@ -130,22 +130,6 @@ func (p ExtractionHostPolicy) normalized() ExtractionHostPolicy {
 	return p
 }
 
-func (p ExtractionHostPolicy) sessionEndModeOrDefault() memorycore.ExtractionRunMode {
-	return p.normalized().SessionEndMode
-}
-
-func (p ExtractionHostPolicy) manualPinModeOrDefault() memorycore.ExtractionRunMode {
-	return p.normalized().ManualPinMode
-}
-
-func (p ExtractionHostPolicy) timezoneOrDefault() string {
-	return p.normalized().Timezone
-}
-
-func (p ExtractionHostPolicy) limitOrDefault() int {
-	return p.normalized().Limit
-}
-
 func extractionHostPolicyFromConfig(c ExtractionConfig) ExtractionHostPolicy {
 	c = c.normalized()
 	return ExtractionHostPolicy{

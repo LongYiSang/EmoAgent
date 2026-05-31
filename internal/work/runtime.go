@@ -919,28 +919,18 @@ func filterAssistantMessageForBlockedCallPause(message llm.Message, blockedCallI
 }
 
 func pickDecisionCall(calls []tool.Call) (tool.Call, bool, bool) {
-	var picked tool.Call
-	count := 0
-	for _, call := range calls {
-		if call.Name != "request_decision" {
-			continue
-		}
-		if count == 0 {
-			picked = call
-		}
-		count++
-	}
-	if count == 0 {
-		return tool.Call{}, false, false
-	}
-	return picked, true, len(calls) > 1
+	return pickNamedToolCall(calls, "request_decision")
 }
 
 func pickFinishTaskCall(calls []tool.Call) (tool.Call, bool, bool) {
+	return pickNamedToolCall(calls, "finish_task")
+}
+
+func pickNamedToolCall(calls []tool.Call, name string) (tool.Call, bool, bool) {
 	var picked tool.Call
 	count := 0
 	for _, call := range calls {
-		if call.Name != "finish_task" {
+		if call.Name != name {
 			continue
 		}
 		if count == 0 {

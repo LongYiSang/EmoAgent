@@ -343,7 +343,7 @@ func (w *WorkConfig) ApplyDefaults() {
 
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() *Config {
-	return &Config{
+	cfg := &Config{
 		Server: ServerConfig{
 			Host: "127.0.0.1",
 			Port: 8080,
@@ -359,23 +359,6 @@ func DefaultConfig() *Config {
 			KeepRecentUserTurns:  6,
 			ToolResultSoftTokens: 1000,
 			ToolResultHardTokens: 3000,
-		},
-		Work: WorkConfig{
-			MaxToolRounds:            15,
-			MaxInputTokens:           100000,
-			CompressSoftRatio:        0.7,
-			CompressKeepRounds:       2,
-			ToolSnipSoftTokens:       500,
-			ToolSnipHardTokens:       2000,
-			JournalDir:               "./logs/work",
-			MaxEscalationsPerTask:    3,
-			PendingDecisionTTL:       30 * time.Minute,
-			SoftTTL:                  30 * time.Minute,
-			HardTTL:                  time.Hour,
-			ArchiveTTL:               24 * time.Hour,
-			ResumeClaimTTL:           10 * time.Minute,
-			DeciderCleanupInterval:   5 * time.Minute,
-			PendingSnapshotMaxTokens: 60000,
 		},
 		DB: DBConfig{
 			Path: "./data/emo.db",
@@ -478,6 +461,8 @@ func DefaultConfig() *Config {
 			MaxOutputBytes: 256 << 10,
 		},
 	}
+	cfg.Work.ApplyDefaults()
+	return cfg
 }
 
 // Load reads a YAML config file and returns a Config.

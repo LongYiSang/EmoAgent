@@ -65,23 +65,8 @@ func NewWriteFileTool(projectRoot string) (tool.Spec, tool.Handler) {
 			}
 		}
 
-		// Atomic write: temp file in same directory → rename.
-		tmp, err := os.CreateTemp(parent, ".write_file_*")
-		if err != nil {
-			return nil, fmt.Errorf("write_file: create temp: %w", err)
-		}
-		tmpName := tmp.Name()
-		defer func() { _ = os.Remove(tmpName) }()
-
-		if _, err := tmp.WriteString(in.Content); err != nil {
-			_ = tmp.Close()
-			return nil, fmt.Errorf("write_file: write temp: %w", err)
-		}
-		if err := tmp.Close(); err != nil {
-			return nil, fmt.Errorf("write_file: close temp: %w", err)
-		}
-		if err := os.Rename(tmpName, fullPath); err != nil {
-			return nil, fmt.Errorf("write_file: rename: %w", err)
+		if err := atomicWriteString(fullPath, in.Content, ".write_file_*"); err != nil {
+			return nil, fmt.Errorf("write_file: %w", err)
 		}
 
 		return json.Marshal(map[string]any{

@@ -456,14 +456,10 @@ func (h *APIHandler) HandleGetProgressPhrasesDefaults(w http.ResponseWriter, r *
 
 func (h *APIHandler) HandleListSessions(w http.ResponseWriter, r *http.Request) {
 	persona := strings.TrimSpace(r.URL.Query().Get("persona"))
-	limit := 20
-	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed <= 0 {
-			writeError(w, http.StatusBadRequest, "invalid limit")
-			return
-		}
-		limit = parsed
+	limit, ok := parsePositiveLimit(r, 20)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid limit")
+		return
 	}
 
 	sessions, err := h.app.ListSessions(r.Context(), persona, limit)
@@ -540,14 +536,10 @@ func (h *APIHandler) HandleQueueMemoryExtraction(w http.ResponseWriter, r *http.
 }
 
 func (h *APIHandler) HandleListMemoryExtractions(w http.ResponseWriter, r *http.Request) {
-	limit := 20
-	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed <= 0 {
-			writeError(w, http.StatusBadRequest, "invalid limit")
-			return
-		}
-		limit = parsed
+	limit, ok := parsePositiveLimit(r, 20)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid limit")
+		return
 	}
 	jobs, err := h.app.ListMemoryExtractions(r.Context(), MemoryExtractionListRequest{
 		SessionID: strings.TrimSpace(r.URL.Query().Get("session_id")),
@@ -790,6 +782,18 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func parsePositiveLimit(r *http.Request, defaultLimit int) (int, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get("limit"))
+	if raw == "" {
+		return defaultLimit, true
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil || parsed <= 0 {
+		return 0, false
+	}
+	return parsed, true
 }
 
 func readJSON(r *http.Request, target interface{}) error {

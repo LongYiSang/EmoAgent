@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 )
 
 type anthropicClient struct {
@@ -238,14 +239,14 @@ func (c *anthropicClient) ChatStream(ctx context.Context, req ChatRequest, cb St
 	defer resp.Body.Close()
 
 	decoder := NewSSEDecoder(resp.Body)
-	var accumulated string
+	var accumulated strings.Builder
 	var chatResp ChatResponse
 
 	// State for accumulating tool_use blocks during streaming.
 	type pendingToolUse struct {
 		id       string
 		name     string
-		inputBuf string // raw JSON accumulated from input_json_delta
+		inputBuf strings.Builder // raw JSON accumulated from input_json_delta
 	}
 	var currentBlock *pendingToolUse
 
@@ -290,27 +291,28 @@ func (c *anthropicClient) ChatStream(ctx context.Context, req ChatRequest, cb St
 			switch delta.Type {
 			case "text_delta":
 				if delta.Text != "" {
-					accumulated += delta.Text
+					accumulated.WriteString(delta.Text)
 					if cb != nil {
 						cb(StreamEvent{Type: "text", Content: delta.Text})
 					}
 				}
 			case "input_json_delta":
 				if currentBlock != nil && delta.PartialJSON != "" {
-					currentBlock.inputBuf += delta.PartialJSON
+					currentBlock.inputBuf.WriteString(delta.PartialJSON)
 				}
 			}
 
 		case "content_block_stop":
 			if currentBlock != nil {
 				// Finalize the accumulated tool_use block.
+				input := currentBlock.inputBuf.String()
 				block := ContentBlock{
 					Type:  "tool_use",
 					ID:    currentBlock.id,
 					Name:  currentBlock.name,
-					Input: json.RawMessage(currentBlock.inputBuf),
+					Input: json.RawMessage(input),
 				}
-				if currentBlock.inputBuf == "" {
+				if input == "" {
 					block.Input = json.RawMessage("{}")
 				}
 				chatResp.ContentBlocks = append(chatResp.ContentBlocks, block)
@@ -345,13 +347,14 @@ func (c *anthropicClient) ChatStream(ctx context.Context, req ChatRequest, cb St
 	}
 
 	// Add text block to ContentBlocks if there was accumulated text.
-	if accumulated != "" {
-		textBlock := ContentBlock{Type: "text", Text: accumulated}
+	content := accumulated.String()
+	if content != "" {
+		textBlock := ContentBlock{Type: "text", Text: content}
 		// Prepend text block before any tool_use blocks.
 		chatResp.ContentBlocks = append([]ContentBlock{textBlock}, chatResp.ContentBlocks...)
 	}
 
-	chatResp.Content = accumulated
+	chatResp.Content = content
 	return &chatResp, nil
 }
 

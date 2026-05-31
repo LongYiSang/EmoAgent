@@ -131,8 +131,8 @@ func (d *DB) CreateMemorySegment(ctx context.Context, params CreateMemorySegment
 	return d.GetMemorySegment(ctx, params.ID)
 }
 
-func (d *DB) GetCurrentMemorySegment(ctx context.Context, chatSessionID string) (*MemorySegment, error) {
-	row := d.db.QueryRowContext(ctx, `
+func memorySegmentSelectSQL() string {
+	return `
 		SELECT id, chat_session_id, memory_session_id, segment_index,
 		       started_at, last_activity_at, COALESCE(finalized_at, ''),
 		       COALESCE(finalize_reason, ''), COALESCE(summary, ''),
@@ -142,24 +142,18 @@ func (d *DB) GetCurrentMemorySegment(ctx context.Context, chatSessionID string) 
 		       COALESCE(last_extraction_job_id, ''), COALESCE(last_extraction_error_code, ''),
 		       COALESCE(last_extraction_error_message, ''), COALESCE(extraction_attempt_count, 0),
 		       COALESCE(extraction_status, 'never')
-		FROM memory_segments
+		FROM memory_segments`
+}
+
+func (d *DB) GetCurrentMemorySegment(ctx context.Context, chatSessionID string) (*MemorySegment, error) {
+	row := d.db.QueryRowContext(ctx, memorySegmentSelectSQL()+`
 		WHERE chat_session_id = ? AND finalized_at IS NULL
 	`, chatSessionID)
 	return scanMemorySegment(row)
 }
 
 func (d *DB) GetMemorySegment(ctx context.Context, segmentID string) (*MemorySegment, error) {
-	row := d.db.QueryRowContext(ctx, `
-		SELECT id, chat_session_id, memory_session_id, segment_index,
-		       started_at, last_activity_at, COALESCE(finalized_at, ''),
-		       COALESCE(finalize_reason, ''), COALESCE(summary, ''),
-		       COALESCE(last_user_episode_id, ''), COALESCE(last_assistant_episode_id, ''),
-		       COALESCE(last_extracted_at, ''), COALESCE(last_extracted_until_at, ''),
-		       COALESCE(last_extracted_user_episode_id, ''), COALESCE(last_extracted_assistant_episode_id, ''),
-		       COALESCE(last_extraction_job_id, ''), COALESCE(last_extraction_error_code, ''),
-		       COALESCE(last_extraction_error_message, ''), COALESCE(extraction_attempt_count, 0),
-		       COALESCE(extraction_status, 'never')
-		FROM memory_segments
+	row := d.db.QueryRowContext(ctx, memorySegmentSelectSQL()+`
 		WHERE id = ?
 	`, segmentID)
 	return scanMemorySegment(row)
@@ -295,11 +289,7 @@ func (d *DB) UpdateMemorySegmentExtractionCompleted(ctx context.Context, segment
 	return nil
 }
 
-type memorySegmentScanner interface {
-	Scan(dest ...any) error
-}
-
-func scanMemorySegment(row memorySegmentScanner) (*MemorySegment, error) {
+func scanMemorySegment(row scanner) (*MemorySegment, error) {
 	var segment MemorySegment
 	if err := row.Scan(
 		&segment.ID,

@@ -114,6 +114,25 @@ func TestBash_StdoutTruncation(t *testing.T) {
 	}
 }
 
+func TestCappedBufferWriteReturnsOriginalLengthWhenTruncated(t *testing.T) {
+	var buf cappedBuffer
+	buf.cap = 3
+
+	n, err := buf.Write([]byte("hello"))
+	if err != nil {
+		t.Fatalf("Write error: %v", err)
+	}
+	if n != len("hello") {
+		t.Fatalf("Write returned %d, want %d", n, len("hello"))
+	}
+	if got := buf.String(); got != "hel" {
+		t.Fatalf("buffer = %q, want hel", got)
+	}
+	if !buf.truncated {
+		t.Fatal("truncated should be true")
+	}
+}
+
 func TestBash_Timeout(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping timeout test in short mode")

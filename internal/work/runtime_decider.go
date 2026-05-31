@@ -133,7 +133,7 @@ func parseRuntimeDecisionResponse(resp *llm.ChatResponse, packet protocol.Decisi
 		return RuntimeDecision{}, fmt.Errorf("runtime decider response is nil")
 	}
 	var parsed runtimeDecisionPayload
-	if err := decodeStrictJSON(json.RawMessage(stripCodeFence(runtimeDeciderResponseText(resp))), &parsed); err != nil {
+	if err := decodeStrictJSON(json.RawMessage(stripCodeFence(chatResponseText(resp))), &parsed); err != nil {
 		return RuntimeDecision{}, fmt.Errorf("decode runtime decision: %w", err)
 	}
 	if parsed.Escalate {
@@ -176,7 +176,7 @@ func buildRuntimeDeciderRepairRequest(req llm.ChatRequest, resp *llm.ChatRespons
 		InvalidResponse string `json:"invalid_response"`
 	}{
 		Error:           parseErr.Error(),
-		InvalidResponse: runtimeDeciderResponseText(resp),
+		InvalidResponse: chatResponseText(resp),
 	})
 	if err != nil {
 		return llm.ChatRequest{}, fmt.Errorf("marshal runtime decider repair payload: %w", err)
@@ -189,20 +189,4 @@ func buildRuntimeDeciderRepairRequest(req llm.ChatRequest, resp *llm.ChatRespons
 	})
 	repairReq.Temperature = 0
 	return repairReq, nil
-}
-
-func runtimeDeciderResponseText(resp *llm.ChatResponse) string {
-	if resp == nil {
-		return ""
-	}
-	if strings.TrimSpace(resp.Content) != "" {
-		return resp.Content
-	}
-	var b strings.Builder
-	for _, block := range resp.ContentBlocks {
-		if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
-			b.WriteString(block.Text)
-		}
-	}
-	return strings.TrimSpace(b.String())
 }

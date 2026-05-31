@@ -96,24 +96,8 @@ func NewEditFileTool(projectRoot string) (tool.Spec, tool.Handler) {
 			replacements = 1
 		}
 
-		// Atomic write back.
-		parent := filepath.Dir(fullPath)
-		tmp, err := os.CreateTemp(parent, ".edit_file_*")
-		if err != nil {
-			return nil, fmt.Errorf("edit_file: create temp: %w", err)
-		}
-		tmpName := tmp.Name()
-		defer func() { _ = os.Remove(tmpName) }()
-
-		if _, err := tmp.WriteString(newContent); err != nil {
-			_ = tmp.Close()
-			return nil, fmt.Errorf("edit_file: write temp: %w", err)
-		}
-		if err := tmp.Close(); err != nil {
-			return nil, fmt.Errorf("edit_file: close temp: %w", err)
-		}
-		if err := os.Rename(tmpName, fullPath); err != nil {
-			return nil, fmt.Errorf("edit_file: rename: %w", err)
+		if err := atomicWriteString(fullPath, newContent, ".edit_file_*"); err != nil {
+			return nil, fmt.Errorf("edit_file: %w", err)
 		}
 
 		return json.Marshal(map[string]any{

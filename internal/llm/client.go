@@ -377,8 +377,8 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 	}
 
 	decoder := NewSSEDecoder(resp.Body)
-	var accumulated string
-	var accumulatedReasoning string
+	var accumulated strings.Builder
+	var accumulatedReasoning strings.Builder
 	var chatResp ChatResponse
 
 	// State for accumulating tool calls during streaming.
@@ -386,7 +386,7 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 	type pendingToolCall struct {
 		id      string
 		name    string
-		argsBuf string
+		argsBuf strings.Builder
 	}
 	pendingCalls := make(map[int]*pendingToolCall)
 
@@ -414,14 +414,14 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 			// Reasoning content delta (thinking models).
 			if choice.Delta.ReasoningContent != nil && *choice.Delta.ReasoningContent != "" {
 				delta := *choice.Delta.ReasoningContent
-				accumulatedReasoning += delta
+				accumulatedReasoning.WriteString(delta)
 				if cb != nil {
 					cb(StreamEvent{Type: "reasoning", ReasoningContent: delta})
 				}
 			}
 			if c.reasoningResponseStyle == ReasoningResponseMessageReasoning && choice.Delta.Reasoning != nil && *choice.Delta.Reasoning != "" {
 				delta := *choice.Delta.Reasoning
-				accumulatedReasoning += delta
+				accumulatedReasoning.WriteString(delta)
 				if cb != nil {
 					cb(StreamEvent{Type: "reasoning", ReasoningContent: delta})
 				}
@@ -430,7 +430,7 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 			// Text delta.
 			if choice.Delta.Content != nil && *choice.Delta.Content != "" {
 				delta := *choice.Delta.Content
-				accumulated += delta
+				accumulated.WriteString(delta)
 				if cb != nil {
 					cb(StreamEvent{Type: "text", Content: delta})
 				}
@@ -451,7 +451,7 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 					p.name = tc.Function.Name
 				}
 				if tc.Function.Arguments != "" {
-					p.argsBuf += tc.Function.Arguments
+					p.argsBuf.WriteString(tc.Function.Arguments)
 				}
 			}
 
@@ -471,10 +471,11 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 	}
 
 	// Build ContentBlocks from accumulated state.
-	if accumulated != "" {
+	content := accumulated.String()
+	if content != "" {
 		chatResp.ContentBlocks = append(chatResp.ContentBlocks, ContentBlock{
 			Type: "text",
-			Text: accumulated,
+			Text: content,
 		})
 	}
 
@@ -486,8 +487,9 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 	sort.Ints(indexes)
 	for _, idx := range indexes {
 		p := pendingCalls[idx]
-		input := json.RawMessage(p.argsBuf)
-		if p.argsBuf == "" {
+		args := p.argsBuf.String()
+		input := json.RawMessage(args)
+		if args == "" {
 			input = json.RawMessage("{}")
 		}
 		block := ContentBlock{
@@ -506,8 +508,8 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 		cb(StreamEvent{Done: true})
 	}
 
-	chatResp.Content = accumulated
-	chatResp.ReasoningContent = accumulatedReasoning
+	chatResp.Content = content
+	chatResp.ReasoningContent = accumulatedReasoning.String()
 	return &chatResp, nil
 }
 

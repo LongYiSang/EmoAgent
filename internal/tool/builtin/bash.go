@@ -192,10 +192,11 @@ type cappedBuffer struct {
 }
 
 func (c *cappedBuffer) Write(p []byte) (int, error) {
+	origLen := len(p)
 	remaining := c.cap - c.written
 	if remaining <= 0 {
 		c.truncated = true
-		return len(p), nil // discard
+		return origLen, nil // discard
 	}
 	if len(p) > remaining {
 		c.truncated = true
@@ -203,7 +204,7 @@ func (c *cappedBuffer) Write(p []byte) (int, error) {
 	}
 	n, err := c.buf.Write(p)
 	c.written += n
-	return len(p), err // report full p consumed even if we truncated
+	return origLen, err // report full p consumed even if we truncated
 }
 
 func (c *cappedBuffer) String() string {
