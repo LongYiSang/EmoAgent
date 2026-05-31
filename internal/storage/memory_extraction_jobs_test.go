@@ -319,6 +319,42 @@ func TestScanEligibleMemorySegmentsForIdleExtraction(t *testing.T) {
 	}
 }
 
+func TestScanEligibleMemorySegmentsSkipsExhaustedFailedSegments(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t)
+	now := time.Now().UTC()
+	idleAt := now.Add(-20 * time.Minute).Format(time.RFC3339Nano)
+
+	failed := createExtractionJobSegment(t, db, "segment-failed-exhausted", "chat-failed-exhausted", "memory-failed-exhausted")
+	setSegmentActivityForTest(t, db, failed.ID, idleAt, idleAt, "", MemorySegmentExtractionStatusFailed)
+	_, err := db.SqlDB().Exec(`
+		UPDATE memory_segments
+		SET extraction_attempt_count = 3
+		WHERE id = ?
+	`, failed.ID)
+	if err != nil {
+		t.Fatalf("set segment attempts: %v", err)
+	}
+
+	got, err := db.ScanEligibleMemorySegments(ctx, ScanEligibleMemorySegmentsParams{
+		Now:                      now,
+		IdleAfter:                15 * time.Minute,
+		IncludeActiveSegments:    true,
+		IncludeFinalizedSegments: true,
+		MinEpisodeCount:          2,
+		MaxFailedAttempts:        3,
+		Limit:                    10,
+	})
+	if err != nil {
+		t.Fatalf("ScanEligibleMemorySegments: %v", err)
+	}
+	for _, segment := range got {
+		if segment.ID == failed.ID {
+			t.Fatalf("eligible ids include exhausted failed segment: %#v", got)
+		}
+	}
+}
+
 func createExtractionJobSegment(t *testing.T, db *DB, segmentID string, chatSessionID string, memorySessionID string) *MemorySegment {
 	t.Helper()
 	ctx := context.Background()

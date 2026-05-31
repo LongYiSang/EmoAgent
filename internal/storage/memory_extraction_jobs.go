@@ -130,6 +130,7 @@ type ScanEligibleMemorySegmentsParams struct {
 	IncludeActiveSegments    bool
 	IncludeFinalizedSegments bool
 	MinEpisodeCount          int
+	MaxFailedAttempts        int
 	Limit                    int
 }
 
@@ -582,6 +583,11 @@ func (d *DB) ScanEligibleMemorySegments(ctx context.Context, params ScanEligible
 		  )
 		  AND COALESCE(extraction_status, 'never') NOT IN ('pending', 'running')
 		  AND (
+		      COALESCE(extraction_status, 'never') != 'failed'
+		      OR ? <= 0
+		      OR COALESCE(extraction_attempt_count, 0) < ?
+		  )
+		  AND (
 		      (CASE WHEN COALESCE(last_user_episode_id, '') = '' THEN 0 ELSE 1 END) +
 		      (CASE WHEN COALESCE(last_assistant_episode_id, '') = '' THEN 0 ELSE 1 END)
 		  ) >= ?
@@ -591,7 +597,7 @@ func (d *DB) ScanEligibleMemorySegments(ctx context.Context, params ScanEligible
 		        AND j.status IN ('pending', 'running')
 		  )
 	`
-	args := []any{idleBefore, params.MinEpisodeCount}
+	args := []any{idleBefore, params.MaxFailedAttempts, params.MaxFailedAttempts, params.MinEpisodeCount}
 	if params.IncludeActiveSegments && !params.IncludeFinalizedSegments {
 		query += " AND finalized_at IS NULL"
 	}

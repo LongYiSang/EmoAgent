@@ -72,19 +72,20 @@ func (s *IdleExtractionScheduler) RunOnce(ctx context.Context) (int, error) {
 	if s == nil || s.host == nil || s.db == nil || !s.host.ExtractionEnabled() || !s.host.extractionPolicy.AsyncEnabled {
 		return 0, nil
 	}
+	policy := s.host.extractionPolicy.normalized()
 	segments, err := s.db.ScanEligibleMemorySegments(ctx, storage.ScanEligibleMemorySegmentsParams{
 		Now:                      time.Now().UTC(),
 		IdleAfter:                s.cfg.IdleAfter,
 		IncludeActiveSegments:    s.cfg.IncludeActiveSegments,
 		IncludeFinalizedSegments: s.cfg.IncludeFinalizedSegments,
 		MinEpisodeCount:          s.cfg.MinEpisodeCount,
+		MaxFailedAttempts:        policy.MaxAttempts,
 		Limit:                    s.cfg.MaxSegmentsPerSweep,
 	})
 	if err != nil {
 		return 0, err
 	}
 	queued := 0
-	policy := s.host.extractionPolicy.normalized()
 	for _, segment := range segments {
 		job, enqueued, err := s.db.EnqueueMemoryExtractionJob(ctx, storage.EnqueueMemoryExtractionJobParams{
 			PersonaID:       defaultPersonaID(segmentPersona(&segment, s.db, ctx)),
