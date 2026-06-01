@@ -547,6 +547,9 @@ func (b *Bridge) extractFinalizedSegment(ctx context.Context, segment *storage.M
 	if b == nil || b.host == nil || !b.host.ExtractionEnabled() || !b.host.extractionTriggerOnFinalizeSegment() || segment == nil {
 		return
 	}
+	if strings.TrimSpace(segment.LastUserEpisodeID) == "" && strings.TrimSpace(segment.LastAssistantEpisodeID) == "" {
+		return
+	}
 	policy := b.host.extractionPolicy.normalized()
 	job, enqueued, err := b.queueExtraction(ctx, segment, storage.EnqueueMemoryExtractionJobParams{
 		PersonaID:    defaultPersonaID(personaID),

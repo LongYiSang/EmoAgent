@@ -128,6 +128,54 @@ func TestExtractionWorkerRetriesFailureWithSanitizedError(t *testing.T) {
 	}
 }
 
+func TestExtractionWorkerStoresCodedErrorMessageWhenResultIsNil(t *testing.T) {
+	fixture := openFacadeBridgeFixture(t, "chat-worker-coded-fail", &fakeMemoryService{
+		runExtractionErr: codedExtractionTestError{
+			code:    "build_request_failed",
+			message: "could not build extraction request",
+		},
+	})
+	job := enqueueWorkerJob(t, fixture, storage.MemoryExtractionTriggerSessionEnd)
+
+	worker := NewExtractionWorker(fixture.serviceHost(), fixture.db, testMemoryLogger(), ExtractionWorkerConfig{
+		WorkerID:       "worker-test",
+		ClaimLimit:     1,
+		ClaimTTL:       time.Minute,
+		RetryBaseDelay: time.Minute,
+		RetryMaxDelay:  time.Minute,
+	})
+	if processed, err := worker.RunOnce(fixture.ctx); err != nil || processed != 1 {
+		t.Fatalf("RunOnce processed=%d err=%v, want 1 nil", processed, err)
+	}
+	failed, err := fixture.db.GetMemoryExtractionJob(fixture.ctx, job.ID)
+	if err != nil {
+		t.Fatalf("GetMemoryExtractionJob: %v", err)
+	}
+	if failed.Status != storage.MemoryExtractionJobStatusPending || failed.ErrorCode != "build_request_failed" || failed.ErrorMessage != "could not build extraction request" {
+		t.Fatalf("failed job = %#v, want pending retry with coded sanitized message", failed)
+	}
+	segment, err := fixture.db.GetMemorySegment(fixture.ctx, fixture.segment.SegmentID)
+	if err != nil {
+		t.Fatalf("GetMemorySegment: %v", err)
+	}
+	if segment.LastExtractionErrorCode != "build_request_failed" || segment.LastExtractionErrorMessage != "could not build extraction request" {
+		t.Fatalf("segment = %#v, want coded sanitized error", segment)
+	}
+}
+
+type codedExtractionTestError struct {
+	code    string
+	message string
+}
+
+func (e codedExtractionTestError) Error() string {
+	return e.message
+}
+
+func (e codedExtractionTestError) ErrorCode() string {
+	return e.code
+}
+
 func TestExtractionWorkerMirrorFailureDoesNotFailExtractionByDefault(t *testing.T) {
 	fixture := openFacadeBridgeFixture(t, "chat-worker-mirror", &fakeMemoryService{
 		runExtractionResult: &memorycore.ExtractionRunResult{

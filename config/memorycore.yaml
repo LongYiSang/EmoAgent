@@ -107,6 +107,27 @@ semantic_ops:
   forget:
     preview_enabled: true
     execute_enabled: true
+  curation:
+    enabled: true
+    mode: apply
+    max_new_facts_per_run: 100
+    candidate_limit_per_fact: 20
+    max_facts_per_group: 8
+    min_auto_apply_confidence: 0.88
+    raw_log:
+      enabled: true
+      directory: "D:/Dev/Project/Agent/EmoAgent/data/raw_log_curation"
+    llm:
+      provider_id: llm_main
+      model: deepseek-v4-flash
+      max_tokens: 8192
+      response_format: json_object
+      timeout_ms: 60000
+      thinking:
+        type: disabled
+    candidate_retrieval:
+      mode: mirror_first
+      mirror_min_similarity: 0.70
 
 sidecar:
   enabled: true

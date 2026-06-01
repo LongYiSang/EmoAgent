@@ -99,6 +99,9 @@ func TestBridgeFinalizeSegmentQueuesExtractionAndDoesNotRunSynchronously(t *test
 		runExtractionErr: errors.New("raw provider failed with user text 我喜欢手冲咖啡"),
 	})
 
+	if _, err := fixture.bridge.AppendUserEpisode(fixture.ctx, fixture.segment.SegmentID, "msg-user", "今天喝了咖啡"); err != nil {
+		t.Fatalf("AppendUserEpisode: %v", err)
+	}
 	if err := fixture.bridge.FinalizeSegment(fixture.ctx, fixture.segment.SegmentID, "session_end", "summary"); err != nil {
 		t.Fatalf("FinalizeSegment: %v", err)
 	}
@@ -121,6 +124,27 @@ func TestBridgeFinalizeSegmentQueuesExtractionAndDoesNotRunSynchronously(t *test
 	}
 	if job.Mode != string(memorycore.ExtractionRunModeApply) || job.MemorySessionID != fixture.segment.MemorySessionID {
 		t.Fatalf("queued job = %#v, want apply mode and memory session", job)
+	}
+}
+
+func TestBridgeFinalizeEmptySegmentDoesNotQueueExtraction(t *testing.T) {
+	fixture := openFacadeBridgeFixture(t, "chat-finalize-empty", &fakeMemoryService{})
+
+	if err := fixture.bridge.FinalizeSegment(fixture.ctx, fixture.segment.SegmentID, "session_end", "summary"); err != nil {
+		t.Fatalf("FinalizeSegment: %v", err)
+	}
+	if fixture.service.endSessionCalls != 1 {
+		t.Fatalf("EndSession calls = %d, want 1", fixture.service.endSessionCalls)
+	}
+	if len(fixture.service.runExtractionCalls) != 0 {
+		t.Fatalf("RunExtraction calls = %d, want 0", len(fixture.service.runExtractionCalls))
+	}
+	jobs, err := fixture.db.ListMemoryExtractionJobs(fixture.ctx, storage.ListMemoryExtractionJobsFilter{SegmentID: fixture.segment.SegmentID, Limit: 10})
+	if err != nil {
+		t.Fatalf("ListMemoryExtractionJobs: %v", err)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("jobs = %#v, want none for empty finalized segment", jobs)
 	}
 }
 

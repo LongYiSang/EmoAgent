@@ -3,6 +3,7 @@ package memoryhost
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -174,6 +175,12 @@ func (w *ExtractionWorker) recordJobFailure(ctx context.Context, job storage.Mem
 	message := ""
 	if result != nil {
 		message = result.SanitizedErrorMessage
+	}
+	if message == "" {
+		var coded interface{ ErrorCode() string }
+		if errors.As(err, &coded) && strings.TrimSpace(coded.ErrorCode()) != "" {
+			message = err.Error()
+		}
 	}
 	retry := job.Attempts < job.MaxAttempts
 	nextRun := time.Now().UTC().Add(w.retryDelay(job.Attempts))
