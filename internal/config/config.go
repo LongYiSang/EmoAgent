@@ -58,6 +58,7 @@ type MemoryRetrievalConfig struct {
 	FinalMemoryCount    int  `yaml:"final_memory_count" json:"final_memory_count"`
 	ContextBudgetTokens int  `yaml:"context_budget_tokens" json:"context_budget_tokens"`
 	FailOpen            bool `yaml:"fail_open" json:"fail_open"`
+	PipelineDebug       bool `yaml:"pipeline_debug" json:"pipeline_debug"`
 }
 
 type MemoryExtractionConfig struct {

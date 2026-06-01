@@ -64,6 +64,7 @@ type fakeMemoryBridge struct {
 	appendUserErr   error
 	appendAssistErr error
 	retrieveBlock   string
+	retrieveTrace   any
 	retrieveErr     error
 	manualNotice    string
 	manualNoticeOK  bool
@@ -95,6 +96,7 @@ type memoryEpisodeCall struct {
 type memoryRetrieveCall struct {
 	ChatSessionID      string
 	Query              string
+	IncludePipeline    bool
 	ExcludedEpisodeIDs []string
 }
 
@@ -137,15 +139,25 @@ func (f *fakeMemoryBridge) AppendAssistantEpisode(_ context.Context, segmentID s
 }
 
 func (f *fakeMemoryBridge) RetrievePromptBlock(_ context.Context, chatSessionID string, query string, excludedEpisodeIDs ...string) (string, error) {
+	block, _, err := f.retrievePrompt(chatSessionID, query, false, excludedEpisodeIDs...)
+	return block, err
+}
+
+func (f *fakeMemoryBridge) RetrievePromptSnapshot(_ context.Context, chatSessionID string, query string, includePipelineTrace bool, excludedEpisodeIDs ...string) (string, any, error) {
+	return f.retrievePrompt(chatSessionID, query, includePipelineTrace, excludedEpisodeIDs...)
+}
+
+func (f *fakeMemoryBridge) retrievePrompt(chatSessionID string, query string, includePipelineTrace bool, excludedEpisodeIDs ...string) (string, any, error) {
 	f.retrieveCalls = append(f.retrieveCalls, memoryRetrieveCall{
 		ChatSessionID:      chatSessionID,
 		Query:              query,
+		IncludePipeline:    includePipelineTrace,
 		ExcludedEpisodeIDs: append([]string(nil), excludedEpisodeIDs...),
 	})
 	if f.retrieveErr != nil {
-		return "", f.retrieveErr
+		return "", nil, f.retrieveErr
 	}
-	return f.retrieveBlock, nil
+	return f.retrieveBlock, f.retrieveTrace, nil
 }
 
 func (f *fakeMemoryBridge) FinalizeSegment(context.Context, string, string, string) error {
@@ -655,6 +667,122 @@ func TestEngineSendMessageInjectsRetrievedMemoryPromptBlock(t *testing.T) {
 	}
 	if !strings.Contains(fakeLLM.lastRequest.System, "[长期记忆上下文：使用约束]") || !strings.Contains(fakeLLM.lastRequest.System, "- 用户喜欢手冲咖啡。") {
 		t.Fatalf("system = %q, want long-term memory block", fakeLLM.lastRequest.System)
+	}
+}
+
+func TestEngineSendMessageStoresMemoryPipelineMetadataWhenDebugEnabled(t *testing.T) {
+	fakeLLM := &fakeLLMClient{
+		response: endTurnResponse("ok"),
+	}
+	engine, db, _ := newTestEngine(t, fakeLLM)
+	bridge := &fakeMemoryBridge{
+		ensureResult:  MemorySegmentRef{SegmentID: "segment-current", MemorySessionID: "memory-current"},
+		retrieveBlock: "[长期记忆上下文：使用约束]\n\n- 用户喜欢手冲咖啡。",
+		retrieveTrace: map[string]any{
+			"query_analysis": map[string]any{
+				"normalized": "咖啡",
+				"scores": map[string]any{
+					"rule_fit": 0.8,
+				},
+			},
+			"stages": map[string]any{
+				"final_selection_mmr": []map[string]any{{
+					"content_summary": "用户喜欢手冲咖啡。",
+					"score":           0.91,
+				}},
+			},
+		},
+	}
+	engine.memory = bridge
+	engine.memoryRetrieval = config.MemoryRetrievalConfig{
+		Enabled:             true,
+		InjectPrompt:        true,
+		UseFTS:              true,
+		FinalMemoryCount:    4,
+		ContextBudgetTokens: 700,
+		FailOpen:            true,
+		PipelineDebug:       true,
+	}
+
+	ctx := context.Background()
+	sessionID, err := engine.StartSession(ctx, "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	bridge.ensureCalls = nil
+
+	if _, err := engine.SendMessage(ctx, sessionID, &config.Persona{Name: "default", SystemPrompt: "system"}, "咖啡", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if len(bridge.retrieveCalls) != 1 || !bridge.retrieveCalls[0].IncludePipeline {
+		t.Fatalf("retrieve calls = %#v, want one pipeline snapshot call", bridge.retrieveCalls)
+	}
+	if !strings.Contains(fakeLLM.lastRequest.System, "[长期记忆上下文：使用约束]") {
+		t.Fatalf("system = %q, want memory prompt block", fakeLLM.lastRequest.System)
+	}
+	messages, err := db.GetAllMessages(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("GetAllMessages: %v", err)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(messages[1].Metadata), &metadata); err != nil {
+		t.Fatalf("Unmarshal(metadata): %v; raw=%s", err, messages[1].Metadata)
+	}
+	pipeline, ok := metadata["memory_pipeline"].(map[string]any)
+	if !ok {
+		t.Fatalf("memory_pipeline = %#v, want object", metadata["memory_pipeline"])
+	}
+	if pipeline["prompt_block"] != "[长期记忆上下文：使用约束]\n\n- 用户喜欢手冲咖啡。" {
+		t.Fatalf("prompt_block = %#v", pipeline["prompt_block"])
+	}
+	queryAnalysis, ok := pipeline["query_analysis"].(map[string]any)
+	if !ok || queryAnalysis["normalized"] != "咖啡" {
+		t.Fatalf("query_analysis = %#v, want normalized query", pipeline["query_analysis"])
+	}
+	stages, ok := pipeline["stages"].(map[string]any)
+	if !ok || stages["final_selection_mmr"] == nil {
+		t.Fatalf("stages = %#v, want final_selection_mmr", pipeline["stages"])
+	}
+}
+
+func TestEngineSendMessageDoesNotStoreMemoryPipelineAfterFailOpenRetrieveError(t *testing.T) {
+	fakeLLM := &fakeLLMClient{
+		response: endTurnResponse("ok"),
+	}
+	engine, db, _ := newTestEngine(t, fakeLLM)
+	bridge := &fakeMemoryBridge{
+		ensureResult: MemorySegmentRef{SegmentID: "segment-current", MemorySessionID: "memory-current"},
+		retrieveErr:  errors.New("retrieve failed"),
+	}
+	engine.memory = bridge
+	engine.memoryRetrieval = config.MemoryRetrievalConfig{
+		Enabled:             true,
+		InjectPrompt:        true,
+		UseFTS:              true,
+		FinalMemoryCount:    4,
+		ContextBudgetTokens: 700,
+		FailOpen:            true,
+		PipelineDebug:       true,
+	}
+
+	ctx := context.Background()
+	sessionID, err := engine.StartSession(ctx, "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if _, err := engine.SendMessage(ctx, sessionID, &config.Persona{Name: "default", SystemPrompt: "system"}, "咖啡", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	messages, err := db.GetAllMessages(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("GetAllMessages: %v", err)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(messages[1].Metadata), &metadata); err != nil {
+		t.Fatalf("Unmarshal(metadata): %v; raw=%s", err, messages[1].Metadata)
+	}
+	if _, ok := metadata["memory_pipeline"]; ok {
+		t.Fatalf("memory_pipeline = %#v, want absent after retrieve error", metadata["memory_pipeline"])
 	}
 }
 

@@ -52,6 +52,9 @@ func TestDefaultConfig(t *testing.T) {
 	if !cfg.Memory.Retrieval.FailOpen {
 		t.Error("default memory.retrieval.fail_open = false, want true")
 	}
+	if cfg.Memory.Retrieval.PipelineDebug {
+		t.Error("default memory.retrieval.pipeline_debug = true, want false")
+	}
 	if cfg.Memory.Extraction.Enabled {
 		t.Error("default memory.extraction.enabled = true, want false")
 	}
@@ -229,6 +232,7 @@ memory:
     final_memory_count: 3
     context_budget_tokens: 600
     fail_open: false
+    pipeline_debug: true
   extraction:
     enabled: true
     mode: apply
@@ -324,6 +328,9 @@ memory:
 	}
 	if cfg.Memory.Retrieval.FailOpen {
 		t.Fatal("memory.retrieval.fail_open = true, want false")
+	}
+	if !cfg.Memory.Retrieval.PipelineDebug {
+		t.Fatal("memory.retrieval.pipeline_debug = false, want true")
 	}
 	if !cfg.Memory.Extraction.Enabled || cfg.Memory.Extraction.Mode != "apply" {
 		t.Fatalf("memory.extraction enabled/mode = %v/%q, want true/apply", cfg.Memory.Extraction.Enabled, cfg.Memory.Extraction.Mode)

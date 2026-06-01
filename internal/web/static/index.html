@@ -285,7 +285,11 @@
       border-radius: var(--r-md); border-top-left-radius: 8px; overflow: hidden; box-shadow: var(--shadow-sm);
     }
     .reasoning-head {
-      width: 100%; border: 0; background: transparent; padding: 11px 14px;
+      padding: 11px 14px; display: grid; grid-template-columns: minmax(0,1fr) auto;
+      gap: 10px; align-items: center;
+    }
+    .reasoning-toggle {
+      min-width: 0; width: 100%; border: 0; background: transparent; padding: 0;
       display: grid; grid-template-columns: 1fr auto auto; gap: 10px;
       align-items: center; text-align: left; cursor: pointer;
     }
@@ -312,6 +316,66 @@
     }
     .reasoning-meta { display: flex; flex-wrap: wrap; gap: 6px; color: var(--muted); font-family: var(--font-data); }
     .reasoning-meta span { padding: 3px 7px; border-radius: 999px; background: rgba(126,103,94,.1); }
+    .memory-pipeline-btn {
+      min-height: 28px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--hair);
+      background: #fff; color: var(--lavender-ink); font-size: 11.5px; font-weight: 800;
+      display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+      transition: all .15s var(--ease-out);
+    }
+    .memory-pipeline-btn:hover { border-color: var(--lavender); background: var(--lavender-soft); }
+    .memory-pipeline-entry {
+      align-self: flex-start; max-width: var(--thread-width); width: 100%;
+      display: flex; gap: 12px; align-items: flex-start;
+      animation: slide-up .24s var(--ease-out);
+    }
+    .memory-pipeline-av {
+      width: 32px; height: 32px; flex-shrink: 0; border-radius: 50%;
+      background: linear-gradient(135deg, var(--mint-soft), var(--lavender-soft));
+      color: var(--mint-ink); display: grid; place-items: center; border: 1px solid rgba(63,122,92,.12);
+    }
+    .memory-pipeline-card {
+      flex: 1; min-width: 0; border: 1px solid var(--hair); border-radius: var(--r-md);
+      border-top-left-radius: 8px; background: #FFFDFA; box-shadow: var(--shadow-sm);
+      padding: 11px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    }
+    .memory-pipeline-title { font-size: 12.5px; font-weight: 800; color: var(--ink); }
+    .memory-pipeline-panel {
+      position: fixed; top: 16px; right: 16px; bottom: 16px; width: min(420px, calc(100vw - 32px));
+      z-index: 30; background: #FFFDFA; border: 1px solid var(--hair); border-radius: var(--r-md);
+      box-shadow: var(--shadow-lg); display: none; grid-template-rows: auto 1fr; overflow: hidden;
+    }
+    .memory-pipeline-panel.open { display: grid; }
+    .memory-pipeline-panel-head {
+      padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      border-bottom: 1px solid var(--hair); background: rgba(255,253,251,.86);
+    }
+    .memory-pipeline-panel-title { font-size: 13px; font-weight: 850; color: var(--ink); }
+    .memory-pipeline-close {
+      width: 30px; height: 30px; border-radius: 9px; border: 1px solid var(--hair);
+      background: #fff; color: var(--ink-2); display: grid; place-items: center;
+    }
+    .memory-pipeline-close:hover { border-color: var(--peach); color: var(--peach-ink); }
+    .memory-pipeline-panel-body { overflow: auto; padding: 14px 16px 16px; display: grid; gap: 14px; }
+    .memory-pipeline-section { display: grid; gap: 8px; min-width: 0; }
+    .memory-pipeline-section-title {
+      font-size: 11px; font-weight: 850; color: var(--muted);
+      text-transform: uppercase; letter-spacing: .08em;
+    }
+    .memory-pipeline-prompt, .memory-pipeline-json {
+      margin: 0; white-space: pre-wrap; word-break: break-word;
+      font-family: var(--font-mono); font-size: 11.5px; line-height: 1.55;
+      padding: 10px 11px; border-radius: 11px; background: #fff; border: 1px solid var(--hair);
+      max-height: 260px; overflow: auto;
+    }
+    .memory-pipeline-stage { display: grid; gap: 6px; }
+    .memory-pipeline-stage-name { font-size: 12px; font-weight: 800; color: var(--ink-2); }
+    .memory-pipeline-item {
+      display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 10px;
+      padding: 8px 10px; border-radius: 10px; background: #fff; border: 1px solid var(--hair);
+      font-size: 12px; color: var(--ink-2);
+    }
+    .memory-pipeline-score { font-family: var(--font-mono); color: var(--lavender-ink); font-weight: 700; }
+    .memory-pipeline-empty { font-size: 12px; color: var(--muted); padding: 8px 10px; }
 
     /* ── Approvals ── */
     .approvals-wrap { display: none !important; }
@@ -540,6 +604,14 @@
   </div>
 </div>
 
+<aside class="memory-pipeline-panel" id="memory-pipeline-panel" aria-hidden="true">
+  <div class="memory-pipeline-panel-head">
+    <div class="memory-pipeline-panel-title">记忆管线</div>
+    <button class="memory-pipeline-close" id="memory-pipeline-close" type="button" aria-label="关闭记忆管线">×</button>
+  </div>
+  <div class="memory-pipeline-panel-body" id="memory-pipeline-panel-body"></div>
+</aside>
+
 <script>
   const statusEl = document.getElementById('status');
   const subtitleEl = document.getElementById('subtitle');
@@ -557,6 +629,9 @@
   const toggleSidebarButton = document.getElementById('toggle-sidebar');
   const memoryScanButton = document.getElementById('memory-scan');
   const memoryStatusPanel = document.getElementById('memory-status-panel');
+  const memoryPipelinePanel = document.getElementById('memory-pipeline-panel');
+  const memoryPipelinePanelBody = document.getElementById('memory-pipeline-panel-body');
+  const memoryPipelineClose = document.getElementById('memory-pipeline-close');
 
   let socket = null;
   let reconnectDelay = 1000;
@@ -577,6 +652,7 @@
   let workProgressNode = null;
   const toolActivityNodes = new Map();
   const reasoningActivityNodes = new Map();
+  const memoryPipelineSnapshots = new Map();
 
   function escapeHTML(text) {
     return String(text ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
@@ -591,7 +667,7 @@
     renderApprovals(); if (!next) input.focus();
   }
   function clearMessages() {
-    pendingAssistant = null; clearWorkProgress(); toolActivityNodes.clear(); reasoningActivityNodes.clear(); messagesEl.innerHTML = '';
+    pendingAssistant = null; clearWorkProgress(); toolActivityNodes.clear(); reasoningActivityNodes.clear(); memoryPipelineSnapshots.clear(); messagesEl.innerHTML = '';
   }
   function timelineMillis(raw, fallback = Date.now()) {
     const parsed = Date.parse(raw || ''); return Number.isNaN(parsed) ? fallback : parsed;
@@ -609,6 +685,81 @@
     if (typeof raw === 'object') return raw;
     try { return JSON.parse(raw); } catch (_) { return {}; }
   }
+  function memoryPipelineOf(metadata) {
+    const snapshot = metadata?.memory_pipeline || metadata?.memoryPipeline;
+    return snapshot && typeof snapshot === 'object' ? snapshot : null;
+  }
+  const memoryPipelineStageLabels = {
+    anchor_recall: 'anchor_recall',
+    rrf_fusion: 'rrf_fusion',
+    sqlite_authority_filter: 'sqlite_authority_filter',
+    safe_rerank: 'safe_rerank',
+    final_selection_mmr: 'final_selection_mmr',
+  };
+  function memoryPipelineField(item, field) {
+    if (!item || typeof item !== 'object') return '';
+    return item[field] ?? item[field[0].toUpperCase() + field.slice(1)] ?? '';
+  }
+  function formatMemoryPipelineScore(value) {
+    if (value === undefined || value === null || value === '') return '';
+    const n = Number(value);
+    if (!Number.isFinite(n)) return String(value);
+    return n.toFixed(4).replace(/0+$/,'').replace(/\.$/,'');
+  }
+  function renderMemoryPipelineButton(snapshotKey) {
+    const button = document.createElement('button');
+    button.className = 'memory-pipeline-btn';
+    button.type = 'button';
+    button.textContent = '记忆管线';
+    button.addEventListener('click', event => {
+      event.stopPropagation();
+      openMemoryPipelinePanel(memoryPipelineSnapshots.get(snapshotKey));
+    });
+    return button;
+  }
+  function openMemoryPipelinePanel(snapshot) {
+    if (!snapshot) return;
+    renderMemoryPipelinePanel(snapshot);
+    memoryPipelinePanel?.classList.add('open');
+    memoryPipelinePanel?.setAttribute('aria-hidden', 'false');
+  }
+  function closeMemoryPipelinePanel() {
+    memoryPipelinePanel?.classList.remove('open');
+    memoryPipelinePanel?.setAttribute('aria-hidden', 'true');
+  }
+  function renderMemoryPipelinePanel(snapshot) {
+    const promptBlock = memoryPipelineField(snapshot, 'prompt_block') || memoryPipelineField(snapshot, 'promptBlock');
+    const queryAnalysis = memoryPipelineField(snapshot, 'query_analysis') || memoryPipelineField(snapshot, 'queryAnalysis') || {};
+    const normalized = memoryPipelineField(queryAnalysis, 'normalized');
+    const scores = memoryPipelineField(queryAnalysis, 'scores') || {};
+    const stages = memoryPipelineField(snapshot, 'stages') || {};
+    const scoreLines = Object.entries(scores)
+      .map(([key, value]) => `${key}: ${formatMemoryPipelineScore(value)}`)
+      .join('\n');
+    const stageHTML = Object.keys(memoryPipelineStageLabels).map(stageKey => {
+      const items = Array.isArray(stages[stageKey]) ? stages[stageKey] : [];
+      const rows = items.map(item => {
+        const summary = memoryPipelineField(item, 'content_summary') || memoryPipelineField(item, 'contentSummary') || '(empty)';
+        const score = formatMemoryPipelineScore(memoryPipelineField(item, 'score'));
+        return `<div class="memory-pipeline-item"><span>${escapeHTML(summary)}</span><span class="memory-pipeline-score">${escapeHTML(score)}</span></div>`;
+      }).join('') || '<div class="memory-pipeline-empty">无记录</div>';
+      return `<div class="memory-pipeline-stage"><div class="memory-pipeline-stage-name">${escapeHTML(memoryPipelineStageLabels[stageKey])}</div>${rows}</div>`;
+    }).join('');
+    memoryPipelinePanelBody.innerHTML = `
+      <section class="memory-pipeline-section">
+        <div class="memory-pipeline-section-title">prompt_block</div>
+        <pre class="memory-pipeline-prompt">${escapeHTML(promptBlock || '(empty)')}</pre>
+      </section>
+      <section class="memory-pipeline-section">
+        <div class="memory-pipeline-section-title">query_analysis</div>
+        <pre class="memory-pipeline-json">${escapeHTML([normalized ? `normalized: ${normalized}` : '', scoreLines].filter(Boolean).join('\n') || '(empty)')}</pre>
+      </section>
+      <section class="memory-pipeline-section">
+        <div class="memory-pipeline-section-title">stages</div>
+        ${stageHTML}
+      </section>`;
+  }
+  memoryPipelineClose?.addEventListener('click', closeMemoryPipelinePanel);
 
   function insertApprovalNode(node) {
     if (!node) return;
@@ -681,6 +832,20 @@
       if (content) appendMessage(role, content, { createdAt: messageCreatedAtOf(item), skipScroll: true });
     }
     scrollToBottom();
+  }
+  function renderMemoryPipelineEntry(snapshot, createdAt, snapshotKey) {
+    if (!snapshot) return;
+    memoryPipelineSnapshots.set(snapshotKey, snapshot);
+    const node = document.createElement('div');
+    node.className = 'memory-pipeline-entry';
+    setTimelineMeta(node, 'memory_pipeline', createdAt || new Date().toISOString());
+    node.innerHTML = `
+      <div class="memory-pipeline-av"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="M5 8h14"/><path d="M5 16h14"/><circle cx="5" cy="8" r="2"/><circle cx="19" cy="16" r="2"/></svg></div>
+      <div class="memory-pipeline-card">
+        <div class="memory-pipeline-title">记忆管线快照</div>
+      </div>`;
+    node.querySelector('.memory-pipeline-card')?.appendChild(renderMemoryPipelineButton(snapshotKey));
+    messagesEl.appendChild(node);
   }
 
   function approvalField(item, field) {
@@ -875,6 +1040,7 @@
     const provider = reasoningField(reasoning, 'provider');
     const model = reasoningField(reasoning, 'model');
     const content = reasoningField(reasoning, 'content') || node.dataset.reasoningContent || '';
+    const memoryPipeline = reasoning.memory_pipeline || reasoning.memoryPipeline || null;
     const wasExpanded = node.classList.contains('expanded');
     const expanded = collapse ? false : (wasExpanded || !node.dataset.hadEnd);
     const title = status === 'running' ? '思考中...' : (duration ? `思考了 ${formatReasoningDuration(duration)}` : '思考完成');
@@ -885,24 +1051,31 @@
     node.innerHTML = `
       <div class="reasoning-av"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3a4 4 0 0 0-4 4c0 1.4.7 2.6 1.7 3.3A4.8 4.8 0 0 0 6 13c0 3.3 2.7 6 6 6s6-2.7 6-6c0-1-.3-1.9-.7-2.7A4 4 0 0 0 19 7a4 4 0 0 0-4-4"/><path d="M9 7h.01"/><path d="M15 7h.01"/><path d="M10 14c1.3.8 2.7.8 4 0"/></svg></div>
       <div class="reasoning-card">
-        <button class="reasoning-head" type="button" aria-expanded="${expanded}">
-          <span class="reasoning-title">${escapeHTML(title)}</span>
-          <span class="reasoning-badge">${escapeHTML(reasoningStatusLabel(status))}</span>
-          <span class="reasoning-caret">⌄</span>
-        </button>
+        <div class="reasoning-head">
+          <button class="reasoning-toggle" type="button" aria-expanded="${expanded}">
+            <span class="reasoning-title">${escapeHTML(title)}</span>
+            <span class="reasoning-badge">${escapeHTML(reasoningStatusLabel(status))}</span>
+            <span class="reasoning-caret">⌄</span>
+          </button>
+        </div>
         <div class="reasoning-body">
           ${content ? `<pre class="reasoning-preview">${escapeHTML(content)}</pre>` : '<div class="reasoning-preview">Waiting for reasoning...</div>'}
           <div class="reasoning-meta">${duration?`<span>${duration} ms</span>`:''}${provider?`<span>${escapeHTML(provider)}</span>`:''}${model?`<span>${escapeHTML(model)}</span>`:''}</div>
         </div>
       </div>`;
-    const head = node.querySelector('.reasoning-head');
-    head?.addEventListener('click', () => { node.classList.toggle('expanded'); head.setAttribute('aria-expanded', node.classList.contains('expanded')); });
+    const toggle = node.querySelector('.reasoning-toggle');
+    toggle?.addEventListener('click', () => { node.classList.toggle('expanded'); toggle.setAttribute('aria-expanded', node.classList.contains('expanded')); });
+    if (memoryPipeline) {
+      const snapshotKey = `reasoning:${id}`;
+      memoryPipelineSnapshots.set(snapshotKey, memoryPipeline);
+      node.querySelector('.reasoning-head')?.appendChild(renderMemoryPipelineButton(snapshotKey));
+    }
   }
   function collapseReasoningActivities() {
     for (const node of reasoningActivityNodes.values()) {
       if (!node?.isConnected) continue;
       node.classList.remove('expanded');
-      node.querySelector('.reasoning-head')?.setAttribute('aria-expanded', 'false');
+      node.querySelector('.reasoning-toggle')?.setAttribute('aria-expanded', 'false');
     }
   }
   function upsertReasoningActivity(reasoning, collapse = false, append = false, createdAt = '') {
@@ -921,11 +1094,17 @@
   }
   function renderThinkingBlocksFromMetadata(metadata, createdAt, messageID) {
     const blocks = metadata?.thinking_blocks || metadata?.thinkingBlocks || [];
+    const memoryPipeline = memoryPipelineOf(metadata);
     if (!Array.isArray(blocks)) return;
+    if (!blocks.length && memoryPipeline) {
+      renderMemoryPipelineEntry(memoryPipeline, createdAt, `${messageID || 'history'}:memory-pipeline`);
+      return;
+    }
     blocks.forEach((block, index) => {
       const rawID = reasoningField(block, 'id') || String(index + 1);
       const historyID = `${messageID || 'history'}:${rawID}`;
-      upsertReasoningActivity({ ...block, id: historyID, status: 'done' }, true, false, createdAt);
+      const withPipeline = index === 0 && memoryPipeline ? { ...block, memory_pipeline: memoryPipeline } : block;
+      upsertReasoningActivity({ ...withPipeline, id: historyID, status: 'done' }, true, false, createdAt);
     });
   }
 
@@ -1139,7 +1318,11 @@
           setMessageContent(pendingAssistant, `${messageTextOf(pendingAssistant)}${payload.content || ''}`); break;
         case 'stream_end':
           pendingAssistant = null; collapseReasoningActivities(); clearWorkProgress(); pendingApprovalActions.clear(); setSending(false);
-          await loadSessionList(); await loadApprovals(currentSessionId); await loadMemoryStatus(currentSessionId); break;
+          await loadSessionList();
+          if (currentSessionId) {
+            try { const d = await loadSessionDetail(currentSessionId); renderHistory(d.messages || []); } catch (_) {}
+          }
+          await loadApprovals(currentSessionId); await loadMemoryStatus(currentSessionId); break;
         case 'tool_call_start': pendingAssistant = null; upsertToolActivity(payload.tool || payload.Tool, false); break;
         case 'tool_call_end': pendingAssistant = null; upsertToolActivity(payload.tool || payload.Tool, true); break;
         case 'error':

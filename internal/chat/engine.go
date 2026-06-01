@@ -34,7 +34,13 @@ type MemoryBridge interface {
 	AppendUserEpisode(ctx context.Context, segmentID string, messageID string, content string) (string, error)
 	AppendAssistantEpisode(ctx context.Context, segmentID string, messageID string, content string) (string, error)
 	RetrievePromptBlock(ctx context.Context, chatSessionID string, query string, excludedEpisodeIDs ...string) (string, error)
+	RetrievePromptSnapshot(ctx context.Context, chatSessionID string, query string, includePipelineTrace bool, excludedEpisodeIDs ...string) (string, any, error)
 	FinalizeSegment(ctx context.Context, segmentID string, reason string, summary string) error
+}
+
+type memoryPromptSnapshot struct {
+	PromptBlock   string
+	PipelineTrace any
 }
 
 type manualMemoryNoticeBridge interface {
@@ -563,22 +569,36 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	if opts.extraSystem != "" {
 		assembled.System += "\n\n" + opts.extraSystem
 	}
+	var memorySnapshot *memoryPromptSnapshot
 	if opts.persistUser && memoryRetrieval.Enabled && memoryRetrieval.InjectPrompt && e.memory != nil {
 		excludedEpisodeIDs := []string(nil)
 		if strings.TrimSpace(userEpisodeID) != "" {
 			excludedEpisodeIDs = append(excludedEpisodeIDs, userEpisodeID)
 		}
-		memoryBlock, retrieveErr := e.memory.RetrievePromptBlock(ctx, sessionID, opts.userContent, excludedEpisodeIDs...)
+		var memoryBlock string
+		var pipelineTrace any
+		var retrieveErr error
+		if memoryRetrieval.PipelineDebug {
+			memoryBlock, pipelineTrace, retrieveErr = e.memory.RetrievePromptSnapshot(ctx, sessionID, opts.userContent, true, excludedEpisodeIDs...)
+		} else {
+			memoryBlock, retrieveErr = e.memory.RetrievePromptBlock(ctx, sessionID, opts.userContent, excludedEpisodeIDs...)
+		}
 		if retrieveErr != nil {
 			e.logMemoryWarning("retrieve memory prompt block", sessionID, retrieveErr)
 			if !memoryRetrieval.FailOpen {
 				return "", fmt.Errorf("retrieve memory prompt block: %w", retrieveErr)
 			}
-		} else if strings.TrimSpace(memoryBlock) != "" {
-			assembled.System += "\n\n" + strings.TrimSpace(memoryBlock)
-			assembled.Budget = contextutil.NewBudget(contextCfg, assembled.System, assembled.Messages)
-			assembled.CompactReport.PreEstimatedTokens = assembled.Budget.EstimatedTokens
-			assembled.CompactReport.PostEstimatedTokens = assembled.Budget.EstimatedTokens
+		} else {
+			memoryBlock = strings.TrimSpace(memoryBlock)
+			if memoryRetrieval.PipelineDebug {
+				memorySnapshot = &memoryPromptSnapshot{PromptBlock: memoryBlock, PipelineTrace: pipelineTrace}
+			}
+			if memoryBlock != "" {
+				assembled.System += "\n\n" + memoryBlock
+				assembled.Budget = contextutil.NewBudget(contextCfg, assembled.System, assembled.Messages)
+				assembled.CompactReport.PreEstimatedTokens = assembled.Budget.EstimatedTokens
+				assembled.CompactReport.PostEstimatedTokens = assembled.Budget.EstimatedTokens
+			}
 		}
 	}
 	if state != nil {
@@ -862,7 +882,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 
 	// Persist only the final assistant text reply to DB.
 	assistantMessageID := uuid.NewString()
-	if err := e.db.AddMessageWithMetadata(ctx, assistantMessageID, sessionID, "assistant", assistantContent, visibleMessageMetadataWithThinking("assistant", assistantContent, thinkingBlocks)); err != nil {
+	if err := e.db.AddMessageWithMetadata(ctx, assistantMessageID, sessionID, "assistant", assistantContent, visibleMessageMetadataWithThinkingAndMemory("assistant", assistantContent, thinkingBlocks, memorySnapshot)); err != nil {
 		e.logger.Error("failed to store assistant message", "session", sessionID, "error", err)
 		return "", err
 	}
@@ -1139,11 +1159,40 @@ func visibleMessageMetadata(role, content string) map[string]any {
 }
 
 func visibleMessageMetadataWithThinking(role, content string, thinkingBlocks []thinkingBlockMetadata) map[string]any {
+	return visibleMessageMetadataWithThinkingAndMemory(role, content, thinkingBlocks, nil)
+}
+
+func visibleMessageMetadataWithThinkingAndMemory(role, content string, thinkingBlocks []thinkingBlockMetadata, memorySnapshot *memoryPromptSnapshot) map[string]any {
 	metadata := visibleMessageMetadata(role, content)
 	if len(thinkingBlocks) > 0 {
 		metadata["thinking_blocks"] = thinkingBlocks
 	}
+	if memorySnapshot != nil {
+		metadata["memory_pipeline"] = memoryPipelineMetadata(memorySnapshot)
+	}
 	return metadata
+}
+
+func memoryPipelineMetadata(snapshot *memoryPromptSnapshot) map[string]any {
+	payload := map[string]any{
+		"enabled":      true,
+		"prompt_block": snapshot.PromptBlock,
+	}
+	if snapshot.PipelineTrace == nil {
+		return payload
+	}
+	raw, err := json.Marshal(snapshot.PipelineTrace)
+	if err != nil {
+		return payload
+	}
+	var trace map[string]any
+	if err := json.Unmarshal(raw, &trace); err != nil {
+		return payload
+	}
+	for key, value := range trace {
+		payload[key] = value
+	}
+	return payload
 }
 
 func buildApprovalContinuationNote(approval *protocol.ApprovalRequest) string {

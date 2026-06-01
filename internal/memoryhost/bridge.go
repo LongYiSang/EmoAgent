@@ -93,37 +93,47 @@ func (b *Bridge) AppendAssistantEpisode(ctx context.Context, segmentID string, m
 }
 
 func (b *Bridge) RetrievePromptBlock(ctx context.Context, chatSessionID string, query string, excludedEpisodeIDs ...string) (string, error) {
+	block, _, err := b.RetrievePromptSnapshot(ctx, chatSessionID, query, false, excludedEpisodeIDs...)
+	return block, err
+}
+
+func (b *Bridge) RetrievePromptSnapshot(ctx context.Context, chatSessionID string, query string, includePipelineTrace bool, excludedEpisodeIDs ...string) (string, any, error) {
 	if b == nil || b.host == nil || b.host.Service == nil || b.db == nil {
-		return "", fmt.Errorf("memory bridge is not configured")
+		return "", nil, fmt.Errorf("memory bridge is not configured")
 	}
 	chatSessionID = strings.TrimSpace(chatSessionID)
 	if chatSessionID == "" {
-		return "", fmt.Errorf("chat session id is required")
+		return "", nil, fmt.Errorf("chat session id is required")
 	}
 	query = strings.TrimSpace(query)
 	if query == "" {
-		return "", nil
+		return "", nil, nil
 	}
 
 	current, err := b.db.GetCurrentMemorySegment(ctx, chatSessionID)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if current == nil {
-		return "", nil
+		return "", nil, nil
 	}
 
 	memorySessionID := current.MemorySessionID
+	diagnosticsLevel := ""
+	if includePipelineTrace {
+		diagnosticsLevel = memorycore.RetrievalDiagnosticsLevelPipelineSummary
+	}
 	contextResult, err := b.host.Service.Retrieve(ctx, memorycore.RetrievalRequest{
-		PersonaID: defaultPersonaID(segmentPersona(current, b.db, ctx)),
-		SessionID: &memorySessionID,
-		QueryText: query,
-		Policy:    b.retrievalPolicy,
+		PersonaID:        defaultPersonaID(segmentPersona(current, b.db, ctx)),
+		SessionID:        &memorySessionID,
+		QueryText:        query,
+		DiagnosticsLevel: diagnosticsLevel,
+		Policy:           b.retrievalPolicy,
 	})
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return FormatMemoryContextForPrompt(contextResult, excludedEpisodeIDs...), nil
+	return FormatMemoryContextForPrompt(contextResult, excludedEpisodeIDs...), contextResult.PipelineTrace, nil
 }
 
 func (b *Bridge) FinalizeSegment(ctx context.Context, segmentID string, reason string, summary string) error {
