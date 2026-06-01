@@ -430,7 +430,10 @@ func TestUpdateChatSettingsPersistsRuntimeOverrideAndHotUpdatesEngine(t *testing
 		Temperature: 0.2,
 	})
 	a := &App{
-		Config: &config.Config{Chat: config.ChatConfig{RealtimeStreaming: false}},
+		Config: &config.Config{Chat: config.ChatConfig{
+			RealtimeStreaming: false,
+			TurnPipeline:      config.TurnPipelineConfig{Shadow: true, Enabled: true, MemoryStages: true, ApprovalStages: true},
+		}},
 		DB:     db,
 		Logger: logger,
 		engine: engine,
@@ -452,6 +455,9 @@ func TestUpdateChatSettingsPersistsRuntimeOverrideAndHotUpdatesEngine(t *testing
 	}
 	if !engine.RuntimeConfig().RealtimeStreaming {
 		t.Fatal("engine realtime streaming = false, want true")
+	}
+	if got := a.Config.Chat.TurnPipeline; !got.Shadow || !got.Enabled || !got.MemoryStages || !got.ApprovalStages {
+		t.Fatalf("turn pipeline config = %#v, want preserved", got)
 	}
 }
 

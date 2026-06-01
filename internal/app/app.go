@@ -314,7 +314,7 @@ func (a *App) Run(ctx context.Context) error {
 	})
 	a.approvalService = approvalService
 	startMemoryExtractionBackground(ctx, a.Memory, a.DB, a.Logger, cfg.Memory.Extraction)
-	chatHandler := chat.NewHandler(a.engine, a, a.Logger)
+	chatHandler := chat.NewHandler(a.engine, a, a.Logger, chat.WithTurnPipelineConfig(cfg.Chat.TurnPipeline))
 
 	staticSub, err := fs.Sub(web.StaticFS, "static")
 	if err != nil {
@@ -696,7 +696,7 @@ func (a *App) UpdateChatSettings(settings config.ChatConfig) error {
 	if a.Config == nil {
 		a.Config = config.DefaultConfig()
 	}
-	a.Config.Chat = settings
+	a.Config.Chat.RealtimeStreaming = settings.RealtimeStreaming
 	engine := a.engine
 	a.mu.Unlock()
 

@@ -22,6 +22,18 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Chat.RealtimeStreaming {
 		t.Error("default chat.realtime_streaming = true, want false")
 	}
+	if cfg.Chat.TurnPipeline.Shadow {
+		t.Error("default chat.turn_pipeline.shadow = true, want false")
+	}
+	if cfg.Chat.TurnPipeline.Enabled {
+		t.Error("default chat.turn_pipeline.enabled = true, want false")
+	}
+	if cfg.Chat.TurnPipeline.MemoryStages {
+		t.Error("default chat.turn_pipeline.memory_stages = true, want false")
+	}
+	if cfg.Chat.TurnPipeline.ApprovalStages {
+		t.Error("default chat.turn_pipeline.approval_stages = true, want false")
+	}
 	if cfg.Memory.Enabled {
 		t.Error("default memory.enabled = true, want false")
 	}
@@ -168,6 +180,11 @@ server:
   port: 9090
 chat:
   realtime_streaming: true
+  turn_pipeline:
+    shadow: true
+    enabled: false
+    memory_stages: true
+    approval_stages: true
 context:
   input_budget_tokens: 12345
   soft_compact_ratio: 0.7
@@ -275,6 +292,18 @@ memory:
 	}
 	if !cfg.Chat.RealtimeStreaming {
 		t.Fatal("chat.realtime_streaming = false, want true")
+	}
+	if !cfg.Chat.TurnPipeline.Shadow {
+		t.Fatal("chat.turn_pipeline.shadow = false, want true")
+	}
+	if cfg.Chat.TurnPipeline.Enabled {
+		t.Fatal("chat.turn_pipeline.enabled = true, want false")
+	}
+	if !cfg.Chat.TurnPipeline.MemoryStages {
+		t.Fatal("chat.turn_pipeline.memory_stages = false, want true")
+	}
+	if !cfg.Chat.TurnPipeline.ApprovalStages {
+		t.Fatal("chat.turn_pipeline.approval_stages = false, want true")
 	}
 	if cfg.Context.InputBudgetTokens != 12345 {
 		t.Errorf("context.input_budget_tokens = %d, want 12345", cfg.Context.InputBudgetTokens)

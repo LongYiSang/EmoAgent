@@ -6,6 +6,11 @@ server:
 
 chat:
   realtime_streaming: false
+  turn_pipeline:
+    shadow: false
+    enabled: false
+    memory_stages: false
+    approval_stages: false
 
 context:
   input_budget_tokens: 216000

@@ -237,7 +237,15 @@ type ServerConfig struct {
 }
 
 type ChatConfig struct {
-	RealtimeStreaming bool `yaml:"realtime_streaming" json:"realtime_streaming"`
+	RealtimeStreaming bool               `yaml:"realtime_streaming" json:"realtime_streaming"`
+	TurnPipeline      TurnPipelineConfig `yaml:"turn_pipeline" json:"turn_pipeline"`
+}
+
+type TurnPipelineConfig struct {
+	Shadow         bool `yaml:"shadow" json:"shadow"`
+	Enabled        bool `yaml:"enabled" json:"enabled"`
+	MemoryStages   bool `yaml:"memory_stages" json:"memory_stages"`
+	ApprovalStages bool `yaml:"approval_stages" json:"approval_stages"`
 }
 
 type DBConfig struct {

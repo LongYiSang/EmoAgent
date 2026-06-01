@@ -39,8 +39,9 @@ type MemoryBridge interface {
 }
 
 type memoryPromptSnapshot struct {
-	PromptBlock   string
-	PipelineTrace any
+	PromptBlock    string
+	PipelineTrace  any
+	RecordMetadata bool
 }
 
 type manualMemoryNoticeBridge interface {
@@ -290,6 +291,14 @@ type turnOptions struct {
 	disableTools bool
 }
 
+type turnMemoryAnchor struct {
+	memorySegment       MemorySegmentRef
+	hasMemorySegment    bool
+	userEpisodeID       string
+	manualNotice        string
+	manualNoticeHandled bool
+}
+
 type thinkingBlockMetadata struct {
 	ID         string `json:"id"`
 	Content    string `json:"content"`
@@ -467,52 +476,16 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 		return "", errors.New("persona is required")
 	}
 
-	var memorySegment MemorySegmentRef
-	var hasMemorySegment bool
-	var userEpisodeID string
-	if opts.persistUser {
-		userMessageID := uuid.NewString()
-		if err := e.db.AddMessageWithMetadata(ctx, userMessageID, sessionID, "user", opts.userContent, visibleMessageMetadata("user", opts.userContent)); err != nil {
-			e.logger.Error("failed to store user message", "session", sessionID, "error", err)
-			return "", err
-		}
-		memorySegment, hasMemorySegment = e.ensureMemorySegment(ctx, sessionID)
-		if hasMemorySegment {
-			if episodeID, err := e.memory.AppendUserEpisode(ctx, memorySegment.SegmentID, userMessageID, opts.userContent); err != nil {
-				e.logMemoryWarning("append user memory episode", sessionID, err)
-			} else {
-				userEpisodeID = episodeID
-			}
-		}
-		if err := e.db.UpdateSessionTimestamp(ctx, sessionID); err != nil {
-			e.logger.Error("failed to update session timestamp", "session", sessionID, "error", err)
-			return "", err
-		}
-
-		// Auto-generate session title from the first user message.
-		session, err := e.db.GetSession(ctx, sessionID)
-		if err == nil && session != nil && session.Title == "" {
-			title := opts.userContent
-			if runeCount := len([]rune(title)); runeCount > 30 {
-				title = string([]rune(title)[:30]) + "…"
-			}
-			if err := e.db.UpdateSessionTitle(ctx, sessionID, title); err != nil {
-				e.logger.Warn("failed to set session title", "session", sessionID, "error", err)
-			}
-		}
-		if notice, ok := e.takeManualMemoryNotice(sessionID); ok {
-			assistantMessageID := uuid.NewString()
-			if err := e.db.AddMessageWithMetadata(ctx, assistantMessageID, sessionID, "assistant", notice, visibleMessageMetadata("assistant", notice)); err != nil {
-				e.logger.Error("failed to store assistant message", "session", sessionID, "error", err)
-				return "", err
-			}
-			if err := e.db.UpdateSessionTimestamp(ctx, sessionID); err != nil {
-				e.logger.Error("failed to update session timestamp", "session", sessionID, "error", err)
-				return "", err
-			}
-			return notice, nil
-		}
+	memoryAnchor, err := e.prepareInputAndMemoryAnchor(ctx, sessionID, opts)
+	if err != nil {
+		return "", err
 	}
+	if memoryAnchor.manualNoticeHandled {
+		return memoryAnchor.manualNotice, nil
+	}
+	memorySegment := memoryAnchor.memorySegment
+	hasMemorySegment := memoryAnchor.hasMemorySegment
+	userEpisodeID := memoryAnchor.userEpisodeID
 
 	history, err := e.db.GetAllMessages(ctx, sessionID)
 	if err != nil {
@@ -570,36 +543,17 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 		assembled.System += "\n\n" + opts.extraSystem
 	}
 	var memorySnapshot *memoryPromptSnapshot
-	if opts.persistUser && memoryRetrieval.Enabled && memoryRetrieval.InjectPrompt && e.memory != nil {
-		excludedEpisodeIDs := []string(nil)
-		if strings.TrimSpace(userEpisodeID) != "" {
-			excludedEpisodeIDs = append(excludedEpisodeIDs, userEpisodeID)
+	if opts.persistUser {
+		memorySnapshot, err = e.retrieveMemoryPrompt(ctx, sessionID, opts.userContent, userEpisodeID, memoryRetrieval)
+		if err != nil {
+			return "", err
 		}
-		var memoryBlock string
-		var pipelineTrace any
-		var retrieveErr error
-		if memoryRetrieval.PipelineDebug {
-			memoryBlock, pipelineTrace, retrieveErr = e.memory.RetrievePromptSnapshot(ctx, sessionID, opts.userContent, true, excludedEpisodeIDs...)
-		} else {
-			memoryBlock, retrieveErr = e.memory.RetrievePromptBlock(ctx, sessionID, opts.userContent, excludedEpisodeIDs...)
-		}
-		if retrieveErr != nil {
-			e.logMemoryWarning("retrieve memory prompt block", sessionID, retrieveErr)
-			if !memoryRetrieval.FailOpen {
-				return "", fmt.Errorf("retrieve memory prompt block: %w", retrieveErr)
-			}
-		} else {
-			memoryBlock = strings.TrimSpace(memoryBlock)
-			if memoryRetrieval.PipelineDebug {
-				memorySnapshot = &memoryPromptSnapshot{PromptBlock: memoryBlock, PipelineTrace: pipelineTrace}
-			}
-			if memoryBlock != "" {
-				assembled.System += "\n\n" + memoryBlock
-				assembled.Budget = contextutil.NewBudget(contextCfg, assembled.System, assembled.Messages)
-				assembled.CompactReport.PreEstimatedTokens = assembled.Budget.EstimatedTokens
-				assembled.CompactReport.PostEstimatedTokens = assembled.Budget.EstimatedTokens
-			}
-		}
+	}
+	if memorySnapshot != nil && memorySnapshot.PromptBlock != "" {
+		assembled.System += "\n\n" + memorySnapshot.PromptBlock
+		assembled.Budget = contextutil.NewBudget(contextCfg, assembled.System, assembled.Messages)
+		assembled.CompactReport.PreEstimatedTokens = assembled.Budget.EstimatedTokens
+		assembled.CompactReport.PostEstimatedTokens = assembled.Budget.EstimatedTokens
 	}
 	if state != nil {
 		state.ContextVersion = contextutil.CurrentContextVersion
@@ -678,6 +632,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 			rawWriter(WSMessage{Type: "work_progress", Content: phrase})
 		})
 	}
+	emitToolEvents := rawWriter != nil && (realtimeStreaming || forcedOutboundEventsFromContext(ctx))
 
 	var assistantContent string
 	var visibleBuilder strings.Builder
@@ -808,7 +763,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 
 		snippedResults := make([]tool.Result, len(calls))
 		for i, call := range calls {
-			if realtimeStreaming && rawWriter != nil {
+			if emitToolEvents {
 				rawWriter(WSMessage{
 					Type: "tool_call_start",
 					Tool: &ToolActivity{
@@ -827,7 +782,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 				contextCfg.ToolResultSoftTokens,
 				contextCfg.ToolResultHardTokens,
 			)
-			if realtimeStreaming && rawWriter != nil {
+			if emitToolEvents {
 				status := "success"
 				if result.NeedsApproval {
 					status = "approval_required"
@@ -880,22 +835,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 		"response_content", assistantContent,
 	)
 
-	// Persist only the final assistant text reply to DB.
-	assistantMessageID := uuid.NewString()
-	if err := e.db.AddMessageWithMetadata(ctx, assistantMessageID, sessionID, "assistant", assistantContent, visibleMessageMetadataWithThinkingAndMemory("assistant", assistantContent, thinkingBlocks, memorySnapshot)); err != nil {
-		e.logger.Error("failed to store assistant message", "session", sessionID, "error", err)
-		return "", err
-	}
-	if !hasMemorySegment {
-		memorySegment, hasMemorySegment = e.ensureMemorySegment(ctx, sessionID)
-	}
-	if hasMemorySegment {
-		if _, err := e.memory.AppendAssistantEpisode(ctx, memorySegment.SegmentID, assistantMessageID, assistantContent); err != nil {
-			e.logMemoryWarning("append assistant memory episode", sessionID, err)
-		}
-	}
-	if err := e.db.UpdateSessionTimestamp(ctx, sessionID); err != nil {
-		e.logger.Error("failed to update session timestamp", "session", sessionID, "error", err)
+	if err := e.commitTurnOutput(ctx, sessionID, assistantContent, thinkingBlocks, memorySnapshot, memorySegment, hasMemorySegment); err != nil {
 		return "", err
 	}
 
@@ -1101,6 +1041,107 @@ func providerDisplayName(name, fallback string) string {
 	return fallback
 }
 
+func (e *Engine) prepareInputAndMemoryAnchor(ctx context.Context, sessionID string, opts turnOptions) (turnMemoryAnchor, error) {
+	var anchor turnMemoryAnchor
+	if !opts.persistUser {
+		return anchor, nil
+	}
+
+	userMessageID := uuid.NewString()
+	if err := e.db.AddMessageWithMetadata(ctx, userMessageID, sessionID, "user", opts.userContent, visibleMessageMetadata("user", opts.userContent)); err != nil {
+		e.logger.Error("failed to store user message", "session", sessionID, "error", err)
+		return anchor, err
+	}
+	anchor.memorySegment, anchor.hasMemorySegment = e.ensureMemorySegment(ctx, sessionID)
+	if anchor.hasMemorySegment {
+		if episodeID, err := e.memory.AppendUserEpisode(ctx, anchor.memorySegment.SegmentID, userMessageID, opts.userContent); err != nil {
+			e.logMemoryWarning("append user memory episode", sessionID, err)
+		} else {
+			anchor.userEpisodeID = episodeID
+		}
+	}
+	if err := e.db.UpdateSessionTimestamp(ctx, sessionID); err != nil {
+		e.logger.Error("failed to update session timestamp", "session", sessionID, "error", err)
+		return anchor, err
+	}
+
+	session, err := e.db.GetSession(ctx, sessionID)
+	if err == nil && session != nil && session.Title == "" {
+		title := opts.userContent
+		if runeCount := len([]rune(title)); runeCount > 30 {
+			title = string([]rune(title)[:30]) + "…"
+		}
+		if err := e.db.UpdateSessionTitle(ctx, sessionID, title); err != nil {
+			e.logger.Warn("failed to set session title", "session", sessionID, "error", err)
+		}
+	}
+	if notice, ok := e.takeManualMemoryNotice(sessionID); ok {
+		assistantMessageID := uuid.NewString()
+		if err := e.db.AddMessageWithMetadata(ctx, assistantMessageID, sessionID, "assistant", notice, visibleMessageMetadata("assistant", notice)); err != nil {
+			e.logger.Error("failed to store assistant message", "session", sessionID, "error", err)
+			return anchor, err
+		}
+		if err := e.db.UpdateSessionTimestamp(ctx, sessionID); err != nil {
+			e.logger.Error("failed to update session timestamp", "session", sessionID, "error", err)
+			return anchor, err
+		}
+		anchor.manualNotice = notice
+		anchor.manualNoticeHandled = true
+	}
+	return anchor, nil
+}
+
+func (e *Engine) commitTurnOutput(ctx context.Context, sessionID string, assistantContent string, thinkingBlocks []thinkingBlockMetadata, memorySnapshot *memoryPromptSnapshot, memorySegment MemorySegmentRef, hasMemorySegment bool) error {
+	assistantMessageID := uuid.NewString()
+	if err := e.db.AddMessageWithMetadata(ctx, assistantMessageID, sessionID, "assistant", assistantContent, visibleMessageMetadataWithThinkingAndMemory("assistant", assistantContent, thinkingBlocks, memorySnapshot)); err != nil {
+		e.logger.Error("failed to store assistant message", "session", sessionID, "error", err)
+		return err
+	}
+	if !hasMemorySegment {
+		memorySegment, hasMemorySegment = e.ensureMemorySegment(ctx, sessionID)
+	}
+	if hasMemorySegment {
+		if _, err := e.memory.AppendAssistantEpisode(ctx, memorySegment.SegmentID, assistantMessageID, assistantContent); err != nil {
+			e.logMemoryWarning("append assistant memory episode", sessionID, err)
+		}
+	}
+	if err := e.db.UpdateSessionTimestamp(ctx, sessionID); err != nil {
+		e.logger.Error("failed to update session timestamp", "session", sessionID, "error", err)
+		return err
+	}
+	return nil
+}
+
+func (e *Engine) retrieveMemoryPrompt(ctx context.Context, sessionID string, query string, userEpisodeID string, memoryRetrieval config.MemoryRetrievalConfig) (*memoryPromptSnapshot, error) {
+	if !memoryRetrieval.Enabled || !memoryRetrieval.InjectPrompt || e.memory == nil {
+		return nil, nil
+	}
+	excludedEpisodeIDs := []string(nil)
+	if strings.TrimSpace(userEpisodeID) != "" {
+		excludedEpisodeIDs = append(excludedEpisodeIDs, userEpisodeID)
+	}
+	var memoryBlock string
+	var pipelineTrace any
+	var retrieveErr error
+	if memoryRetrieval.PipelineDebug {
+		memoryBlock, pipelineTrace, retrieveErr = e.memory.RetrievePromptSnapshot(ctx, sessionID, query, true, excludedEpisodeIDs...)
+	} else {
+		memoryBlock, retrieveErr = e.memory.RetrievePromptBlock(ctx, sessionID, query, excludedEpisodeIDs...)
+	}
+	if retrieveErr != nil {
+		e.logMemoryWarning("retrieve memory prompt block", sessionID, retrieveErr)
+		if !memoryRetrieval.FailOpen {
+			return nil, fmt.Errorf("retrieve memory prompt block: %w", retrieveErr)
+		}
+		return nil, nil
+	}
+	memoryBlock = strings.TrimSpace(memoryBlock)
+	if memoryBlock == "" && !memoryRetrieval.PipelineDebug {
+		return nil, nil
+	}
+	return &memoryPromptSnapshot{PromptBlock: memoryBlock, PipelineTrace: pipelineTrace, RecordMetadata: memoryRetrieval.PipelineDebug}, nil
+}
+
 func (e *Engine) ensureMemorySegment(ctx context.Context, sessionID string) (MemorySegmentRef, bool) {
 	if e.memory == nil {
 		return MemorySegmentRef{}, false
@@ -1167,7 +1208,7 @@ func visibleMessageMetadataWithThinkingAndMemory(role, content string, thinkingB
 	if len(thinkingBlocks) > 0 {
 		metadata["thinking_blocks"] = thinkingBlocks
 	}
-	if memorySnapshot != nil {
+	if memorySnapshot != nil && memorySnapshot.RecordMetadata {
 		metadata["memory_pipeline"] = memoryPipelineMetadata(memorySnapshot)
 	}
 	return metadata

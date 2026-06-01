@@ -18,6 +18,7 @@ import (
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/storage"
 	"github.com/longyisang/emoagent/internal/tool"
+	"github.com/longyisang/emoagent/internal/turn"
 	"github.com/longyisang/emoagent/internal/work"
 )
 
@@ -549,6 +550,134 @@ func TestEngineSendMessageAppendsMemoryEpisodes(t *testing.T) {
 	}
 	if bridge.assistEpisodes[0].SegmentID != "segment-current" || bridge.assistEpisodes[0].Content != "Hi there" || bridge.assistEpisodes[0].MessageID == "" {
 		t.Fatalf("assistant episode = %#v, want current segment/content/message id", bridge.assistEpisodes[0])
+	}
+}
+
+func TestEnginePrepareInputAndMemoryAnchorReturnsCurrentUserEpisode(t *testing.T) {
+	engine, _, _ := newTestEngine(t, &fakeLLMClient{})
+	bridge := &fakeMemoryBridge{
+		ensureResult: MemorySegmentRef{SegmentID: "segment-current", MemorySessionID: "memory-current"},
+	}
+	engine.memory = bridge
+
+	ctx := context.Background()
+	sessionID, err := engine.StartSession(ctx, "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	bridge.ensureCalls = nil
+
+	anchor, err := engine.prepareInputAndMemoryAnchor(ctx, sessionID, turnOptions{
+		persistUser: true,
+		userContent: "咖啡",
+	})
+	if err != nil {
+		t.Fatalf("prepareInputAndMemoryAnchor: %v", err)
+	}
+	if !anchor.hasMemorySegment || anchor.memorySegment.SegmentID != "segment-current" {
+		t.Fatalf("anchor segment = %#v has=%v, want current segment", anchor.memorySegment, anchor.hasMemorySegment)
+	}
+	if anchor.userEpisodeID != "episode-user" {
+		t.Fatalf("userEpisodeID = %q, want episode-user", anchor.userEpisodeID)
+	}
+	if len(bridge.userEpisodes) != 1 || bridge.userEpisodes[0].Content != "咖啡" {
+		t.Fatalf("user episodes = %#v, want one current episode", bridge.userEpisodes)
+	}
+}
+
+func TestEngineCommitTurnOutputPersistsAssistantAndEpisode(t *testing.T) {
+	engine, db, _ := newTestEngine(t, &fakeLLMClient{})
+	bridge := &fakeMemoryBridge{
+		ensureResult: MemorySegmentRef{SegmentID: "segment-current", MemorySessionID: "memory-current"},
+	}
+	engine.memory = bridge
+
+	ctx := context.Background()
+	sessionID, err := engine.StartSession(ctx, "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	bridge.ensureCalls = nil
+
+	if err := engine.commitTurnOutput(ctx, sessionID, "Hi there", nil, nil, MemorySegmentRef{}, false); err != nil {
+		t.Fatalf("commitTurnOutput: %v", err)
+	}
+	messages, err := db.GetAllMessages(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("GetAllMessages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Role != "assistant" || messages[0].Content != "Hi there" {
+		t.Fatalf("messages = %#v, want final assistant message", messages)
+	}
+	if len(bridge.assistEpisodes) != 1 || bridge.assistEpisodes[0].Content != "Hi there" {
+		t.Fatalf("assistant episodes = %#v, want final assistant episode", bridge.assistEpisodes)
+	}
+}
+
+func TestEngineRetrieveMemoryPromptExcludesCurrentEpisode(t *testing.T) {
+	engine, _, _ := newTestEngine(t, &fakeLLMClient{})
+	bridge := &fakeMemoryBridge{
+		retrieveBlock: "memory block",
+	}
+	engine.memory = bridge
+
+	snapshot, err := engine.retrieveMemoryPrompt(context.Background(), "session-1", "咖啡", "episode-user", config.MemoryRetrievalConfig{
+		Enabled:      true,
+		InjectPrompt: true,
+		FailOpen:     true,
+	})
+	if err != nil {
+		t.Fatalf("retrieveMemoryPrompt: %v", err)
+	}
+	if snapshot == nil || snapshot.PromptBlock != "memory block" {
+		t.Fatalf("snapshot = %#v, want memory block", snapshot)
+	}
+	if len(bridge.retrieveCalls) != 1 {
+		t.Fatalf("retrieve calls = %#v, want one", bridge.retrieveCalls)
+	}
+	if got := bridge.retrieveCalls[0].ExcludedEpisodeIDs; len(got) != 1 || got[0] != "episode-user" {
+		t.Fatalf("excluded episodes = %#v, want current user episode", got)
+	}
+}
+
+func TestEngineApprovalContinuationSkipsMemoryRetrieve(t *testing.T) {
+	fakeLLM := &fakeLLMClient{
+		response: &llm.ChatResponse{
+			ID:         "resp-approval",
+			Content:    "resumed",
+			StopReason: "end_turn",
+		},
+	}
+	engine, _, _ := newTestEngine(t, fakeLLM)
+	bridge := &fakeMemoryBridge{
+		ensureResult:  MemorySegmentRef{SegmentID: "segment-current", MemorySessionID: "memory-current"},
+		retrieveBlock: "memory block",
+	}
+	engine.memory = bridge
+	engine.memoryRetrieval = config.MemoryRetrievalConfig{
+		Enabled:      true,
+		InjectPrompt: true,
+		FailOpen:     false,
+	}
+	ctx := context.Background()
+	sessionID, err := engine.StartSession(ctx, "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	bridge.retrieveCalls = nil
+
+	reply, err := engine.sendTurn(ctx, sessionID, &config.Persona{Name: "default", SystemPrompt: "system"}, nil, turnOptions{
+		persistUser: false,
+		extraSystem: "approval continuation",
+	})
+	if err != nil {
+		t.Fatalf("sendTurn approval continuation: %v", err)
+	}
+	if reply != "resumed" {
+		t.Fatalf("reply = %q, want resumed", reply)
+	}
+	if len(bridge.retrieveCalls) != 0 {
+		t.Fatalf("retrieve calls = %#v, want none for approval continuation", bridge.retrieveCalls)
 	}
 }
 
@@ -1502,6 +1631,74 @@ func TestEngineToolLoopExecutesToolAndReturnsResponse(t *testing.T) {
 	}
 	if messages[1].Role != "assistant" || messages[1].Content != "It's 17:00 now!" {
 		t.Fatalf("messages[1] = %+v, want final assistant message", messages[1])
+	}
+}
+
+func TestEngineForcedOutboundEmitsToolEventsWhenRealtimeStreamingDisabled(t *testing.T) {
+	mockLLM := &toolLoopLLMClient{}
+	registry := tool.NewRegistry()
+	registry.Register(tool.Spec{
+		Name:        "get_current_time",
+		Description: "Get current time",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+		Scope:       tool.ScopeBoth,
+		Permission:  tool.PermReadOnly,
+	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{"current_time":"17:00:00","timezone":"CST"}`), nil
+	})
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "chat.db"), logger)
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, logger)
+	engine := NewEngine(EngineConfig{
+		LLM:         mockLLM,
+		DB:          db,
+		Logger:      logger,
+		Model:       "test-model",
+		MaxTokens:   256,
+		Temperature: 0.2,
+		ContextConfig: config.ContextConfig{
+			InputBudgetTokens:    24000,
+			SoftCompactRatio:     0.75,
+			HardCompactRatio:     0.92,
+			ReserveOutputTokens:  4096,
+			KeepRecentUserTurns:  6,
+			ToolResultSoftTokens: 1000,
+			ToolResultHardTokens: 3000,
+		},
+		Provider:   "openai",
+		Registry:   registry,
+		Dispatcher: dispatcher,
+	})
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	var events []turn.OutboundEvent
+	ctx := turn.WithOutboundSink(context.Background(), turn.SinkFunc(func(_ context.Context, event turn.OutboundEvent) error {
+		events = append(events, event)
+		return nil
+	}))
+	ctx = withForcedOutboundEvents(ctx)
+	if _, err := engine.SendMessage(ctx, sessionID, &config.Persona{Name: "default", SystemPrompt: "You are warm."}, "What time is it?", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	var types []string
+	for _, event := range events {
+		types = append(types, event.Type)
+	}
+	want := []string{turn.EventToolCallStart, turn.EventToolCallEnd}
+	if len(types) != len(want) {
+		t.Fatalf("events = %#v, want %#v", types, want)
+	}
+	for i := range want {
+		if types[i] != want[i] {
+			t.Fatalf("events[%d] = %q, want %q (all=%#v)", i, types[i], want[i], types)
+		}
 	}
 }
 

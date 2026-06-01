@@ -14,6 +14,7 @@ import (
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/storage"
+	"github.com/longyisang/emoagent/internal/turn"
 )
 
 // WSMessage is the JSON envelope used for WebSocket chat events.
@@ -73,18 +74,41 @@ type conversationEngine interface {
 
 // Handler serves the WebSocket chat protocol.
 type Handler struct {
-	engine conversationEngine
-	app    AppInterface
-	logger *slog.Logger
+	engine      conversationEngine
+	app         AppInterface
+	logger      *slog.Logger
+	turnConfig  config.TurnPipelineConfig
+	turnJournal turn.TurnJournal
+	turnRuntime *chatTurnRuntime
 }
 
-type wsWriterKeyType struct{}
+type HandlerOption func(*Handler)
 
-var wsWriterCtxKey = wsWriterKeyType{}
+func WithTurnPipelineConfig(cfg config.TurnPipelineConfig) HandlerOption {
+	return func(h *Handler) {
+		h.turnConfig = cfg
+	}
+}
+
+func WithTurnJournal(journal turn.TurnJournal) HandlerOption {
+	return func(h *Handler) {
+		h.turnJournal = journal
+	}
+}
 
 // NewHandler creates a WebSocket chat handler.
-func NewHandler(engine conversationEngine, app AppInterface, logger *slog.Logger) *Handler {
-	return &Handler{engine: engine, app: app, logger: logger}
+func NewHandler(engine conversationEngine, app AppInterface, logger *slog.Logger, options ...HandlerOption) *Handler {
+	h := &Handler{engine: engine, app: app, logger: logger}
+	for _, option := range options {
+		if option != nil {
+			option(h)
+		}
+	}
+	if h.turnJournal == nil {
+		h.turnJournal = turn.NewMemoryJournal()
+	}
+	h.turnRuntime = newChatTurnRuntime(engine, h.turnConfig, h.turnJournal, logger)
+	return h
 }
 
 // ServeHTTP upgrades the request to WebSocket and runs the chat loop.
@@ -160,6 +184,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if strings.TrimSpace(msg.Content) == "" {
 				continue
 			}
+			if h.turnConfig.Shadow && !h.turnConfig.Enabled {
+				_, _ = h.turnRuntime.Shadow(ctx, wsMessageToInbound(msg, sessionID, personaName))
+			}
+			if h.turnConfig.Enabled {
+				sink := h.newWSOutboundSink(ctx, conn, &writeMu, cancel)
+				env := wsMessageToInbound(msg, sessionID, personaName)
+				if _, err := h.turnRuntime.Execute(ctx, env, persona, sink); err != nil {
+					if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: err.Error()}, &writeMu); writeErr != nil {
+						return
+					}
+				}
+				continue
+			}
 			if err := writeWSMessage(ctx, conn, WSMessage{Type: "stream_start"}, &writeMu); err != nil {
 				cancel()
 				return
@@ -212,6 +249,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 
 		case "approval_action":
+			if h.turnConfig.Shadow && !h.turnConfig.Enabled {
+				_, _ = h.turnRuntime.Shadow(ctx, wsMessageToInbound(msg, sessionID, personaName))
+			}
+			if h.turnConfig.Enabled {
+				sink := h.newWSOutboundSink(ctx, conn, &writeMu, cancel)
+				env := wsMessageToInbound(msg, sessionID, personaName)
+				if _, err := h.turnRuntime.Execute(ctx, env, persona, sink); err != nil {
+					if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: err.Error()}, &writeMu); writeErr != nil {
+						return
+					}
+				}
+				continue
+			}
 			if strings.TrimSpace(msg.RequestID) == "" {
 				if err := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: "request_id is required"}, &writeMu); err != nil {
 					return
@@ -282,6 +332,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (h *Handler) newWSOutboundSink(ctx context.Context, conn *websocket.Conn, mu *sync.Mutex, cancel context.CancelFunc) turn.OutboundSink {
+	return turn.SinkFunc(func(_ context.Context, event turn.OutboundEvent) error {
+		if err := writeWSMessage(ctx, conn, outboundEventToWSMessage(event), mu); err != nil {
+			if !errors.Is(ctx.Err(), context.Canceled) && h.logger != nil {
+				h.logger.Warn("ws outbound write failed", "error", err)
+			}
+			cancel()
+			return err
+		}
+		return nil
+	})
+}
+
 func (h *Handler) emitApprovalEvents(ctx context.Context, conn *websocket.Conn, mu *sync.Mutex, sessionID string) error {
 	if h.engine == nil {
 		return nil
@@ -323,13 +386,21 @@ func withWSWriter(ctx context.Context, fn func(WSMessage)) context.Context {
 	if ctx == nil || fn == nil {
 		return ctx
 	}
-	return context.WithValue(ctx, wsWriterCtxKey, fn)
+	return turn.WithOutboundSink(ctx, turn.SinkFunc(func(_ context.Context, event turn.OutboundEvent) error {
+		fn(outboundEventToWSMessage(event))
+		return nil
+	}))
 }
 
 func wsWriterFromContext(ctx context.Context) func(WSMessage) {
 	if ctx == nil {
 		return nil
 	}
-	writer, _ := ctx.Value(wsWriterCtxKey).(func(WSMessage))
-	return writer
+	sink := turn.OutboundSinkFromContext(ctx)
+	if sink == nil {
+		return nil
+	}
+	return func(msg WSMessage) {
+		_ = sink.Emit(ctx, wsMessageToOutboundEvent(msg))
+	}
 }

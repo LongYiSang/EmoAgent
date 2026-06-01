@@ -14,6 +14,7 @@ import (
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/storage"
+	"github.com/longyisang/emoagent/internal/turn"
 )
 
 type fakeConversationEngine struct {
@@ -34,6 +35,8 @@ type fakeConversationEngine struct {
 	lastAction     string
 	lastActionReq  string
 	lastActionOpt  string
+	applyCount     int
+	continueCount  int
 	approvalReply  string
 	approvalDeltas []string
 }
@@ -83,6 +86,7 @@ func (f *fakeConversationEngine) ListSessionApprovals(_ context.Context, session
 }
 
 func (f *fakeConversationEngine) ApplyApprovalAction(_ context.Context, sessionID, requestID, action, optionID string) (*protocol.ApprovalRequest, error) {
+	f.applyCount++
 	f.lastAction = action
 	f.lastActionReq = requestID
 	f.lastActionOpt = optionID
@@ -106,6 +110,7 @@ func (f *fakeConversationEngine) ApplyApprovalAction(_ context.Context, sessionI
 }
 
 func (f *fakeConversationEngine) ContinueAfterApproval(_ context.Context, sessionID string, persona *config.Persona, approval *protocol.ApprovalRequest, cb func(delta string)) (string, error) {
+	f.continueCount++
 	for _, delta := range f.approvalDeltas {
 		cb(delta)
 	}
@@ -577,6 +582,83 @@ func TestHandlerForwardsWorkProgressMessages(t *testing.T) {
 	}
 }
 
+func TestHandlerTurnPipelineEnabledForwardsWorkProgressViaOutboundSink(t *testing.T) {
+	handler, engine := newTestHandlerWithOptions(WithTurnPipelineConfig(config.TurnPipelineConfig{Enabled: true}))
+	engine.sendReply = "done"
+	engine.sendHook = func(ctx context.Context) {
+		sink := turn.OutboundSinkFromContext(ctx)
+		if sink == nil {
+			t.Fatal("outbound sink missing from context")
+		}
+		if err := sink.Emit(ctx, turn.OutboundEvent{Type: turn.EventWorkProgress, Content: "processing..."}); err != nil {
+			t.Fatalf("Emit work_progress: %v", err)
+		}
+	}
+
+	conn := dialTestWS(t, handler)
+	defer conn.Close(websocket.StatusNormalClosure, "bye")
+
+	var msg WSMessage
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(session_ready): %v", err)
+	}
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(greeting): %v", err)
+	}
+	if err := wsjson.Write(context.Background(), conn, WSMessage{Type: "message", Content: "progress please", RequestID: "request-1"}); err != nil {
+		t.Fatalf("Write(message): %v", err)
+	}
+
+	var types []string
+	for len(types) < 4 {
+		if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+			t.Fatalf("Read(stream): %v", err)
+		}
+		types = append(types, msg.Type)
+	}
+	want := []string{"stream_start", "work_progress", "stream_delta", "stream_end"}
+	for i := range want {
+		if types[i] != want[i] {
+			t.Fatalf("types[%d] = %q, want %q (all=%#v)", i, types[i], want[i], types)
+		}
+	}
+}
+
+func TestTurnRuntimeDeduplicatesApprovalAction(t *testing.T) {
+	_, engine := newTestHandler()
+	engine.approvals = []protocol.ApprovalRequest{
+		{
+			ID:             "approval-1",
+			SessionID:      "session-test",
+			TaskID:         "task-1",
+			Status:         string(protocol.ApprovalStatusPending),
+			RejectOptionID: "cancel",
+			Options:        []protocol.DecisionOption{{ID: "delete", Summary: "Delete"}, {ID: "cancel", Summary: "Cancel"}},
+		},
+	}
+	engine.approvalDeltas = []string{"ok"}
+
+	runtime := newChatTurnRuntime(engine, config.TurnPipelineConfig{Enabled: true}, turn.NewMemoryJournal(), slog.Default())
+	env := wsMessageToInbound(WSMessage{
+		Type:      "approval_action",
+		RequestID: "approval-1",
+		Action:    "approve",
+		OptionID:  "delete",
+	}, "session-test", "default")
+	persona := &config.Persona{Name: "default"}
+	sink := turn.SinkFunc(func(context.Context, turn.OutboundEvent) error { return nil })
+
+	if _, err := runtime.Execute(context.Background(), env, persona, sink); err != nil {
+		t.Fatalf("Execute first: %v", err)
+	}
+	if _, err := runtime.Execute(context.Background(), env, persona, sink); err != nil {
+		t.Fatalf("Execute duplicate: %v", err)
+	}
+	if engine.applyCount != 1 || engine.continueCount != 1 {
+		t.Fatalf("apply/continue counts = %d/%d, want 1/1", engine.applyCount, engine.continueCount)
+	}
+}
+
 func TestHandlerProcessesApprovalActionAndStreamsContinuation(t *testing.T) {
 	handler, engine := newTestHandler()
 	engine.approvals = []protocol.ApprovalRequest{
@@ -704,6 +786,21 @@ func newTestHandler() (*Handler, *fakeConversationEngine) {
 			},
 		},
 	})
+}
+
+func newTestHandlerWithOptions(options ...HandlerOption) (*Handler, *fakeConversationEngine) {
+	engine := &fakeConversationEngine{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+	app := &fakeAppProvider{
+		defaultPersona: "default",
+		personas: map[string]*config.Persona{
+			"default": {
+				Name:     "default",
+				Greeting: "Hello from Emo",
+			},
+		},
+	}
+	return NewHandler(engine, app, logger, options...), engine
 }
 
 func newTestHandlerWithApp(app *fakeAppProvider) (*Handler, *fakeConversationEngine) {
