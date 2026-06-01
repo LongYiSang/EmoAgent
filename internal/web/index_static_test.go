@@ -14,7 +14,10 @@ func TestIndexStaticIncludesMemoryExtractionControls(t *testing.T) {
 	html := string(data)
 	for _, snippet := range []string{
 		`id="memory-scan"`,
+		`id="memory-status-toggle"`,
 		`id="memory-status-panel"`,
+		`let memoryStatusVisible = false`,
+		`toggleMemoryStatus`,
 		`queueMemoryExtraction`,
 		`/api/memory/extractions`,
 		`/api/memory/segments?session_id=`,

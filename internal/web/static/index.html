@@ -107,13 +107,16 @@
     }
     .conv-sub .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--mint-ink); flex-shrink: 0; }
     .conv-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
-    .memory-scan {
+    .memory-scan, .memory-status-toggle {
       min-height: 34px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--hair);
       background: #fff; color: var(--ink-2); font-size: 12px; font-weight: 700;
       display: inline-flex; align-items: center; gap: 7px; transition: all .15s var(--ease-out);
     }
-    .memory-scan:hover { border-color: var(--lavender); color: var(--lavender-ink); }
-    .memory-scan:disabled { opacity: .55; cursor: not-allowed; }
+    .memory-scan:hover, .memory-status-toggle:hover, .memory-status-toggle.active {
+      border-color: var(--lavender); color: var(--lavender-ink);
+    }
+    .memory-status-toggle.active { background: var(--lavender-soft); }
+    .memory-scan:disabled, .memory-status-toggle:disabled { opacity: .55; cursor: not-allowed; }
     .memory-status-panel {
       display: none; border-bottom: 1px solid var(--hair); background: rgba(255,253,251,.76);
       padding: 10px 28px; gap: 10px; grid-template-columns: minmax(0,1fr) minmax(0,1fr);
@@ -574,6 +577,10 @@
           </div>
         </div>
         <div class="conv-actions">
+          <button class="memory-status-toggle" id="memory-status-toggle" type="button" aria-expanded="false" aria-controls="memory-status-panel" disabled>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16"/><path d="M4 12h16"/><path d="M4 19h16"/><circle cx="8" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="16" cy="19" r="1.5"/></svg>
+            <span>记忆状态</span>
+          </button>
           <button class="memory-scan" id="memory-scan" type="button" disabled>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="M5 8a4 4 0 0 1 7-2.6A4 4 0 0 1 19 8c0 4-7 8-7 8S5 12 5 8Z"/></svg>
             <span>扫描记忆</span>
@@ -628,6 +635,7 @@
   const refreshSessionsButton = document.getElementById('refresh-sessions');
   const toggleSidebarButton = document.getElementById('toggle-sidebar');
   const memoryScanButton = document.getElementById('memory-scan');
+  const memoryStatusToggle = document.getElementById('memory-status-toggle');
   const memoryStatusPanel = document.getElementById('memory-status-panel');
   const memoryPipelinePanel = document.getElementById('memory-pipeline-panel');
   const memoryPipelinePanelBody = document.getElementById('memory-pipeline-panel-body');
@@ -647,6 +655,7 @@
   let approvals = [];
   let memorySegments = [];
   let memoryJobs = [];
+  let memoryStatusVisible = false;
   const pendingApprovalActions = new Set();
   const dismissedApprovalIDs = new Set();
   let workProgressNode = null;
@@ -1165,6 +1174,8 @@
     history.replaceState({}, '', url);
     document.getElementById('session-hint').textContent = currentSessionId ? `Session · ${currentSessionId.substring(0,13)}` : 'No active session';
     memoryScanButton.disabled = !currentSessionId;
+    memoryStatusToggle.disabled = !currentSessionId;
+    updateMemoryStatusToggle();
   }
   function formatSessionTime(raw) {
     if (!raw) return 'Unknown time'; const d = new Date(raw);
@@ -1205,9 +1216,19 @@
     const id = item.ID || item.id || '';
     return idx ? `Segment ${idx}` : (id ? `Segment · ${String(id).slice(0, 8)}` : 'Segment');
   }
+  function updateMemoryStatusToggle() {
+    memoryStatusToggle.classList.toggle('active', memoryStatusVisible);
+    memoryStatusToggle.setAttribute('aria-expanded', memoryStatusVisible ? 'true' : 'false');
+    memoryStatusToggle.title = memoryStatusVisible ? '隐藏记忆状态' : '显示记忆状态';
+  }
+  function toggleMemoryStatus() {
+    memoryStatusVisible = !memoryStatusVisible;
+    updateMemoryStatusToggle();
+    renderMemoryStatus();
+  }
   function renderMemoryStatus() {
     memoryStatusPanel.innerHTML = '';
-    if (!currentSessionId || (!memorySegments.length && !memoryJobs.length)) {
+    if (!currentSessionId || !memoryStatusVisible) {
       memoryStatusPanel.classList.remove('visible'); return;
     }
     const segBlock = document.createElement('div'); segBlock.className = 'memory-status-block';
@@ -1431,6 +1452,7 @@
   newChatButton.addEventListener('click', async () => { await startNewChat(); });
   refreshSessionsButton.addEventListener('click', async () => { await loadSessionList(); });
   toggleSidebarButton.addEventListener('click', toggleDrawer);
+  memoryStatusToggle.addEventListener('click', toggleMemoryStatus);
   memoryScanButton.addEventListener('click', queueMemoryExtraction);
   input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } });
   input.addEventListener('input', () => { input.style.height = '44px'; input.style.height = `${Math.min(input.scrollHeight, 140)}px`; });

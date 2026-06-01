@@ -730,6 +730,7 @@ func FormatMemoryContextForPrompt(mc *memorycore.MemoryContext, excludedEpisodeI
 	}
 	usageLines := []string{
 		"不要主动说明“我记得”，除非用户询问来源。",
+		"不用尝试使用每一条记忆，只用符合场景的，如没有合适的可以不用。",
 		"历史事实不能当当前事实说。",
 		"低置信度记忆只可柔和使用。",
 	}

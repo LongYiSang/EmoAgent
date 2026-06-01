@@ -83,6 +83,7 @@ memory:
     final_memory_count: 4
     context_budget_tokens: 2048
     fail_open: true
+    pipeline_debug: true
 
   extraction:
     enabled: true
