@@ -46,6 +46,14 @@ func outboundEventToWSMessage(event turn.OutboundEvent) WSMessage {
 	msg := WSMessage{
 		Type:    event.Type,
 		Content: event.Content,
+		TurnID:  event.TurnID,
+		Payload: clonePayload(event.Payload),
+	}
+	if status, ok := event.Payload["status"].(string); ok {
+		msg.Status = status
+	}
+	if errorKind, ok := event.Payload["error_kind"].(string); ok {
+		msg.ErrorKind = errorKind
 	}
 	if event.Tool != nil {
 		msg.Tool = &ToolActivity{
@@ -80,6 +88,8 @@ func wsMessageToOutboundEvent(msg WSMessage) turn.OutboundEvent {
 	event := turn.OutboundEvent{
 		Type:    msg.Type,
 		Content: msg.Content,
+		TurnID:  msg.TurnID,
+		Payload: clonePayload(msg.Payload),
 	}
 	if msg.Tool != nil {
 		event.Tool = &turn.ToolActivity{
@@ -108,4 +118,15 @@ func wsMessageToOutboundEvent(msg WSMessage) turn.OutboundEvent {
 		event.Approval = &turn.ApprovalActivity{Request: msg.Approval}
 	}
 	return event
+}
+
+func clonePayload(payload map[string]any) map[string]any {
+	if payload == nil {
+		return nil
+	}
+	clone := make(map[string]any, len(payload))
+	for key, value := range payload {
+		clone[key] = value
+	}
+	return clone
 }

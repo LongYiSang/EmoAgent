@@ -314,7 +314,11 @@ func (a *App) Run(ctx context.Context) error {
 	})
 	a.approvalService = approvalService
 	startMemoryExtractionBackground(ctx, a.Memory, a.DB, a.Logger, cfg.Memory.Extraction)
-	chatHandler := chat.NewHandler(a.engine, a, a.Logger, chat.WithTurnPipelineConfig(cfg.Chat.TurnPipeline))
+	chatOptions := []chat.HandlerOption{chat.WithTurnPipelineConfig(cfg.Chat.TurnPipeline)}
+	if a.DB != nil {
+		chatOptions = append(chatOptions, chat.WithTurnDB(a.DB.SqlDB()))
+	}
+	chatHandler := chat.NewHandler(a.engine, a, a.Logger, chatOptions...)
 
 	staticSub, err := fs.Sub(web.StaticFS, "static")
 	if err != nil {

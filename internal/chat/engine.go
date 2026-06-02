@@ -289,6 +289,8 @@ type turnOptions struct {
 	userContent  string
 	extraSystem  string
 	disableTools bool
+	deferCommit  bool
+	output       *deferredTurnOutput
 }
 
 type turnMemoryAnchor struct {
@@ -297,6 +299,14 @@ type turnMemoryAnchor struct {
 	userEpisodeID       string
 	manualNotice        string
 	manualNoticeHandled bool
+}
+
+type deferredTurnOutput struct {
+	assistantContent string
+	thinkingBlocks   []thinkingBlockMetadata
+	memorySnapshot   *memoryPromptSnapshot
+	memorySegment    MemorySegmentRef
+	hasMemorySegment bool
 }
 
 type thinkingBlockMetadata struct {
@@ -835,7 +845,20 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 		"response_content", assistantContent,
 	)
 
-	if err := e.commitTurnOutput(ctx, sessionID, assistantContent, thinkingBlocks, memorySnapshot, memorySegment, hasMemorySegment); err != nil {
+	output := deferredTurnOutput{
+		assistantContent: assistantContent,
+		thinkingBlocks:   thinkingBlocks,
+		memorySnapshot:   memorySnapshot,
+		memorySegment:    memorySegment,
+		hasMemorySegment: hasMemorySegment,
+	}
+	if opts.deferCommit {
+		if opts.output != nil {
+			*opts.output = output
+		}
+		return assistantContent, nil
+	}
+	if err := e.commitTurnOutput(ctx, sessionID, output.assistantContent, output.thinkingBlocks, output.memorySnapshot, output.memorySegment, output.hasMemorySegment); err != nil {
 		return "", err
 	}
 

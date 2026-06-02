@@ -18,7 +18,7 @@ type chatTurnRuntime struct {
 	cfg     config.TurnPipelineConfig
 	rt      *turn.Runtime
 	journal turn.TurnJournal
-	ids     *turn.MemoryIdempotencyStore
+	ids     turn.IdempotencyStore
 	logger  *slog.Logger
 }
 
@@ -34,15 +34,22 @@ func forcedOutboundEventsFromContext(ctx context.Context) bool {
 }
 
 func newChatTurnRuntime(engine conversationEngine, cfg config.TurnPipelineConfig, journal turn.TurnJournal, logger *slog.Logger) *chatTurnRuntime {
+	return newChatTurnRuntimeWithStore(engine, cfg, journal, turn.NewMemoryIdempotencyStore(), logger)
+}
+
+func newChatTurnRuntimeWithStore(engine conversationEngine, cfg config.TurnPipelineConfig, journal turn.TurnJournal, ids turn.IdempotencyStore, logger *slog.Logger) *chatTurnRuntime {
 	if journal == nil {
 		journal = turn.NewMemoryJournal()
+	}
+	if ids == nil {
+		ids = turn.NewMemoryIdempotencyStore()
 	}
 	return &chatTurnRuntime{
 		engine:  engine,
 		cfg:     cfg,
 		rt:      turn.NewRuntime(turn.RuntimeConfig{Journal: journal}),
 		journal: journal,
-		ids:     turn.NewMemoryIdempotencyStore(),
+		ids:     ids,
 		logger:  logger,
 	}
 }
@@ -63,8 +70,13 @@ func (r *chatTurnRuntime) Execute(ctx context.Context, env turn.InboundEnvelope,
 		return turn.TurnResult{}, err
 	}
 	if idem.Duplicate {
-		return turn.TurnResult{TurnID: idem.TurnID, State: turn.StateDone, Status: idem.Status}, nil
+		return r.replayDuplicate(ctx, idem, sink)
 	}
+
+	finalStatus := "failed"
+	defer func() {
+		_ = r.ids.Complete(env.IdempotencyKey, finalStatus)
+	}()
 
 	tc := turn.TurnContext{
 		TurnID:  turnID,
@@ -75,14 +87,136 @@ func (r *chatTurnRuntime) Execute(ctx context.Context, env turn.InboundEnvelope,
 	}
 	stages := r.stages(env, persona)
 	result, execErr := r.rt.Execute(ctx, tc, stages)
+	if closeErr := closeTurnStream(ctx, tc.Stream); closeErr != nil && execErr == nil {
+		_ = r.journal.RecordEvent(ctx, turnID, turn.JournalEvent{
+			Stage: turn.StageOutboundCommit,
+			Type:  "outbound_failed",
+			Payload: map[string]any{
+				"error": closeErr.Error(),
+			},
+		})
+		_ = r.journal.CompleteTurn(ctx, turnID, "failed", "outbound_failed")
+		result.State = turn.StateFailed
+		result.Status = "failed"
+		result.ErrorKind = "outbound_failed"
+		execErr = closeErr
+	}
 	status := result.Status
 	if status == "" {
 		status = "failed"
 	}
-	if execErr == nil {
-		_ = r.ids.Complete(env.IdempotencyKey, status)
-	}
+	finalStatus = status
 	return result, execErr
+}
+
+func closeTurnStream(ctx context.Context, sink turn.OutboundSink) error {
+	closer, ok := sink.(interface {
+		Close(context.Context) error
+	})
+	if !ok {
+		return nil
+	}
+	return closer.Close(ctx)
+}
+
+func (r *chatTurnRuntime) replayDuplicate(ctx context.Context, idem turn.IdempotencyResult, sink turn.OutboundSink) (turn.TurnResult, error) {
+	status := idem.Status
+	if status == "" {
+		status = "running"
+	}
+	resultStatus := status
+	switch status {
+	case "running":
+		if r.cfg.Idempotency.DuplicateRunning == "status" {
+			resultStatus = "running"
+		} else {
+			resultStatus = "busy"
+		}
+		_ = emitTurnStatus(ctx, sink, idem.TurnID, resultStatus, "")
+		return turn.TurnResult{TurnID: idem.TurnID, State: turn.StateRunningEmotion, Status: resultStatus}, nil
+	case "failed":
+		resultStatus = "previous_failed"
+		errorKind := r.lookupTurnErrorKind(ctx, idem.TurnID)
+		_ = emitTurnStatus(ctx, sink, idem.TurnID, resultStatus, errorKind)
+		return turn.TurnResult{TurnID: idem.TurnID, State: turn.StateFailed, Status: resultStatus, ErrorKind: errorKind}, nil
+	case "approval_wait":
+		_ = emitTurnStatus(ctx, sink, idem.TurnID, "approval_wait", "")
+		_ = r.replayOutbound(ctx, idem.TurnID, sink, func(event turn.OutboundEvent) bool {
+			return event.Type == turn.EventApprovalRequired
+		})
+		return turn.TurnResult{TurnID: idem.TurnID, State: turn.StateApprovalWait, Status: "approval_wait"}, nil
+	default:
+		_ = emitTurnStatus(ctx, sink, idem.TurnID, status, "")
+		if r.cfg.Idempotency.DuplicateDone != "noop" {
+			_ = r.replayOutbound(ctx, idem.TurnID, sink, func(event turn.OutboundEvent) bool {
+				return event.Type == turn.EventStreamDelta || event.Type == turn.EventStreamEnd || event.Type == turn.EventApprovalRequired || event.Type == turn.EventApprovalUpdated
+			})
+		}
+		return turn.TurnResult{TurnID: idem.TurnID, State: turn.StateDone, Status: status}, nil
+	}
+}
+
+func emitTurnStatus(ctx context.Context, sink turn.OutboundSink, turnID, status, errorKind string) error {
+	if sink == nil {
+		return nil
+	}
+	payload := map[string]any{
+		"turn_id": turnID,
+		"status":  status,
+	}
+	if errorKind != "" {
+		payload["error_kind"] = errorKind
+	}
+	return sink.Emit(ctx, turn.OutboundEvent{
+		TurnID:  turnID,
+		Type:    turn.EventTurnStatus,
+		Payload: payload,
+	})
+}
+
+func (r *chatTurnRuntime) lookupTurnErrorKind(ctx context.Context, turnID string) string {
+	switch journal := r.journal.(type) {
+	case interface {
+		GetTurn(context.Context, string) (turn.TurnSnapshot, bool, error)
+	}:
+		snapshot, ok, err := journal.GetTurn(ctx, turnID)
+		if err == nil && ok {
+			return snapshot.ErrorKind
+		}
+	case interface {
+		GetTurn(string) (turn.TurnSnapshot, bool)
+	}:
+		snapshot, ok := journal.GetTurn(turnID)
+		if ok {
+			return snapshot.ErrorKind
+		}
+	}
+	return ""
+}
+
+func (r *chatTurnRuntime) replayOutbound(ctx context.Context, turnID string, sink turn.OutboundSink, keep func(turn.OutboundEvent) bool) error {
+	if sink == nil {
+		return nil
+	}
+	lister, ok := r.journal.(interface {
+		ListOutbound(context.Context, string) ([]turn.OutboundEvent, error)
+	})
+	if !ok {
+		return nil
+	}
+	events, err := lister.ListOutbound(ctx, turnID)
+	if err != nil {
+		return err
+	}
+	for _, event := range events {
+		if keep != nil && !keep(event) {
+			continue
+		}
+		if err := sink.Emit(ctx, event); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *chatTurnRuntime) Shadow(ctx context.Context, env turn.InboundEnvelope) (turn.TurnResult, error) {
@@ -136,11 +270,105 @@ func (r *chatTurnRuntime) stages(env turn.InboundEnvelope, persona *config.Perso
 			r.emitApprovalsStage(),
 		}
 	default:
+		if r.cfg.MemoryStages {
+			return []turn.Stage{
+				r.normalizeStage(),
+				r.memoryPrepareStage(),
+				r.emotionPrepareStage(),
+				r.messageStage(persona),
+				r.memoryCommitStage(),
+				r.emitApprovalsStage(),
+			}
+		}
 		return []turn.Stage{
 			r.normalizeStage(),
 			r.messageStage(persona),
 			r.emitApprovalsStage(),
 		}
+	}
+}
+
+func (r *chatTurnRuntime) memoryPrepareStage() turn.Stage {
+	return turn.StageFunc{
+		NameValue: turn.StageMemoryPrepare,
+		RunFunc: func(ctx context.Context, tc *turn.TurnContext) (turn.StageResult, error) {
+			engine, ok := r.engine.(*Engine)
+			if !ok {
+				return turn.StageResult{NextState: turn.StateMemoryPrepared}, nil
+			}
+			anchor, err := engine.prepareInputAndMemoryAnchor(ctx, tc.Inbound.SessionID, turnOptions{
+				persistUser: true,
+				userContent: tc.Inbound.UserMessage.Content,
+			})
+			if err != nil {
+				return turn.StageResult{NextState: turn.StateFailed, Terminal: true, Status: "failed", ErrorKind: "memory_prepare_failed"}, err
+			}
+			ensureDiagnostics(tc)
+			tc.Diagnostics["memory_anchor"] = anchor
+			tc.Diagnostics["memory_prepared"] = true
+			if anchor.manualNoticeHandled {
+				tc.Diagnostics["manual_notice"] = anchor.manualNotice
+			}
+			return turn.StageResult{NextState: turn.StateMemoryPrepared}, nil
+		},
+	}
+}
+
+func (r *chatTurnRuntime) emotionPrepareStage() turn.Stage {
+	return turn.StageFunc{
+		NameValue: turn.StageEmotionPrepare,
+		RunFunc: func(ctx context.Context, tc *turn.TurnContext) (turn.StageResult, error) {
+			engine, ok := r.engine.(*Engine)
+			if !ok || tc.Diagnostics == nil {
+				return turn.StageResult{NextState: turn.StateEmotionPrepared}, nil
+			}
+			if _, handled := tc.Diagnostics["manual_notice"].(string); handled {
+				return turn.StageResult{NextState: turn.StateEmotionPrepared}, nil
+			}
+			anchor, _ := tc.Diagnostics["memory_anchor"].(turnMemoryAnchor)
+			engine.mu.RLock()
+			memoryRetrieval := engine.memoryRetrieval
+			engine.mu.RUnlock()
+			snapshot, err := engine.retrieveMemoryPrompt(ctx, tc.Inbound.SessionID, tc.Inbound.UserMessage.Content, anchor.userEpisodeID, memoryRetrieval)
+			if err != nil {
+				return turn.StageResult{NextState: turn.StateFailed, Terminal: true, Status: "failed", ErrorKind: "emotion_prepare_failed"}, err
+			}
+			if snapshot != nil && snapshot.PromptBlock != "" {
+				tc.Diagnostics["memory_prompt_block"] = snapshot.PromptBlock
+				tc.Diagnostics["memory_prompt_snapshot"] = snapshot
+			}
+			return turn.StageResult{NextState: turn.StateEmotionPrepared}, nil
+		},
+	}
+}
+
+func (r *chatTurnRuntime) memoryCommitStage() turn.Stage {
+	return turn.StageFunc{
+		NameValue: turn.StageMemoryCommit,
+		RunFunc: func(ctx context.Context, tc *turn.TurnContext) (turn.StageResult, error) {
+			ensureDiagnostics(tc)
+			engine, ok := r.engine.(*Engine)
+			if !ok {
+				tc.Diagnostics["memory_commit_observed"] = true
+				return turn.StageResult{NextState: tc.State}, nil
+			}
+			output, ok := tc.Diagnostics["turn_output"].(deferredTurnOutput)
+			if !ok || output.assistantContent == "" {
+				tc.Diagnostics["memory_commit_observed"] = true
+				return turn.StageResult{NextState: tc.State}, nil
+			}
+			if err := engine.commitTurnOutput(ctx, tc.Inbound.SessionID, output.assistantContent, output.thinkingBlocks, output.memorySnapshot, output.memorySegment, output.hasMemorySegment); err != nil {
+				return turn.StageResult{NextState: turn.StateCommitFailedAfterOutput, Terminal: true, Status: "commit_failed_after_output", ErrorKind: "memory_commit_failed"}, err
+			}
+			tc.Diagnostics["memory_committed"] = true
+			return turn.StageResult{NextState: tc.State}, nil
+		},
+	}
+}
+
+func ensureDiagnostics(tc *turn.TurnContext) {
+	if tc.Diagnostics == nil {
+		tc.Diagnostics = map[string]any{}
 	}
 }
 
@@ -174,6 +402,17 @@ func (r *chatTurnRuntime) messageStage(persona *config.Persona) turn.Stage {
 				return turn.StageResult{NextState: turn.StateFailed, Terminal: true, Status: "failed", ErrorKind: "engine_unconfigured"}, errors.New("chat engine is not configured")
 			}
 			ctx = withForcedOutboundEvents(turn.WithOutboundSink(ctx, tc.Stream))
+			if notice, ok := tc.Diagnostics["manual_notice"].(string); ok && notice != "" {
+				return turn.StageResult{
+					NextState: turn.StateDone,
+					Terminal:  false,
+					Status:    "done",
+					Outbound: []turn.OutboundEvent{
+						{Type: turn.EventStreamDelta, Content: notice},
+						{Type: turn.EventStreamEnd},
+					},
+				}, nil
+			}
 			if tc.Stream != nil {
 				if err := tc.Stream.Emit(ctx, turn.OutboundEvent{Type: turn.EventStreamStart}); err != nil {
 					return turn.StageResult{NextState: turn.StateFailed, Terminal: true, Status: "failed", ErrorKind: "outbound_failed"}, err
@@ -181,17 +420,56 @@ func (r *chatTurnRuntime) messageStage(persona *config.Persona) turn.Stage {
 			}
 			result := turn.StageResult{
 				NextState: turn.StateDone,
-				Terminal:  true,
+				Terminal:  false,
 				Status:    "done",
 			}
 			streamedDelta := false
-			reply, err := r.engine.SendMessage(ctx, tc.Inbound.SessionID, persona, tc.Inbound.UserMessage.Content, func(delta string) {
-				if delta == "" || tc.Stream == nil {
-					return
+			reply := ""
+			var err error
+			if r.cfg.MemoryStages {
+				if engine, ok := r.engine.(*Engine); ok {
+					extraSystem, _ := tc.Diagnostics["memory_prompt_block"].(string)
+					var output deferredTurnOutput
+					reply, err = engine.sendTurn(ctx, tc.Inbound.SessionID, persona, func(delta string) {
+						if delta == "" || tc.Stream == nil {
+							return
+						}
+						streamedDelta = true
+						_ = tc.Stream.Emit(ctx, turn.OutboundEvent{Type: turn.EventStreamDelta, Content: delta})
+					}, turnOptions{
+						persistUser: false,
+						userContent: tc.Inbound.UserMessage.Content,
+						extraSystem: extraSystem,
+						deferCommit: true,
+						output:      &output,
+					})
+					if snapshot, ok := tc.Diagnostics["memory_prompt_snapshot"].(*memoryPromptSnapshot); ok {
+						output.memorySnapshot = snapshot
+					}
+					if anchor, ok := tc.Diagnostics["memory_anchor"].(turnMemoryAnchor); ok {
+						output.memorySegment = anchor.memorySegment
+						output.hasMemorySegment = anchor.hasMemorySegment
+					}
+					ensureDiagnostics(tc)
+					tc.Diagnostics["turn_output"] = output
+				} else {
+					reply, err = r.engine.SendMessage(ctx, tc.Inbound.SessionID, persona, tc.Inbound.UserMessage.Content, func(delta string) {
+						if delta == "" || tc.Stream == nil {
+							return
+						}
+						streamedDelta = true
+						_ = tc.Stream.Emit(ctx, turn.OutboundEvent{Type: turn.EventStreamDelta, Content: delta})
+					})
 				}
-				streamedDelta = true
-				_ = tc.Stream.Emit(ctx, turn.OutboundEvent{Type: turn.EventStreamDelta, Content: delta})
-			})
+			} else {
+				reply, err = r.engine.SendMessage(ctx, tc.Inbound.SessionID, persona, tc.Inbound.UserMessage.Content, func(delta string) {
+					if delta == "" || tc.Stream == nil {
+						return
+					}
+					streamedDelta = true
+					_ = tc.Stream.Emit(ctx, turn.OutboundEvent{Type: turn.EventStreamDelta, Content: delta})
+				})
+			}
 			if err != nil && !errors.Is(err, errApprovalPending) {
 				return turn.StageResult{NextState: turn.StateFailed, Terminal: true, Status: "failed", ErrorKind: "llm_failed"}, err
 			}
@@ -322,16 +600,37 @@ func (s *journalingSink) Emit(ctx context.Context, event turn.OutboundEvent) err
 		event.Seq = s.seq
 	}
 	if s.journal != nil {
-		_ = s.journal.RecordEvent(ctx, s.turnID, turn.JournalEvent{
-			Stage:   turn.StageOutboundCommit,
-			Type:    event.Type,
-			Payload: outboundJournalPayload(event),
-		})
+		if recorder, ok := s.journal.(interface {
+			RecordOutbound(context.Context, string, turn.OutboundEvent) error
+		}); ok {
+			journalEvent := event
+			journalEvent.Payload = outboundJournalPayload(event)
+			_ = recorder.RecordOutbound(ctx, s.turnID, journalEvent)
+		} else {
+			_ = s.journal.RecordEvent(ctx, s.turnID, turn.JournalEvent{
+				Stage:   turn.StageOutboundCommit,
+				Type:    event.Type,
+				Payload: outboundJournalPayload(event),
+			})
+		}
 	}
 	if s.next == nil {
 		return nil
 	}
 	return s.next.Emit(ctx, event)
+}
+
+func (s *journalingSink) Close(ctx context.Context) error {
+	if s == nil || s.next == nil {
+		return nil
+	}
+	closer, ok := s.next.(interface {
+		Close(context.Context) error
+	})
+	if !ok {
+		return nil
+	}
+	return closer.Close(ctx)
 }
 
 func outboundJournalPayload(event turn.OutboundEvent) map[string]any {

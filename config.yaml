@@ -8,9 +8,21 @@ chat:
   realtime_streaming: false
   turn_pipeline:
     shadow: false
-    enabled: false
-    memory_stages: false
-    approval_stages: false
+    enabled: true
+    memory_stages: true
+    approval_stages: true
+    rollout_percent: 100
+    allow_personas: []
+    allow_sessions: []
+    deny_sessions: []
+    journal:
+      mode: sqlite
+      jsonl_dir: ./logs/turns
+      fail_closed: true
+    idempotency:
+      mode: sqlite
+      duplicate_done: replay_summary
+      duplicate_running: busy
 
 context:
   input_budget_tokens: 216000

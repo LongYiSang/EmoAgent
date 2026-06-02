@@ -410,6 +410,70 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_extraction_jobs_dedupe_pending
     WHERE status IN ('pending', 'running');
 `,
 	},
+	{
+		Version: 17,
+		SQL: `
+CREATE TABLE IF NOT EXISTS turns (
+    id              TEXT PRIMARY KEY,
+    idempotency_key TEXT UNIQUE,
+    source          TEXT NOT NULL DEFAULT '',
+    source_event_id TEXT NOT NULL DEFAULT '',
+    kind            TEXT NOT NULL,
+    session_id      TEXT NOT NULL DEFAULT '',
+    persona_key     TEXT NOT NULL DEFAULT '',
+    state           TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    error_kind      TEXT NOT NULL DEFAULT '',
+    error_message   TEXT NOT NULL DEFAULT '',
+    started_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    completed_at    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_turns_session_started
+    ON turns(session_id, started_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_turns_status_updated
+    ON turns(status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS turn_events (
+    id           TEXT PRIMARY KEY,
+    turn_id      TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+    seq          INTEGER NOT NULL,
+    stage        TEXT NOT NULL,
+    event_type   TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at   TEXT NOT NULL,
+    UNIQUE(turn_id, seq)
+);
+
+CREATE INDEX IF NOT EXISTS idx_turn_events_turn_seq
+    ON turn_events(turn_id, seq);
+
+CREATE TABLE IF NOT EXISTS turn_outbound_events (
+    id              TEXT PRIMARY KEY,
+    turn_id          TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+    seq              INTEGER NOT NULL,
+    event_type       TEXT NOT NULL,
+    payload_json     TEXT NOT NULL DEFAULT '{}',
+    delivery_status  TEXT NOT NULL DEFAULT 'pending',
+    created_at       TEXT NOT NULL,
+    delivered_at     TEXT,
+    UNIQUE(turn_id, seq)
+);
+
+CREATE INDEX IF NOT EXISTS idx_turn_outbound_turn_seq
+    ON turn_outbound_events(turn_id, seq);
+
+CREATE TABLE IF NOT EXISTS turn_idempotency (
+    idempotency_key TEXT PRIMARY KEY,
+    turn_id         TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+    status          TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.
@@ -453,5 +517,118 @@ func ApplyMigrations(db *sql.DB) error {
 		}
 	}
 
+	if err := ApplySchemaRepairs(db); err != nil {
+		return fmt.Errorf("schema repair: %w", err)
+	}
+
 	return nil
+}
+
+// ApplySchemaRepairs patches additive schema drift from development databases
+// whose schema_version rows predate later edits to already-applied migrations.
+func ApplySchemaRepairs(db *sql.DB) error {
+	if err := ensureApprovalRequestsSchema(db); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureApprovalRequestsSchema(db *sql.DB) error {
+	if _, err := db.Exec(`
+CREATE TABLE IF NOT EXISTS approval_requests (
+    id                    TEXT PRIMARY KEY,
+    session_id            TEXT NOT NULL,
+    task_id               TEXT NOT NULL,
+    category              TEXT NOT NULL,
+    risk_level            TEXT NOT NULL,
+    goal_summary          TEXT NOT NULL,
+    question              TEXT NOT NULL,
+    options_json          TEXT NOT NULL,
+    recommended_option    TEXT NOT NULL DEFAULT '',
+    recommendation_reason TEXT NOT NULL DEFAULT '',
+    reject_option_id      TEXT NOT NULL,
+    status                TEXT NOT NULL,
+    selected_option_id    TEXT NOT NULL DEFAULT '',
+    actor_channel         TEXT NOT NULL DEFAULT '',
+    actor_ref             TEXT NOT NULL DEFAULT '',
+    expires_at            TEXT NOT NULL,
+    decided_at            TEXT,
+    consumed_at           TEXT,
+    approval_kind         TEXT NOT NULL DEFAULT '',
+    tool_name             TEXT NOT NULL DEFAULT '',
+    normalized_input_hash TEXT NOT NULL DEFAULT '',
+    path_digest           TEXT NOT NULL DEFAULT '',
+    input_preview         TEXT NOT NULL DEFAULT '',
+    created_at            TEXT NOT NULL,
+    updated_at            TEXT NOT NULL
+);
+`); err != nil {
+		return fmt.Errorf("ensure approval_requests table: %w", err)
+	}
+
+	columns, err := tableColumns(db, "approval_requests")
+	if err != nil {
+		return fmt.Errorf("read approval_requests columns: %w", err)
+	}
+	for _, column := range []struct {
+		name string
+		sql  string
+	}{
+		{"tool_name", "ALTER TABLE approval_requests ADD COLUMN tool_name TEXT NOT NULL DEFAULT ''"},
+		{"normalized_input_hash", "ALTER TABLE approval_requests ADD COLUMN normalized_input_hash TEXT NOT NULL DEFAULT ''"},
+		{"path_digest", "ALTER TABLE approval_requests ADD COLUMN path_digest TEXT NOT NULL DEFAULT ''"},
+		{"input_preview", "ALTER TABLE approval_requests ADD COLUMN input_preview TEXT NOT NULL DEFAULT ''"},
+		{"approval_kind", "ALTER TABLE approval_requests ADD COLUMN approval_kind TEXT NOT NULL DEFAULT ''"},
+	} {
+		if columns[column.name] {
+			continue
+		}
+		if _, err := db.Exec(column.sql); err != nil {
+			return fmt.Errorf("add approval_requests.%s: %w", column.name, err)
+		}
+	}
+
+	if _, err := db.Exec(`
+CREATE INDEX IF NOT EXISTS idx_approval_requests_session_status
+    ON approval_requests(session_id, status);
+CREATE INDEX IF NOT EXISTS idx_approval_requests_task_created
+    ON approval_requests(task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_approval_requests_expires_at
+    ON approval_requests(expires_at);
+CREATE INDEX IF NOT EXISTS idx_approval_requests_binding
+    ON approval_requests(session_id, task_id, tool_name, normalized_input_hash, path_digest);
+CREATE INDEX IF NOT EXISTS idx_approval_requests_kind_binding
+    ON approval_requests(session_id, task_id, approval_kind, tool_name, normalized_input_hash, path_digest);
+`); err != nil {
+		return fmt.Errorf("ensure approval_requests indexes: %w", err)
+	}
+	return nil
+}
+
+func tableColumns(db *sql.DB, table string) (map[string]bool, error) {
+	rows, err := db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	columns := map[string]bool{}
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal interface{}
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			return nil, err
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return columns, nil
 }

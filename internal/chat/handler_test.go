@@ -28,6 +28,7 @@ type fakeConversationEngine struct {
 	sendSession    string
 	sendPersona    *config.Persona
 	sendContent    string
+	sendCount      int
 	deltas         []string
 	history        []storage.MessageRecord
 	sendHook       func(context.Context)
@@ -62,6 +63,7 @@ func (f *fakeConversationEngine) ResumeSession(_ context.Context, sessionID stri
 }
 
 func (f *fakeConversationEngine) SendMessage(ctx context.Context, sessionID string, persona *config.Persona, userContent string, cb func(delta string)) (string, error) {
+	f.sendCount++
 	if f.sendHook != nil {
 		f.sendHook(ctx)
 	}

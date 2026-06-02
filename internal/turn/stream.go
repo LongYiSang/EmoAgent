@@ -15,6 +15,7 @@ const (
 	EventWorkProgressEnd  = "work_progress_end"
 	EventApprovalRequired = "approval_required"
 	EventApprovalUpdated  = "approval_updated"
+	EventTurnStatus       = "turn_status"
 	EventError            = "error"
 )
 

@@ -14,6 +14,11 @@ type IdempotencyResult struct {
 	Status    string
 }
 
+type IdempotencyStore interface {
+	Begin(key, turnID string) (IdempotencyResult, error)
+	Complete(key, status string) error
+}
+
 type MemoryIdempotencyStore struct {
 	mu      sync.Mutex
 	records map[string]idempotencyRecord

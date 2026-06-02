@@ -45,6 +45,8 @@ func (r *Runtime) Execute(ctx context.Context, tc TurnContext, stages []Stage) (
 	if err := tc.Journal.StartTurn(ctx, TurnRecord{
 		TurnID:         tc.TurnID,
 		IdempotencyKey: tc.Inbound.IdempotencyKey,
+		Source:         tc.Inbound.Source,
+		SourceEventID:  tc.Inbound.SourceEventID,
 		Kind:           tc.Inbound.Kind,
 		SessionID:      tc.Inbound.SessionID,
 		PersonaKey:     tc.Inbound.PersonaKey,

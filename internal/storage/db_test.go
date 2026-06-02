@@ -32,7 +32,7 @@ func TestOpenAndMigrate(t *testing.T) {
 	db := testDB(t)
 
 	// Verify tables exist by querying them.
-	tables := []string{"sessions", "messages", "personas", "config_runtime", "llm_providers", "agent_configs", "schema_version", "pending_decisions", "archived_decisions", "memory_chat_links", "memory_segments", "memory_extraction_jobs"}
+	tables := []string{"sessions", "messages", "personas", "config_runtime", "llm_providers", "agent_configs", "schema_version", "pending_decisions", "archived_decisions", "memory_chat_links", "memory_segments", "memory_extraction_jobs", "turns", "turn_events", "turn_outbound_events", "turn_idempotency"}
 	for _, table := range tables {
 		var name string
 		err := db.SqlDB().QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&name)
@@ -89,6 +89,42 @@ func TestOpenAndMigrate(t *testing.T) {
 	}
 	if !keyIsPK {
 		t.Fatal("personas.key should be the primary key")
+	}
+}
+
+func TestOpenAndMigrate_CreatesTurnRuntimeSchema(t *testing.T) {
+	db := testDB(t)
+
+	assertTableColumns(t, db, "turns", []string{
+		"id", "idempotency_key", "source", "source_event_id", "kind",
+		"session_id", "persona_key", "state", "status", "error_kind",
+		"error_message", "started_at", "updated_at", "completed_at",
+	})
+	assertTableColumns(t, db, "turn_events", []string{
+		"id", "turn_id", "seq", "stage", "event_type", "payload_json", "created_at",
+	})
+	assertTableColumns(t, db, "turn_outbound_events", []string{
+		"id", "turn_id", "seq", "event_type", "payload_json", "delivery_status", "created_at", "delivered_at",
+	})
+	assertTableColumns(t, db, "turn_idempotency", []string{
+		"idempotency_key", "turn_id", "status", "created_at", "updated_at",
+	})
+
+	for _, indexName := range []string{
+		"idx_turns_session_started",
+		"idx_turns_status_updated",
+		"idx_turn_events_turn_seq",
+		"idx_turn_outbound_turn_seq",
+	} {
+		var name string
+		if err := db.SqlDB().QueryRow("SELECT name FROM sqlite_master WHERE type='index' AND name=?", indexName).Scan(&name); err != nil {
+			t.Fatalf("turn runtime index %q not found: %v", indexName, err)
+		}
+	}
+
+	var idempotencyPK string
+	if err := db.SqlDB().QueryRow("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='turn_idempotency' AND sql IS NULL").Scan(&idempotencyPK); err != nil {
+		t.Fatalf("turn_idempotency primary key index not found: %v", err)
 	}
 }
 
@@ -174,15 +210,10 @@ func TestOpenAndMigrate_CreatesPendingDecisionTables(t *testing.T) {
 	}
 }
 
-func TestOpenAndMigrate_CreatesApprovalRequestsTableAndColumns(t *testing.T) {
-	db := testDB(t)
+func approvalRequestColumns(t *testing.T, db *sql.DB) map[string]bool {
+	t.Helper()
 
-	var name string
-	if err := db.SqlDB().QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='approval_requests'").Scan(&name); err != nil {
-		t.Fatalf("table %q not found: %v", "approval_requests", err)
-	}
-
-	rows, err := db.SqlDB().Query("PRAGMA table_info(approval_requests)")
+	rows, err := db.Query("PRAGMA table_info(approval_requests)")
 	if err != nil {
 		t.Fatalf("PRAGMA table_info(approval_requests): %v", err)
 	}
@@ -206,7 +237,18 @@ func TestOpenAndMigrate_CreatesApprovalRequestsTableAndColumns(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("rows.Err(): %v", err)
 	}
+	return columns
+}
 
+func TestOpenAndMigrate_CreatesApprovalRequestsTableAndColumns(t *testing.T) {
+	db := testDB(t)
+
+	var name string
+	if err := db.SqlDB().QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='approval_requests'").Scan(&name); err != nil {
+		t.Fatalf("table %q not found: %v", "approval_requests", err)
+	}
+
+	columns := approvalRequestColumns(t, db.SqlDB())
 	for _, required := range []string{
 		"id", "session_id", "task_id", "category", "risk_level", "goal_summary", "question",
 		"options_json", "recommended_option", "recommendation_reason", "reject_option_id",
@@ -222,6 +264,72 @@ func TestOpenAndMigrate_CreatesApprovalRequestsTableAndColumns(t *testing.T) {
 	var indexName string
 	if err := db.SqlDB().QueryRow("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_approval_requests_kind_binding'").Scan(&indexName); err != nil {
 		t.Fatalf("approval_requests missing kind binding index: %v", err)
+	}
+}
+
+func TestApplyMigrationsRepairsDriftedApprovalRequestSchema(t *testing.T) {
+	dir := t.TempDir()
+	sqlDB, err := sql.Open("sqlite", filepath.Join(dir, "migration.db"))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer sqlDB.Close()
+
+	_, err = sqlDB.Exec(`
+CREATE TABLE schema_version (
+    version    INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT INTO schema_version (version)
+VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11), (12), (13), (14), (15), (16), (17);
+
+CREATE TABLE approval_requests (
+    id                    TEXT PRIMARY KEY,
+    session_id            TEXT NOT NULL,
+    task_id               TEXT NOT NULL,
+    category              TEXT NOT NULL,
+    risk_level            TEXT NOT NULL,
+    goal_summary          TEXT NOT NULL,
+    question              TEXT NOT NULL,
+    options_json          TEXT NOT NULL,
+    recommended_option    TEXT NOT NULL DEFAULT '',
+    recommendation_reason TEXT NOT NULL DEFAULT '',
+    reject_option_id      TEXT NOT NULL,
+    status                TEXT NOT NULL,
+    selected_option_id    TEXT NOT NULL DEFAULT '',
+    actor_channel         TEXT NOT NULL DEFAULT '',
+    actor_ref             TEXT NOT NULL DEFAULT '',
+    expires_at            TEXT NOT NULL,
+    decided_at            TEXT,
+    consumed_at           TEXT,
+    created_at            TEXT NOT NULL,
+    updated_at            TEXT NOT NULL
+);
+`)
+	if err != nil {
+		t.Fatalf("seed drifted approval_requests schema: %v", err)
+	}
+
+	if err := ApplyMigrations(sqlDB); err != nil {
+		t.Fatalf("ApplyMigrations: %v", err)
+	}
+
+	columns := approvalRequestColumns(t, sqlDB)
+	for _, required := range []string{
+		"approval_kind", "tool_name", "normalized_input_hash", "path_digest", "input_preview",
+	} {
+		if !columns[required] {
+			t.Fatalf("approval_requests missing repaired column %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"idx_approval_requests_binding", "idx_approval_requests_kind_binding",
+	} {
+		var indexName string
+		if err := sqlDB.QueryRow("SELECT name FROM sqlite_master WHERE type='index' AND name=?", required).Scan(&indexName); err != nil {
+			t.Fatalf("approval_requests missing repaired index %q: %v", required, err)
+		}
 	}
 }
 

@@ -34,6 +34,27 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Chat.TurnPipeline.ApprovalStages {
 		t.Error("default chat.turn_pipeline.approval_stages = true, want false")
 	}
+	if cfg.Chat.TurnPipeline.RolloutPercent != 0 {
+		t.Errorf("default chat.turn_pipeline.rollout_percent = %d, want 0", cfg.Chat.TurnPipeline.RolloutPercent)
+	}
+	if cfg.Chat.TurnPipeline.Journal.Mode != "sqlite" {
+		t.Errorf("default chat.turn_pipeline.journal.mode = %q, want sqlite", cfg.Chat.TurnPipeline.Journal.Mode)
+	}
+	if cfg.Chat.TurnPipeline.Journal.JSONLDir != "./logs/turns" {
+		t.Errorf("default chat.turn_pipeline.journal.jsonl_dir = %q, want ./logs/turns", cfg.Chat.TurnPipeline.Journal.JSONLDir)
+	}
+	if cfg.Chat.TurnPipeline.Journal.FailClosed {
+		t.Error("default chat.turn_pipeline.journal.fail_closed = true, want false")
+	}
+	if cfg.Chat.TurnPipeline.Idempotency.Mode != "sqlite" {
+		t.Errorf("default chat.turn_pipeline.idempotency.mode = %q, want sqlite", cfg.Chat.TurnPipeline.Idempotency.Mode)
+	}
+	if cfg.Chat.TurnPipeline.Idempotency.DuplicateDone != "replay_summary" {
+		t.Errorf("default duplicate_done = %q, want replay_summary", cfg.Chat.TurnPipeline.Idempotency.DuplicateDone)
+	}
+	if cfg.Chat.TurnPipeline.Idempotency.DuplicateRunning != "busy" {
+		t.Errorf("default duplicate_running = %q, want busy", cfg.Chat.TurnPipeline.Idempotency.DuplicateRunning)
+	}
 	if cfg.Memory.Enabled {
 		t.Error("default memory.enabled = true, want false")
 	}
@@ -185,6 +206,18 @@ chat:
     enabled: false
     memory_stages: true
     approval_stages: true
+    rollout_percent: 25
+    allow_personas: ["default"]
+    allow_sessions: ["session-allow"]
+    deny_sessions: ["session-deny"]
+    journal:
+      mode: sqlite_jsonl
+      jsonl_dir: ./tmp/turns
+      fail_closed: true
+    idempotency:
+      mode: sqlite
+      duplicate_done: replay_summary
+      duplicate_running: busy
 context:
   input_budget_tokens: 12345
   soft_compact_ratio: 0.7
@@ -304,6 +337,24 @@ memory:
 	}
 	if !cfg.Chat.TurnPipeline.ApprovalStages {
 		t.Fatal("chat.turn_pipeline.approval_stages = false, want true")
+	}
+	if cfg.Chat.TurnPipeline.RolloutPercent != 25 {
+		t.Fatalf("chat.turn_pipeline.rollout_percent = %d, want 25", cfg.Chat.TurnPipeline.RolloutPercent)
+	}
+	if len(cfg.Chat.TurnPipeline.AllowPersonas) != 1 || cfg.Chat.TurnPipeline.AllowPersonas[0] != "default" {
+		t.Fatalf("chat.turn_pipeline.allow_personas = %#v", cfg.Chat.TurnPipeline.AllowPersonas)
+	}
+	if len(cfg.Chat.TurnPipeline.AllowSessions) != 1 || cfg.Chat.TurnPipeline.AllowSessions[0] != "session-allow" {
+		t.Fatalf("chat.turn_pipeline.allow_sessions = %#v", cfg.Chat.TurnPipeline.AllowSessions)
+	}
+	if len(cfg.Chat.TurnPipeline.DenySessions) != 1 || cfg.Chat.TurnPipeline.DenySessions[0] != "session-deny" {
+		t.Fatalf("chat.turn_pipeline.deny_sessions = %#v", cfg.Chat.TurnPipeline.DenySessions)
+	}
+	if cfg.Chat.TurnPipeline.Journal.Mode != "sqlite_jsonl" || cfg.Chat.TurnPipeline.Journal.JSONLDir != "./tmp/turns" || !cfg.Chat.TurnPipeline.Journal.FailClosed {
+		t.Fatalf("chat.turn_pipeline.journal = %#v", cfg.Chat.TurnPipeline.Journal)
+	}
+	if cfg.Chat.TurnPipeline.Idempotency.Mode != "sqlite" || cfg.Chat.TurnPipeline.Idempotency.DuplicateDone != "replay_summary" || cfg.Chat.TurnPipeline.Idempotency.DuplicateRunning != "busy" {
+		t.Fatalf("chat.turn_pipeline.idempotency = %#v", cfg.Chat.TurnPipeline.Idempotency)
 	}
 	if cfg.Context.InputBudgetTokens != 12345 {
 		t.Errorf("context.input_budget_tokens = %d, want 12345", cfg.Context.InputBudgetTokens)

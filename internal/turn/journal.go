@@ -2,6 +2,8 @@ package turn
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -19,6 +21,8 @@ type TurnJournal interface {
 type TurnRecord struct {
 	TurnID         string
 	IdempotencyKey string
+	Source         InboundSource
+	SourceEventID  string
 	Kind           InboundKind
 	SessionID      string
 	PersonaKey     string
@@ -49,6 +53,7 @@ type TurnSnapshot struct {
 	TurnRecord
 	Transitions []TurnTransition
 	Events      []JournalEvent
+	Outbound    []OutboundEvent
 }
 
 type MemoryJournal struct {
@@ -179,10 +184,66 @@ func (j *MemoryJournal) GetTurn(turnID string) (TurnSnapshot, bool) {
 func cloneSnapshot(snapshot TurnSnapshot) TurnSnapshot {
 	snapshot.Transitions = append([]TurnTransition(nil), snapshot.Transitions...)
 	snapshot.Events = append([]JournalEvent(nil), snapshot.Events...)
+	snapshot.Outbound = append([]OutboundEvent(nil), snapshot.Outbound...)
 	for i := range snapshot.Events {
 		snapshot.Events[i].Payload = sanitizePayload(snapshot.Events[i].Payload)
 	}
+	for i := range snapshot.Outbound {
+		snapshot.Outbound[i] = sanitizeOutboundEvent(snapshot.Outbound[i])
+	}
 	return snapshot
+}
+
+func (j *MemoryJournal) RecordOutbound(ctx context.Context, turnID string, event OutboundEvent) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if turnID == "" {
+		return fmt.Errorf("turn id is required")
+	}
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = time.Now()
+	}
+
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	snapshot, ok := j.turns[turnID]
+	if !ok {
+		return fmt.Errorf("turn %q not found", turnID)
+	}
+	if event.Seq == 0 {
+		event.Seq = int64(len(snapshot.Outbound) + 1)
+	}
+	event.TurnID = turnID
+	event = sanitizeOutboundEvent(event)
+	snapshot.Outbound = append(snapshot.Outbound, event)
+	snapshot.Events = append(snapshot.Events, JournalEvent{
+		Seq:       int64(len(snapshot.Events) + 1),
+		Stage:     StageOutboundCommit,
+		Type:      event.Type,
+		Payload:   outboundEventPayload(event),
+		CreatedAt: event.CreatedAt,
+	})
+	return nil
+}
+
+func (j *MemoryJournal) ListOutbound(ctx context.Context, turnID string) ([]OutboundEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	snapshot, ok := j.turns[turnID]
+	if !ok {
+		return nil, fmt.Errorf("turn %q not found", turnID)
+	}
+	outbound := append([]OutboundEvent(nil), snapshot.Outbound...)
+	for i := range outbound {
+		outbound[i] = sanitizeOutboundEvent(outbound[i])
+	}
+	return outbound, nil
 }
 
 func sanitizePayload(payload map[string]any) map[string]any {
@@ -250,6 +311,66 @@ func sanitizeString(value string) string {
 		return "[redacted]"
 	}
 	return value
+}
+
+func sanitizeOutboundEvent(event OutboundEvent) OutboundEvent {
+	event.Content = sanitizeString(event.Content)
+	event.Payload = sanitizePayload(event.Payload)
+	if event.Tool != nil {
+		tool := *event.Tool
+		tool.Preview = ""
+		event.Tool = &tool
+	}
+	if event.Reasoning != nil {
+		reasoning := *event.Reasoning
+		reasoning.Content = ""
+		event.Reasoning = &reasoning
+	}
+	return event
+}
+
+func outboundEventPayload(event OutboundEvent) map[string]any {
+	payload := map[string]any{
+		"outbound_type": event.Type,
+	}
+	if event.Content != "" {
+		payload["content_bytes"] = len([]byte(event.Content))
+		payload["content_hash"] = contentHash(event.Content)
+	}
+	if event.Payload != nil {
+		safePayload := sanitizePayload(event.Payload)
+		payload["payload"] = safePayload
+		for key, value := range safePayload {
+			if _, exists := payload[key]; !exists {
+				payload[key] = value
+			}
+		}
+	}
+	if event.Tool != nil {
+		payload["tool"] = event.Tool.Name
+		payload["tool_status"] = event.Tool.Status
+		payload["hash"] = event.Tool.Hash
+		payload["size"] = event.Tool.Size
+		payload["is_truncated"] = event.Tool.IsTruncated
+	}
+	if event.Reasoning != nil {
+		payload["reasoning_id"] = event.Reasoning.ID
+		payload["reasoning_status"] = event.Reasoning.Status
+		payload["reasoning_provider"] = event.Reasoning.Provider
+		payload["reasoning_model"] = event.Reasoning.Model
+		payload["reasoning_kind"] = event.Reasoning.Kind
+	}
+	if event.Approval != nil && event.Approval.Request != nil {
+		payload["approval_request_id"] = event.Approval.Request.ID
+		payload["task_id"] = event.Approval.Request.TaskID
+		payload["status"] = event.Approval.Request.Status
+	}
+	return sanitizePayload(payload)
+}
+
+func contentHash(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func toDebugString(value any) string {

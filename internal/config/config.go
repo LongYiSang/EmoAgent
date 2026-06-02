@@ -242,10 +242,28 @@ type ChatConfig struct {
 }
 
 type TurnPipelineConfig struct {
-	Shadow         bool `yaml:"shadow" json:"shadow"`
-	Enabled        bool `yaml:"enabled" json:"enabled"`
-	MemoryStages   bool `yaml:"memory_stages" json:"memory_stages"`
-	ApprovalStages bool `yaml:"approval_stages" json:"approval_stages"`
+	Shadow         bool                      `yaml:"shadow" json:"shadow"`
+	Enabled        bool                      `yaml:"enabled" json:"enabled"`
+	MemoryStages   bool                      `yaml:"memory_stages" json:"memory_stages"`
+	ApprovalStages bool                      `yaml:"approval_stages" json:"approval_stages"`
+	RolloutPercent int                       `yaml:"rollout_percent" json:"rollout_percent"`
+	AllowPersonas  []string                  `yaml:"allow_personas" json:"allow_personas"`
+	AllowSessions  []string                  `yaml:"allow_sessions" json:"allow_sessions"`
+	DenySessions   []string                  `yaml:"deny_sessions" json:"deny_sessions"`
+	Journal        TurnPipelineJournalConfig `yaml:"journal" json:"journal"`
+	Idempotency    TurnPipelineIdemConfig    `yaml:"idempotency" json:"idempotency"`
+}
+
+type TurnPipelineJournalConfig struct {
+	Mode       string `yaml:"mode" json:"mode"`
+	JSONLDir   string `yaml:"jsonl_dir" json:"jsonl_dir"`
+	FailClosed bool   `yaml:"fail_closed" json:"fail_closed"`
+}
+
+type TurnPipelineIdemConfig struct {
+	Mode             string `yaml:"mode" json:"mode"`
+	DuplicateDone    string `yaml:"duplicate_done" json:"duplicate_done"`
+	DuplicateRunning string `yaml:"duplicate_running" json:"duplicate_running"`
 }
 
 type DBConfig struct {
@@ -359,6 +377,17 @@ func DefaultConfig() *Config {
 		},
 		Chat: ChatConfig{
 			RealtimeStreaming: false,
+			TurnPipeline: TurnPipelineConfig{
+				Journal: TurnPipelineJournalConfig{
+					Mode:     "sqlite",
+					JSONLDir: "./logs/turns",
+				},
+				Idempotency: TurnPipelineIdemConfig{
+					Mode:             "sqlite",
+					DuplicateDone:    "replay_summary",
+					DuplicateRunning: "busy",
+				},
+			},
 		},
 		Context: ContextConfig{
 			InputBudgetTokens:    24000,
@@ -490,6 +519,7 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	cfg.Chat.TurnPipeline.applyDefaults()
 	cfg.Work.ApplyDefaults()
 	cfg.WebFetch.applyDefaults()
 	cfg.Bash.applyDefaults()
@@ -509,10 +539,31 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+func (c *TurnPipelineConfig) applyDefaults() {
+	if c.Journal.Mode == "" {
+		c.Journal.Mode = "sqlite"
+	}
+	if c.Journal.JSONLDir == "" {
+		c.Journal.JSONLDir = "./logs/turns"
+	}
+	if c.Idempotency.Mode == "" {
+		c.Idempotency.Mode = "sqlite"
+	}
+	if c.Idempotency.DuplicateDone == "" {
+		c.Idempotency.DuplicateDone = "replay_summary"
+	}
+	if c.Idempotency.DuplicateRunning == "" {
+		c.Idempotency.DuplicateRunning = "busy"
+	}
+}
+
 // Validate checks that required fields are set.
 func (c *Config) Validate() error {
 	if c.Server.Port < 1 || c.Server.Port > 65535 {
 		return fmt.Errorf("server.port must be 1-65535, got %d", c.Server.Port)
+	}
+	if err := c.Chat.TurnPipeline.Validate(); err != nil {
+		return fmt.Errorf("chat.turn_pipeline: %w", err)
 	}
 	if c.Memory.Enabled && strings.TrimSpace(c.Memory.ConfigPath) == "" {
 		return fmt.Errorf("memory.config_path is required when memory is enabled")
@@ -598,6 +649,33 @@ func (c *Config) Validate() error {
 	}
 	if c.Work.ToolSnipSoftTokens >= c.Work.ToolSnipHardTokens {
 		return fmt.Errorf("work.tool_snip_soft_tokens must be < work.tool_snip_hard_tokens")
+	}
+	return nil
+}
+
+func (c TurnPipelineConfig) Validate() error {
+	if c.RolloutPercent < 0 || c.RolloutPercent > 100 {
+		return fmt.Errorf("rollout_percent must be between 0 and 100")
+	}
+	switch c.Journal.Mode {
+	case "", "memory", "sqlite", "jsonl", "sqlite_jsonl":
+	default:
+		return fmt.Errorf("journal.mode must be memory, sqlite, jsonl, or sqlite_jsonl")
+	}
+	switch c.Idempotency.Mode {
+	case "", "memory", "sqlite":
+	default:
+		return fmt.Errorf("idempotency.mode must be memory or sqlite")
+	}
+	switch c.Idempotency.DuplicateDone {
+	case "", "replay_summary", "noop":
+	default:
+		return fmt.Errorf("idempotency.duplicate_done must be replay_summary or noop")
+	}
+	switch c.Idempotency.DuplicateRunning {
+	case "", "busy", "status":
+	default:
+		return fmt.Errorf("idempotency.duplicate_running must be busy or status")
 	}
 	return nil
 }

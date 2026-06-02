@@ -2,8 +2,10 @@ package chat
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -22,6 +24,9 @@ type WSMessage struct {
 	Type      string                    `json:"type"`
 	Content   string                    `json:"content,omitempty"`
 	SessionID string                    `json:"session_id,omitempty"`
+	TurnID    string                    `json:"turn_id,omitempty"`
+	Status    string                    `json:"status,omitempty"`
+	ErrorKind string                    `json:"error_kind,omitempty"`
 	Persona   string                    `json:"persona,omitempty"`
 	IsNew     bool                      `json:"is_new,omitempty"`
 	Messages  []storage.MessageRecord   `json:"messages,omitempty"`
@@ -31,6 +36,7 @@ type WSMessage struct {
 	Approval  *protocol.ApprovalRequest `json:"approval,omitempty"`
 	Tool      *ToolActivity             `json:"tool,omitempty"`
 	Reasoning *ReasoningActivity        `json:"reasoning,omitempty"`
+	Payload   map[string]any            `json:"payload,omitempty"`
 }
 
 // ToolActivity is the compact, UI-safe description of a live tool call.
@@ -78,7 +84,9 @@ type Handler struct {
 	app         AppInterface
 	logger      *slog.Logger
 	turnConfig  config.TurnPipelineConfig
+	turnDB      *sql.DB
 	turnJournal turn.TurnJournal
+	turnIDs     turn.IdempotencyStore
 	turnRuntime *chatTurnRuntime
 }
 
@@ -96,6 +104,12 @@ func WithTurnJournal(journal turn.TurnJournal) HandlerOption {
 	}
 }
 
+func WithTurnDB(db *sql.DB) HandlerOption {
+	return func(h *Handler) {
+		h.turnDB = db
+	}
+}
+
 // NewHandler creates a WebSocket chat handler.
 func NewHandler(engine conversationEngine, app AppInterface, logger *slog.Logger, options ...HandlerOption) *Handler {
 	h := &Handler{engine: engine, app: app, logger: logger}
@@ -104,10 +118,16 @@ func NewHandler(engine conversationEngine, app AppInterface, logger *slog.Logger
 			option(h)
 		}
 	}
-	if h.turnJournal == nil {
-		h.turnJournal = turn.NewMemoryJournal()
+	if h.turnJournal == nil || h.turnIDs == nil {
+		journal, ids := buildTurnRuntimeStores(h.turnConfig, h.turnDB, logger)
+		if h.turnJournal == nil {
+			h.turnJournal = journal
+		}
+		if h.turnIDs == nil {
+			h.turnIDs = ids
+		}
 	}
-	h.turnRuntime = newChatTurnRuntime(engine, h.turnConfig, h.turnJournal, logger)
+	h.turnRuntime = newChatTurnRuntimeWithStore(engine, h.turnConfig, h.turnJournal, h.turnIDs, logger)
 	return h
 }
 
@@ -184,10 +204,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if strings.TrimSpace(msg.Content) == "" {
 				continue
 			}
-			if h.turnConfig.Shadow && !h.turnConfig.Enabled {
+			usePipeline := shouldUseTurnPipeline(h.turnConfig, personaName, sessionID)
+			if h.turnConfig.Shadow && !usePipeline {
 				_, _ = h.turnRuntime.Shadow(ctx, wsMessageToInbound(msg, sessionID, personaName))
 			}
-			if h.turnConfig.Enabled {
+			if usePipeline {
 				sink := h.newWSOutboundSink(ctx, conn, &writeMu, cancel)
 				env := wsMessageToInbound(msg, sessionID, personaName)
 				if _, err := h.turnRuntime.Execute(ctx, env, persona, sink); err != nil {
@@ -195,6 +216,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						return
 					}
 				}
+				closeOutboundSink(ctx, sink)
 				continue
 			}
 			if err := writeWSMessage(ctx, conn, WSMessage{Type: "stream_start"}, &writeMu); err != nil {
@@ -249,10 +271,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 
 		case "approval_action":
-			if h.turnConfig.Shadow && !h.turnConfig.Enabled {
+			useApprovalPipeline := shouldUseTurnPipeline(h.turnConfig, personaName, sessionID) && h.turnConfig.ApprovalStages
+			if h.turnConfig.Shadow && !useApprovalPipeline {
 				_, _ = h.turnRuntime.Shadow(ctx, wsMessageToInbound(msg, sessionID, personaName))
 			}
-			if h.turnConfig.Enabled {
+			if useApprovalPipeline {
 				sink := h.newWSOutboundSink(ctx, conn, &writeMu, cancel)
 				env := wsMessageToInbound(msg, sessionID, personaName)
 				if _, err := h.turnRuntime.Execute(ctx, env, persona, sink); err != nil {
@@ -260,6 +283,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						return
 					}
 				}
+				closeOutboundSink(ctx, sink)
 				continue
 			}
 			if strings.TrimSpace(msg.RequestID) == "" {
@@ -333,7 +357,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) newWSOutboundSink(ctx context.Context, conn *websocket.Conn, mu *sync.Mutex, cancel context.CancelFunc) turn.OutboundSink {
-	return turn.SinkFunc(func(_ context.Context, event turn.OutboundEvent) error {
+	raw := turn.SinkFunc(func(_ context.Context, event turn.OutboundEvent) error {
 		if err := writeWSMessage(ctx, conn, outboundEventToWSMessage(event), mu); err != nil {
 			if !errors.Is(ctx.Err(), context.Canceled) && h.logger != nil {
 				h.logger.Warn("ws outbound write failed", "error", err)
@@ -343,6 +367,155 @@ func (h *Handler) newWSOutboundSink(ctx context.Context, conn *websocket.Conn, m
 		}
 		return nil
 	})
+	return turn.NewBoundedOutboundSink(raw, turn.BoundedOutboundOptions{})
+}
+
+func closeOutboundSink(ctx context.Context, sink turn.OutboundSink) {
+	closer, ok := sink.(interface{ Close(context.Context) error })
+	if ok {
+		_ = closer.Close(ctx)
+	}
+}
+
+func shouldUseTurnPipeline(cfg config.TurnPipelineConfig, personaName, sessionID string) bool {
+	if stringInList(sessionID, cfg.DenySessions) {
+		return false
+	}
+	if stringInList(personaName, cfg.AllowPersonas) || stringInList(sessionID, cfg.AllowSessions) {
+		return true
+	}
+	if !cfg.Enabled {
+		return false
+	}
+	if cfg.RolloutPercent <= 0 {
+		return false
+	}
+	if cfg.RolloutPercent >= 100 {
+		return true
+	}
+	key := personaName + ":" + sessionID
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(key))
+	return int(h.Sum32()%100) < cfg.RolloutPercent
+}
+
+func stringInList(value string, list []string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	for _, item := range list {
+		if strings.TrimSpace(item) == value {
+			return true
+		}
+	}
+	return false
+}
+
+func buildTurnRuntimeStores(cfg config.TurnPipelineConfig, db *sql.DB, logger *slog.Logger) (turn.TurnJournal, turn.IdempotencyStore) {
+	journal, journalErr := buildTurnJournal(cfg, db)
+	ids, idsErr := buildIdempotencyStore(cfg, db)
+	if journalErr == nil && idsErr == nil {
+		return journal, ids
+	}
+	if cfg.Journal.FailClosed {
+		err := firstErr(journalErr, idsErr)
+		return failingJournal{err: err}, failingIdempotencyStore{err: err}
+	}
+	if logger != nil {
+		logger.Warn("turn runtime persistence degraded", "journal_error", journalErr, "idempotency_error", idsErr)
+	}
+	memory := turn.NewMemoryJournal()
+	_ = memory.StartTurn(context.Background(), turn.TurnRecord{TurnID: "journal_degraded", Kind: turn.InboundSystemResume, State: turn.StateCreated, Status: "degraded"})
+	_ = memory.RecordEvent(context.Background(), "journal_degraded", turn.JournalEvent{
+		Stage: turn.StageIngress,
+		Type:  "journal_degraded",
+		Payload: map[string]any{
+			"journal_error":     errorString(journalErr),
+			"idempotency_error": errorString(idsErr),
+		},
+	})
+	_ = memory.CompleteTurn(context.Background(), "journal_degraded", "degraded", "")
+	return memory, turn.NewMemoryIdempotencyStore()
+}
+
+func buildTurnJournal(cfg config.TurnPipelineConfig, db *sql.DB) (turn.TurnJournal, error) {
+	switch cfg.Journal.Mode {
+	case "memory":
+		return turn.NewMemoryJournal(), nil
+	case "jsonl":
+		return turn.NewJSONLJournal(cfg.Journal.JSONLDir), nil
+	case "sqlite_jsonl":
+		if db == nil {
+			return nil, errors.New("sqlite database is not configured")
+		}
+		return turn.NewMultiJournal(turn.NewSQLiteJournal(db), turn.NewJSONLJournal(cfg.Journal.JSONLDir)), nil
+	case "", "sqlite":
+		if db == nil {
+			return nil, errors.New("sqlite database is not configured")
+		}
+		return turn.NewSQLiteJournal(db), nil
+	default:
+		return nil, fmt.Errorf("unsupported turn journal mode %q", cfg.Journal.Mode)
+	}
+}
+
+func buildIdempotencyStore(cfg config.TurnPipelineConfig, db *sql.DB) (turn.IdempotencyStore, error) {
+	switch cfg.Idempotency.Mode {
+	case "memory":
+		return turn.NewMemoryIdempotencyStore(), nil
+	case "", "sqlite":
+		if db == nil {
+			return nil, errors.New("sqlite database is not configured")
+		}
+		return turn.NewSQLiteIdempotencyStore(db), nil
+	default:
+		return nil, fmt.Errorf("unsupported turn idempotency mode %q", cfg.Idempotency.Mode)
+	}
+}
+
+func firstErr(errs ...error) error {
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+type failingJournal struct {
+	err error
+}
+
+func (j failingJournal) StartTurn(context.Context, turn.TurnRecord) error {
+	return j.err
+}
+func (j failingJournal) RecordTransition(context.Context, string, turn.TurnState, turn.TurnState, turn.StageMetrics) error {
+	return j.err
+}
+func (j failingJournal) RecordEvent(context.Context, string, turn.JournalEvent) error {
+	return j.err
+}
+func (j failingJournal) CompleteTurn(context.Context, string, string, string) error {
+	return j.err
+}
+
+type failingIdempotencyStore struct {
+	err error
+}
+
+func (s failingIdempotencyStore) Begin(string, string) (turn.IdempotencyResult, error) {
+	return turn.IdempotencyResult{}, s.err
+}
+func (s failingIdempotencyStore) Complete(string, string) error {
+	return s.err
 }
 
 func (h *Handler) emitApprovalEvents(ctx context.Context, conn *websocket.Conn, mu *sync.Mutex, sessionID string) error {
