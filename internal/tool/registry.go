@@ -2,6 +2,7 @@ package tool
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/longyisang/emoagent/internal/llm"
@@ -33,6 +34,32 @@ func (r *Registry) Register(spec Spec, handler Handler) {
 	}
 	r.specs[spec.Name] = spec
 	r.funcs[spec.Name] = handler
+}
+
+// TryRegister adds a tool and returns an error on invalid or duplicate
+// registrations. Plugin code must use this path so a bad plugin cannot panic
+// the host or overwrite built-in tools.
+func (r *Registry) TryRegister(spec Spec, handler Handler) error {
+	if r == nil {
+		return fmt.Errorf("tool registry is nil")
+	}
+	spec.Name = strings.TrimSpace(spec.Name)
+	if spec.Name == "" {
+		return fmt.Errorf("tool name is required")
+	}
+	if handler == nil {
+		return fmt.Errorf("tool %q handler is required", spec.Name)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, exists := r.specs[spec.Name]; exists {
+		return fmt.Errorf("tool %q already registered", spec.Name)
+	}
+	r.specs[spec.Name] = spec
+	r.funcs[spec.Name] = handler
+	return nil
 }
 
 // Get returns the handler for a tool name.

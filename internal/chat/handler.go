@@ -88,6 +88,7 @@ type Handler struct {
 	turnJournal turn.TurnJournal
 	turnIDs     turn.IdempotencyStore
 	turnRuntime *chatTurnRuntime
+	pluginHost  turnPluginHost
 }
 
 type HandlerOption func(*Handler)
@@ -110,6 +111,12 @@ func WithTurnDB(db *sql.DB) HandlerOption {
 	}
 }
 
+func WithPluginHost(host turnPluginHost) HandlerOption {
+	return func(h *Handler) {
+		h.pluginHost = host
+	}
+}
+
 // NewHandler creates a WebSocket chat handler.
 func NewHandler(engine conversationEngine, app AppInterface, logger *slog.Logger, options ...HandlerOption) *Handler {
 	h := &Handler{engine: engine, app: app, logger: logger}
@@ -127,7 +134,12 @@ func NewHandler(engine conversationEngine, app AppInterface, logger *slog.Logger
 			h.turnIDs = ids
 		}
 	}
-	h.turnRuntime = newChatTurnRuntimeWithStore(engine, h.turnConfig, h.turnJournal, h.turnIDs, logger)
+	if setter, ok := h.pluginHost.(interface {
+		SetTurnJournal(turn.TurnJournal)
+	}); ok {
+		setter.SetTurnJournal(h.turnJournal)
+	}
+	h.turnRuntime = newChatTurnRuntimeWithStore(engine, h.turnConfig, h.turnJournal, h.turnIDs, logger, h.pluginHost)
 	return h
 }
 
@@ -205,6 +217,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			usePipeline := shouldUseTurnPipeline(h.turnConfig, personaName, sessionID)
+			if pluginHostEnabled(h.pluginHost) && !usePipeline {
+				_ = writeWSMessage(ctx, conn, WSMessage{Type: "error", Content: "plugins.enabled requires Turn Pipeline for this session/persona"}, &writeMu)
+				continue
+			}
 			if h.turnConfig.Shadow && !usePipeline {
 				_, _ = h.turnRuntime.Shadow(ctx, wsMessageToInbound(msg, sessionID, personaName))
 			}
@@ -272,6 +288,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		case "approval_action":
 			useApprovalPipeline := shouldUseTurnPipeline(h.turnConfig, personaName, sessionID) && h.turnConfig.ApprovalStages
+			if pluginHostEnabled(h.pluginHost) && !useApprovalPipeline {
+				_ = writeWSMessage(ctx, conn, WSMessage{Type: "error", Content: "plugins.enabled requires Turn Pipeline approval stages for this session/persona"}, &writeMu)
+				continue
+			}
 			if h.turnConfig.Shadow && !useApprovalPipeline {
 				_, _ = h.turnRuntime.Shadow(ctx, wsMessageToInbound(msg, sessionID, personaName))
 			}
@@ -397,6 +417,10 @@ func shouldUseTurnPipeline(cfg config.TurnPipelineConfig, personaName, sessionID
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(key))
 	return int(h.Sum32()%100) < cfg.RolloutPercent
+}
+
+func pluginHostEnabled(host turnPluginHost) bool {
+	return host != nil && host.Enabled()
 }
 
 func stringInList(value string, list []string) bool {

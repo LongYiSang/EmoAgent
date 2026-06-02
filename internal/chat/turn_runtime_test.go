@@ -138,6 +138,71 @@ func TestTurnRuntimeStagesHonorMemoryStageConfig(t *testing.T) {
 	}
 }
 
+func TestTurnRuntimeUsesPluginHostStageAndOutboundWrappers(t *testing.T) {
+	pluginHost := &fakePluginHost{enabled: true}
+	handler, engine := newTestHandlerWithOptions(
+		WithTurnPipelineConfig(config.TurnPipelineConfig{Enabled: true, RolloutPercent: 100}),
+		WithPluginHost(pluginHost),
+	)
+	engine.sendReply = "answer"
+	env := wsMessageToInbound(WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, "session-test", "default")
+	persona := &config.Persona{Name: "default"}
+
+	var events []turn.OutboundEvent
+	result, err := handler.turnRuntime.Execute(context.Background(), env, persona, turn.SinkFunc(func(ctx context.Context, event turn.OutboundEvent) error {
+		events = append(events, event)
+		return nil
+	}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Status != "done" {
+		t.Fatalf("status = %q, want done", result.Status)
+	}
+	if pluginHost.wrapStagesCount != 1 {
+		t.Fatalf("wrapStagesCount = %d, want 1", pluginHost.wrapStagesCount)
+	}
+	if pluginHost.wrapSinkCount != 1 {
+		t.Fatalf("wrapSinkCount = %d, want 1", pluginHost.wrapSinkCount)
+	}
+	if pluginHost.outboundCount == 0 || len(events) == 0 {
+		t.Fatalf("outbound wrapper count/events = %d/%#v, want outbound routed through plugin host", pluginHost.outboundCount, events)
+	}
+	if pluginHost.turnEndCount != 1 {
+		t.Fatalf("turnEndCount = %d, want 1", pluginHost.turnEndCount)
+	}
+}
+
+func TestTurnRuntimeDuplicateReplayDoesNotRunPluginWrappers(t *testing.T) {
+	pluginHost := &fakePluginHost{enabled: true}
+	handler, engine := newTestHandlerWithOptions(
+		WithTurnPipelineConfig(config.TurnPipelineConfig{Enabled: true, RolloutPercent: 100}),
+		WithPluginHost(pluginHost),
+	)
+	engine.sendReply = "answer"
+	env := wsMessageToInbound(WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, "session-test", "default")
+	persona := &config.Persona{Name: "default"}
+
+	if _, err := handler.turnRuntime.Execute(context.Background(), env, persona, turn.SinkFunc(func(context.Context, turn.OutboundEvent) error { return nil })); err != nil {
+		t.Fatalf("first Execute: %v", err)
+	}
+	firstStageWraps := pluginHost.wrapStagesCount
+	firstOutbound := pluginHost.outboundCount
+
+	if _, err := handler.turnRuntime.Execute(context.Background(), env, persona, turn.SinkFunc(func(context.Context, turn.OutboundEvent) error { return nil })); err != nil {
+		t.Fatalf("duplicate Execute: %v", err)
+	}
+	if pluginHost.wrapStagesCount != firstStageWraps {
+		t.Fatalf("duplicate wrapStagesCount = %d, want unchanged %d", pluginHost.wrapStagesCount, firstStageWraps)
+	}
+	if pluginHost.outboundCount != firstOutbound {
+		t.Fatalf("duplicate outboundCount = %d, want unchanged %d", pluginHost.outboundCount, firstOutbound)
+	}
+	if engine.sendCount != 1 {
+		t.Fatalf("sendCount = %d, want no duplicate engine call", engine.sendCount)
+	}
+}
+
 func TestTurnRuntimeDuplicateRunningReturnsBusyWithoutSecondExecution(t *testing.T) {
 	_, engine := newTestHandler()
 	started := make(chan struct{})
@@ -354,4 +419,48 @@ func hasEventType(events []turn.OutboundEvent, eventType string) bool {
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+type fakePluginHost struct {
+	enabled         bool
+	wrapStagesCount int
+	wrapSinkCount   int
+	outboundCount   int
+	turnEndCount    int
+	turnErrorCount  int
+}
+
+func (h *fakePluginHost) Enabled() bool {
+	return h != nil && h.enabled
+}
+
+func (h *fakePluginHost) WrapStages(stages []turn.Stage) []turn.Stage {
+	h.wrapStagesCount++
+	wrapped := make([]turn.Stage, 0, len(stages))
+	for _, stage := range stages {
+		stage := stage
+		wrapped = append(wrapped, turn.StageFunc{
+			NameValue: stage.Name(),
+			RunFunc: func(ctx context.Context, tc *turn.TurnContext) (turn.StageResult, error) {
+				return stage.Run(ctx, tc)
+			},
+		})
+	}
+	return wrapped
+}
+
+func (h *fakePluginHost) WrapOutboundSink(next turn.OutboundSink) turn.OutboundSink {
+	h.wrapSinkCount++
+	return turn.SinkFunc(func(ctx context.Context, event turn.OutboundEvent) error {
+		h.outboundCount++
+		return next.Emit(ctx, event)
+	})
+}
+
+func (h *fakePluginHost) DispatchTurnEnd(context.Context, turn.TurnResult, turn.InboundEnvelope) {
+	h.turnEndCount++
+}
+
+func (h *fakePluginHost) DispatchTurnError(context.Context, turn.TurnResult, error, turn.InboundEnvelope) {
+	h.turnErrorCount++
 }

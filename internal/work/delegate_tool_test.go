@@ -10,6 +10,7 @@ import (
 
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/progress"
+	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/tool"
 )
 
@@ -151,6 +152,45 @@ func TestDelegateTool_HandlerAcceptsApprovedDestructiveScope(t *testing.T) {
 	}
 }
 
+func TestDelegateTool_AppliesDispatchAnnotationsBeforeRun(t *testing.T) {
+	llmClient := &scriptedLLM{
+		responses: []*llm.ChatResponse{textResp(`{"status":"completed","summary":"ok"}`)},
+	}
+	runtime := newTestRuntime(t, llmClient)
+	annotator := fakeTaskBriefAnnotator{
+		constraints: []string{"plugin constraint"},
+		acceptance:  []string{"plugin acceptance"},
+		background:  []string{"plugin background"},
+	}
+
+	_, handler := NewDelegateToolWithFactoryAndAnnotator(
+		func() (*Runtime, error) { return runtime, nil },
+		nil,
+		t.TempDir(),
+		testLogger(),
+		annotator,
+	)
+	input := json.RawMessage(`{
+		"goal":"inspect config",
+		"background":"user background",
+		"constraints":["user constraint"],
+		"acceptance_criteria":["user acceptance"],
+		"permission_scope":"read-only"
+	}`)
+	if _, err := handler(context.Background(), input); err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if len(llmClient.calls) != 1 {
+		t.Fatalf("llm calls = %d, want 1", len(llmClient.calls))
+	}
+	system := llmClient.calls[0].System
+	for _, want := range []string{"user constraint", "plugin constraint", "user acceptance", "plugin acceptance", "user background", "plugin background"} {
+		if !strings.Contains(system, want) {
+			t.Fatalf("system prompt missing %q:\n%s", want, system)
+		}
+	}
+}
+
 func TestDelegateTool_HandlerRejectsRemovedExpressionBriefField(t *testing.T) {
 	runtime := newTestRuntime(t, &scriptedLLM{
 		responses: []*llm.ChatResponse{textResp(`{"status":"completed","summary":"ok"}`)},
@@ -167,6 +207,24 @@ func TestDelegateTool_HandlerRejectsRemovedExpressionBriefField(t *testing.T) {
 	if _, err := handler(context.Background(), input); err == nil {
 		t.Fatal("handler should reject removed expression_brief field")
 	}
+}
+
+type fakeTaskBriefAnnotator struct {
+	constraints []string
+	acceptance  []string
+	background  []string
+}
+
+func (a fakeTaskBriefAnnotator) AnnotateTaskBrief(_ context.Context, brief *protocol.TaskBrief) error {
+	brief.Constraints = append(brief.Constraints, a.constraints...)
+	brief.AcceptanceCriteria = append(brief.AcceptanceCriteria, a.acceptance...)
+	if len(a.background) > 0 {
+		if brief.Background != "" {
+			brief.Background += "\n"
+		}
+		brief.Background += strings.Join(a.background, "\n")
+	}
+	return nil
 }
 
 func TestDelegateTool_HappyPathWritesJournalAndReturnsReport(t *testing.T) {

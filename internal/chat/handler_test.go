@@ -626,6 +626,34 @@ func TestHandlerTurnPipelineEnabledForwardsWorkProgressViaOutboundSink(t *testin
 	}
 }
 
+func TestHandlerPluginsEnabledRejectsLegacyMessagePath(t *testing.T) {
+	pluginHost := &fakePluginHost{enabled: true}
+	handler, engine := newTestHandlerWithOptions(
+		WithTurnPipelineConfig(config.TurnPipelineConfig{Enabled: true, RolloutPercent: 0}),
+		WithPluginHost(pluginHost),
+	)
+	conn := dialTestWS(t, handler, "/ws?skip_greeting=1")
+	defer conn.Close(websocket.StatusNormalClosure, "done")
+
+	var ready WSMessage
+	if err := wsjson.Read(context.Background(), conn, &ready); err != nil {
+		t.Fatalf("read ready: %v", err)
+	}
+	if err := wsjson.Write(context.Background(), conn, WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}); err != nil {
+		t.Fatalf("write message: %v", err)
+	}
+	var got WSMessage
+	if err := wsjson.Read(context.Background(), conn, &got); err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if got.Type != "error" || !strings.Contains(got.Content, "plugins.enabled requires Turn Pipeline") {
+		t.Fatalf("message = %#v, want plugin turn pipeline error", got)
+	}
+	if engine.sendCount != 0 {
+		t.Fatalf("sendCount = %d, want legacy path blocked before engine", engine.sendCount)
+	}
+}
+
 func TestTurnRuntimeDeduplicatesApprovalAction(t *testing.T) {
 	_, engine := newTestHandler()
 	engine.approvals = []protocol.ApprovalRequest{

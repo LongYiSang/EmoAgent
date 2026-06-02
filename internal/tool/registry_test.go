@@ -58,6 +58,40 @@ func TestRegistryDuplicatePanics(t *testing.T) {
 	r.Register(spec, noopHandler)
 }
 
+func TestRegistryTryRegisterRejectsDuplicateWithoutPanic(t *testing.T) {
+	r := NewRegistry()
+	first := Spec{Name: "dup_tool", Parameters: json.RawMessage(`{}`), Scope: ScopeBoth, Permission: PermReadOnly}
+	second := Spec{Name: "dup_tool", Parameters: json.RawMessage(`{}`), Scope: ScopeWork, Permission: PermWorkspaceWrite}
+	r.Register(first, noopHandler)
+
+	err := r.TryRegister(second, func(context.Context, json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{"second":true}`), nil
+	})
+	if err == nil {
+		t.Fatal("TryRegister duplicate error = nil, want error")
+	}
+	got, ok := r.GetSpec("dup_tool")
+	if !ok {
+		t.Fatal("dup_tool missing after TryRegister duplicate")
+	}
+	if got.Permission != PermReadOnly {
+		t.Fatalf("dup_tool permission = %q, want original %q", got.Permission, PermReadOnly)
+	}
+}
+
+func TestRegistryTryRegisterValidatesNameAndHandler(t *testing.T) {
+	r := NewRegistry()
+	if err := r.TryRegister(Spec{Name: "", Scope: ScopeBoth, Permission: PermReadOnly}, noopHandler); err == nil {
+		t.Fatal("TryRegister empty name error = nil, want error")
+	}
+	if err := r.TryRegister(Spec{Name: "missing_handler", Scope: ScopeBoth, Permission: PermReadOnly}, nil); err == nil {
+		t.Fatal("TryRegister nil handler error = nil, want error")
+	}
+	if err := r.TryRegister(Spec{Name: "ok", Scope: ScopeBoth, Permission: PermReadOnly}, noopHandler); err != nil {
+		t.Fatalf("TryRegister valid: %v", err)
+	}
+}
+
 func TestRegistryForScope(t *testing.T) {
 	r := NewRegistry()
 

@@ -55,6 +55,24 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Chat.TurnPipeline.Idempotency.DuplicateRunning != "busy" {
 		t.Errorf("default duplicate_running = %q, want busy", cfg.Chat.TurnPipeline.Idempotency.DuplicateRunning)
 	}
+	if cfg.Plugins.Enabled {
+		t.Error("default plugins.enabled = true, want false")
+	}
+	if cfg.Plugins.DefaultTimeoutMS != 80 {
+		t.Errorf("default plugins.default_timeout_ms = %d, want 80", cfg.Plugins.DefaultTimeoutMS)
+	}
+	if cfg.Plugins.MaxTimeoutMS != 1000 {
+		t.Errorf("default plugins.max_timeout_ms = %d, want 1000", cfg.Plugins.MaxTimeoutMS)
+	}
+	if len(cfg.Plugins.BuiltinEnabled) != 3 {
+		t.Fatalf("default plugins.builtin_enabled = %#v, want 3 demo plugins", cfg.Plugins.BuiltinEnabled)
+	}
+	if !cfg.Plugins.Audit.Enabled {
+		t.Error("default plugins.audit.enabled = false, want true")
+	}
+	if cfg.Plugins.Audit.IncludePayload {
+		t.Error("default plugins.audit.include_payload = true, want false")
+	}
 	if cfg.Memory.Enabled {
 		t.Error("default memory.enabled = true, want false")
 	}
@@ -203,7 +221,7 @@ chat:
   realtime_streaming: true
   turn_pipeline:
     shadow: true
-    enabled: false
+    enabled: true
     memory_stages: true
     approval_stages: true
     rollout_percent: 25
@@ -218,6 +236,20 @@ chat:
       mode: sqlite
       duplicate_done: replay_summary
       duplicate_running: busy
+plugins:
+  enabled: true
+  directories: ["data/plugins"]
+  builtin_enabled:
+    - com.emoagent.plugins.turn-audit
+  rollout_percent: 100
+  default_timeout_ms: 120
+  max_timeout_ms: 800
+  fail_closed_hooks:
+    - before_tool_call
+    - before_memory_commit
+  audit:
+    enabled: true
+    include_payload: false
 context:
   input_budget_tokens: 12345
   soft_compact_ratio: 0.7
@@ -329,8 +361,8 @@ memory:
 	if !cfg.Chat.TurnPipeline.Shadow {
 		t.Fatal("chat.turn_pipeline.shadow = false, want true")
 	}
-	if cfg.Chat.TurnPipeline.Enabled {
-		t.Fatal("chat.turn_pipeline.enabled = true, want false")
+	if !cfg.Chat.TurnPipeline.Enabled {
+		t.Fatal("chat.turn_pipeline.enabled = false, want true")
 	}
 	if !cfg.Chat.TurnPipeline.MemoryStages {
 		t.Fatal("chat.turn_pipeline.memory_stages = false, want true")
@@ -355,6 +387,24 @@ memory:
 	}
 	if cfg.Chat.TurnPipeline.Idempotency.Mode != "sqlite" || cfg.Chat.TurnPipeline.Idempotency.DuplicateDone != "replay_summary" || cfg.Chat.TurnPipeline.Idempotency.DuplicateRunning != "busy" {
 		t.Fatalf("chat.turn_pipeline.idempotency = %#v", cfg.Chat.TurnPipeline.Idempotency)
+	}
+	if !cfg.Plugins.Enabled {
+		t.Fatal("plugins.enabled = false, want true")
+	}
+	if len(cfg.Plugins.Directories) != 1 || cfg.Plugins.Directories[0] != "data/plugins" {
+		t.Fatalf("plugins.directories = %#v", cfg.Plugins.Directories)
+	}
+	if len(cfg.Plugins.BuiltinEnabled) != 1 || cfg.Plugins.BuiltinEnabled[0] != "com.emoagent.plugins.turn-audit" {
+		t.Fatalf("plugins.builtin_enabled = %#v", cfg.Plugins.BuiltinEnabled)
+	}
+	if cfg.Plugins.RolloutPercent != 100 || cfg.Plugins.DefaultTimeoutMS != 120 || cfg.Plugins.MaxTimeoutMS != 800 {
+		t.Fatalf("plugins timing/rollout = %#v", cfg.Plugins)
+	}
+	if len(cfg.Plugins.FailClosedHooks) != 2 || cfg.Plugins.FailClosedHooks[0] != "before_tool_call" || cfg.Plugins.FailClosedHooks[1] != "before_memory_commit" {
+		t.Fatalf("plugins.fail_closed_hooks = %#v", cfg.Plugins.FailClosedHooks)
+	}
+	if !cfg.Plugins.Audit.Enabled || cfg.Plugins.Audit.IncludePayload {
+		t.Fatalf("plugins.audit = %#v", cfg.Plugins.Audit)
 	}
 	if cfg.Context.InputBudgetTokens != 12345 {
 		t.Errorf("context.input_budget_tokens = %d, want 12345", cfg.Context.InputBudgetTokens)
@@ -482,6 +532,80 @@ func TestValidateMemoryRetrievalLimits(t *testing.T) {
 			cfg.Memory.Enabled = true
 			tt.update(cfg)
 			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Validate error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsUnknownPluginConfigKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+plugins:
+  enabled: false
+  raw_prompt_debug: true
+`), 0o644)
+
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), `plugins.raw_prompt_debug is not supported`) {
+		t.Fatalf("Load error = %v, want unsupported plugins key", err)
+	}
+}
+
+func TestValidatePluginsEnabledRequiresTurnPipelineTarget(t *testing.T) {
+	tests := []struct {
+		name string
+		mut  func(*Config)
+		want string
+	}{
+		{
+			name: "turn pipeline disabled",
+			mut: func(cfg *Config) {
+				cfg.Plugins.Enabled = true
+				cfg.Chat.TurnPipeline.Enabled = false
+			},
+			want: "plugins.enabled requires chat.turn_pipeline.enabled=true",
+		},
+		{
+			name: "no target",
+			mut: func(cfg *Config) {
+				cfg.Plugins.Enabled = true
+				cfg.Chat.TurnPipeline.Enabled = true
+				cfg.Chat.TurnPipeline.RolloutPercent = 0
+			},
+			want: "plugins.enabled requires chat.turn_pipeline rollout or allow list",
+		},
+		{
+			name: "targeted persona",
+			mut: func(cfg *Config) {
+				cfg.Plugins.Enabled = true
+				cfg.Chat.TurnPipeline.Enabled = true
+				cfg.Chat.TurnPipeline.AllowPersonas = []string{"default"}
+			},
+		},
+		{
+			name: "rollout target",
+			mut: func(cfg *Config) {
+				cfg.Plugins.Enabled = true
+				cfg.Chat.TurnPipeline.Enabled = true
+				cfg.Chat.TurnPipeline.RolloutPercent = 100
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			tt.mut(cfg)
+			err := cfg.Validate()
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("Validate error = %v, want nil", err)
+				}
+				return
+			}
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("Validate error = %v, want %q", err, tt.want)
 			}

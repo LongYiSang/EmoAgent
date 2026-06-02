@@ -24,6 +24,24 @@ chat:
       duplicate_done: replay_summary
       duplicate_running: busy
 
+plugins:
+  enabled: false
+  directories:
+    - data/plugins
+  builtin_enabled:
+    - com.emoagent.plugins.turn-audit
+    - com.emoagent.plugins.memory-context-debug
+    - com.emoagent.plugins.outbound-guard
+  rollout_percent: 0
+  default_timeout_ms: 80
+  max_timeout_ms: 1000
+  fail_closed_hooks:
+    - before_tool_call
+    - before_memory_commit
+  audit:
+    enabled: true
+    include_payload: false
+
 context:
   input_budget_tokens: 216000
   soft_compact_ratio: 0.75

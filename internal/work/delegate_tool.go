@@ -60,6 +60,14 @@ func NewDelegateTool(runtime *Runtime, pending *PendingRegistry, journalDir stri
 }
 
 func NewDelegateToolWithFactory(runtimeFactory func() (*Runtime, error), pending *PendingRegistry, journalDir string, logger *slog.Logger) (tool.Spec, tool.Handler) {
+	return NewDelegateToolWithFactoryAndAnnotator(runtimeFactory, pending, journalDir, logger, nil)
+}
+
+type TaskBriefAnnotator interface {
+	AnnotateTaskBrief(context.Context, *protocol.TaskBrief) error
+}
+
+func NewDelegateToolWithFactoryAndAnnotator(runtimeFactory func() (*Runtime, error), pending *PendingRegistry, journalDir string, logger *slog.Logger, annotator TaskBriefAnnotator) (tool.Spec, tool.Handler) {
 	spec := tool.Spec{
 		Name:        "delegate_to_work",
 		Description: delegateToolDescription,
@@ -72,6 +80,15 @@ func NewDelegateToolWithFactory(runtimeFactory func() (*Runtime, error), pending
 		var brief protocol.TaskBrief
 		if err := decodeStrictJSON(input, &brief); err != nil {
 			return nil, fmt.Errorf("delegate_to_work: invalid input: %w", err)
+		}
+		if annotator != nil {
+			original := brief
+			if err := annotator.AnnotateTaskBrief(ctx, &brief); err != nil {
+				return nil, fmt.Errorf("delegate_to_work: annotate task brief: %w", err)
+			}
+			if brief.TaskID != original.TaskID || brief.Goal != original.Goal || brief.PermissionScope != original.PermissionScope || brief.ReadScope != original.ReadScope {
+				return nil, fmt.Errorf("delegate_to_work: annotation cannot change task_id, goal, permission_scope, or read_scope")
+			}
 		}
 		if err := ValidateAndComplete(&brief); err != nil {
 			return nil, fmt.Errorf("delegate_to_work: %w", err)

@@ -18,8 +18,10 @@ import (
 	"github.com/longyisang/emoagent/internal/chat"
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/plugin"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/storage"
+	"github.com/longyisang/emoagent/internal/tool"
 	"github.com/longyisang/emoagent/internal/web"
 )
 
@@ -458,6 +460,33 @@ func TestUpdateChatSettingsPersistsRuntimeOverrideAndHotUpdatesEngine(t *testing
 	}
 	if got := a.Config.Chat.TurnPipeline; !got.Shadow || !got.Enabled || !got.MemoryStages || !got.ApprovalStages {
 		t.Fatalf("turn pipeline config = %#v, want preserved", got)
+	}
+}
+
+func TestConfigurePluginHostHonorsEnabledConfig(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := config.DefaultConfig()
+	cfg.Plugins.Enabled = true
+	cfg.Plugins.BuiltinEnabled = []string{plugin.TurnAuditPluginID}
+	cfg.Chat.TurnPipeline.Enabled = true
+	cfg.Chat.TurnPipeline.RolloutPercent = 100
+	a := &App{Config: cfg, Logger: logger, toolRegistry: tool.NewRegistry()}
+	dispatcher := tool.NewDispatcher(a.toolRegistry, tool.MinimalSchemaValidator{}, logger)
+
+	if err := a.configurePluginHost(context.Background(), dispatcher, nil); err != nil {
+		t.Fatalf("configurePluginHost: %v", err)
+	}
+	if a.PluginHost == nil || !a.PluginHost.Enabled() {
+		t.Fatalf("PluginHost = %#v, want enabled host", a.PluginHost)
+	}
+
+	disabled := &App{Config: config.DefaultConfig(), Logger: logger, toolRegistry: tool.NewRegistry()}
+	dispatcher = tool.NewDispatcher(disabled.toolRegistry, tool.MinimalSchemaValidator{}, logger)
+	if err := disabled.configurePluginHost(context.Background(), dispatcher, nil); err != nil {
+		t.Fatalf("disabled configurePluginHost: %v", err)
+	}
+	if disabled.PluginHost != nil {
+		t.Fatalf("disabled PluginHost = %#v, want nil", disabled.PluginHost)
 	}
 }
 

@@ -23,11 +23,13 @@ import (
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/logger"
 	"github.com/longyisang/emoagent/internal/memoryhost"
+	"github.com/longyisang/emoagent/internal/plugin"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/storage"
 	"github.com/longyisang/emoagent/internal/tool"
 	"github.com/longyisang/emoagent/internal/tool/builtin"
+	"github.com/longyisang/emoagent/internal/turn"
 	"github.com/longyisang/emoagent/internal/web"
 	"github.com/longyisang/emoagent/internal/work"
 )
@@ -62,6 +64,8 @@ type App struct {
 	toolRegistry       *tool.Registry
 	approvalService    *work.ApprovalService
 	environment        runtimeenv.Facts
+	PluginHost         *plugin.PluginHost
+	pluginRunner       *plugin.BuiltinRunner
 	mu                 sync.RWMutex
 	cancel             context.CancelFunc
 }
@@ -230,6 +234,9 @@ func (a *App) Run(ctx context.Context) error {
 	}
 
 	dispatcher := tool.NewDispatcher(a.toolRegistry, tool.MinimalSchemaValidator{}, a.Logger)
+	if err := a.configurePluginHost(ctx, dispatcher, nil); err != nil {
+		return err
+	}
 	var pendingRegistry *work.PendingRegistry
 	var approvalService *work.ApprovalService
 	if _, ok := a.toolRegistry.GetSpec("delegate_to_work"); !ok {
@@ -282,7 +289,7 @@ func (a *App) Run(ctx context.Context) error {
 				spec, handler := work.NewListDecisionsTool(pendingRegistry)
 				a.toolRegistry.Register(spec, handler)
 			}
-			delegateSpec, delegateHandler := work.NewDelegateToolWithFactory(runtimeFactory, pendingRegistry, cfg.Work.JournalDir, a.Logger)
+			delegateSpec, delegateHandler := work.NewDelegateToolWithFactoryAndAnnotator(runtimeFactory, pendingRegistry, cfg.Work.JournalDir, a.Logger, plugin.NewWorkAnnotator(a.PluginHost))
 			a.toolRegistry.Register(delegateSpec, delegateHandler)
 		}
 	}
@@ -317,6 +324,9 @@ func (a *App) Run(ctx context.Context) error {
 	chatOptions := []chat.HandlerOption{chat.WithTurnPipelineConfig(cfg.Chat.TurnPipeline)}
 	if a.DB != nil {
 		chatOptions = append(chatOptions, chat.WithTurnDB(a.DB.SqlDB()))
+	}
+	if a.PluginHost != nil && a.PluginHost.Enabled() {
+		chatOptions = append(chatOptions, chat.WithPluginHost(a.PluginHost))
 	}
 	chatHandler := chat.NewHandler(a.engine, a, a.Logger, chatOptions...)
 
@@ -412,6 +422,13 @@ func (a *App) Shutdown() error {
 		a.cancel()
 	}
 	var closeErr error
+	if a.pluginRunner != nil {
+		if err := a.pluginRunner.Shutdown(context.Background()); err != nil {
+			closeErr = errors.Join(closeErr, fmt.Errorf("shutdown plugins: %w", err))
+		}
+		a.pluginRunner = nil
+	}
+	a.PluginHost = nil
 	if a.Memory != nil {
 		if err := a.Memory.Close(); err != nil {
 			closeErr = errors.Join(closeErr, fmt.Errorf("close memorycore: %w", err))
@@ -429,6 +446,27 @@ func (a *App) Shutdown() error {
 		a.Logger.Info("EmoAgent stopped")
 	}
 	return closeErr
+}
+
+func (a *App) configurePluginHost(ctx context.Context, dispatcher *tool.Dispatcher, journal turn.TurnJournal) error {
+	if a == nil || a.Config == nil || !a.Config.Plugins.Enabled {
+		if a != nil {
+			a.PluginHost = nil
+			a.pluginRunner = nil
+		}
+		return nil
+	}
+	host := plugin.NewPluginHost(a.Config.Plugins, journal, a.Logger)
+	runner := plugin.NewBuiltinRunner(host, a.toolRegistry)
+	if err := runner.Load(ctx, plugin.DefaultBuiltinPlugins(), a.Config.Plugins.BuiltinEnabled); err != nil {
+		return fmt.Errorf("load builtin plugins: %w", err)
+	}
+	if dispatcher != nil {
+		dispatcher.SetHook(plugin.NewToolHook(host))
+	}
+	a.PluginHost = host
+	a.pluginRunner = runner
+	return nil
 }
 
 func (a *App) applyRuntimeOverrides() error {

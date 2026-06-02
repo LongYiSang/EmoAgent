@@ -22,6 +22,27 @@ type Dispatcher struct {
 	registry  *Registry
 	validator SchemaValidator
 	logger    *slog.Logger
+	hook      CallHook
+}
+
+type CallHook interface {
+	BeforeToolCall(context.Context, CallHookView) (CallHookDecision, error)
+	AfterToolCall(context.Context, CallHookView, Result) error
+}
+
+type CallHookView struct {
+	Call          Call
+	Spec          Spec
+	MaxPermission Permission
+	AgentScope    Scope
+}
+
+type CallHookDecision struct {
+	RequireApproval bool
+	ApprovalKind    ApprovalKind
+	ApprovalReason  string
+	MaxPermission   Permission
+	Reason          string
 }
 
 type CallAction string
@@ -55,6 +76,12 @@ func NewDispatcher(registry *Registry, validator SchemaValidator, logger *slog.L
 	}
 }
 
+func (d *Dispatcher) SetHook(hook CallHook) {
+	if d != nil {
+		d.hook = hook
+	}
+}
+
 func (d *Dispatcher) ClassifyCall(ctx context.Context, call Call, maxPermission Permission) CallClassification {
 	classification := CallClassification{
 		Call:   call,
@@ -85,6 +112,35 @@ func (d *Dispatcher) ClassifyCall(ctx context.Context, call Call, maxPermission 
 		if err := d.validator.Validate(spec.Parameters, call.Input); err != nil {
 			classification.Reason = fmt.Sprintf("input validation failed: %v", err)
 			return classification
+		}
+	}
+
+	if d.hook != nil {
+		decision, err := d.hook.BeforeToolCall(ctx, CallHookView{
+			Call:          call,
+			Spec:          spec,
+			MaxPermission: maxPermission,
+			AgentScope:    spec.Scope,
+		})
+		if err != nil {
+			classification.Reason = fmt.Sprintf("tool hook rejected call: %v", err)
+			return classification
+		}
+		if decision.RequireApproval {
+			classification.Action = CallActionToolApprovalRequired
+			classification.ApprovalKind = decision.ApprovalKind
+			if classification.ApprovalKind == "" {
+				classification.ApprovalKind = ApprovalKindDestructiveWrite
+			}
+			classification.ApprovalReason = decision.ApprovalReason
+			classification.Reason = decision.Reason
+			if classification.Reason == "" {
+				classification.Reason = fmt.Sprintf("approval required by tool hook for %q", call.Name)
+			}
+			return classification
+		}
+		if decision.MaxPermission != "" && permissionLevel(decision.MaxPermission) >= 0 && permissionLevel(decision.MaxPermission) < permissionLevel(maxPermission) {
+			maxPermission = decision.MaxPermission
 		}
 	}
 
@@ -177,20 +233,37 @@ func approvalBindingMatches(approval ApprovalContext, binding ApprovalBinding) b
 //  4. Handler execution → error if handler fails
 func (d *Dispatcher) Execute(ctx context.Context, call Call, maxPermission Permission) Result {
 	classification := d.ClassifyCall(ctx, call, maxPermission)
+	return d.ExecuteClassified(ctx, classification, maxPermission)
+}
+
+func (d *Dispatcher) ExecuteClassified(ctx context.Context, classification CallClassification, maxPermission Permission) Result {
+	call := classification.Call
+	view := CallHookView{
+		Call:          call,
+		Spec:          classification.Spec,
+		MaxPermission: maxPermission,
+		AgentScope:    classification.Spec.Scope,
+	}
 	switch classification.Action {
 	case CallActionExecute:
 		// continue
 	case CallActionToolApprovalRequired:
 		d.logClassificationBlock(classification, maxPermission)
-		return approvalRequiredResult(call.ID, classification.Reason)
+		return d.afterToolCall(ctx, view, approvalRequiredResult(call.ID, classification.Reason))
 	case CallActionError, CallActionPermissionDenied, CallActionPermissionEscalationRequired:
 		d.logClassificationBlock(classification, maxPermission)
-		return errorResult(call.ID, classification.Reason)
+		return d.afterToolCall(ctx, view, errorResult(call.ID, classification.Reason))
 	default:
-		return errorResult(call.ID, fmt.Sprintf("unsupported tool action %q", classification.Action))
+		return d.afterToolCall(ctx, view, errorResult(call.ID, fmt.Sprintf("unsupported tool action %q", classification.Action)))
 	}
 
+	if d == nil || d.registry == nil {
+		return d.afterToolCall(ctx, view, errorResult(call.ID, "tool dispatcher is not configured"))
+	}
 	handler, _ := d.registry.Get(call.Name)
+	if handler == nil {
+		return d.afterToolCall(ctx, view, errorResult(call.ID, fmt.Sprintf("handler for tool %q not found", call.Name)))
+	}
 
 	// 4. Execute handler.
 	d.logAttrs(slog.LevelInfo, "executing tool", "tool", call.Name, "call_id", call.ID)
@@ -201,7 +274,7 @@ func (d *Dispatcher) Execute(ctx context.Context, call Call, maxPermission Permi
 			"call_id", call.ID,
 			"error", err,
 		)
-		return errorResult(call.ID, fmt.Sprintf("execution error: %v", err))
+		return d.afterToolCall(ctx, view, errorResult(call.ID, fmt.Sprintf("execution error: %v", err)))
 	}
 
 	digest := contextutil.SnipToolResult(call.Name, call.ID, result, maxInt, maxInt)
@@ -212,12 +285,22 @@ func (d *Dispatcher) Execute(ctx context.Context, call Call, maxPermission Permi
 		"preview", digest.Preview,
 		"hash", digest.Hash,
 	)
-	return Result{
+	return d.afterToolCall(ctx, view, Result{
 		CallID:        call.ID,
 		Content:       result,
 		IsError:       false,
 		NeedsApproval: false,
+	})
+}
+
+func (d *Dispatcher) afterToolCall(ctx context.Context, view CallHookView, result Result) Result {
+	if d == nil || d.hook == nil {
+		return result
 	}
+	if err := d.hook.AfterToolCall(ctx, view, result); err != nil {
+		d.logAttrs(slog.LevelWarn, "tool after hook failed", "tool", view.Call.Name, "call_id", view.Call.ID, "error", err)
+	}
+	return result
 }
 
 func effectivePermission(spec Spec, input json.RawMessage) (Permission, string) {
@@ -234,6 +317,14 @@ func (d *Dispatcher) ExecuteAll(ctx context.Context, calls []Call, maxPermission
 	results := make([]Result, len(calls))
 	for i, call := range calls {
 		results[i] = d.Execute(ctx, call, maxPermission)
+	}
+	return results
+}
+
+func (d *Dispatcher) ExecuteAllClassified(ctx context.Context, classifications []CallClassification, maxPermission Permission) []Result {
+	results := make([]Result, len(classifications))
+	for i, classification := range classifications {
+		results[i] = d.ExecuteClassified(ctx, classification, maxPermission)
 	}
 	return results
 }

@@ -25,6 +25,7 @@ type Config struct {
 	WebSearch    WebSearchConfig    `yaml:"websearch"`
 	WebFetch     WebFetchConfig     `yaml:"webfetch"`
 	Bash         BashConfig         `yaml:"bash"`
+	Plugins      PluginsConfig      `yaml:"plugins"`
 }
 
 type LLMProvider struct {
@@ -220,6 +221,164 @@ type BashConfig struct {
 	TimeoutSec     int    `yaml:"timeout_sec"`
 	MaxOutputBytes int    `yaml:"max_output_bytes"`
 	Shell          string `yaml:"shell"`
+}
+
+type PluginsConfig struct {
+	Enabled          bool              `yaml:"enabled" json:"enabled"`
+	Directories      []string          `yaml:"directories" json:"directories"`
+	BuiltinEnabled   []string          `yaml:"builtin_enabled" json:"builtin_enabled"`
+	RolloutPercent   int               `yaml:"rollout_percent" json:"rollout_percent"`
+	DefaultTimeoutMS int               `yaml:"default_timeout_ms" json:"default_timeout_ms"`
+	MaxTimeoutMS     int               `yaml:"max_timeout_ms" json:"max_timeout_ms"`
+	FailClosedHooks  []string          `yaml:"fail_closed_hooks" json:"fail_closed_hooks"`
+	Audit            PluginAuditConfig `yaml:"audit" json:"audit"`
+}
+
+type PluginAuditConfig struct {
+	Enabled        bool `yaml:"enabled" json:"enabled"`
+	IncludePayload bool `yaml:"include_payload" json:"include_payload"`
+}
+
+func (c *PluginsConfig) UnmarshalYAML(value *yaml.Node) error {
+	if value == nil || value.Kind == 0 {
+		return nil
+	}
+	if value.Kind != yaml.MappingNode {
+		return fmt.Errorf("plugins must be a mapping")
+	}
+	allowed := map[string]struct{}{
+		"enabled":            {},
+		"directories":        {},
+		"builtin_enabled":    {},
+		"rollout_percent":    {},
+		"default_timeout_ms": {},
+		"max_timeout_ms":     {},
+		"fail_closed_hooks":  {},
+		"audit":              {},
+	}
+	for i := 0; i < len(value.Content); i += 2 {
+		key := strings.TrimSpace(value.Content[i].Value)
+		if _, ok := allowed[key]; !ok {
+			return fmt.Errorf("plugins.%s is not supported", key)
+		}
+	}
+	type rawPluginsConfig PluginsConfig
+	var decoded rawPluginsConfig
+	if err := value.Decode(&decoded); err != nil {
+		return err
+	}
+	*c = PluginsConfig(decoded)
+	return nil
+}
+
+func (c *PluginAuditConfig) UnmarshalYAML(value *yaml.Node) error {
+	if value == nil || value.Kind == 0 {
+		return nil
+	}
+	if value.Kind != yaml.MappingNode {
+		return fmt.Errorf("plugins.audit must be a mapping")
+	}
+	allowed := map[string]struct{}{
+		"enabled":         {},
+		"include_payload": {},
+	}
+	for i := 0; i < len(value.Content); i += 2 {
+		key := strings.TrimSpace(value.Content[i].Value)
+		if _, ok := allowed[key]; !ok {
+			return fmt.Errorf("plugins.audit.%s is not supported", key)
+		}
+	}
+	type rawPluginAuditConfig PluginAuditConfig
+	var decoded rawPluginAuditConfig
+	if err := value.Decode(&decoded); err != nil {
+		return err
+	}
+	*c = PluginAuditConfig(decoded)
+	return nil
+}
+
+func (c *PluginsConfig) applyDefaults() {
+	if len(c.Directories) == 0 {
+		c.Directories = []string{"data/plugins"}
+	}
+	if len(c.BuiltinEnabled) == 0 {
+		c.BuiltinEnabled = defaultBuiltinPluginIDs()
+	}
+	if c.DefaultTimeoutMS == 0 {
+		c.DefaultTimeoutMS = 80
+	}
+	if c.MaxTimeoutMS == 0 {
+		c.MaxTimeoutMS = 1000
+	}
+	if len(c.FailClosedHooks) == 0 {
+		c.FailClosedHooks = []string{"before_tool_call", "before_memory_commit"}
+	}
+	c.Audit.applyDefaults()
+}
+
+func (c *PluginAuditConfig) applyDefaults() {
+	if !c.Enabled && !c.IncludePayload {
+		c.Enabled = true
+	}
+}
+
+func (c PluginsConfig) Validate(turnPipeline TurnPipelineConfig) error {
+	if c.RolloutPercent < 0 || c.RolloutPercent > 100 {
+		return fmt.Errorf("rollout_percent must be between 0 and 100")
+	}
+	if c.DefaultTimeoutMS <= 0 {
+		return fmt.Errorf("default_timeout_ms must be > 0")
+	}
+	if c.MaxTimeoutMS <= 0 {
+		return fmt.Errorf("max_timeout_ms must be > 0")
+	}
+	if c.DefaultTimeoutMS > c.MaxTimeoutMS {
+		return fmt.Errorf("default_timeout_ms must be <= max_timeout_ms")
+	}
+	for _, hook := range c.FailClosedHooks {
+		if !knownPluginHookName(hook) {
+			return fmt.Errorf("fail_closed_hooks contains unknown hook %q", hook)
+		}
+	}
+	if !c.Enabled {
+		return nil
+	}
+	if !turnPipeline.Enabled {
+		return fmt.Errorf("plugins.enabled requires chat.turn_pipeline.enabled=true")
+	}
+	if turnPipeline.RolloutPercent <= 0 && len(turnPipeline.AllowPersonas) == 0 && len(turnPipeline.AllowSessions) == 0 {
+		return fmt.Errorf("plugins.enabled requires chat.turn_pipeline rollout or allow list")
+	}
+	return nil
+}
+
+func knownPluginHookName(hook string) bool {
+	switch strings.TrimSpace(hook) {
+	case "before_ingress_normalize",
+		"after_ingress_normalize",
+		"before_memory_prepare",
+		"after_memory_prepare",
+		"before_memory_retrieve",
+		"after_memory_retrieve",
+		"before_memory_commit",
+		"after_memory_commit",
+		"before_outbound",
+		"after_outbound",
+		"before_tool_call",
+		"after_tool_call",
+		"memory.candidate.submit",
+		"memory.forget.request",
+		"work.dispatch.annotate",
+		"on_decision_packet",
+		"on_approval_requested",
+		"on_approval_resolved",
+		"on_approval_consumed",
+		"on_turn_error",
+		"after_turn_end":
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *BashConfig) applyDefaults() {
@@ -498,9 +657,30 @@ func DefaultConfig() *Config {
 			TimeoutSec:     60,
 			MaxOutputBytes: 256 << 10,
 		},
+		Plugins: PluginsConfig{
+			Enabled:          false,
+			Directories:      []string{"data/plugins"},
+			BuiltinEnabled:   defaultBuiltinPluginIDs(),
+			RolloutPercent:   0,
+			DefaultTimeoutMS: 80,
+			MaxTimeoutMS:     1000,
+			FailClosedHooks:  []string{"before_tool_call", "before_memory_commit"},
+			Audit: PluginAuditConfig{
+				Enabled:        true,
+				IncludePayload: false,
+			},
+		},
 	}
 	cfg.Work.ApplyDefaults()
 	return cfg
+}
+
+func defaultBuiltinPluginIDs() []string {
+	return []string{
+		"com.emoagent.plugins.turn-audit",
+		"com.emoagent.plugins.memory-context-debug",
+		"com.emoagent.plugins.outbound-guard",
+	}
 }
 
 // Load reads a YAML config file and returns a Config.
@@ -524,6 +704,7 @@ func Load(path string) (*Config, error) {
 	cfg.WebFetch.applyDefaults()
 	cfg.Bash.applyDefaults()
 	cfg.Memory.Extraction.applyDefaults()
+	cfg.Plugins.applyDefaults()
 	for i := range cfg.LLMProviders {
 		provider, err := cfg.LLMProviders[i].WithPresetDefaults()
 		if err != nil {
@@ -564,6 +745,9 @@ func (c *Config) Validate() error {
 	}
 	if err := c.Chat.TurnPipeline.Validate(); err != nil {
 		return fmt.Errorf("chat.turn_pipeline: %w", err)
+	}
+	if err := c.Plugins.Validate(c.Chat.TurnPipeline); err != nil {
+		return fmt.Errorf("plugins: %w", err)
 	}
 	if c.Memory.Enabled && strings.TrimSpace(c.Memory.ConfigPath) == "" {
 		return fmt.Errorf("memory.config_path is required when memory is enabled")

@@ -168,6 +168,92 @@ func TestDispatcherExecute_Success(t *testing.T) {
 	}
 }
 
+func TestDispatcherHookRunsAfterSchemaValidationAndCanDowngradePermission(t *testing.T) {
+	hook := &recordingDispatcherHook{
+		beforeDecision: CallHookDecision{MaxPermission: PermReadOnly, Reason: "plugin downgraded permission"},
+	}
+	d := NewDispatcher(setupTestRegistry(), &mockValidator{}, slog.Default())
+	d.SetHook(hook)
+
+	classification := d.ClassifyCall(context.Background(), Call{
+		ID:    "call_write",
+		Name:  "write_file",
+		Input: json.RawMessage(`{"path":"/tmp/test"}`),
+	}, PermWorkspaceWrite)
+	if classification.Action != CallActionPermissionDenied {
+		t.Fatalf("Action = %q, want permission_denied; reason=%s", classification.Action, classification.Reason)
+	}
+	if hook.beforeCount != 1 {
+		t.Fatalf("beforeCount = %d, want 1", hook.beforeCount)
+	}
+
+	hook.beforeCount = 0
+	d = NewDispatcher(setupTestRegistry(), &mockValidator{err: errors.New("schema failed")}, slog.Default())
+	d.SetHook(hook)
+	_ = d.ClassifyCall(context.Background(), Call{
+		ID:    "call_invalid",
+		Name:  "write_file",
+		Input: json.RawMessage(`{"path":"/tmp/test"}`),
+	}, PermWorkspaceWrite)
+	if hook.beforeCount != 0 {
+		t.Fatalf("beforeCount after schema failure = %d, want 0", hook.beforeCount)
+	}
+}
+
+func TestDispatcherHookAfterToolCallReceivesResult(t *testing.T) {
+	hook := &recordingDispatcherHook{}
+	d := NewDispatcher(setupTestRegistry(), &mockValidator{}, slog.Default())
+	d.SetHook(hook)
+
+	result := d.Execute(context.Background(), Call{
+		ID:    "call_1",
+		Name:  "get_time",
+		Input: json.RawMessage(`{"tz":"UTC"}`),
+	}, PermReadOnly)
+	if result.IsError {
+		t.Fatalf("Execute result = %#v, want success", result)
+	}
+	if hook.beforeCount != 1 {
+		t.Fatalf("beforeCount = %d, want 1", hook.beforeCount)
+	}
+	if hook.afterCount != 1 {
+		t.Fatalf("afterCount = %d, want 1", hook.afterCount)
+	}
+	if hook.afterResult.CallID != "call_1" || string(hook.afterResult.Content) != `{"time":"10:00"}` {
+		t.Fatalf("afterResult = %#v", hook.afterResult)
+	}
+}
+
+func TestDispatcherExecuteClassifiedDoesNotRepeatBeforeHook(t *testing.T) {
+	hook := &recordingDispatcherHook{}
+	d := NewDispatcher(setupTestRegistry(), &mockValidator{}, slog.Default())
+	d.SetHook(hook)
+	call := Call{
+		ID:    "call_1",
+		Name:  "get_time",
+		Input: json.RawMessage(`{"tz":"UTC"}`),
+	}
+
+	classification := d.ClassifyCall(context.Background(), call, PermReadOnly)
+	if classification.Action != CallActionExecute {
+		t.Fatalf("Action = %q, want execute; reason=%s", classification.Action, classification.Reason)
+	}
+	if hook.beforeCount != 1 {
+		t.Fatalf("beforeCount after classify = %d, want 1", hook.beforeCount)
+	}
+
+	result := d.ExecuteClassified(context.Background(), classification, PermReadOnly)
+	if result.IsError {
+		t.Fatalf("ExecuteClassified result = %#v, want success", result)
+	}
+	if hook.beforeCount != 1 {
+		t.Fatalf("beforeCount after ExecuteClassified = %d, want still 1", hook.beforeCount)
+	}
+	if hook.afterCount != 1 {
+		t.Fatalf("afterCount = %d, want 1", hook.afterCount)
+	}
+}
+
 func TestDispatcherExecute_ToolNotFound(t *testing.T) {
 	d := NewDispatcher(setupTestRegistry(), &mockValidator{}, slog.Default())
 
@@ -885,4 +971,22 @@ func TestDispatcherExecute_LogsPreviewHashAndSizeWithoutFullPayload(t *testing.T
 	if strings.Contains(logOutput, strings.Repeat("x", 200)) {
 		t.Fatal("logs should not contain the full payload")
 	}
+}
+
+type recordingDispatcherHook struct {
+	beforeCount    int
+	afterCount     int
+	beforeDecision CallHookDecision
+	afterResult    Result
+}
+
+func (h *recordingDispatcherHook) BeforeToolCall(_ context.Context, view CallHookView) (CallHookDecision, error) {
+	h.beforeCount++
+	return h.beforeDecision, nil
+}
+
+func (h *recordingDispatcherHook) AfterToolCall(_ context.Context, view CallHookView, result Result) error {
+	h.afterCount++
+	h.afterResult = result
+	return nil
 }

@@ -20,6 +20,15 @@ type chatTurnRuntime struct {
 	journal turn.TurnJournal
 	ids     turn.IdempotencyStore
 	logger  *slog.Logger
+	plugin  turnPluginHost
+}
+
+type turnPluginHost interface {
+	Enabled() bool
+	WrapStages([]turn.Stage) []turn.Stage
+	WrapOutboundSink(turn.OutboundSink) turn.OutboundSink
+	DispatchTurnEnd(context.Context, turn.TurnResult, turn.InboundEnvelope)
+	DispatchTurnError(context.Context, turn.TurnResult, error, turn.InboundEnvelope)
 }
 
 type forcedOutboundEventsKey struct{}
@@ -37,12 +46,16 @@ func newChatTurnRuntime(engine conversationEngine, cfg config.TurnPipelineConfig
 	return newChatTurnRuntimeWithStore(engine, cfg, journal, turn.NewMemoryIdempotencyStore(), logger)
 }
 
-func newChatTurnRuntimeWithStore(engine conversationEngine, cfg config.TurnPipelineConfig, journal turn.TurnJournal, ids turn.IdempotencyStore, logger *slog.Logger) *chatTurnRuntime {
+func newChatTurnRuntimeWithStore(engine conversationEngine, cfg config.TurnPipelineConfig, journal turn.TurnJournal, ids turn.IdempotencyStore, logger *slog.Logger, pluginHosts ...turnPluginHost) *chatTurnRuntime {
 	if journal == nil {
 		journal = turn.NewMemoryJournal()
 	}
 	if ids == nil {
 		ids = turn.NewMemoryIdempotencyStore()
+	}
+	var plugin turnPluginHost
+	if len(pluginHosts) > 0 {
+		plugin = pluginHosts[0]
 	}
 	return &chatTurnRuntime{
 		engine:  engine,
@@ -51,6 +64,7 @@ func newChatTurnRuntimeWithStore(engine conversationEngine, cfg config.TurnPipel
 		journal: journal,
 		ids:     ids,
 		logger:  logger,
+		plugin:  plugin,
 	}
 }
 
@@ -82,10 +96,23 @@ func (r *chatTurnRuntime) Execute(ctx context.Context, env turn.InboundEnvelope,
 		TurnID:  turnID,
 		State:   turn.StateCreated,
 		Inbound: env,
-		Stream:  newJournalingSink(sink, r.journal, turnID),
 		Journal: r.journal,
 	}
+	ctx = turn.WithCorrelationContext(ctx, turn.CorrelationContext{
+		TurnID:     turnID,
+		SessionID:  env.SessionID,
+		PersonaKey: env.PersonaKey,
+		RequestID:  env.RequestID,
+		Kind:       env.Kind,
+	})
+	tc.Stream = newJournalingSink(sink, r.journal, turnID)
+	if r.plugin != nil && r.plugin.Enabled() {
+		tc.Stream = r.plugin.WrapOutboundSink(tc.Stream)
+	}
 	stages := r.stages(env, persona)
+	if r.plugin != nil && r.plugin.Enabled() {
+		stages = r.plugin.WrapStages(stages)
+	}
 	result, execErr := r.rt.Execute(ctx, tc, stages)
 	if closeErr := closeTurnStream(ctx, tc.Stream); closeErr != nil && execErr == nil {
 		_ = r.journal.RecordEvent(ctx, turnID, turn.JournalEvent{
@@ -100,6 +127,13 @@ func (r *chatTurnRuntime) Execute(ctx context.Context, env turn.InboundEnvelope,
 		result.Status = "failed"
 		result.ErrorKind = "outbound_failed"
 		execErr = closeErr
+	}
+	if r.plugin != nil && r.plugin.Enabled() {
+		if execErr != nil {
+			r.plugin.DispatchTurnError(ctx, result, execErr, env)
+		} else {
+			r.plugin.DispatchTurnEnd(ctx, result, env)
+		}
 	}
 	status := result.Status
 	if status == "" {
@@ -398,6 +432,7 @@ func (r *chatTurnRuntime) messageStage(persona *config.Persona) turn.Stage {
 	return turn.StageFunc{
 		NameValue: turn.StageEmotionLoop,
 		RunFunc: func(ctx context.Context, tc *turn.TurnContext) (turn.StageResult, error) {
+			ctx = turn.WithCorrelationStage(ctx, turn.StageEmotionLoop)
 			if r.engine == nil {
 				return turn.StageResult{NextState: turn.StateFailed, Terminal: true, Status: "failed", ErrorKind: "engine_unconfigured"}, errors.New("chat engine is not configured")
 			}
@@ -508,6 +543,7 @@ func (r *chatTurnRuntime) resumeStage(persona *config.Persona) turn.Stage {
 	return turn.StageFunc{
 		NameValue: turn.StageResume,
 		RunFunc: func(ctx context.Context, tc *turn.TurnContext) (turn.StageResult, error) {
+			ctx = turn.WithCorrelationStage(ctx, turn.StageResume)
 			approval, _ := tc.Diagnostics["approval"].(*protocol.ApprovalRequest)
 			if approval == nil {
 				return turn.StageResult{NextState: turn.StateFailed, Terminal: true, Status: "failed", ErrorKind: "approval_failed"}, errors.New("approval is required")

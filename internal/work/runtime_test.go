@@ -337,6 +337,30 @@ func TestRuntime_HappyPath(t *testing.T) {
 	}
 }
 
+func TestRuntime_ExecutesPreclassifiedToolWithoutRepeatingBeforeHook(t *testing.T) {
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			toolUseResp("call-1", "echo_tool", `{"x":"y"}`),
+			toolUseResp("finish-1", "finish_task", finishTaskPayloadJSON("completed", "done", nil, nil)),
+		},
+	}
+	runtime := newTestRuntime(t, client)
+	hook := &workToolHookRecorder{beforeByName: map[string]int{}, afterByName: map[string]int{}}
+	runtime.cfg.Dispatcher.SetHook(hook)
+	brief := newValidatedBrief(t)
+
+	outcome := runtime.Run(context.Background(), brief, nil)
+	if outcome.Report == nil || outcome.Report.Status != "completed" {
+		t.Fatalf("expected completed report, got %#v", outcome)
+	}
+	if hook.beforeByName["echo_tool"] != 1 {
+		t.Fatalf("echo_tool before count = %d, want 1", hook.beforeByName["echo_tool"])
+	}
+	if hook.afterByName["echo_tool"] != 1 {
+		t.Fatalf("echo_tool after count = %d, want 1", hook.afterByName["echo_tool"])
+	}
+}
+
 func TestRuntime_UsesEnvironmentFactsInSystemPrompt(t *testing.T) {
 	client := &scriptedLLM{
 		responses: []*llm.ChatResponse{
@@ -1329,4 +1353,19 @@ func containsEventKind(kinds []progress.EventKind, target progress.EventKind) bo
 		}
 	}
 	return false
+}
+
+type workToolHookRecorder struct {
+	beforeByName map[string]int
+	afterByName  map[string]int
+}
+
+func (h *workToolHookRecorder) BeforeToolCall(_ context.Context, view tool.CallHookView) (tool.CallHookDecision, error) {
+	h.beforeByName[view.Call.Name]++
+	return tool.CallHookDecision{}, nil
+}
+
+func (h *workToolHookRecorder) AfterToolCall(_ context.Context, view tool.CallHookView, result tool.Result) error {
+	h.afterByName[view.Call.Name]++
+	return nil
 }

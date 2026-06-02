@@ -121,7 +121,7 @@ func (r *Runtime) Resume(ctx context.Context, paused *PausedWork, resp protocol.
 		} else {
 			permission := tool.Permission(paused.Brief.PermissionScope)
 			classification := r.cfg.Dispatcher.ClassifyCall(ctx, *paused.PendingToolCall, permission)
-			result = r.cfg.Dispatcher.Execute(ctx, *paused.PendingToolCall, permission)
+			result = r.cfg.Dispatcher.ExecuteClassified(ctx, classification, permission)
 			writeToolApprovalResumeEvent(ctx, journal, paused.Round, *paused.PendingToolCall, result, classification.DestructiveReason)
 			if result.NeedsApproval && journal != nil && isApprovalBindingMismatchResult(result) {
 				writeApprovalBindingMismatchEvent(ctx, journal, paused.Round, *paused.PendingToolCall)
@@ -505,7 +505,7 @@ func (r *Runtime) runLoop(
 				return outcome, true
 			}
 
-			results := r.cfg.Dispatcher.ExecuteAll(ctx, calls, permission)
+			results := r.cfg.Dispatcher.ExecuteAllClassified(ctx, classifications, permission)
 			logToolResults(journal, round, results)
 			messages = r.appendResultsAndSnip(messages, results, journal, round)
 			return RunOutcome{}, false
