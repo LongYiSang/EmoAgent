@@ -55,6 +55,10 @@ func TestAdminHTMLContainsConfigCenterControls(t *testing.T) {
 		`save-sidecar-config`,
 		`save-privacy-forget`,
 		`save-retention`,
+		`llmPipelineKeys`,
+		`pipelineProviderOptions`,
+		`pipelineThinkingOptions`,
+		`mem-${key}-thinking`,
 		`/api/memory/config`,
 		`/api/sidecar/start`,
 	} {

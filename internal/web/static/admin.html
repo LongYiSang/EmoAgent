@@ -689,6 +689,7 @@
     ['embedding', 'Embedding'],
     ['rerank', 'Rerank'],
   ];
+  const llmPipelineKeys = new Set(['prefilter', 'extraction', 'extraction_repair', 'query_analysis', 'curation']);
 
   function status(text) { $('status').textContent = text; }
   function esc(v) {
@@ -748,6 +749,29 @@
   function providerCapabilities(provider) {
     const caps = provider && Array.isArray(provider.capabilities) && provider.capabilities.length ? provider.capabilities : ['chat'];
     return new Set(caps);
+  }
+  function pipelineProviderSupports(provider, key) {
+    const caps = providerCapabilities(provider);
+    if (key === 'embedding') return caps.has('embedding');
+    if (key === 'rerank') return caps.has('rerank');
+    if (key === 'query_analysis') return caps.has('query_analysis') || caps.has('chat');
+    return caps.has('chat');
+  }
+  function pipelineProviderOptions(key, selected) {
+    const providers = state.providers.filter(p => pipelineProviderSupports(p, key));
+    let options = `<option value="">Select provider</option>` + providers.map(p =>
+      `<option value="${esc(p.id)}"${p.id === selected ? ' selected' : ''}>${esc(p.name || p.id)}</option>`
+    ).join('');
+    if (selected && !providers.some(p => p.id === selected)) {
+      options += `<option value="${esc(selected)}" selected disabled>Missing: ${esc(selected)}</option>`;
+    }
+    return options;
+  }
+  function pipelineThinkingOptions(selected) {
+    return ['inherit', 'disabled', 'enabled'].map(value => {
+      const optionValue = value === 'inherit' ? '' : value;
+      return `<option value="${optionValue}"${optionValue === selected ? ' selected' : ''}>${value}</option>`;
+    }).join('');
   }
   function hydrateProviderCapabilities(provider) {
     const caps = providerCapabilities(provider);
@@ -1302,8 +1326,12 @@
     const bindings = memory.provider_bindings || {};
     $('pipeline-binding-form').innerHTML = memoryPipelineBindings.map(([key, label]) => {
       const binding = bindings[key] || {};
-      return `<div class="field"><label for="mem-${key}-provider">${esc(label)} provider_id</label><input id="mem-${key}-provider" class="mono" value="${esc(binding.provider_id || '')}"></div>
-        <div class="field"><label for="mem-${key}-model">${esc(label)} model</label><input id="mem-${key}-model" class="mono" value="${esc(binding.model || '')}"></div>`;
+      const thinking = binding.thinking && binding.thinking.type ? binding.thinking.type : '';
+      const thinkingField = llmPipelineKeys.has(key)
+        ? `<div class="field"><label for="mem-${key}-thinking">${esc(label)} Thinking</label><select id="mem-${key}-thinking">${pipelineThinkingOptions(thinking)}</select></div>`
+        : '';
+      return `<div class="field"><label for="mem-${key}-provider">${esc(label)} provider_id</label><select id="mem-${key}-provider" class="mono">${pipelineProviderOptions(key, binding.provider_id || '')}</select></div>
+        <div class="field"><label for="mem-${key}-model">${esc(label)} model</label><input id="mem-${key}-model" class="mono" value="${esc(binding.model || '')}"></div>${thinkingField}`;
     }).join('');
     for (const [key] of memoryPipelineBindings) {
       const binding = bindings[key] || {};
@@ -1423,7 +1451,18 @@
     for (const [key] of memoryPipelineBindings) {
       const providerID = text($(`mem-${key}-provider`).value);
       const model = text($(`mem-${key}-model`).value);
-      memory.provider_bindings[key] = {...(memory.provider_bindings[key] || {}), provider_id: providerID, model};
+      const binding = {...(memory.provider_bindings[key] || {}), provider_id: providerID, model};
+      if (llmPipelineKeys.has(key)) {
+        const thinkingType = text($(`mem-${key}-thinking`)?.value);
+        if (thinkingType) {
+          binding.thinking = {type: thinkingType};
+        } else {
+          delete binding.thinking;
+        }
+      } else {
+        delete binding.thinking;
+      }
+      memory.provider_bindings[key] = binding;
     }
     const dims = intOrUndefined($('mem-embedding-dimensions')?.value);
     if (dims !== undefined) memory.provider_bindings.embedding = {...(memory.provider_bindings.embedding || {}), dimensions: dims, enabled: true};

@@ -127,7 +127,7 @@ func TestBuildEffectiveMergesRuntimeSettingsIntoMemoryCoreAndSidecar(t *testing.
 	if err := db.UpsertRuntimeSetting("memory.sidecar", "config", `{"enabled":true,"managed":true,"adapter":"trivium","host":"127.0.0.1","port":8765,"url":"http://127.0.0.1:8765","config_path":"./data/runtime/sidecar.generated.toml"}`, "ui"); err != nil {
 		t.Fatalf("UpsertRuntimeSetting sidecar: %v", err)
 	}
-	if err := db.UpsertRuntimeSetting("memory.provider_bindings", "config", `{"prefilter":{"provider_id":"moonshot","model":"prefilter-model"},"extraction":{"provider_id":"moonshot","model":"memory-model"},"extraction_repair":{"provider_id":"moonshot","model":"repair-model"},"query_analysis":{"provider_id":"moonshot","model":"analysis-model"},"curation":{"provider_id":"moonshot","model":"curation-model"},"embedding":{"enabled":true,"provider_id":"dashscope_embedding","model":"text-embedding-v4","dimensions":1536}}`, "ui"); err != nil {
+	if err := db.UpsertRuntimeSetting("memory.provider_bindings", "config", `{"prefilter":{"provider_id":"moonshot","model":"prefilter-model"},"extraction":{"provider_id":"moonshot","model":"memory-model","thinking":{"type":"enabled"}},"extraction_repair":{"provider_id":"moonshot","model":"repair-model"},"query_analysis":{"provider_id":"moonshot","model":"analysis-model"},"curation":{"provider_id":"moonshot","model":"curation-model","thinking":{"type":"enabled"}},"embedding":{"enabled":true,"provider_id":"dashscope_embedding","model":"text-embedding-v4","dimensions":1536}}`, "ui"); err != nil {
 		t.Fatalf("UpsertRuntimeSetting bindings: %v", err)
 	}
 
@@ -156,6 +156,9 @@ func TestBuildEffectiveMergesRuntimeSettingsIntoMemoryCoreAndSidecar(t *testing.
 	if effective.MemoryCore.Pipelines.Extraction.ProviderID != "moonshot" || effective.MemoryCore.Pipelines.Extraction.Model != "memory-model" {
 		t.Fatalf("extraction pipeline = %#v", effective.MemoryCore.Pipelines.Extraction)
 	}
+	if effective.MemoryCore.Pipelines.Extraction.Thinking.Type != "enabled" {
+		t.Fatalf("extraction thinking = %#v", effective.MemoryCore.Pipelines.Extraction.Thinking)
+	}
 	if effective.MemoryCore.Pipelines.Prefilter.Model != "prefilter-model" {
 		t.Fatalf("prefilter pipeline = %#v", effective.MemoryCore.Pipelines.Prefilter)
 	}
@@ -167,6 +170,9 @@ func TestBuildEffectiveMergesRuntimeSettingsIntoMemoryCoreAndSidecar(t *testing.
 	}
 	if effective.MemoryCore.SemanticOps.Curation.LLM.Model != "curation-model" {
 		t.Fatalf("curation llm = %#v", effective.MemoryCore.SemanticOps.Curation.LLM)
+	}
+	if effective.MemoryCore.SemanticOps.Curation.LLM.Thinking.Type != "enabled" {
+		t.Fatalf("curation thinking = %#v", effective.MemoryCore.SemanticOps.Curation.LLM.Thinking)
 	}
 	for _, want := range []string{
 		`provider = "openai-compatible"`,

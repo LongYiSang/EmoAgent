@@ -584,7 +584,8 @@ func ensurePipelineOverrides(overrides *memconfig.ConfigOverrides) *memconfig.Pi
 func llmPipelineOverride(binding config.MemoryProviderBindingConfig) *memconfig.LLMPipelineOverrides {
 	providerID := strings.TrimSpace(binding.ProviderID)
 	model := strings.TrimSpace(binding.Model)
-	if providerID == "" && model == "" {
+	thinkingType := strings.TrimSpace(binding.Thinking.Type)
+	if providerID == "" && model == "" && thinkingType == "" {
 		return nil
 	}
 	override := memconfig.LLMPipelineOverrides{}
@@ -594,13 +595,17 @@ func llmPipelineOverride(binding config.MemoryProviderBindingConfig) *memconfig.
 	if model != "" {
 		override.Model = &model
 	}
+	if thinkingType != "" {
+		override.Thinking = &memconfig.ThinkingConfig{Type: thinkingType}
+	}
 	return &override
 }
 
 func curationLLMOverride(binding config.MemoryProviderBindingConfig) *memconfig.CurationLLMOverrides {
 	providerID := strings.TrimSpace(binding.ProviderID)
 	model := strings.TrimSpace(binding.Model)
-	if providerID == "" && model == "" {
+	thinkingType := strings.TrimSpace(binding.Thinking.Type)
+	if providerID == "" && model == "" && thinkingType == "" {
 		return nil
 	}
 	override := memconfig.CurationLLMOverrides{}
@@ -609,6 +614,9 @@ func curationLLMOverride(binding config.MemoryProviderBindingConfig) *memconfig.
 	}
 	if model != "" {
 		override.Model = &model
+	}
+	if thinkingType != "" {
+		override.Thinking = &memconfig.ThinkingConfig{Type: thinkingType}
 	}
 	return &override
 }

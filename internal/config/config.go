@@ -181,11 +181,12 @@ type MemoryProviderBindingsConfig struct {
 }
 
 type MemoryProviderBindingConfig struct {
-	Enabled    bool   `yaml:"enabled" json:"enabled"`
-	ProviderID string `yaml:"provider_id" json:"provider_id"`
-	Model      string `yaml:"model" json:"model"`
-	Dimensions int    `yaml:"dimensions" json:"dimensions"`
-	TopK       int    `yaml:"top_k" json:"top_k"`
+	Enabled    bool                           `yaml:"enabled" json:"enabled"`
+	ProviderID string                         `yaml:"provider_id" json:"provider_id"`
+	Model      string                         `yaml:"model" json:"model"`
+	Thinking   MemoryExtractionThinkingConfig `yaml:"thinking" json:"thinking"`
+	Dimensions int                            `yaml:"dimensions" json:"dimensions"`
+	TopK       int                            `yaml:"top_k" json:"top_k"`
 }
 
 type MemoryExtractionThinkingConfig struct {
