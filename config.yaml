@@ -57,17 +57,36 @@ llm_providers:
     preset_id: "moonshot"
     protocol: "openai_compatible"
     base_url: "https://api.moonshot.cn"
-    api_key_env: "OPENAI_API_KEY"
+    api_key_env: "MOONSHOT_API_KEY"
     model_discovery: "openai_models"
     enabled: true
-  - id: "anthropic"
-    name: "Anthropic"
-    preset_id: "anthropic"
-    protocol: "anthropic"
-    base_url: "https://api.anthropic.com"
-    api_key_env: "ANTHROPIC_API_KEY"
-    model_discovery: "anthropic_models"
-    enabled: false
+    capabilities: ["chat", "query_analysis"]
+  - id: "deepseek"
+    name: "DeepSeek"
+    preset_id: "deepseek"
+    protocol: "openai_compatible"
+    base_url: "https://api.deepseek.com"
+    api_key_env: "DEEPSEEK_API_KEY"
+    model_discovery: "openai_models"
+    enabled: true
+    capabilities: ["chat", "query_analysis"]
+  - id: "dashscope_embedding"
+    name: "DashScope Embedding"
+    preset_id: "qwen_dashscope_cn"
+    protocol: "openai_compatible"
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    api_key_env: "DASHSCOPE_API_KEY"
+    model_discovery: "manual"
+    enabled: true
+    capabilities: ["embedding"]
+  - id: "dashscope_rerank"
+    name: "DashScope Rerank"
+    protocol: "dashscope_vl"
+    base_url: "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+    api_key_env: "DASHSCOPE_API_KEY"
+    model_discovery: "manual"
+    enabled: true
+    capabilities: ["rerank"]
 
 agent_configs:
   - id: "default"
@@ -109,6 +128,7 @@ agent:
 
 memory:
   enabled: true
+  config_path: "./config/memorycore.yaml"
   manual_rules_path: "./config/memory_manual_rules.yaml"
   retrieval:
     enabled: true
@@ -175,20 +195,56 @@ memory:
       enabled: true
       directory: ./logs/memory_extraction_raw
 
-    provider:
-      kind: openai-compatible
-      id: memory_extractor
-      base_url: https://api.deepseek.com
-      api_key_env: MEMORYCORE_LLM_API_KEY
-      model: deepseek-v4-flash
-      timeout_seconds: 30
-      max_tokens: 4096
-      temperature: 0
-      thinking:
-        type: disabled
-
     repair_enabled: true
     audit_enabled: true
+
+  sidecar:
+    enabled: true
+    managed: true
+    adapter: trivium
+    host: "127.0.0.1"
+    port: 8765
+    url: "http://127.0.0.1:8765"
+    working_dir: "../EmoAgent-MemoryCore/sidecar"
+    config_path: "./data/runtime/sidecar.generated.toml"
+    startup_timeout_ms: 15000
+    shutdown_timeout_ms: 5000
+    fail_open: true
+    log_path: "./logs/sidecar.log"
+    trivium_dir: "./data/trivium"
+    embedding_cache_path: "./data/embedding_cache.sqlite3"
+
+  provider_bindings:
+    prefilter:
+      enabled: true
+      provider_id: "deepseek"
+      model: "deepseek-v4-flash"
+    extraction:
+      enabled: true
+      provider_id: "deepseek"
+      model: "deepseek-v4-flash"
+    extraction_repair:
+      enabled: true
+      provider_id: "deepseek"
+      model: "deepseek-v4-flash"
+    query_analysis:
+      enabled: true
+      provider_id: "deepseek"
+      model: "deepseek-v4-flash"
+    curation:
+      enabled: true
+      provider_id: "deepseek"
+      model: "deepseek-v4-flash"
+    embedding:
+      enabled: true
+      provider_id: "dashscope_embedding"
+      model: "text-embedding-v4"
+      dimensions: 1024
+    rerank:
+      enabled: true
+      provider_id: "dashscope_rerank"
+      model: "qwen3-vl-rerank"
+      top_k: 16
 
 
 work:

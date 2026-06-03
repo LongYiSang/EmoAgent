@@ -68,6 +68,11 @@ func (s *Supervisor) Start(ctx context.Context) (Status, error) {
 		return s.status, nil
 	}
 
+	resolvedSpec, err := resolveManagedPaths(s.spec)
+	if err != nil {
+		return s.degradeOrError(err)
+	}
+	s.spec = resolvedSpec
 	if err := s.writeGeneratedConfig(); err != nil {
 		return s.degradeOrError(fmt.Errorf("write sidecar generated config: %w", err))
 	}
@@ -102,6 +107,33 @@ func (s *Supervisor) Start(ctx context.Context) (Status, error) {
 	}
 	s.status.State = StateHealthy
 	return s.status, nil
+}
+
+func resolveManagedPaths(spec Spec) (Spec, error) {
+	var err error
+	if spec.WorkingDir, err = absolutePath(spec.WorkingDir); err != nil {
+		return Spec{}, fmt.Errorf("resolve sidecar working_dir: %w", err)
+	}
+	if spec.ConfigPath, err = absolutePath(spec.ConfigPath); err != nil {
+		return Spec{}, fmt.Errorf("resolve sidecar config_path: %w", err)
+	}
+	if spec.LogPath, err = absolutePath(spec.LogPath); err != nil {
+		return Spec{}, fmt.Errorf("resolve sidecar log_path: %w", err)
+	}
+	if spec.TriviumDir, err = absolutePath(spec.TriviumDir); err != nil {
+		return Spec{}, fmt.Errorf("resolve sidecar trivium_dir: %w", err)
+	}
+	if spec.EmbeddingCacheDBPath, err = absolutePath(spec.EmbeddingCacheDBPath); err != nil {
+		return Spec{}, fmt.Errorf("resolve sidecar embedding_cache_path: %w", err)
+	}
+	return spec, nil
+}
+
+func absolutePath(path string) (string, error) {
+	if path == "" || filepath.IsAbs(path) {
+		return path, nil
+	}
+	return filepath.Abs(path)
 }
 
 func (s *Supervisor) Stop(ctx context.Context) error {

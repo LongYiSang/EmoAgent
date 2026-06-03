@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +28,31 @@ func TestManagedCommandArgsUseLoopbackAndGeneratedConfig(t *testing.T) {
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("CommandArgs = %q, want %q", got, want)
+		}
+	}
+}
+
+func TestResolveManagedPathsMakesChildInputsAbsolute(t *testing.T) {
+	spec := DefaultSpec()
+	spec.ConfigPath = `.\data\runtime\sidecar.generated.toml`
+	spec.WorkingDir = `..\EmoAgent-MemoryCore\sidecar`
+	spec.LogPath = `.\logs\sidecar.log`
+	spec.TriviumDir = `.\data\trivium`
+	spec.EmbeddingCacheDBPath = `.\data\embedding_cache.sqlite3`
+
+	resolved, err := resolveManagedPaths(spec)
+	if err != nil {
+		t.Fatalf("resolveManagedPaths: %v", err)
+	}
+	for name, path := range map[string]string{
+		"config_path":          resolved.ConfigPath,
+		"working_dir":          resolved.WorkingDir,
+		"log_path":             resolved.LogPath,
+		"trivium_dir":          resolved.TriviumDir,
+		"embedding_cache_path": resolved.EmbeddingCacheDBPath,
+	} {
+		if !filepath.IsAbs(path) {
+			t.Fatalf("%s = %q, want absolute path", name, path)
 		}
 	}
 }

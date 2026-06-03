@@ -53,6 +53,9 @@ func TestRenderGeneratedConfigUsesEnvNamesWithoutSecretValues(t *testing.T) {
 	if strings.Contains(text, "secret-value") {
 		t.Fatalf("generated TOML leaked API key value:\n%s", text)
 	}
+	if strings.Contains(text, `instruct = ""`) {
+		t.Fatalf("generated TOML should not write empty rerank instruct:\n%s", text)
+	}
 }
 
 func TestSpecRejectsNonLoopbackHost(t *testing.T) {

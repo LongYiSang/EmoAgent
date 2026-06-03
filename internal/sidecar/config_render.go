@@ -36,7 +36,6 @@ func RenderConfig(spec Spec) ([]byte, error) {
 	writeProviderWithOptions(&b, spec.Rerank, providerWriteOptions{EndpointURL: true})
 	writeInt(&b, "timeout_seconds", 30)
 	writeInt(&b, "top_n", defaultInt(spec.Rerank.TopK, 16))
-	writeString(&b, "instruct", "")
 
 	writeSection(&b, "query_analysis")
 	writeProvider(&b, spec.QueryAnalysis)

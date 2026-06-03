@@ -1,10 +1,9 @@
-# Standalone fallback / overlay for MemoryCore.
+# MemoryCore fallback / overlay defaults.
 #
 # EmoAgent now treats config.yaml + Provider Center + runtime settings as the
 # primary configuration entrypoint. When EmoAgent opens MemoryCore it injects
 # its ProviderRegistry and runtime overrides into this file. Keep this YAML for
-# standalone MemoryCore runs and transition-time defaults; do not store plaintext
-# API keys here. Use api_key_env only.
+# MemoryCore structural defaults; do not store plaintext API keys here.
 schema_version: memorycore.config.v0.2
 enabled: true
 
@@ -14,23 +13,10 @@ core:
   auto_migrate: true
   enable_fts: true
 
-providers:
-  llm:
-    - id: llm_main
-      provider: deepseek
-      protocol: openai_compatible
-      base_url: https://api.deepseek.com
-      api_key_env: MEMORYCORE_LLM_API_KEY
-      enabled: true
-      timeout_ms: 30000
-      retry:
-        max_attempts: 5
-        backoff_ms: 20000
-
 pipelines:
   prefilter:
     enabled: true
-    provider_id: llm_main
+    provider_id: deepseek
     model: deepseek-v4-flash
     params:
       temperature: 0
@@ -44,7 +30,7 @@ pipelines:
 
   extraction:
     enabled: true
-    provider_id: llm_main
+    provider_id: deepseek
     model: deepseek-v4-flash
     mode: apply
     params:
@@ -66,7 +52,7 @@ pipelines:
 
   extraction_repair:
     enabled: true
-    provider_id: llm_main
+    provider_id: deepseek
     model: deepseek-v4-flash
     params:
       temperature: 0
@@ -82,7 +68,7 @@ pipelines:
     mode: sidecar
     runtime_mode: adaptive_safe
     fallback_mode: rule_only
-    provider_id: llm_main
+    provider_id: deepseek
     model: deepseek-v4-flash
     timeout_ms: 32000
     params:
@@ -123,9 +109,9 @@ semantic_ops:
     min_auto_apply_confidence: 0.88
     raw_log:
       enabled: true
-      directory: "D:/Dev/Project/Agent/EmoAgent/data/raw_log_curation"
+      directory: "./data/raw_log_curation"
     llm:
-      provider_id: llm_main
+      provider_id: deepseek
       model: deepseek-v4-flash
       max_tokens: 8192
       response_format: json_object
