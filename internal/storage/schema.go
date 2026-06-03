@@ -474,6 +474,24 @@ CREATE TABLE IF NOT EXISTS turn_idempotency (
 );
 `,
 	},
+	{
+		Version: 18,
+		SQL: `
+CREATE TABLE IF NOT EXISTS runtime_settings (
+    namespace  TEXT NOT NULL,
+    key        TEXT NOT NULL,
+    value_json TEXT NOT NULL,
+    source     TEXT NOT NULL DEFAULT 'ui',
+    updated_by TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY(namespace, key)
+);
+`,
+	},
+	{
+		Version: 19,
+		SQL:     `SELECT 1;`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.
@@ -529,6 +547,69 @@ func ApplyMigrations(db *sql.DB) error {
 func ApplySchemaRepairs(db *sql.DB) error {
 	if err := ensureApprovalRequestsSchema(db); err != nil {
 		return err
+	}
+	if err := ensureRuntimeSettingsSchema(db); err != nil {
+		return err
+	}
+	if err := ensureLLMProvidersSchema(db); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureLLMProvidersSchema(db *sql.DB) error {
+	var tableName string
+	err := db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='llm_providers'").Scan(&tableName)
+	if err == sql.ErrNoRows {
+		if _, err := db.Exec(`
+CREATE TABLE IF NOT EXISTS llm_providers (
+    id                      TEXT PRIMARY KEY,
+    name                    TEXT NOT NULL,
+    protocol                TEXT NOT NULL,
+    base_url                TEXT NOT NULL,
+    api_key_env             TEXT NOT NULL,
+    model_discovery         TEXT NOT NULL DEFAULT 'manual',
+    enabled                 INTEGER NOT NULL DEFAULT 1,
+    models_cache_json       TEXT NOT NULL DEFAULT '[]',
+    models_cache_updated_at TEXT,
+    created_at              TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at              TEXT NOT NULL DEFAULT (datetime('now')),
+    preset_id               TEXT NOT NULL DEFAULT '',
+    capabilities_json       TEXT NOT NULL DEFAULT '["chat"]'
+);
+`); err != nil {
+			return fmt.Errorf("ensure llm_providers table: %w", err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("check llm_providers table: %w", err)
+	}
+	columns, err := tableColumns(db, "llm_providers")
+	if err != nil {
+		return fmt.Errorf("read llm_providers columns: %w", err)
+	}
+	if !columns["capabilities_json"] {
+		if _, err := db.Exec(`ALTER TABLE llm_providers ADD COLUMN capabilities_json TEXT NOT NULL DEFAULT '["chat"]'`); err != nil {
+			return fmt.Errorf("add llm_providers.capabilities_json: %w", err)
+		}
+	}
+	return nil
+}
+
+func ensureRuntimeSettingsSchema(db *sql.DB) error {
+	if _, err := db.Exec(`
+CREATE TABLE IF NOT EXISTS runtime_settings (
+    namespace  TEXT NOT NULL,
+    key        TEXT NOT NULL,
+    value_json TEXT NOT NULL,
+    source     TEXT NOT NULL DEFAULT 'ui',
+    updated_by TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY(namespace, key)
+);
+`); err != nil {
+		return fmt.Errorf("ensure runtime_settings table: %w", err)
 	}
 	return nil
 }

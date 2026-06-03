@@ -19,17 +19,39 @@ type Host struct {
 	logger           *slog.Logger
 }
 
+type OpenConfigOptions struct {
+	ConfigPath       string
+	Overrides        memconfig.ConfigOverrides
+	ProviderRegistry memconfig.ProviderRegistry
+	Runtime          memconfig.RuntimeValidationOptions
+	Logger           *slog.Logger
+}
+
 func OpenFromConfig(ctx context.Context, path string, logger *slog.Logger) (*Host, error) {
+	return OpenFromConfigWithOptions(ctx, OpenConfigOptions{
+		ConfigPath: path,
+		Logger:     logger,
+	})
+}
+
+func OpenFromConfigWithOptions(ctx context.Context, opts OpenConfigOptions) (*Host, error) {
+	path := strings.TrimSpace(opts.ConfigPath)
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return nil, fmt.Errorf("memorycore config path is required")
 	}
 
 	cfg, err := memconfig.LoadEffective(memconfig.LoadEffectiveOptions{
-		ConfigPath: path,
+		ConfigPath:       path,
+		Overrides:        opts.Overrides,
+		ProviderRegistry: opts.ProviderRegistry,
+		Runtime:          opts.Runtime,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("load memorycore config %q: %w", path, err)
+	}
+	if err := ValidateLLMProviderBindings(cfg); err != nil {
+		return nil, fmt.Errorf("validate memorycore provider bindings: %w", err)
 	}
 	if !cfg.Enabled {
 		return nil, fmt.Errorf("memorycore config enabled must be true")
@@ -43,7 +65,7 @@ func OpenFromConfig(ctx context.Context, path string, logger *slog.Logger) (*Hos
 		return nil, fmt.Errorf("memorycore core.auto_migrate must be true")
 	}
 
-	return open(ctx, runtime.Options, runtime.RetrievalPolicy, logger, path)
+	return open(ctx, runtime.Options, runtime.RetrievalPolicy, opts.Logger, path)
 }
 
 func OpenWithOptions(ctx context.Context, opts memorycore.Options, logger *slog.Logger) (*Host, error) {

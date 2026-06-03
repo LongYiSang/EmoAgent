@@ -12,9 +12,11 @@ import (
 
 	"github.com/longyisang/emoagent/internal/apperrors"
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/configcenter"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/progress"
 	"github.com/longyisang/emoagent/internal/protocol"
+	sidecarruntime "github.com/longyisang/emoagent/internal/sidecar"
 	"github.com/longyisang/emoagent/internal/storage"
 )
 
@@ -27,6 +29,7 @@ type AdminApp interface {
 	DeleteLLMProvider(id string) error
 	RefreshLLMProviderModels(id string) ([]llm.ModelInfo, error)
 	GetLLMProviderModels(id string) ([]llm.ModelInfo, error)
+	GetLLMProviderEnvStatus(id string) (configcenter.ProviderEnvStatus, error)
 	ListAgentConfigs() ([]config.AgentConfig, error)
 	GetAgentConfig(id string) (*config.AgentConfig, error)
 	GetActiveAgentConfig() (*config.AgentConfig, bool, error)
@@ -51,6 +54,19 @@ type AdminApp interface {
 	ListMemorySegments(ctx context.Context, sessionID string) ([]storage.MemorySegment, error)
 	GetChatSettings() config.ChatConfig
 	UpdateChatSettings(settings config.ChatConfig) error
+	GetEffectiveConfig(ctx context.Context) (configcenter.EffectiveConfig, error)
+	ValidateConfig(ctx context.Context, req configcenter.ValidateRequest) (configcenter.ValidateResponse, error)
+	ListConfigIssues(ctx context.Context) ([]configcenter.ConfigIssue, error)
+	GetMemoryConfig(ctx context.Context) (configcenter.MemoryConfigResponse, error)
+	UpdateMemoryConfig(ctx context.Context, memory config.MemoryConfig) (configcenter.EffectiveConfig, error)
+	GetMemoryFeatures(ctx context.Context) (configcenter.MemoryConfigResponse, error)
+	UpdateMemoryFeatures(ctx context.Context, memory config.MemoryConfig) (configcenter.EffectiveConfig, error)
+	GetSidecarStatus(ctx context.Context) (sidecarruntime.Status, error)
+	StartSidecar(ctx context.Context) (sidecarruntime.Status, error)
+	StopSidecar(ctx context.Context) (sidecarruntime.Status, error)
+	RestartSidecar(ctx context.Context) (sidecarruntime.Status, error)
+	GetSidecarGeneratedConfig(ctx context.Context) (string, error)
+	GetSidecarLogs(ctx context.Context, maxBytes int) (string, error)
 }
 
 type APIHandler struct {
@@ -147,6 +163,18 @@ type MemoryExtractionQueueResponse struct {
 	Jobs          []storage.MemoryExtractionJob `json:"jobs"`
 }
 
+type memoryConfigRequest struct {
+	Memory config.MemoryConfig `json:"memory"`
+}
+
+type sidecarGeneratedConfigResponse struct {
+	Config string `json:"config"`
+}
+
+type sidecarLogsResponse struct {
+	Logs string `json:"logs"`
+}
+
 func NewAPIHandler(app AdminApp, logger *slog.Logger) *APIHandler {
 	return &APIHandler{app: app, logger: logger}
 }
@@ -225,6 +253,193 @@ func (h *APIHandler) HandleGetLLMProviderModels(w http.ResponseWriter, r *http.R
 		return
 	}
 	writeJSON(w, http.StatusOK, providerModelsResponse{Models: models})
+}
+
+func (h *APIHandler) HandleGetLLMProviderEnvStatus(w http.ResponseWriter, r *http.Request) {
+	status, err := h.app.GetLLMProviderEnvStatus(r.PathValue("id"))
+	if err != nil {
+		h.writeLLMProviderError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (h *APIHandler) HandleTestProvider(w http.ResponseWriter, r *http.Request) {
+	provider, err := h.app.GetLLMProvider(r.PathValue("id"))
+	if err != nil {
+		h.writeLLMProviderError(w, err)
+		return
+	}
+	status, err := h.app.GetLLMProviderEnvStatus(r.PathValue("id"))
+	if err != nil {
+		h.writeLLMProviderError(w, err)
+		return
+	}
+	ok := !provider.Enabled || status.APIKeyEnv == "" || status.Present
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":          ok,
+		"provider_id": provider.ID,
+		"env":         status,
+	})
+}
+
+func (h *APIHandler) HandleGetConfigEffective(w http.ResponseWriter, r *http.Request) {
+	effective, err := h.app.GetEffectiveConfig(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to build effective config")
+		return
+	}
+	writeJSON(w, http.StatusOK, effective)
+}
+
+func (h *APIHandler) HandleValidateConfig(w http.ResponseWriter, r *http.Request) {
+	var req configcenter.ValidateRequest
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := readJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON")
+			return
+		}
+	}
+	resp, err := h.app.ValidateConfig(r.Context(), req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to validate config")
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *APIHandler) HandleListConfigIssues(w http.ResponseWriter, r *http.Request) {
+	issues, err := h.app.ListConfigIssues(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list config issues")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string][]configcenter.ConfigIssue{"issues": issues})
+}
+
+func (h *APIHandler) HandleGetMemoryConfig(w http.ResponseWriter, r *http.Request) {
+	resp, err := h.app.GetMemoryConfig(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get memory config")
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *APIHandler) HandleUpdateMemoryConfig(w http.ResponseWriter, r *http.Request) {
+	memory, ok := h.readMemoryConfigRequest(w, r)
+	if !ok {
+		return
+	}
+	effective, err := h.app.UpdateMemoryConfig(r.Context(), memory)
+	if err != nil {
+		h.writeConfigMutationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, effective)
+}
+
+func (h *APIHandler) HandleGetMemoryFeatures(w http.ResponseWriter, r *http.Request) {
+	resp, err := h.app.GetMemoryFeatures(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get memory features")
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *APIHandler) HandleUpdateMemoryFeatures(w http.ResponseWriter, r *http.Request) {
+	memory, ok := h.readMemoryConfigRequest(w, r)
+	if !ok {
+		return
+	}
+	effective, err := h.app.UpdateMemoryFeatures(r.Context(), memory)
+	if err != nil {
+		h.writeConfigMutationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, effective)
+}
+
+func (h *APIHandler) HandleGetSidecarStatus(w http.ResponseWriter, r *http.Request) {
+	status, err := h.app.GetSidecarStatus(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get sidecar status")
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (h *APIHandler) HandleStartSidecar(w http.ResponseWriter, r *http.Request) {
+	status, err := h.app.StartSidecar(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (h *APIHandler) HandleStopSidecar(w http.ResponseWriter, r *http.Request) {
+	status, err := h.app.StopSidecar(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to stop sidecar")
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (h *APIHandler) HandleRestartSidecar(w http.ResponseWriter, r *http.Request) {
+	status, err := h.app.RestartSidecar(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (h *APIHandler) HandleGetSidecarGeneratedConfig(w http.ResponseWriter, r *http.Request) {
+	body, err := h.app.GetSidecarGeneratedConfig(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to render sidecar generated config")
+		return
+	}
+	writeJSON(w, http.StatusOK, sidecarGeneratedConfigResponse{Config: body})
+}
+
+func (h *APIHandler) HandleGetSidecarLogs(w http.ResponseWriter, r *http.Request) {
+	maxBytes := 65536
+	if raw := strings.TrimSpace(r.URL.Query().Get("max_bytes")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			maxBytes = n
+		}
+	}
+	logs, err := h.app.GetSidecarLogs(r.Context(), maxBytes)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read sidecar logs")
+		return
+	}
+	writeJSON(w, http.StatusOK, sidecarLogsResponse{Logs: logs})
+}
+
+func (h *APIHandler) readMemoryConfigRequest(w http.ResponseWriter, r *http.Request) (config.MemoryConfig, bool) {
+	var req memoryConfigRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return config.MemoryConfig{}, false
+	}
+	return req.Memory, true
+}
+
+func (h *APIHandler) writeConfigMutationError(w http.ResponseWriter, err error) {
+	var validation *configcenter.ValidationError
+	if errors.As(err, &validation) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":  err.Error(),
+			"issues": validation.Issues,
+		})
+		return
+	}
+	writeError(w, http.StatusInternalServerError, "failed to update config")
 }
 
 func (h *APIHandler) HandleListAgentConfigs(w http.ResponseWriter, r *http.Request) {
@@ -762,6 +977,7 @@ func normalizeProvider(provider *config.LLMProvider) {
 	if provider.ModelDiscovery == "" {
 		provider.ModelDiscovery = "manual"
 	}
+	provider.Capabilities = config.NormalizeProviderCapabilities(provider.Capabilities)
 }
 
 func cloneProgressPhrases(src map[string][]string) map[string][]string {

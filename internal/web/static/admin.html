@@ -198,6 +198,12 @@
       transition: all .15s var(--ease-out);
     }
     .model-pill:hover { border-color: var(--peach); background: var(--peach-soft); }
+    .code {
+      margin: 0; padding: 14px; max-height: 560px; overflow: auto;
+      border: 1px solid var(--hair); border-radius: var(--r-md);
+      background: rgba(255,255,255,.78); color: var(--ink);
+      font: 12px/1.6 var(--font-mono); white-space: pre-wrap;
+    }
 
     /* ── Bubble Wall (Quirks) ── */
     .bubble-wall {
@@ -298,6 +304,13 @@
         <button class="tab active" data-tab="providers">Providers</button>
         <button class="tab" data-tab="agents">Agent Configs</button>
         <button class="tab" data-tab="personas">Personas</button>
+        <button class="tab" data-tab="memory-core">Memory Core</button>
+        <button class="tab" data-tab="pipelines">Pipelines</button>
+        <button class="tab" data-tab="retrieval-mirror">Retrieval/Mirror</button>
+        <button class="tab" data-tab="sidecar">Sidecar</button>
+        <button class="tab" data-tab="privacy-forget">Privacy/Forget</button>
+        <button class="tab" data-tab="retention">Retention</button>
+        <button class="tab" data-tab="diagnostics">Diagnostics</button>
       </nav>
       <div class="admin-status">
         <div class="status-chip"><span class="dot"></span><span id="status">Unexpected non-whitespace character after JSON at position 4 (line 1 column 5)</span></div>
@@ -339,6 +352,15 @@
                   <div class="field"><label for="p-base-url">Base URL</label><input class="mono" id="p-base-url" autocomplete="off"></div>
                   <div class="field"><label for="p-api-key-env">API Key Env</label><input class="mono" id="p-api-key-env" autocomplete="off"></div>
                   <label class="checkline"><input type="checkbox" id="p-enabled"> Enabled</label>
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend>Capabilities</legend>
+                <div class="grid">
+                  <label class="checkline"><input type="checkbox" id="p-cap-chat"> Chat</label>
+                  <label class="checkline"><input type="checkbox" id="p-cap-embedding"> Embedding</label>
+                  <label class="checkline"><input type="checkbox" id="p-cap-rerank"> Rerank</label>
+                  <div class="field"><label>Environment</label><div><span class="badge" id="provider-env-status">not checked</span></div></div>
                 </div>
               </fieldset>
               <div class="form-actions">
@@ -576,6 +598,44 @@
           </div>
         </section>
       </div>
+
+      <div class="admin-page" id="tab-memory-core">
+        <aside class="list-pane">
+          <div class="pane-head"><div><h2>Memory Core</h2><div class="hint">Effective runtime view</div></div></div>
+          <div class="items"><button class="item active" type="button"><div class="item-title"><span>Core</span><span class="badge" id="memory-core-enabled">unknown</span></div><div class="item-meta" id="memory-core-path">config path</div></button></div>
+        </aside>
+        <section class="detail-pane"><div class="section anim-up"><div class="hero"><div><h2>Memory Core</h2><div class="meta">Seed + runtime + MemoryCore effective config</div></div><button class="btn primary" id="save-memory-core" type="button">Save</button></div><div class="grid"><label class="check"><input type="checkbox" id="memory-enabled"> Enabled</label><div class="field"><label for="memory-config-path">Config path</label><input id="memory-config-path" class="mono"></div><div class="field"><label for="memory-manual-rules">Manual rules path</label><input id="memory-manual-rules" class="mono"></div></div><pre class="code" id="memory-core-json">{}</pre></div></section>
+      </div>
+
+      <div class="admin-page" id="tab-pipelines">
+        <aside class="list-pane"><div class="pane-head"><div><h2>Pipelines</h2><div class="hint">Provider bindings</div></div></div><div class="items" id="pipeline-list"></div></aside>
+        <section class="detail-pane"><div class="section anim-up"><div class="hero"><div><h2>Pipelines</h2><div class="meta">Provider/model bindings are selected by provider_id + model</div></div><button class="btn primary" id="save-pipelines" type="button">Save</button></div><div class="grid" id="pipeline-binding-form"></div><pre class="code" id="pipelines-json">{}</pre></div></section>
+      </div>
+
+      <div class="admin-page" id="tab-retrieval-mirror">
+        <aside class="list-pane"><div class="pane-head"><div><h2>Retrieval/Mirror</h2><div class="hint">FTS and mirror dependencies</div></div></div><div class="items" id="retrieval-mirror-list"></div></aside>
+        <section class="detail-pane"><div class="section anim-up"><div class="hero"><div><h2>Retrieval/Mirror</h2><div class="meta">SQLite remains authority; mirror is degradable</div></div><button class="btn primary" id="save-retrieval" type="button">Save</button></div><div class="grid"><label class="check"><input type="checkbox" id="retrieval-enabled"> Retrieval</label><label class="check"><input type="checkbox" id="retrieval-inject"> Inject prompt</label><label class="check"><input type="checkbox" id="retrieval-fts"> Use FTS</label><label class="check"><input type="checkbox" id="retrieval-mirror"> Use mirror</label><div class="field"><label for="retrieval-final-count">Final count</label><input id="retrieval-final-count" type="number" min="1"></div><div class="field"><label for="retrieval-budget">Context budget</label><input id="retrieval-budget" type="number" min="1"></div></div><pre class="code" id="retrieval-mirror-json">{}</pre></div></section>
+      </div>
+
+      <div class="admin-page" id="tab-sidecar">
+        <aside class="list-pane"><div class="pane-head"><div><h2>Sidecar</h2><div class="hint">Loopback process status</div></div></div><div class="actions"><button class="btn primary" id="sidecar-start" type="button">Start</button><button class="btn ghost" id="sidecar-stop" type="button">Stop</button><button class="btn ghost" id="sidecar-restart" type="button">Restart</button></div><div class="items"><button class="item active" type="button"><div class="item-title"><span>Status</span><span class="badge" id="sidecar-health">unknown</span></div><div class="item-meta" id="sidecar-url">not configured</div></button></div></aside>
+        <section class="detail-pane"><div class="section anim-up"><div class="hero"><div><h2>Generated TOML</h2><div class="meta">Preview only; API keys stay in environment variables</div></div><div class="actions"><button class="btn primary" id="save-sidecar-config" type="button">Save</button><button class="btn ghost" id="sidecar-reload" type="button">Reload</button></div></div><div class="grid"><label class="check"><input type="checkbox" id="sidecar-enabled-input"> Enabled</label><label class="check"><input type="checkbox" id="sidecar-managed-input"> Managed</label><div class="field"><label for="sidecar-adapter-input">Adapter</label><input id="sidecar-adapter-input"></div><div class="field"><label for="sidecar-host-input">Host</label><input id="sidecar-host-input"></div><div class="field"><label for="sidecar-port-input">Port</label><input id="sidecar-port-input" type="number" min="1" max="65535"></div><div class="field"><label for="sidecar-url-input">URL</label><input id="sidecar-url-input" class="mono"></div><div class="field"><label for="sidecar-working-dir-input">Working dir</label><input id="sidecar-working-dir-input" class="mono"></div><div class="field"><label for="sidecar-config-path-input">Generated config path</label><input id="sidecar-config-path-input" class="mono"></div></div><pre class="code" id="sidecar-runtime-json">{}</pre><pre class="code" id="sidecar-generated-config">{}</pre><pre class="code" id="sidecar-logs"></pre></div></section>
+      </div>
+
+      <div class="admin-page" id="tab-privacy-forget">
+        <aside class="list-pane"><div class="pane-head"><div><h2>Privacy/Forget</h2><div class="hint">Forget safety</div></div></div><div class="items" id="privacy-forget-list"></div></aside>
+        <section class="detail-pane"><div class="section anim-up"><div class="hero"><div><h2>Privacy/Forget</h2><div class="meta">Preview and execution switches</div></div><button class="btn primary" id="save-privacy-forget" type="button">Save</button></div><div class="field"><label for="privacy-forget-editor">Privacy / Agent Affect JSON</label><textarea id="privacy-forget-editor" class="mono"></textarea></div><pre class="code" id="privacy-forget-json">{}</pre></div></section>
+      </div>
+
+      <div class="admin-page" id="tab-retention">
+        <aside class="list-pane"><div class="pane-head"><div><h2>Retention</h2><div class="hint">Lifecycle jobs</div></div></div><div class="items" id="retention-list"></div></aside>
+        <section class="detail-pane"><div class="section anim-up"><div class="hero"><div><h2>Retention</h2><div class="meta">Lifecycle jobs</div></div><button class="btn primary" id="save-retention" type="button">Save</button></div><div class="field"><label for="retention-editor">Retention JSON</label><textarea id="retention-editor" class="mono"></textarea></div><pre class="code" id="retention-json">{}</pre></div></section>
+      </div>
+
+      <div class="admin-page" id="tab-diagnostics">
+        <aside class="list-pane"><div class="pane-head"><div><h2>Diagnostics</h2><div class="hint">Issues and effective JSON</div></div></div><div class="items" id="config-issues-list"></div></aside>
+        <section class="detail-pane"><div class="section anim-up"><div class="hero"><div><h2>Effective Config</h2><div class="meta">Validation issues, disabled reasons, provider env status</div></div><button class="btn ghost" id="reload-effective-config" type="button">Reload</button></div><pre class="code" id="effective-config-json">{}</pre></div></section>
+      </div>
     </div>
   </div>
 </div>
@@ -602,6 +662,9 @@
     selectedAgent: '',
     personas: [],
     selectedPersona: '',
+    effectiveConfig: null,
+    sidecarStatus: null,
+    configIssues: [],
   };
   const slotParamFields = {
     max_tokens: 'max',
@@ -617,6 +680,15 @@
     extra: 'extra',
   };
   const allSlotParams = Object.keys(slotParamFields);
+  const memoryPipelineBindings = [
+    ['prefilter', 'Prefilter'],
+    ['extraction', 'Extraction'],
+    ['extraction_repair', 'Extraction repair'],
+    ['query_analysis', 'Query analysis'],
+    ['curation', 'Curation'],
+    ['embedding', 'Embedding'],
+    ['rerank', 'Rerank'],
+  ];
 
   function status(text) { $('status').textContent = text; }
   function esc(v) {
@@ -647,6 +719,12 @@
       const isTarget = p.id === `tab-${name}`;
       p.classList.toggle('active', isTarget);
     });
+    if (['memory-core','pipelines','retrieval-mirror','sidecar','privacy-forget','retention','diagnostics'].includes(name)) {
+      loadEffectiveConfig().catch(showError);
+    }
+    if (name === 'sidecar') {
+      loadSidecarStatus().catch(showError);
+    }
   }
 
   // ── Provider helpers ──
@@ -666,6 +744,23 @@
   }
   function providerByID(id) {
     return state.providers.find(p => p.id === id) || null;
+  }
+  function providerCapabilities(provider) {
+    const caps = provider && Array.isArray(provider.capabilities) && provider.capabilities.length ? provider.capabilities : ['chat'];
+    return new Set(caps);
+  }
+  function hydrateProviderCapabilities(provider) {
+    const caps = providerCapabilities(provider);
+    $('p-cap-chat').checked = caps.has('chat');
+    $('p-cap-embedding').checked = caps.has('embedding');
+    $('p-cap-rerank').checked = caps.has('rerank');
+  }
+  function providerCapabilityPayload() {
+    const out = [];
+    if ($('p-cap-chat').checked) out.push('chat');
+    if ($('p-cap-embedding').checked) out.push('embedding');
+    if ($('p-cap-rerank').checked) out.push('rerank');
+    return out.length ? out : ['chat'];
   }
   function presetForProvider(provider) {
     return provider?.preset_id ? presetByID(provider.preset_id) : null;
@@ -834,6 +929,9 @@
     $('p-name').value = ''; $('p-protocol').value = 'openai_compatible';
     $('p-discovery').value = 'manual'; $('p-base-url').value = '';
     $('p-api-key-env').value = ''; $('p-enabled').checked = true;
+    hydrateProviderCapabilities({capabilities:['chat']});
+    $('provider-env-status').textContent = 'not checked';
+    $('provider-env-status').className = 'badge';
     $('provider-title').textContent = 'New Provider';
     $('provider-meta').textContent = 'openai_compatible / manual';
     $('provider-models').innerHTML = '';
@@ -853,19 +951,22 @@
     $('p-base-url').value = p.base_url || '';
     $('p-api-key-env').value = p.api_key_env || '';
     $('p-enabled').checked = !!p.enabled;
+    hydrateProviderCapabilities(p);
     $('provider-title').textContent = p.name || p.id || 'Provider';
     $('provider-meta').textContent = `${p.preset_id || 'custom'} / ${p.protocol || ''} / ${p.model_discovery || 'manual'}`;
     $('delete-provider').disabled = false;
     $('refresh-models').disabled = !id;
     renderProviderList();
     await loadProviderModels(id);
+    await loadProviderEnvStatus(id);
   }
 
   function providerPayload() {
     return { id: text($('p-id').value), name: text($('p-name').value), protocol: text($('p-protocol').value),
       preset_id: text($('p-preset').value),
       base_url: text($('p-base-url').value), api_key_env: text($('p-api-key-env').value),
-      model_discovery: text($('p-discovery').value) || 'manual', enabled: $('p-enabled').checked };
+      model_discovery: text($('p-discovery').value) || 'manual', enabled: $('p-enabled').checked,
+      capabilities: providerCapabilityPayload() };
   }
 
   function applyProviderPreset() {
@@ -877,6 +978,7 @@
     $('p-discovery').value = preset.model_discovery || 'manual';
     $('p-base-url').value = preset.base_url || '';
     $('p-api-key-env').value = preset.api_key_env || '';
+    hydrateProviderCapabilities({capabilities:['chat']});
     $('provider-title').textContent = $('p-name').value || $('p-id').value || 'Provider';
     $('provider-meta').textContent = `${preset.id || 'custom'} / ${preset.protocol || ''} / ${preset.model_discovery || 'manual'}`;
   }
@@ -901,6 +1003,28 @@
     const data = await request(`/api/llm-providers/${encodeURIComponent(id)}/models`);
     state.providerModels[id] = data.models || [];
     renderModels(id); renderModelOptions();
+  }
+  async function loadProviderEnvStatus(id) {
+    if (!id) return;
+    const badge = $('provider-env-status');
+    badge.textContent = 'checking...';
+    badge.className = 'badge';
+    try {
+      const env = await request(`/api/llm-providers/${encodeURIComponent(id)}/env-status`);
+      if (!env.api_key_env) {
+        badge.textContent = 'env not configured';
+        badge.className = 'badge warn';
+      } else if (env.present) {
+        badge.textContent = `${env.api_key_env}: present`;
+        badge.className = 'badge ok';
+      } else {
+        badge.textContent = `${env.api_key_env}: missing`;
+        badge.className = 'badge warn';
+      }
+    } catch (error) {
+      badge.textContent = 'env check failed';
+      badge.className = 'badge warn';
+    }
   }
   function renderModels(id) {
     const models = state.providerModels[id] || [];
@@ -1161,6 +1285,115 @@
     else clearPersona(); status('Ready');
   }
 
+  function pretty(value) {
+    return JSON.stringify(value ?? {}, null, 2);
+  }
+  function memoryConfigCopy() {
+    return JSON.parse(JSON.stringify((state.effectiveConfig && state.effectiveConfig.memory) || {}));
+  }
+  function setChecked(id, value) { const el = $(id); if (el) el.checked = !!value; }
+  function setValue(id, value) { const el = $(id); if (el) el.value = value ?? ''; }
+  function readJSONEditor(id, fallback) {
+    const raw = $(id).value.trim();
+    if (!raw) return fallback;
+    return JSON.parse(raw);
+  }
+  function renderPipelineBindingForm(memory) {
+    const bindings = memory.provider_bindings || {};
+    $('pipeline-binding-form').innerHTML = memoryPipelineBindings.map(([key, label]) => {
+      const binding = bindings[key] || {};
+      return `<div class="field"><label for="mem-${key}-provider">${esc(label)} provider_id</label><input id="mem-${key}-provider" class="mono" value="${esc(binding.provider_id || '')}"></div>
+        <div class="field"><label for="mem-${key}-model">${esc(label)} model</label><input id="mem-${key}-model" class="mono" value="${esc(binding.model || '')}"></div>`;
+    }).join('');
+    for (const [key] of memoryPipelineBindings) {
+      const binding = bindings[key] || {};
+      if (key === 'embedding') {
+        $('pipeline-binding-form').insertAdjacentHTML('beforeend', `<div class="field"><label for="mem-embedding-dimensions">Embedding dimensions</label><input id="mem-embedding-dimensions" type="number" min="1" value="${esc(binding.dimensions || '')}"></div>`);
+      }
+      if (key === 'rerank') {
+        $('pipeline-binding-form').insertAdjacentHTML('beforeend', `<div class="field"><label for="mem-rerank-topk">Rerank top_k</label><input id="mem-rerank-topk" type="number" min="1" value="${esc(binding.top_k || '')}"></div>`);
+      }
+    }
+  }
+  async function saveMemoryConfig(memory, label) {
+    const effective = await request('/api/memory/config', {method: 'PUT', body: {memory}});
+    state.effectiveConfig = effective;
+    state.configIssues = effective.issues || [];
+    renderEffectiveConfig();
+    status(label || 'Memory config saved');
+  }
+  function renderIssues(issues) {
+    const list = $('config-issues-list');
+    list.innerHTML = issues.length ? issues.map(issue => `
+      <button class="item" type="button">
+        <div class="item-title"><span>${esc(issue.path || 'config')}</span><span class="badge ${issue.severity === 'error' ? 'warn' : ''}">${esc(issue.severity || 'info')}</span></div>
+        <div class="item-meta">${esc(issue.message || '')}</div>
+      </button>
+    `).join('') : '<div class="hint" style="padding:8px">No config issues</div>';
+  }
+  function renderEffectiveConfig() {
+    const effective = state.effectiveConfig || {};
+    const memoryCore = effective.memory_core || {};
+    const memory = effective.memory || {};
+    $('memory-core-enabled').textContent = memory.enabled ? 'enabled' : 'disabled';
+    $('memory-core-enabled').className = `badge ${memory.enabled ? 'ok' : 'warn'}`;
+    $('memory-core-path').textContent = memory.config_path || 'no config path';
+    setChecked('memory-enabled', memory.enabled);
+    setValue('memory-config-path', memory.config_path);
+    setValue('memory-manual-rules', memory.manual_rules_path);
+    $('memory-core-json').textContent = pretty({memory, memory_core: memoryCore});
+    renderPipelineBindingForm(memory);
+    $('pipelines-json').textContent = pretty(memoryCore.pipelines || {});
+    const retrieval = memory.retrieval || {};
+    setChecked('retrieval-enabled', retrieval.enabled);
+    setChecked('retrieval-inject', retrieval.inject_prompt);
+    setChecked('retrieval-fts', retrieval.use_fts);
+    setChecked('retrieval-mirror', retrieval.use_mirror);
+    setValue('retrieval-final-count', retrieval.final_memory_count);
+    setValue('retrieval-budget', retrieval.context_budget_tokens);
+    $('retrieval-mirror-json').textContent = pretty({retrieval: memoryCore.retrieval, mirror: memoryCore.mirror});
+    const sidecar = memoryCore.sidecar || {};
+    const memorySidecar = memory.sidecar || {};
+    setChecked('sidecar-enabled-input', memorySidecar.enabled);
+    setChecked('sidecar-managed-input', memorySidecar.managed);
+    setValue('sidecar-adapter-input', memorySidecar.adapter);
+    setValue('sidecar-host-input', memorySidecar.host);
+    setValue('sidecar-port-input', memorySidecar.port);
+    setValue('sidecar-url-input', memorySidecar.url);
+    setValue('sidecar-working-dir-input', memorySidecar.working_dir);
+    setValue('sidecar-config-path-input', memorySidecar.config_path);
+    const status = state.sidecarStatus || {};
+    $('sidecar-health').textContent = status.state || (sidecar.enabled ? 'configured' : 'disabled');
+    $('sidecar-health').className = `badge ${(status.state === 'healthy' || sidecar.enabled) ? 'ok' : 'warn'}`;
+    $('sidecar-url').textContent = status.url || sidecar.url || 'not configured';
+    $('sidecar-runtime-json').textContent = pretty({status, effective: sidecar});
+    $('sidecar-generated-config').textContent = effective.sidecar_generated_config || '';
+    $('privacy-forget-json').textContent = pretty({forgetting_privacy: memoryCore.forgetting_privacy || {}, agent_affect: memoryCore.agent_affect || {}});
+    setValue('privacy-forget-editor', pretty({forgetting_privacy: memory.forgetting_privacy || memoryCore.forgetting_privacy || {}, agent_affect: memory.agent_affect || memoryCore.agent_affect || {}}));
+    $('retention-json').textContent = pretty(memoryCore.retention || {});
+    setValue('retention-editor', pretty(memory.retention || memoryCore.retention || {}));
+    $('effective-config-json').textContent = pretty(effective);
+    renderIssues(effective.issues || []);
+  }
+  async function loadSidecarStatus() {
+    const statusData = await request('/api/sidecar/status');
+    const configData = await request('/api/sidecar/generated-config');
+    const logsData = await request('/api/sidecar/logs?max_bytes=20000');
+    state.sidecarStatus = statusData;
+    $('sidecar-runtime-json').textContent = pretty({status: statusData});
+    $('sidecar-generated-config').textContent = configData.config || '';
+    $('sidecar-logs').textContent = logsData.logs || '';
+    renderEffectiveConfig();
+  }
+  async function loadEffectiveConfig() {
+    status('Loading effective config...');
+    const effective = await request('/api/config/effective');
+    state.effectiveConfig = effective;
+    state.configIssues = effective.issues || [];
+    renderEffectiveConfig();
+    status('Ready');
+  }
+
   // ── Event Listeners ──
   tabs.forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
   $('provider-search').addEventListener('input', renderProviderList);
@@ -1172,6 +1405,72 @@
   $('reload-providers').addEventListener('click', () => loadProviders().catch(showError));
   $('reload-agents').addEventListener('click', () => loadAgents().catch(showError));
   $('reload-personas').addEventListener('click', () => loadPersonas().catch(showError));
+  $('reload-effective-config').addEventListener('click', () => loadEffectiveConfig().catch(showError));
+  $('sidecar-reload').addEventListener('click', () => loadSidecarStatus().catch(showError));
+  $('sidecar-start').addEventListener('click', async () => { try { state.sidecarStatus = await request('/api/sidecar/start', {method:'POST'}); await loadSidecarStatus(); status('Sidecar started'); } catch (error) { showError(error); } });
+  $('sidecar-stop').addEventListener('click', async () => { try { state.sidecarStatus = await request('/api/sidecar/stop', {method:'POST'}); await loadSidecarStatus(); status('Sidecar stopped'); } catch (error) { showError(error); } });
+  $('sidecar-restart').addEventListener('click', async () => { try { state.sidecarStatus = await request('/api/sidecar/restart', {method:'POST'}); await loadSidecarStatus(); status('Sidecar restarted'); } catch (error) { showError(error); } });
+  $('save-memory-core').addEventListener('click', async () => { try {
+    const memory = memoryConfigCopy();
+    memory.enabled = $('memory-enabled').checked;
+    memory.config_path = text($('memory-config-path').value);
+    memory.manual_rules_path = text($('memory-manual-rules').value);
+    await saveMemoryConfig(memory, 'Memory core saved');
+  } catch (error) { showError(error); } });
+  $('save-pipelines').addEventListener('click', async () => { try {
+    const memory = memoryConfigCopy();
+    memory.provider_bindings = memory.provider_bindings || {};
+    for (const [key] of memoryPipelineBindings) {
+      const providerID = text($(`mem-${key}-provider`).value);
+      const model = text($(`mem-${key}-model`).value);
+      memory.provider_bindings[key] = {...(memory.provider_bindings[key] || {}), provider_id: providerID, model};
+    }
+    const dims = intOrUndefined($('mem-embedding-dimensions')?.value);
+    if (dims !== undefined) memory.provider_bindings.embedding = {...(memory.provider_bindings.embedding || {}), dimensions: dims, enabled: true};
+    const topK = intOrUndefined($('mem-rerank-topk')?.value);
+    if (topK !== undefined) memory.provider_bindings.rerank = {...(memory.provider_bindings.rerank || {}), top_k: topK, enabled: true};
+    await saveMemoryConfig(memory, 'Pipeline bindings saved');
+  } catch (error) { showError(error); } });
+  $('save-retrieval').addEventListener('click', async () => { try {
+    const memory = memoryConfigCopy();
+    memory.retrieval = memory.retrieval || {};
+    Object.assign(memory.retrieval, {
+      enabled: $('retrieval-enabled').checked,
+      inject_prompt: $('retrieval-inject').checked,
+      use_fts: $('retrieval-fts').checked,
+      use_mirror: $('retrieval-mirror').checked,
+      final_memory_count: intOrUndefined($('retrieval-final-count').value) || 1,
+      context_budget_tokens: intOrUndefined($('retrieval-budget').value) || 1,
+    });
+    await saveMemoryConfig(memory, 'Retrieval saved');
+  } catch (error) { showError(error); } });
+  $('save-sidecar-config').addEventListener('click', async () => { try {
+    const memory = memoryConfigCopy();
+    memory.sidecar = memory.sidecar || {};
+    Object.assign(memory.sidecar, {
+      enabled: $('sidecar-enabled-input').checked,
+      managed: $('sidecar-managed-input').checked,
+      adapter: text($('sidecar-adapter-input').value),
+      host: text($('sidecar-host-input').value),
+      port: intOrUndefined($('sidecar-port-input').value) || 8765,
+      url: text($('sidecar-url-input').value),
+      working_dir: text($('sidecar-working-dir-input').value),
+      config_path: text($('sidecar-config-path-input').value),
+    });
+    await saveMemoryConfig(memory, 'Sidecar config saved');
+  } catch (error) { showError(error); } });
+  $('save-privacy-forget').addEventListener('click', async () => { try {
+    const memory = memoryConfigCopy();
+    const payload = readJSONEditor('privacy-forget-editor', {});
+    memory.forgetting_privacy = payload.forgetting_privacy || payload;
+    if (payload.agent_affect) memory.agent_affect = payload.agent_affect;
+    await saveMemoryConfig(memory, 'Privacy/forget saved');
+  } catch (error) { showError(error); } });
+  $('save-retention').addEventListener('click', async () => { try {
+    const memory = memoryConfigCopy();
+    memory.retention = readJSONEditor('retention-editor', {});
+    await saveMemoryConfig(memory, 'Retention saved');
+  } catch (error) { showError(error); } });
   $('p-preset').addEventListener('change', applyProviderPreset);
 
   $('provider-form').addEventListener('submit', async e => {

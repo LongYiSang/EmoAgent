@@ -17,9 +17,11 @@ import (
 	"github.com/longyisang/emoagent/internal/apperrors"
 	"github.com/longyisang/emoagent/internal/chat"
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/configcenter"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/plugin"
 	"github.com/longyisang/emoagent/internal/protocol"
+	sidecarruntime "github.com/longyisang/emoagent/internal/sidecar"
 	"github.com/longyisang/emoagent/internal/storage"
 	"github.com/longyisang/emoagent/internal/tool"
 	"github.com/longyisang/emoagent/internal/web"
@@ -54,6 +56,9 @@ func (a *routeTestAdminApp) RefreshLLMProviderModels(id string) ([]llm.ModelInfo
 }
 func (a *routeTestAdminApp) GetLLMProviderModels(id string) ([]llm.ModelInfo, error) {
 	return []llm.ModelInfo{}, nil
+}
+func (a *routeTestAdminApp) GetLLMProviderEnvStatus(id string) (configcenter.ProviderEnvStatus, error) {
+	return configcenter.ProviderEnvStatus{}, nil
 }
 func (a *routeTestAdminApp) ListAgentConfigs() ([]config.AgentConfig, error) {
 	return append([]config.AgentConfig(nil), a.agentConfigs...), nil
@@ -128,6 +133,46 @@ func (a *routeTestAdminApp) GetChatSettings() config.ChatConfig {
 func (a *routeTestAdminApp) UpdateChatSettings(settings config.ChatConfig) error {
 	return nil
 }
+func (a *routeTestAdminApp) GetEffectiveConfig(ctx context.Context) (configcenter.EffectiveConfig, error) {
+	return configcenter.EffectiveConfig{}, nil
+}
+func (a *routeTestAdminApp) ValidateConfig(ctx context.Context, req configcenter.ValidateRequest) (configcenter.ValidateResponse, error) {
+	return configcenter.ValidateResponse{}, nil
+}
+func (a *routeTestAdminApp) ListConfigIssues(ctx context.Context) ([]configcenter.ConfigIssue, error) {
+	return nil, nil
+}
+func (a *routeTestAdminApp) GetMemoryConfig(ctx context.Context) (configcenter.MemoryConfigResponse, error) {
+	return configcenter.MemoryConfigResponse{}, nil
+}
+func (a *routeTestAdminApp) UpdateMemoryConfig(ctx context.Context, memory config.MemoryConfig) (configcenter.EffectiveConfig, error) {
+	return configcenter.EffectiveConfig{}, nil
+}
+func (a *routeTestAdminApp) GetMemoryFeatures(ctx context.Context) (configcenter.MemoryConfigResponse, error) {
+	return configcenter.MemoryConfigResponse{}, nil
+}
+func (a *routeTestAdminApp) UpdateMemoryFeatures(ctx context.Context, memory config.MemoryConfig) (configcenter.EffectiveConfig, error) {
+	return configcenter.EffectiveConfig{}, nil
+}
+func (a *routeTestAdminApp) GetSidecarStatus(ctx context.Context) (sidecarruntime.Status, error) {
+	return sidecarruntime.Status{}, nil
+}
+func (a *routeTestAdminApp) StartSidecar(ctx context.Context) (sidecarruntime.Status, error) {
+	return sidecarruntime.Status{}, nil
+}
+func (a *routeTestAdminApp) StopSidecar(ctx context.Context) (sidecarruntime.Status, error) {
+	return sidecarruntime.Status{}, nil
+}
+func (a *routeTestAdminApp) RestartSidecar(ctx context.Context) (sidecarruntime.Status, error) {
+	return sidecarruntime.Status{}, nil
+}
+func (a *routeTestAdminApp) GetSidecarGeneratedConfig(ctx context.Context) (string, error) {
+	return "", nil
+}
+func (a *routeTestAdminApp) GetSidecarLogs(ctx context.Context, maxBytes int) (string, error) {
+	return "", nil
+}
+
 func TestRunAllowsStartupWithoutLLM(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -228,6 +273,154 @@ func TestInitMemoryEnabledOpensMemoryCore(t *testing.T) {
 	}
 	if _, err := os.Stat(memoryDBPath); err != nil {
 		t.Fatalf("memory db was not created: %v", err)
+	}
+}
+
+func TestInitMemoryEnabledUsesProviderCenterForMemoryCore(t *testing.T) {
+	dir := t.TempDir()
+	memoryDBPath := filepath.Join(dir, "memory.db")
+	memoryConfigPath := writeAppMemoryCoreConfigWithPipeline(t, dir, memoryDBPath, "moonshot")
+	configPath := writeAppInitConfig(t, dir, true, memoryConfigPath)
+
+	a := New()
+	t.Cleanup(func() { _ = a.Shutdown() })
+	if err := a.Init(context.Background(), configPath); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	if a.Memory == nil {
+		t.Fatal("App.Memory = nil, want initialized host")
+	}
+	if _, err := os.Stat(memoryDBPath); err != nil {
+		t.Fatalf("memory db was not created: %v", err)
+	}
+}
+
+func TestInitMemoryEnabledMissingProviderEnvReturnsClearError(t *testing.T) {
+	dir := t.TempDir()
+	memoryDBPath := filepath.Join(dir, "memory.db")
+	memoryConfigPath := writeAppMemoryCoreConfigWithPipeline(t, dir, memoryDBPath, "moonshot")
+	configPath := writeAppInitConfig(t, dir, true, memoryConfigPath)
+	body, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile config: %v", err)
+	}
+	body = []byte(strings.ReplaceAll(string(body), "api_key_env: MOONSHOT_API_KEY", "api_key_env: MISSING_MOONSHOT_API_KEY"))
+	if err := os.WriteFile(configPath, body, 0o644); err != nil {
+		t.Fatalf("WriteFile config: %v", err)
+	}
+
+	a := New()
+	t.Cleanup(func() { _ = a.Shutdown() })
+	err = a.Init(context.Background(), configPath)
+	if err == nil {
+		t.Fatal("Init succeeded, want missing env error")
+	}
+	if !strings.Contains(err.Error(), "provider \"moonshot\" requires env MISSING_MOONSHOT_API_KEY") {
+		t.Fatalf("Init error = %v, want missing provider env", err)
+	}
+}
+
+func TestInitMemorySidecarExternalInjectsURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" {
+			t.Fatalf("path = %q, want /health", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	memoryDBPath := filepath.Join(dir, "memory.db")
+	memoryConfigPath := writeAppMemoryCoreConfigWithSidecar(t, dir, memoryDBPath)
+	configPath := writeAppInitConfigWithMemorySidecar(t, dir, true, memoryConfigPath, fmt.Sprintf(`
+  sidecar:
+    enabled: true
+    managed: false
+    url: %q
+    fail_open: false
+`, server.URL))
+
+	a := New()
+	t.Cleanup(func() { _ = a.Shutdown() })
+	if err := a.Init(context.Background(), configPath); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if a.Memory == nil {
+		t.Fatal("App.Memory = nil, want initialized host")
+	}
+}
+
+func TestInitMemorySidecarFailOpenDisablesMirror(t *testing.T) {
+	dir := t.TempDir()
+	memoryDBPath := filepath.Join(dir, "memory.db")
+	memoryConfigPath := writeAppMemoryCoreConfigWithSidecar(t, dir, memoryDBPath)
+	configPath := writeAppInitConfigWithMemorySidecar(t, dir, true, memoryConfigPath, `
+  sidecar:
+    enabled: true
+    managed: false
+    url: "http://127.0.0.1:1"
+    fail_open: true
+`)
+
+	a := New()
+	t.Cleanup(func() { _ = a.Shutdown() })
+	if err := a.Init(context.Background(), configPath); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if a.Memory == nil {
+		t.Fatal("App.Memory = nil, want initialized host")
+	}
+	if a.Memory.Source == "" {
+		t.Fatal("memory source is empty")
+	}
+}
+
+func TestInitMemorySidecarFailClosedReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	memoryDBPath := filepath.Join(dir, "memory.db")
+	memoryConfigPath := writeAppMemoryCoreConfigWithSidecar(t, dir, memoryDBPath)
+	configPath := writeAppInitConfigWithMemorySidecar(t, dir, true, memoryConfigPath, `
+  sidecar:
+    enabled: true
+    managed: false
+    url: "http://127.0.0.1:1"
+    fail_open: false
+`)
+
+	a := New()
+	t.Cleanup(func() { _ = a.Shutdown() })
+	err := a.Init(context.Background(), configPath)
+	if err == nil {
+		t.Fatal("Init succeeded, want sidecar error")
+	}
+	if !strings.Contains(err.Error(), "start sidecar") {
+		t.Fatalf("Init error = %v, want start sidecar", err)
+	}
+}
+
+func TestGetSidecarLogsUsesRuntimeSettingsLogPath(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	logPath := filepath.Join(t.TempDir(), "runtime-sidecar.log")
+	if err := os.WriteFile(logPath, []byte("runtime sidecar log"), 0o644); err != nil {
+		t.Fatalf("WriteFile log: %v", err)
+	}
+	if err := db.UpsertRuntimeSetting("memory.sidecar", "log_path", `"`+filepath.ToSlash(logPath)+`"`, "ui"); err != nil {
+		t.Fatalf("UpsertRuntimeSetting: %v", err)
+	}
+
+	a := &App{Config: config.DefaultConfig(), DB: db, Logger: logger}
+	logs, err := a.GetSidecarLogs(context.Background(), 1024)
+	if err != nil {
+		t.Fatalf("GetSidecarLogs: %v", err)
+	}
+	if logs != "runtime sidecar log" {
+		t.Fatalf("logs = %q, want runtime sidecar log", logs)
 	}
 }
 
@@ -339,6 +532,39 @@ func TestRegisterRoutesAgentConfigDispatch(t *testing.T) {
 		}
 		if len(resp.Providers) != 1 || resp.Providers[0].ID != "moonshot" {
 			t.Fatalf("providers = %#v, want moonshot", resp.Providers)
+		}
+	})
+
+	t.Run("provider env alias route dispatches", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/providers/moonshot/env-status", nil)
+		rec := httptest.NewRecorder()
+
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+	})
+
+	t.Run("memory config route dispatches", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/memory/config", nil)
+		rec := httptest.NewRecorder()
+
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+	})
+
+	t.Run("sidecar status route dispatches", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/sidecar/status", nil)
+		rec := httptest.NewRecorder()
+
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
 		}
 	})
 
@@ -929,6 +1155,31 @@ func writeAppInitConfigWithManualRules(t *testing.T, dir string, memoryEnabled b
 		manualRulesPath = writeAppManualRulesConfig(t, dir)
 	}
 
+	return writeAppInitConfigWithMemorySidecarAndRules(t, dir, memoryEnabled, memoryConfigPath, manualRulesPath, "")
+}
+
+func writeAppInitConfigWithMemorySidecar(t *testing.T, dir string, memoryEnabled bool, memoryConfigPath string, sidecarYAML string) string {
+	t.Helper()
+	return writeAppInitConfigWithMemorySidecarAndRules(t, dir, memoryEnabled, memoryConfigPath, "", sidecarYAML)
+}
+
+func writeAppInitConfigWithMemorySidecarAndRules(t *testing.T, dir string, memoryEnabled bool, memoryConfigPath string, manualRulesPath string, sidecarYAML string) string {
+	t.Helper()
+
+	personaDir := filepath.Join(dir, "personas")
+	if err := os.MkdirAll(personaDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll persona dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(personaDir, "default.yaml"), []byte("name: Default\nsystem_prompt: test\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile persona: %v", err)
+	}
+	if memoryEnabled && manualRulesPath == "" {
+		manualRulesPath = writeAppManualRulesConfig(t, dir)
+	}
+	if memoryEnabled {
+		t.Setenv("MOONSHOT_API_KEY", "test-key")
+	}
+
 	configPath := filepath.Join(dir, "config.yaml")
 	body := fmt.Sprintf(`
 server:
@@ -967,11 +1218,12 @@ memory:
   enabled: %t
   config_path: %q
 %s
+%s
 db:
   path: %q
 personas:
   dir: %q
-`, memoryEnabled, filepath.ToSlash(memoryConfigPath), formatManualRulesPathYAML(manualRulesPath), filepath.ToSlash(filepath.Join(dir, "emo.db")), filepath.ToSlash(personaDir))
+`, memoryEnabled, filepath.ToSlash(memoryConfigPath), formatManualRulesPathYAML(manualRulesPath), sidecarYAML, filepath.ToSlash(filepath.Join(dir, "emo.db")), filepath.ToSlash(personaDir))
 	if err := os.WriteFile(configPath, []byte(body), 0o644); err != nil {
 		t.Fatalf("WriteFile app config: %v", err)
 	}
@@ -1015,6 +1267,57 @@ core:
   auto_migrate: %t
   enable_fts: true
 `, enabled, filepath.ToSlash(dbPath), autoMigrate)
+	if err := os.WriteFile(configPath, []byte(body), 0o644); err != nil {
+		t.Fatalf("WriteFile memorycore config: %v", err)
+	}
+	return configPath
+}
+
+func writeAppMemoryCoreConfigWithPipeline(t *testing.T, dir string, dbPath string, providerID string) string {
+	t.Helper()
+
+	configPath := filepath.Join(dir, "memorycore.yaml")
+	body := fmt.Sprintf(`
+schema_version: memorycore.config.v0.2
+enabled: true
+core:
+  db_path: %q
+  persona_id: default
+  auto_migrate: true
+  enable_fts: true
+pipelines:
+  extraction:
+    enabled: true
+    provider_id: %s
+    model: memory-model
+`, filepath.ToSlash(dbPath), providerID)
+	if err := os.WriteFile(configPath, []byte(body), 0o644); err != nil {
+		t.Fatalf("WriteFile memorycore config: %v", err)
+	}
+	return configPath
+}
+
+func writeAppMemoryCoreConfigWithSidecar(t *testing.T, dir string, dbPath string) string {
+	t.Helper()
+
+	configPath := filepath.Join(dir, "memorycore.yaml")
+	body := fmt.Sprintf(`
+schema_version: memorycore.config.v0.2
+enabled: true
+core:
+  db_path: %q
+  persona_id: default
+  auto_migrate: true
+  enable_fts: true
+retrieval:
+  use_fts: true
+  use_mirror: true
+sidecar:
+  enabled: true
+  adapter: trivium
+mirror:
+  enabled: true
+`, filepath.ToSlash(dbPath))
 	if err := os.WriteFile(configPath, []byte(body), 0o644); err != nil {
 		t.Fatalf("WriteFile memorycore config: %v", err)
 	}

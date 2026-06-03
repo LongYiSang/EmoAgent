@@ -117,7 +117,7 @@ flowchart LR
 WebUI、Admin API、Session、Persona、Work 运行时、工具审批、Turn Pipeline、长期记忆桥、异步记忆抽取队列和 MemoryCore 集成已接入。
 
 长期记忆的权威层： MemoryCore Go Service + SQLite。
-Python sidecar 是 loopback HTTP 增强依赖，用于 Trivium mirror、query analysis / rerank 等能力；EmoAgent 会读取 sidecar URL 并调用它，但不会在自身启动流程中自动拉起 Python sidecar。
+Python sidecar 是 loopback HTTP 增强依赖，用于 Trivium mirror、query analysis / rerank 等能力；可配置为 external 模式复用已有进程，也可配置为 managed 模式由 EmoAgent 生成 TOML、启动、健康检查并在关闭时终止。
 
 插件系统已有实验骨架：`internal/plugin` 提供 hook bus、能力声明、内置插件和 Turn stage / outbound sink 包裹能力；默认配置里 `plugins.enabled: false`，适合继续作为受控实验开关。
 
@@ -135,11 +135,22 @@ go test ./...
 
 主要配置入口：
 
-- `config.yaml`：EmoAgent 外层配置，包含 server、LLM provider、agent/persona、Turn Pipeline、plugins、memory、work、db、websearch、bash。
-- `config/memorycore.yaml`：MemoryCore 配置，包含 MemoryCore SQLite、retrieval、query analysis、sidecar、mirror、write policy。
+- `config.yaml`：EmoAgent seed 配置，包含 server、初始 LLM provider、agent/persona、Turn Pipeline、plugins、memory、work、db、websearch、bash。
+- Admin Provider Center / Config Center：Provider、模型绑定、环境变量检测、EffectiveConfig、依赖问题的主要运行时入口。
+- `config/memorycore.yaml`：MemoryCore standalone fallback / transition overlay。EmoAgent 打开 MemoryCore 时会注入 ProviderRegistry 和 runtime overrides，因此普通用户不需要在这里维护重复的 LLM provider。
 - `config/memory_manual_rules.yaml`：手动记忆固定和忘记规则。
 
-当 `memory.enabled=true` 时，EmoAgent 会通过 `memoryhost.OpenFromConfig` 打开 MemoryCore。当前 `config.yaml` 依赖默认 `memory.config_path=./config/memorycore.yaml`；如果改成显式配置，必须保持该路径有效。
+当 `memory.enabled=true` 时，EmoAgent 会通过 `memoryhost.OpenFromConfigWithOptions` 打开 MemoryCore，并把 Provider Center 中的 provider 转成 MemoryCore `ProviderRegistry`。MemoryCore pipeline 的运行时选择应写入 `memory.provider_bindings.*` 或 DB `runtime_settings`，只保存 `provider_id + model`；旧的 `memory.extraction.provider` 仅作为过渡兼容字段，不再作为主配置入口。`memory.sidecar.enabled=true` 时会先按 `managed/external` 模式检查 sidecar；健康时注入 `sidecar.url`，失败且 `fail_open=true` 时降级关闭 mirror/sidecar，保留 SQLite/FTS 路径。
+
+配置中心 API：
+
+- `GET /api/config/effective`、`POST /api/config/validate`、`GET /api/config/issues`
+- `GET/PUT /api/memory/config`、`GET/PUT /api/memory/features`
+- `GET /api/sidecar/status`、`POST /api/sidecar/start|stop|restart`
+- `GET /api/sidecar/generated-config`、`GET /api/sidecar/logs`
+- `GET /api/providers/{id}/env-status`、`POST /api/providers/{id}/test`
+
+Admin 配置中心中的 Memory Core、Pipelines、Retrieval/Mirror、Sidecar、Privacy/Forget、Retention 页面会从 EffectiveConfig 回填当前值，保存时写入 DB `runtime_settings`，并在写入前执行同一套依赖校验。
 
 ## 长期记忆链路
 

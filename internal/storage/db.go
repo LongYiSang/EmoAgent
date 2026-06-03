@@ -66,6 +66,15 @@ type LLMProviderRecord struct {
 	UpdatedAt            string
 }
 
+type RuntimeSetting struct {
+	Namespace string `json:"namespace"`
+	Key       string `json:"key"`
+	ValueJSON string `json:"value_json"`
+	Source    string `json:"source"`
+	UpdatedBy string `json:"updated_by"`
+	UpdatedAt string `json:"updated_at"`
+}
+
 // Open creates or opens a SQLite database, sets pragmas, and runs migrations.
 func Open(path string, logger *slog.Logger) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -150,8 +159,77 @@ func (d *DB) GetAllRuntimeConfig() (map[string]string, error) {
 	return m, rows.Err()
 }
 
+func (d *DB) UpsertRuntimeSetting(namespace, key, valueJSON, source string) error {
+	if !json.Valid([]byte(valueJSON)) {
+		return fmt.Errorf("value_json must be valid JSON")
+	}
+	if source == "" {
+		source = "ui"
+	}
+	_, err := d.db.Exec(`
+		INSERT INTO runtime_settings (namespace, key, value_json, source, updated_at)
+		VALUES (?, ?, ?, ?, datetime('now'))
+		ON CONFLICT(namespace, key) DO UPDATE SET
+			value_json = excluded.value_json,
+			source = excluded.source,
+			updated_at = datetime('now')
+	`, namespace, key, valueJSON, source)
+	return err
+}
+
+func (d *DB) GetRuntimeSetting(namespace, key string) (RuntimeSetting, bool, error) {
+	row := d.db.QueryRow(`
+		SELECT namespace, key, value_json, source, updated_by, updated_at
+		FROM runtime_settings
+		WHERE namespace = ? AND key = ?
+	`, namespace, key)
+	setting, err := scanRuntimeSetting(row)
+	if err == sql.ErrNoRows {
+		return RuntimeSetting{}, false, nil
+	}
+	if err != nil {
+		return RuntimeSetting{}, false, err
+	}
+	return setting, true, nil
+}
+
+func (d *DB) ListRuntimeSettings() ([]RuntimeSetting, error) {
+	rows, err := d.db.Query(`
+		SELECT namespace, key, value_json, source, updated_by, updated_at
+		FROM runtime_settings
+		ORDER BY namespace, key
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var settings []RuntimeSetting
+	for rows.Next() {
+		setting, err := scanRuntimeSetting(rows)
+		if err != nil {
+			return nil, err
+		}
+		settings = append(settings, setting)
+	}
+	return settings, rows.Err()
+}
+
 func (d *DB) SetActiveAgentConfig(id string) error {
 	return d.SetRuntimeConfig("agent.active_config", id)
+}
+
+func scanRuntimeSetting(row scanner) (RuntimeSetting, error) {
+	var setting RuntimeSetting
+	err := row.Scan(
+		&setting.Namespace,
+		&setting.Key,
+		&setting.ValueJSON,
+		&setting.Source,
+		&setting.UpdatedBy,
+		&setting.UpdatedAt,
+	)
+	return setting, err
 }
 
 func (d *DB) GetActiveAgentConfig() (string, bool, error) {
@@ -163,11 +241,15 @@ func (d *DB) UpsertLLMProvider(provider config.LLMProvider) error {
 	if discovery == "" {
 		discovery = "manual"
 	}
-	_, err := d.db.Exec(`
+	capabilities, err := encodeProviderCapabilities(provider.Capabilities)
+	if err != nil {
+		return err
+	}
+	_, err = d.db.Exec(`
 		INSERT INTO llm_providers (
-			id, name, preset_id, protocol, base_url, api_key_env, model_discovery, enabled, updated_at
+			id, name, preset_id, protocol, base_url, api_key_env, model_discovery, enabled, capabilities_json, updated_at
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			preset_id = excluded.preset_id,
@@ -176,15 +258,16 @@ func (d *DB) UpsertLLMProvider(provider config.LLMProvider) error {
 			api_key_env = excluded.api_key_env,
 			model_discovery = excluded.model_discovery,
 			enabled = excluded.enabled,
+			capabilities_json = excluded.capabilities_json,
 			updated_at = datetime('now')
-	`, provider.ID, provider.Name, provider.PresetID, provider.Protocol, provider.BaseURL, provider.APIKeyEnv, discovery, boolInt(provider.Enabled))
+	`, provider.ID, provider.Name, provider.PresetID, provider.Protocol, provider.BaseURL, provider.APIKeyEnv, discovery, boolInt(provider.Enabled), capabilities)
 	return err
 }
 
 func (d *DB) GetLLMProvider(ctx context.Context, id string) (*LLMProviderRecord, error) {
 	row := d.db.QueryRowContext(ctx, `
 		SELECT id, name, preset_id, protocol, base_url, api_key_env, model_discovery, enabled,
-		       models_cache_json, models_cache_updated_at, created_at, updated_at
+		       capabilities_json, models_cache_json, models_cache_updated_at, created_at, updated_at
 		FROM llm_providers
 		WHERE id = ?
 	`, id)
@@ -201,7 +284,7 @@ func (d *DB) GetLLMProvider(ctx context.Context, id string) (*LLMProviderRecord,
 func (d *DB) ListLLMProviders() ([]LLMProviderRecord, error) {
 	rows, err := d.db.Query(`
 		SELECT id, name, preset_id, protocol, base_url, api_key_env, model_discovery, enabled,
-		       models_cache_json, models_cache_updated_at, created_at, updated_at
+		       capabilities_json, models_cache_json, models_cache_updated_at, created_at, updated_at
 		FROM llm_providers
 		ORDER BY id
 	`)
@@ -704,6 +787,7 @@ type scanner interface {
 func scanLLMProvider(row scanner) (LLMProviderRecord, error) {
 	var record LLMProviderRecord
 	var enabled int
+	var capabilitiesJSON string
 	if err := row.Scan(
 		&record.ID,
 		&record.Name,
@@ -713,6 +797,7 @@ func scanLLMProvider(row scanner) (LLMProviderRecord, error) {
 		&record.APIKeyEnv,
 		&record.ModelDiscovery,
 		&enabled,
+		&capabilitiesJSON,
 		&record.ModelsCacheJSON,
 		&record.ModelsCacheUpdatedAt,
 		&record.CreatedAt,
@@ -721,7 +806,19 @@ func scanLLMProvider(row scanner) (LLMProviderRecord, error) {
 		return LLMProviderRecord{}, err
 	}
 	record.Enabled = enabled != 0
+	if err := json.Unmarshal([]byte(capabilitiesJSON), &record.Capabilities); err != nil {
+		return LLMProviderRecord{}, err
+	}
+	record.Capabilities = config.NormalizeProviderCapabilities(record.Capabilities)
 	return record, nil
+}
+
+func encodeProviderCapabilities(capabilities []string) (string, error) {
+	data, err := json.Marshal(config.NormalizeProviderCapabilities(capabilities))
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
 func agentConfigSelectSQL() string {

@@ -8,12 +8,15 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/longyisang/emoagent/internal/apperrors"
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/configcenter"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/protocol"
+	sidecarruntime "github.com/longyisang/emoagent/internal/sidecar"
 	"github.com/longyisang/emoagent/internal/storage"
 )
 
@@ -50,6 +53,14 @@ type fakeAdminApp struct {
 	chatSettings        config.ChatConfig
 	lastChatSettings    config.ChatConfig
 	updateChatErr       error
+	effectiveConfig     configcenter.EffectiveConfig
+	configIssues        []configcenter.ConfigIssue
+	providerEnvStatus   configcenter.ProviderEnvStatus
+	memoryConfig        configcenter.MemoryConfigResponse
+	lastMemoryConfig    config.MemoryConfig
+	sidecarStatus       sidecarruntime.Status
+	sidecarConfig       string
+	sidecarLogs         string
 }
 
 func (f *fakeAdminApp) ListLLMProviders() ([]config.LLMProvider, error) {
@@ -79,6 +90,9 @@ func (f *fakeAdminApp) RefreshLLMProviderModels(id string) ([]llm.ModelInfo, err
 }
 func (f *fakeAdminApp) GetLLMProviderModels(id string) ([]llm.ModelInfo, error) {
 	return []llm.ModelInfo{{ID: "model-a"}}, nil
+}
+func (f *fakeAdminApp) GetLLMProviderEnvStatus(id string) (configcenter.ProviderEnvStatus, error) {
+	return f.providerEnvStatus, nil
 }
 func (f *fakeAdminApp) ListAgentConfigs() ([]config.AgentConfig, error) {
 	return append([]config.AgentConfig(nil), f.agentConfigs...), nil
@@ -203,6 +217,50 @@ func (f *fakeAdminApp) UpdateChatSettings(settings config.ChatConfig) error {
 	f.lastChatSettings = settings
 	return f.updateChatErr
 }
+func (f *fakeAdminApp) GetEffectiveConfig(ctx context.Context) (configcenter.EffectiveConfig, error) {
+	return f.effectiveConfig, nil
+}
+func (f *fakeAdminApp) ValidateConfig(ctx context.Context, req configcenter.ValidateRequest) (configcenter.ValidateResponse, error) {
+	return configcenter.ValidateResponse{Issues: append([]configcenter.ConfigIssue(nil), f.configIssues...)}, nil
+}
+func (f *fakeAdminApp) ListConfigIssues(ctx context.Context) ([]configcenter.ConfigIssue, error) {
+	return append([]configcenter.ConfigIssue(nil), f.configIssues...), nil
+}
+func (f *fakeAdminApp) GetMemoryConfig(ctx context.Context) (configcenter.MemoryConfigResponse, error) {
+	return f.memoryConfig, nil
+}
+func (f *fakeAdminApp) UpdateMemoryConfig(ctx context.Context, memory config.MemoryConfig) (configcenter.EffectiveConfig, error) {
+	f.lastMemoryConfig = memory
+	return f.effectiveConfig, nil
+}
+func (f *fakeAdminApp) GetMemoryFeatures(ctx context.Context) (configcenter.MemoryConfigResponse, error) {
+	return f.memoryConfig, nil
+}
+func (f *fakeAdminApp) UpdateMemoryFeatures(ctx context.Context, memory config.MemoryConfig) (configcenter.EffectiveConfig, error) {
+	f.lastMemoryConfig = memory
+	return f.effectiveConfig, nil
+}
+func (f *fakeAdminApp) GetSidecarStatus(ctx context.Context) (sidecarruntime.Status, error) {
+	return f.sidecarStatus, nil
+}
+func (f *fakeAdminApp) StartSidecar(ctx context.Context) (sidecarruntime.Status, error) {
+	f.sidecarStatus.State = sidecarruntime.StateHealthy
+	return f.sidecarStatus, nil
+}
+func (f *fakeAdminApp) StopSidecar(ctx context.Context) (sidecarruntime.Status, error) {
+	f.sidecarStatus.State = sidecarruntime.StateStopped
+	return f.sidecarStatus, nil
+}
+func (f *fakeAdminApp) RestartSidecar(ctx context.Context) (sidecarruntime.Status, error) {
+	f.sidecarStatus.State = sidecarruntime.StateHealthy
+	return f.sidecarStatus, nil
+}
+func (f *fakeAdminApp) GetSidecarGeneratedConfig(ctx context.Context) (string, error) {
+	return f.sidecarConfig, nil
+}
+func (f *fakeAdminApp) GetSidecarLogs(ctx context.Context, maxBytes int) (string, error) {
+	return f.sidecarLogs, nil
+}
 
 func TestHandleCreateLLMProviderNormalizesPayload(t *testing.T) {
 	app := &fakeAdminApp{}
@@ -254,6 +312,176 @@ func TestHandleListLLMProviderPresets(t *testing.T) {
 	}
 	if !foundMoonshot {
 		t.Fatalf("moonshot preset missing from response: %#v", body.Presets)
+	}
+}
+
+func TestHandleGetLLMProviderEnvStatusDoesNotLeakValue(t *testing.T) {
+	app := &fakeAdminApp{
+		providerEnvStatus: configcenter.ProviderEnvStatus{
+			APIKeyEnv: "MOONSHOT_API_KEY",
+			Present:   true,
+		},
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/llm-providers/moonshot/env-status", nil)
+	rec := httptest.NewRecorder()
+	handler.HandleGetLLMProviderEnvStatus(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"api_key_env":"MOONSHOT_API_KEY"`) || !strings.Contains(body, `"present":true`) {
+		t.Fatalf("body = %s", body)
+	}
+	if strings.Contains(body, "secret") {
+		t.Fatalf("body leaked secret value: %s", body)
+	}
+}
+
+func TestHandleConfigEffective(t *testing.T) {
+	app := &fakeAdminApp{
+		effectiveConfig: configcenter.EffectiveConfig{
+			Providers: []configcenter.ProviderEffective{{
+				ID:      "moonshot",
+				Enabled: true,
+				Env:     configcenter.ProviderEnvStatus{APIKeyEnv: "MOONSHOT_API_KEY", Present: true},
+			}},
+			Issues: []configcenter.ConfigIssue{{
+				Path:     "memory.retrieval.enabled",
+				Severity: "warning",
+				Message:  "memory retrieval is disabled because memory is disabled",
+			}},
+		},
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/config/effective", nil)
+	rec := httptest.NewRecorder()
+	handler.HandleGetConfigEffective(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var resp configcenter.EffectiveConfig
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(resp.Providers) != 1 || resp.Providers[0].Env.APIKeyEnv != "MOONSHOT_API_KEY" || !resp.Providers[0].Env.Present {
+		t.Fatalf("providers = %#v", resp.Providers)
+	}
+	if len(resp.Issues) != 1 || resp.Issues[0].Path != "memory.retrieval.enabled" {
+		t.Fatalf("issues = %#v", resp.Issues)
+	}
+}
+
+func TestHandleConfigValidateAndIssues(t *testing.T) {
+	app := &fakeAdminApp{
+		configIssues: []configcenter.ConfigIssue{{
+			Path:     "memory.retrieval.use_mirror",
+			Severity: "warning",
+			Message:  "use_mirror requires sidecar.enabled",
+			AutoFix:  &configcenter.AutoFix{Value: false},
+		}},
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	validateReq := httptest.NewRequest(http.MethodPost, "/api/config/validate", bytes.NewBufferString(`{}`))
+	validateRec := httptest.NewRecorder()
+	handler.HandleValidateConfig(validateRec, validateReq)
+	if validateRec.Code != http.StatusOK {
+		t.Fatalf("validate status = %d, want 200", validateRec.Code)
+	}
+	var validateResp configcenter.ValidateResponse
+	if err := json.NewDecoder(validateRec.Body).Decode(&validateResp); err != nil {
+		t.Fatalf("Decode validate: %v", err)
+	}
+	if len(validateResp.Issues) != 1 || validateResp.Issues[0].AutoFix == nil {
+		t.Fatalf("validate issues = %#v", validateResp.Issues)
+	}
+
+	issuesReq := httptest.NewRequest(http.MethodGet, "/api/config/issues", nil)
+	issuesRec := httptest.NewRecorder()
+	handler.HandleListConfigIssues(issuesRec, issuesReq)
+	if issuesRec.Code != http.StatusOK {
+		t.Fatalf("issues status = %d, want 200", issuesRec.Code)
+	}
+	var issuesResp struct {
+		Issues []configcenter.ConfigIssue `json:"issues"`
+	}
+	if err := json.NewDecoder(issuesRec.Body).Decode(&issuesResp); err != nil {
+		t.Fatalf("Decode issues: %v", err)
+	}
+	if len(issuesResp.Issues) != 1 || issuesResp.Issues[0].Path != "memory.retrieval.use_mirror" {
+		t.Fatalf("issues response = %#v", issuesResp)
+	}
+}
+
+func TestHandleMemoryConfigAndSidecarEndpoints(t *testing.T) {
+	app := &fakeAdminApp{
+		memoryConfig: configcenter.MemoryConfigResponse{
+			Memory: config.MemoryConfig{Enabled: true, ConfigPath: "./config/memorycore.yaml"},
+		},
+		effectiveConfig: configcenter.EffectiveConfig{
+			Memory: config.MemoryConfig{Enabled: true, ConfigPath: "./config/memorycore.yaml"},
+		},
+		sidecarStatus: sidecarruntime.Status{State: sidecarruntime.StateStopped, URL: "http://127.0.0.1:8765", Adapter: "trivium"},
+		sidecarConfig: "[embedding]\napi_key_env = \"DASHSCOPE_API_KEY\"\n",
+		sidecarLogs:   "sidecar log line",
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	getMemoryReq := httptest.NewRequest(http.MethodGet, "/api/memory/config", nil)
+	getMemoryRec := httptest.NewRecorder()
+	handler.HandleGetMemoryConfig(getMemoryRec, getMemoryReq)
+	if getMemoryRec.Code != http.StatusOK {
+		t.Fatalf("GET memory status = %d, want 200", getMemoryRec.Code)
+	}
+
+	putMemoryReq := httptest.NewRequest(http.MethodPut, "/api/memory/config", bytes.NewBufferString(`{"memory":{"enabled":true,"config_path":"./config/memorycore.yaml"}}`))
+	putMemoryRec := httptest.NewRecorder()
+	handler.HandleUpdateMemoryConfig(putMemoryRec, putMemoryReq)
+	if putMemoryRec.Code != http.StatusOK {
+		t.Fatalf("PUT memory status = %d, want 200", putMemoryRec.Code)
+	}
+	if !app.lastMemoryConfig.Enabled || app.lastMemoryConfig.ConfigPath != "./config/memorycore.yaml" {
+		t.Fatalf("lastMemoryConfig = %#v", app.lastMemoryConfig)
+	}
+
+	statusReq := httptest.NewRequest(http.MethodGet, "/api/sidecar/status", nil)
+	statusRec := httptest.NewRecorder()
+	handler.HandleGetSidecarStatus(statusRec, statusReq)
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("sidecar status code = %d, want 200", statusRec.Code)
+	}
+	var statusResp sidecarruntime.Status
+	if err := json.NewDecoder(statusRec.Body).Decode(&statusResp); err != nil {
+		t.Fatalf("Decode sidecar status: %v", err)
+	}
+	if statusResp.Adapter != "trivium" {
+		t.Fatalf("sidecar status = %#v", statusResp)
+	}
+
+	configReq := httptest.NewRequest(http.MethodGet, "/api/sidecar/generated-config", nil)
+	configRec := httptest.NewRecorder()
+	handler.HandleGetSidecarGeneratedConfig(configRec, configReq)
+	if configRec.Code != http.StatusOK || !strings.Contains(configRec.Body.String(), "DASHSCOPE_API_KEY") {
+		t.Fatalf("generated config response = %d %s", configRec.Code, configRec.Body.String())
+	}
+
+	logsReq := httptest.NewRequest(http.MethodGet, "/api/sidecar/logs?max_bytes=100", nil)
+	logsRec := httptest.NewRecorder()
+	handler.HandleGetSidecarLogs(logsRec, logsReq)
+	if logsRec.Code != http.StatusOK || !strings.Contains(logsRec.Body.String(), "sidecar log line") {
+		t.Fatalf("logs response = %d %s", logsRec.Code, logsRec.Body.String())
+	}
+
+	startReq := httptest.NewRequest(http.MethodPost, "/api/sidecar/start", nil)
+	startRec := httptest.NewRecorder()
+	handler.HandleStartSidecar(startRec, startReq)
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("start status = %d, want 200", startRec.Code)
 	}
 }
 

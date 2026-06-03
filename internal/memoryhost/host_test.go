@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
+	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/storage"
 	_ "modernc.org/sqlite"
 )
@@ -96,6 +97,33 @@ func TestOpenFromConfigStoresRetrievalPolicy(t *testing.T) {
 	}
 	if host.retrievalPolicy.SensitivityPermission != memorycore.SensitivitySensitive {
 		t.Fatalf("SensitivityPermission = %q, want %q", host.retrievalPolicy.SensitivityPermission, memorycore.SensitivitySensitive)
+	}
+}
+
+func TestOpenFromConfigWithOptionsUsesProviderRegistry(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "memory.db")
+	configPath := writeMemoryCoreConfigWithPipeline(t, dir, dbPath, "moonshot")
+
+	host, err := OpenFromConfigWithOptions(context.Background(), OpenConfigOptions{
+		ConfigPath: configPath,
+		ProviderRegistry: BuildProviderRegistry([]config.LLMProvider{{
+			ID:        "moonshot",
+			Name:      "Moonshot",
+			Protocol:  "openai_compatible",
+			BaseURL:   "https://api.moonshot.cn/v1",
+			APIKeyEnv: "MOONSHOT_API_KEY",
+			Enabled:   true,
+		}}),
+		Logger: testMemoryLogger(),
+	})
+	if err != nil {
+		t.Fatalf("OpenFromConfigWithOptions: %v", err)
+	}
+	t.Cleanup(func() { _ = host.Close() })
+
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Fatalf("memory db was not created: %v", err)
 	}
 }
 
@@ -802,6 +830,28 @@ func writeMemoryCoreConfig(t *testing.T, dir string, enabled bool, autoMigrate b
 		"  sensitivity_permission: sensitive\n" +
 		"  final_memory_count: 3\n" +
 		"  context_budget_tokens: 321\n"
+	if err := os.WriteFile(configPath, []byte(body), 0o644); err != nil {
+		t.Fatalf("WriteFile memorycore config: %v", err)
+	}
+	return configPath
+}
+
+func writeMemoryCoreConfigWithPipeline(t *testing.T, dir string, dbPath string, providerID string) string {
+	t.Helper()
+
+	configPath := filepath.Join(dir, "memorycore.yaml")
+	body := "schema_version: memorycore.config.v0.2\n" +
+		"enabled: true\n" +
+		"core:\n" +
+		"  db_path: " + filepath.ToSlash(dbPath) + "\n" +
+		"  persona_id: default\n" +
+		"  auto_migrate: true\n" +
+		"  enable_fts: true\n" +
+		"pipelines:\n" +
+		"  extraction:\n" +
+		"    enabled: true\n" +
+		"    provider_id: " + providerID + "\n" +
+		"    model: memory-model\n"
 	if err := os.WriteFile(configPath, []byte(body), 0o644); err != nil {
 		t.Fatalf("WriteFile memorycore config: %v", err)
 	}

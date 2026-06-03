@@ -1,3 +1,10 @@
+# Standalone fallback / overlay for MemoryCore.
+#
+# EmoAgent now treats config.yaml + Provider Center + runtime settings as the
+# primary configuration entrypoint. When EmoAgent opens MemoryCore it injects
+# its ProviderRegistry and runtime overrides into this file. Keep this YAML for
+# standalone MemoryCore runs and transition-time defaults; do not store plaintext
+# API keys here. Use api_key_env only.
 schema_version: memorycore.config.v0.2
 enabled: true
 

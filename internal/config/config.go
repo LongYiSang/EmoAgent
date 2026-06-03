@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	memconfig "github.com/longyisang/emoagent-memorycore/config"
 	"github.com/longyisang/emoagent/internal/llm"
 	"gopkg.in/yaml.v3"
 )
@@ -29,14 +30,15 @@ type Config struct {
 }
 
 type LLMProvider struct {
-	ID             string `yaml:"id" json:"id"`
-	Name           string `yaml:"name" json:"name"`
-	PresetID       string `yaml:"preset_id" json:"preset_id"`
-	Protocol       string `yaml:"protocol" json:"protocol"`
-	BaseURL        string `yaml:"base_url" json:"base_url"`
-	APIKeyEnv      string `yaml:"api_key_env" json:"api_key_env"`
-	ModelDiscovery string `yaml:"model_discovery" json:"model_discovery"`
-	Enabled        bool   `yaml:"enabled" json:"enabled"`
+	ID             string   `yaml:"id" json:"id"`
+	Name           string   `yaml:"name" json:"name"`
+	PresetID       string   `yaml:"preset_id" json:"preset_id"`
+	Protocol       string   `yaml:"protocol" json:"protocol"`
+	BaseURL        string   `yaml:"base_url" json:"base_url"`
+	APIKeyEnv      string   `yaml:"api_key_env" json:"api_key_env"`
+	ModelDiscovery string   `yaml:"model_discovery" json:"model_discovery"`
+	Enabled        bool     `yaml:"enabled" json:"enabled"`
+	Capabilities   []string `yaml:"capabilities" json:"capabilities"`
 }
 
 type AgentRuntimeConfig struct {
@@ -44,11 +46,16 @@ type AgentRuntimeConfig struct {
 }
 
 type MemoryConfig struct {
-	Enabled         bool                   `yaml:"enabled" json:"enabled"`
-	ConfigPath      string                 `yaml:"config_path" json:"config_path"`
-	ManualRulesPath string                 `yaml:"manual_rules_path" json:"manual_rules_path"`
-	Retrieval       MemoryRetrievalConfig  `yaml:"retrieval" json:"retrieval"`
-	Extraction      MemoryExtractionConfig `yaml:"extraction" json:"extraction"`
+	Enabled           bool                               `yaml:"enabled" json:"enabled"`
+	ConfigPath        string                             `yaml:"config_path" json:"config_path"`
+	ManualRulesPath   string                             `yaml:"manual_rules_path" json:"manual_rules_path"`
+	Retrieval         MemoryRetrievalConfig              `yaml:"retrieval" json:"retrieval"`
+	Extraction        MemoryExtractionConfig             `yaml:"extraction" json:"extraction"`
+	Sidecar           MemorySidecarConfig                `yaml:"sidecar" json:"sidecar"`
+	ProviderBindings  MemoryProviderBindingsConfig       `yaml:"provider_bindings" json:"provider_bindings"`
+	Retention         *memconfig.RetentionConfig         `yaml:"retention,omitempty" json:"retention,omitempty"`
+	ForgettingPrivacy *memconfig.ForgettingPrivacyConfig `yaml:"forgetting_privacy,omitempty" json:"forgetting_privacy,omitempty"`
+	AgentAffect       *memconfig.AgentAffectConfig       `yaml:"agent_affect,omitempty" json:"agent_affect,omitempty"`
 }
 
 type MemoryRetrievalConfig struct {
@@ -144,6 +151,41 @@ type MemoryExtractionProviderConfig struct {
 	MaxTokens      int                            `yaml:"max_tokens" json:"max_tokens"`
 	Temperature    float64                        `yaml:"temperature" json:"temperature"`
 	Thinking       MemoryExtractionThinkingConfig `yaml:"thinking" json:"thinking"`
+}
+
+type MemorySidecarConfig struct {
+	Enabled            bool   `yaml:"enabled" json:"enabled"`
+	Managed            bool   `yaml:"managed" json:"managed"`
+	Adapter            string `yaml:"adapter" json:"adapter"`
+	Host               string `yaml:"host" json:"host"`
+	Port               int    `yaml:"port" json:"port"`
+	URL                string `yaml:"url" json:"url"`
+	WorkingDir         string `yaml:"working_dir" json:"working_dir"`
+	ConfigPath         string `yaml:"config_path" json:"config_path"`
+	StartupTimeoutMS   int    `yaml:"startup_timeout_ms" json:"startup_timeout_ms"`
+	ShutdownTimeoutMS  int    `yaml:"shutdown_timeout_ms" json:"shutdown_timeout_ms"`
+	FailOpen           bool   `yaml:"fail_open" json:"fail_open"`
+	LogPath            string `yaml:"log_path" json:"log_path"`
+	TriviumDir         string `yaml:"trivium_dir" json:"trivium_dir"`
+	EmbeddingCachePath string `yaml:"embedding_cache_path" json:"embedding_cache_path"`
+}
+
+type MemoryProviderBindingsConfig struct {
+	Prefilter        MemoryProviderBindingConfig `yaml:"prefilter" json:"prefilter"`
+	Extraction       MemoryProviderBindingConfig `yaml:"extraction" json:"extraction"`
+	ExtractionRepair MemoryProviderBindingConfig `yaml:"extraction_repair" json:"extraction_repair"`
+	QueryAnalysis    MemoryProviderBindingConfig `yaml:"query_analysis" json:"query_analysis"`
+	Curation         MemoryProviderBindingConfig `yaml:"curation" json:"curation"`
+	Embedding        MemoryProviderBindingConfig `yaml:"embedding" json:"embedding"`
+	Rerank           MemoryProviderBindingConfig `yaml:"rerank" json:"rerank"`
+}
+
+type MemoryProviderBindingConfig struct {
+	Enabled    bool   `yaml:"enabled" json:"enabled"`
+	ProviderID string `yaml:"provider_id" json:"provider_id"`
+	Model      string `yaml:"model" json:"model"`
+	Dimensions int    `yaml:"dimensions" json:"dimensions"`
+	TopK       int    `yaml:"top_k" json:"top_k"`
 }
 
 type MemoryExtractionThinkingConfig struct {
@@ -564,6 +606,22 @@ func DefaultConfig() *Config {
 			Enabled:         false,
 			ConfigPath:      "./config/memorycore.yaml",
 			ManualRulesPath: "./config/memory_manual_rules.yaml",
+			Sidecar: MemorySidecarConfig{
+				Enabled:            false,
+				Managed:            false,
+				Adapter:            "trivium",
+				Host:               "127.0.0.1",
+				Port:               8765,
+				URL:                "http://127.0.0.1:8765",
+				WorkingDir:         "../EmoAgent-MemoryCore/sidecar",
+				ConfigPath:         "./data/runtime/sidecar.generated.toml",
+				StartupTimeoutMS:   15000,
+				ShutdownTimeoutMS:  5000,
+				FailOpen:           true,
+				LogPath:            "./logs/sidecar.log",
+				TriviumDir:         "./data/trivium",
+				EmbeddingCachePath: "./data/embedding_cache.sqlite3",
+			},
 			Retrieval: MemoryRetrievalConfig{
 				Enabled:             true,
 				InjectPrompt:        false,
@@ -703,6 +761,7 @@ func Load(path string) (*Config, error) {
 	cfg.Work.ApplyDefaults()
 	cfg.WebFetch.applyDefaults()
 	cfg.Bash.applyDefaults()
+	cfg.Memory.Sidecar.applyDefaults()
 	cfg.Memory.Extraction.applyDefaults()
 	cfg.Plugins.applyDefaults()
 	for i := range cfg.LLMProviders {
@@ -939,6 +998,42 @@ func (c *MemoryExtractionConfig) applyDefaults() {
 	}
 }
 
+func (c *MemorySidecarConfig) applyDefaults() {
+	if c.Adapter == "" {
+		c.Adapter = "trivium"
+	}
+	if c.Host == "" {
+		c.Host = "127.0.0.1"
+	}
+	if c.Port == 0 {
+		c.Port = 8765
+	}
+	if c.URL == "" {
+		c.URL = "http://127.0.0.1:8765"
+	}
+	if c.WorkingDir == "" {
+		c.WorkingDir = "../EmoAgent-MemoryCore/sidecar"
+	}
+	if c.ConfigPath == "" {
+		c.ConfigPath = "./data/runtime/sidecar.generated.toml"
+	}
+	if c.StartupTimeoutMS == 0 {
+		c.StartupTimeoutMS = 15000
+	}
+	if c.ShutdownTimeoutMS == 0 {
+		c.ShutdownTimeoutMS = 5000
+	}
+	if c.LogPath == "" {
+		c.LogPath = "./logs/sidecar.log"
+	}
+	if c.TriviumDir == "" {
+		c.TriviumDir = "./data/trivium"
+	}
+	if c.EmbeddingCachePath == "" {
+		c.EmbeddingCachePath = "./data/embedding_cache.sqlite3"
+	}
+}
+
 func (c MemoryExtractionConfig) Validate() error {
 	if !c.Enabled {
 		return nil
@@ -1042,7 +1137,7 @@ func (p LLMProvider) Validate() error {
 		}
 	}
 	switch p.Protocol {
-	case "openai_compatible", "anthropic":
+	case "openai_compatible", "anthropic", "dashscope_vl", "dashscope-vl":
 	default:
 		return fmt.Errorf("unsupported protocol: %s", p.Protocol)
 	}
@@ -1057,6 +1152,13 @@ func (p LLMProvider) Validate() error {
 	default:
 		return fmt.Errorf("unsupported model_discovery: %s", p.ModelDiscovery)
 	}
+	for _, capability := range p.Capabilities {
+		switch capability {
+		case "chat", "embedding", "rerank", "query_analysis":
+		default:
+			return fmt.Errorf("unsupported capability: %s", capability)
+		}
+	}
 	return nil
 }
 
@@ -1068,6 +1170,7 @@ func (p LLMProvider) WithPresetDefaults() (LLMProvider, error) {
 	p.BaseURL = strings.TrimRight(strings.TrimSpace(p.BaseURL), "/")
 	p.APIKeyEnv = strings.TrimSpace(p.APIKeyEnv)
 	p.ModelDiscovery = strings.TrimSpace(p.ModelDiscovery)
+	p.Capabilities = NormalizeProviderCapabilities(p.Capabilities)
 	if p.PresetID == "" {
 		return p, nil
 	}
@@ -1094,6 +1197,29 @@ func (p LLMProvider) WithPresetDefaults() (LLMProvider, error) {
 		p.ModelDiscovery = preset.ModelDiscovery
 	}
 	return p, nil
+}
+
+func NormalizeProviderCapabilities(capabilities []string) []string {
+	if len(capabilities) == 0 {
+		return []string{"chat"}
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(capabilities))
+	for _, capability := range capabilities {
+		capability = strings.ToLower(strings.TrimSpace(capability))
+		if capability == "" {
+			continue
+		}
+		if _, ok := seen[capability]; ok {
+			continue
+		}
+		seen[capability] = struct{}{}
+		out = append(out, capability)
+	}
+	if len(out) == 0 {
+		return []string{"chat"}
+	}
+	return out
 }
 
 func (a AgentConfig) Validate() error {

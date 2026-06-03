@@ -20,12 +20,14 @@ import (
 	"github.com/longyisang/emoagent/internal/apperrors"
 	"github.com/longyisang/emoagent/internal/chat"
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/configcenter"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/logger"
 	"github.com/longyisang/emoagent/internal/memoryhost"
 	"github.com/longyisang/emoagent/internal/plugin"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/runtimeenv"
+	sidecarruntime "github.com/longyisang/emoagent/internal/sidecar"
 	"github.com/longyisang/emoagent/internal/storage"
 	"github.com/longyisang/emoagent/internal/tool"
 	"github.com/longyisang/emoagent/internal/tool/builtin"
@@ -60,6 +62,7 @@ type App struct {
 	Logger             *slog.Logger
 	Personas           map[string]*config.Persona
 	ActiveAgentRuntime *ActiveAgentRuntime
+	Sidecar            *sidecarruntime.Supervisor
 	engine             *chat.Engine
 	toolRegistry       *tool.Registry
 	approvalService    *work.ApprovalService
@@ -114,6 +117,7 @@ func (a *App) Init(ctx context.Context, configPath string) error {
 	if err := a.applyRuntimeOverrides(); err != nil {
 		a.Logger.Warn("runtime config overrides failed", "error", err)
 	}
+	cfg = a.Config
 
 	personas, err := config.LoadAllPersonas(cfg.Personas.Dir)
 	if err != nil {
@@ -168,11 +172,42 @@ func (a *App) Init(ctx context.Context, configPath string) error {
 		if err != nil {
 			return fmt.Errorf("load memory manual rules: %w", err)
 		}
-		memoryHost, err := memoryhost.OpenFromConfig(ctx, cfg.Memory.ConfigPath, a.Logger)
+		configService := a.configService()
+		var sidecarStatus *sidecarruntime.Status
+		sidecarSpec, sidecarIssues, err := configService.BuildSidecarSpec(ctx)
+		if err != nil {
+			return fmt.Errorf("build sidecar spec: %w", err)
+		}
+		for _, issue := range sidecarIssues {
+			if issue.Severity == "error" {
+				return fmt.Errorf("build sidecar spec: %s: %s", issue.Path, issue.Message)
+			}
+			a.Logger.Warn("sidecar config issue", "path", issue.Path, "message", issue.Message)
+		}
+		if sidecarSpec.Enabled {
+			supervisor := sidecarruntime.NewSupervisor(sidecarSpec, a.Logger)
+			status, err := supervisor.Start(ctx)
+			if err != nil {
+				return fmt.Errorf("start sidecar: %w", err)
+			}
+			a.Sidecar = supervisor
+			sidecarStatus = &status
+		}
+		memoryOpen, err := configService.BuildMemoryCoreOpenConfig(ctx, sidecarStatus)
+		if err != nil {
+			return fmt.Errorf("build memorycore config: %w", err)
+		}
+		memoryHost, err := memoryhost.OpenFromConfigWithOptions(ctx, memoryhost.OpenConfigOptions{
+			ConfigPath:       memoryOpen.ConfigPath,
+			Overrides:        memoryOpen.Overrides,
+			ProviderRegistry: memoryOpen.ProviderRegistry,
+			Runtime:          memoryOpen.Runtime,
+			Logger:           a.Logger,
+		})
 		if err != nil {
 			return fmt.Errorf("open memorycore: %w", err)
 		}
-		memoryHost.ConfigureExtractionPolicy(memoryExtractionHostConfig(cfg.Memory.Extraction))
+		memoryHost.ConfigureExtractionPolicy(memoryExtractionHostConfig(memoryOpen.Memory.Extraction))
 		a.Memory = memoryHost
 		a.ManualMemoryRules = manualRules
 	}
@@ -377,6 +412,22 @@ func registerRoutes(mux *http.ServeMux, api *web.APIHandler, chatHandler http.Ha
 	mux.HandleFunc("DELETE /api/llm-providers/{id}", api.HandleDeleteLLMProvider)
 	mux.HandleFunc("POST /api/llm-providers/{id}/refresh-models", api.HandleRefreshLLMProviderModels)
 	mux.HandleFunc("GET /api/llm-providers/{id}/models", api.HandleGetLLMProviderModels)
+	mux.HandleFunc("GET /api/llm-providers/{id}/env-status", api.HandleGetLLMProviderEnvStatus)
+	mux.HandleFunc("GET /api/providers/{id}/env-status", api.HandleGetLLMProviderEnvStatus)
+	mux.HandleFunc("POST /api/providers/{id}/test", api.HandleTestProvider)
+	mux.HandleFunc("GET /api/config/effective", api.HandleGetConfigEffective)
+	mux.HandleFunc("POST /api/config/validate", api.HandleValidateConfig)
+	mux.HandleFunc("GET /api/config/issues", api.HandleListConfigIssues)
+	mux.HandleFunc("GET /api/memory/config", api.HandleGetMemoryConfig)
+	mux.HandleFunc("PUT /api/memory/config", api.HandleUpdateMemoryConfig)
+	mux.HandleFunc("GET /api/memory/features", api.HandleGetMemoryFeatures)
+	mux.HandleFunc("PUT /api/memory/features", api.HandleUpdateMemoryFeatures)
+	mux.HandleFunc("GET /api/sidecar/status", api.HandleGetSidecarStatus)
+	mux.HandleFunc("POST /api/sidecar/start", api.HandleStartSidecar)
+	mux.HandleFunc("POST /api/sidecar/stop", api.HandleStopSidecar)
+	mux.HandleFunc("POST /api/sidecar/restart", api.HandleRestartSidecar)
+	mux.HandleFunc("GET /api/sidecar/generated-config", api.HandleGetSidecarGeneratedConfig)
+	mux.HandleFunc("GET /api/sidecar/logs", api.HandleGetSidecarLogs)
 	mux.HandleFunc("GET /api/agent-configs", api.HandleListAgentConfigs)
 	mux.HandleFunc("POST /api/agent-configs", api.HandleCreateAgentConfig)
 	mux.HandleFunc("GET /api/agent-configs/active", api.HandleGetActiveAgentConfig)
@@ -435,6 +486,12 @@ func (a *App) Shutdown() error {
 		} else {
 			a.Memory = nil
 		}
+	}
+	if a.Sidecar != nil {
+		if err := a.Sidecar.Stop(context.Background()); err != nil {
+			closeErr = errors.Join(closeErr, fmt.Errorf("stop sidecar: %w", err))
+		}
+		a.Sidecar = nil
 	}
 	a.ManualMemoryRules = nil
 	if a.DB != nil {
@@ -495,6 +552,18 @@ func (a *App) applyRuntimeOverrides() error {
 
 	if len(overrides) > 0 {
 		a.Logger.Info("runtime config overrides applied", "count", len(overrides))
+	}
+	settings, err := a.DB.ListRuntimeSettings()
+	if err != nil {
+		return err
+	}
+	if len(settings) > 0 {
+		runtimeCfg, issues := configcenter.ApplyRuntimeSettings(a.Config, settings)
+		a.Config = &runtimeCfg
+		for _, issue := range issues {
+			a.Logger.Warn("runtime setting rejected", "path", issue.Path, "message", issue.Message)
+		}
+		a.Logger.Info("runtime settings applied", "count", len(settings))
 	}
 	return nil
 }
@@ -1232,6 +1301,159 @@ func (a *App) GetLLMProviderModels(id string) ([]llm.ModelInfo, error) {
 		return nil, err
 	}
 	return models, nil
+}
+
+func (a *App) GetLLMProviderEnvStatus(id string) (configcenter.ProviderEnvStatus, error) {
+	provider, err := a.GetLLMProvider(id)
+	if err != nil {
+		return configcenter.ProviderEnvStatus{}, err
+	}
+	_, present := os.LookupEnv(strings.TrimSpace(provider.APIKeyEnv))
+	return configcenter.ProviderEnvStatus{
+		APIKeyEnv: strings.TrimSpace(provider.APIKeyEnv),
+		Present:   strings.TrimSpace(provider.APIKeyEnv) != "" && present,
+	}, nil
+}
+
+func (a *App) GetEffectiveConfig(ctx context.Context) (configcenter.EffectiveConfig, error) {
+	return a.configService().BuildEffective(ctx)
+}
+
+func (a *App) ValidateConfig(ctx context.Context, req configcenter.ValidateRequest) (configcenter.ValidateResponse, error) {
+	return a.configService().Validate(ctx, req)
+}
+
+func (a *App) ListConfigIssues(ctx context.Context) ([]configcenter.ConfigIssue, error) {
+	return a.configService().Issues(ctx)
+}
+
+func (a *App) GetMemoryConfig(ctx context.Context) (configcenter.MemoryConfigResponse, error) {
+	return a.configService().MemoryConfig(ctx)
+}
+
+func (a *App) UpdateMemoryConfig(ctx context.Context, memory config.MemoryConfig) (configcenter.EffectiveConfig, error) {
+	effective, err := a.configService().UpdateMemoryConfig(ctx, memory)
+	if err == nil && a.Config != nil {
+		a.Config.Memory = effective.Memory
+	}
+	return effective, err
+}
+
+func (a *App) GetMemoryFeatures(ctx context.Context) (configcenter.MemoryConfigResponse, error) {
+	return a.GetMemoryConfig(ctx)
+}
+
+func (a *App) UpdateMemoryFeatures(ctx context.Context, memory config.MemoryConfig) (configcenter.EffectiveConfig, error) {
+	effective, err := a.configService().UpdateMemoryFeatures(ctx, memory)
+	if err == nil && a.Config != nil {
+		a.Config.Memory = effective.Memory
+	}
+	return effective, err
+}
+
+func (a *App) GetSidecarStatus(ctx context.Context) (sidecarruntime.Status, error) {
+	if a.Sidecar != nil {
+		return a.Sidecar.Status(), nil
+	}
+	spec, _, err := a.configService().BuildSidecarSpec(ctx)
+	if err != nil {
+		return sidecarruntime.Status{}, err
+	}
+	state := sidecarruntime.StateStopped
+	if !spec.Enabled {
+		state = sidecarruntime.StateDisabled
+	}
+	return sidecarruntime.Status{
+		State:   state,
+		Managed: spec.Managed,
+		URL:     spec.EffectiveURL(),
+		Adapter: spec.Adapter,
+	}, nil
+}
+
+func (a *App) StartSidecar(ctx context.Context) (sidecarruntime.Status, error) {
+	if a.Sidecar != nil {
+		status := a.Sidecar.Status()
+		if status.State == sidecarruntime.StateHealthy || status.State == sidecarruntime.StateStarting {
+			return status, nil
+		}
+	}
+	spec, issues, err := a.configService().BuildSidecarSpec(ctx)
+	if err != nil {
+		return sidecarruntime.Status{}, err
+	}
+	for _, issue := range issues {
+		if issue.Severity == "error" {
+			return sidecarruntime.Status{}, fmt.Errorf("%s: %s", issue.Path, issue.Message)
+		}
+	}
+	supervisor := sidecarruntime.NewSupervisor(spec, a.Logger)
+	status, err := supervisor.Start(ctx)
+	if err != nil {
+		return sidecarruntime.Status{}, err
+	}
+	a.Sidecar = supervisor
+	return status, nil
+}
+
+func (a *App) StopSidecar(ctx context.Context) (sidecarruntime.Status, error) {
+	if a.Sidecar == nil {
+		return a.GetSidecarStatus(ctx)
+	}
+	err := a.Sidecar.Stop(ctx)
+	a.Sidecar = nil
+	status, statusErr := a.GetSidecarStatus(ctx)
+	if err != nil {
+		return status, err
+	}
+	return status, statusErr
+}
+
+func (a *App) RestartSidecar(ctx context.Context) (sidecarruntime.Status, error) {
+	if a.Sidecar != nil {
+		_ = a.Sidecar.Stop(ctx)
+		a.Sidecar = nil
+	}
+	return a.StartSidecar(ctx)
+}
+
+func (a *App) GetSidecarGeneratedConfig(ctx context.Context) (string, error) {
+	effective, err := a.configService().BuildEffective(ctx)
+	if err != nil {
+		return "", err
+	}
+	return effective.SidecarGeneratedConfig, nil
+}
+
+func (a *App) GetSidecarLogs(ctx context.Context, maxBytes int) (string, error) {
+	cfg := config.DefaultConfig().Memory.Sidecar
+	spec, _, err := a.configService().BuildSidecarSpec(ctx)
+	if err == nil {
+		cfg.LogPath = spec.LogPath
+	} else if a.Config != nil {
+		cfg = a.Config.Memory.Sidecar
+	}
+	if strings.TrimSpace(cfg.LogPath) == "" {
+		return "", nil
+	}
+	body, err := os.ReadFile(cfg.LogPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if maxBytes <= 0 {
+		maxBytes = 65536
+	}
+	if len(body) > maxBytes {
+		body = body[len(body)-maxBytes:]
+	}
+	return string(body), nil
+}
+
+func (a *App) configService() *configcenter.Service {
+	return configcenter.NewService(a.Config, a.DB)
 }
 
 func (a *App) ListAgentConfigs() ([]config.AgentConfig, error) {

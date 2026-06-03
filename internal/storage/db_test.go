@@ -32,7 +32,7 @@ func TestOpenAndMigrate(t *testing.T) {
 	db := testDB(t)
 
 	// Verify tables exist by querying them.
-	tables := []string{"sessions", "messages", "personas", "config_runtime", "llm_providers", "agent_configs", "schema_version", "pending_decisions", "archived_decisions", "memory_chat_links", "memory_segments", "memory_extraction_jobs", "turns", "turn_events", "turn_outbound_events", "turn_idempotency"}
+	tables := []string{"sessions", "messages", "personas", "config_runtime", "runtime_settings", "llm_providers", "agent_configs", "schema_version", "pending_decisions", "archived_decisions", "memory_chat_links", "memory_segments", "memory_extraction_jobs", "turns", "turn_events", "turn_outbound_events", "turn_idempotency"}
 	for _, table := range tables {
 		var name string
 		err := db.SqlDB().QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&name)
@@ -89,6 +89,39 @@ func TestOpenAndMigrate(t *testing.T) {
 	}
 	if !keyIsPK {
 		t.Fatal("personas.key should be the primary key")
+	}
+}
+
+func TestRuntimeSettingsCRUD(t *testing.T) {
+	db := testDB(t)
+
+	if err := db.UpsertRuntimeSetting("memory.sidecar", "managed", `{"enabled":true}`, "ui"); err != nil {
+		t.Fatalf("UpsertRuntimeSetting: %v", err)
+	}
+	if err := db.UpsertRuntimeSetting("memory.sidecar", "managed", `{"enabled":false}`, "test"); err != nil {
+		t.Fatalf("UpsertRuntimeSetting update: %v", err)
+	}
+
+	setting, ok, err := db.GetRuntimeSetting("memory.sidecar", "managed")
+	if err != nil {
+		t.Fatalf("GetRuntimeSetting: %v", err)
+	}
+	if !ok {
+		t.Fatal("GetRuntimeSetting ok = false, want true")
+	}
+	if setting.Namespace != "memory.sidecar" || setting.Key != "managed" || setting.ValueJSON != `{"enabled":false}` || setting.Source != "test" {
+		t.Fatalf("setting = %#v", setting)
+	}
+	if setting.UpdatedAt == "" {
+		t.Fatal("UpdatedAt is empty")
+	}
+
+	settings, err := db.ListRuntimeSettings()
+	if err != nil {
+		t.Fatalf("ListRuntimeSettings: %v", err)
+	}
+	if len(settings) != 1 || settings[0].Namespace != "memory.sidecar" || settings[0].Key != "managed" {
+		t.Fatalf("settings = %#v", settings)
 	}
 }
 
@@ -510,6 +543,7 @@ func TestProviderAndAgentConfigCRUD(t *testing.T) {
 		APIKeyEnv:      "MOONSHOT_API_KEY",
 		ModelDiscovery: "openai_models",
 		Enabled:        true,
+		Capabilities:   []string{"chat", "embedding"},
 	}
 	if err := db.UpsertLLMProvider(provider); err != nil {
 		t.Fatalf("UpsertLLMProvider: %v", err)
@@ -523,6 +557,9 @@ func TestProviderAndAgentConfigCRUD(t *testing.T) {
 	}
 	if providers[0].PresetID != "moonshot" {
 		t.Fatalf("provider preset_id = %q, want moonshot", providers[0].PresetID)
+	}
+	if got := strings.Join(providers[0].Capabilities, ","); got != "chat,embedding" {
+		t.Fatalf("provider capabilities = %#v, want chat,embedding", providers[0].Capabilities)
 	}
 
 	temperature := 0.1
