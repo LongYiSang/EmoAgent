@@ -84,6 +84,7 @@ type Handler struct {
 	app         AppInterface
 	logger      *slog.Logger
 	turnConfig  config.TurnPipelineConfig
+	turnTimezone string
 	turnDB      *sql.DB
 	turnJournal turn.TurnJournal
 	turnIDs     turn.IdempotencyStore
@@ -96,6 +97,12 @@ type HandlerOption func(*Handler)
 func WithTurnPipelineConfig(cfg config.TurnPipelineConfig) HandlerOption {
 	return func(h *Handler) {
 		h.turnConfig = cfg
+	}
+}
+
+func WithTurnTimezone(timezone string) HandlerOption {
+	return func(h *Handler) {
+		h.turnTimezone = timezone
 	}
 }
 
@@ -126,7 +133,7 @@ func NewHandler(engine conversationEngine, app AppInterface, logger *slog.Logger
 		}
 	}
 	if h.turnJournal == nil || h.turnIDs == nil {
-		journal, ids := buildTurnRuntimeStores(h.turnConfig, h.turnDB, logger)
+		journal, ids := buildTurnRuntimeStores(h.turnConfig, h.turnDB, logger, h.turnTimezone)
 		if h.turnJournal == nil {
 			h.turnJournal = journal
 		}
@@ -436,9 +443,9 @@ func stringInList(value string, list []string) bool {
 	return false
 }
 
-func buildTurnRuntimeStores(cfg config.TurnPipelineConfig, db *sql.DB, logger *slog.Logger) (turn.TurnJournal, turn.IdempotencyStore) {
-	journal, journalErr := buildTurnJournal(cfg, db)
-	ids, idsErr := buildIdempotencyStore(cfg, db)
+func buildTurnRuntimeStores(cfg config.TurnPipelineConfig, db *sql.DB, logger *slog.Logger, timezone string) (turn.TurnJournal, turn.IdempotencyStore) {
+	journal, journalErr := buildTurnJournal(cfg, db, timezone)
+	ids, idsErr := buildIdempotencyStore(cfg, db, timezone)
 	if journalErr == nil && idsErr == nil {
 		return journal, ids
 	}
@@ -463,7 +470,7 @@ func buildTurnRuntimeStores(cfg config.TurnPipelineConfig, db *sql.DB, logger *s
 	return memory, turn.NewMemoryIdempotencyStore()
 }
 
-func buildTurnJournal(cfg config.TurnPipelineConfig, db *sql.DB) (turn.TurnJournal, error) {
+func buildTurnJournal(cfg config.TurnPipelineConfig, db *sql.DB, timezone string) (turn.TurnJournal, error) {
 	switch cfg.Journal.Mode {
 	case "memory":
 		return turn.NewMemoryJournal(), nil
@@ -473,18 +480,18 @@ func buildTurnJournal(cfg config.TurnPipelineConfig, db *sql.DB) (turn.TurnJourn
 		if db == nil {
 			return nil, errors.New("sqlite database is not configured")
 		}
-		return turn.NewMultiJournal(turn.NewSQLiteJournal(db), turn.NewJSONLJournal(cfg.Journal.JSONLDir)), nil
+		return turn.NewMultiJournal(turn.NewSQLiteJournalWithTimezone(db, timezone), turn.NewJSONLJournal(cfg.Journal.JSONLDir)), nil
 	case "", "sqlite":
 		if db == nil {
 			return nil, errors.New("sqlite database is not configured")
 		}
-		return turn.NewSQLiteJournal(db), nil
+		return turn.NewSQLiteJournalWithTimezone(db, timezone), nil
 	default:
 		return nil, fmt.Errorf("unsupported turn journal mode %q", cfg.Journal.Mode)
 	}
 }
 
-func buildIdempotencyStore(cfg config.TurnPipelineConfig, db *sql.DB) (turn.IdempotencyStore, error) {
+func buildIdempotencyStore(cfg config.TurnPipelineConfig, db *sql.DB, timezone string) (turn.IdempotencyStore, error) {
 	switch cfg.Idempotency.Mode {
 	case "memory":
 		return turn.NewMemoryIdempotencyStore(), nil
@@ -492,7 +499,7 @@ func buildIdempotencyStore(cfg config.TurnPipelineConfig, db *sql.DB) (turn.Idem
 		if db == nil {
 			return nil, errors.New("sqlite database is not configured")
 		}
-		return turn.NewSQLiteIdempotencyStore(db), nil
+		return turn.NewSQLiteIdempotencyStoreWithTimezone(db, timezone), nil
 	default:
 		return nil, fmt.Errorf("unsupported turn idempotency mode %q", cfg.Idempotency.Mode)
 	}

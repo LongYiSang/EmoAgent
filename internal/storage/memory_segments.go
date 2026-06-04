@@ -87,7 +87,7 @@ func (d *DB) CreateMemorySegment(ctx context.Context, params CreateMemorySegment
 	}
 	defer tx.Rollback()
 
-	now := nowUTC()
+	now := d.nowText()
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO memory_chat_links (chat_session_id, persona_id, created_at, updated_at)
 		VALUES (?, ?, ?, ?)
@@ -185,7 +185,7 @@ func (d *DB) FinalizeMemorySegment(ctx context.Context, segmentID string, reason
 		return err
 	}
 
-	now := nowUTC()
+	now := d.nowText()
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE memory_segments
 		SET finalized_at = COALESCE(finalized_at, ?),
@@ -227,7 +227,7 @@ func (d *DB) UpdateMemorySegmentEpisode(ctx context.Context, segmentID string, r
 		return fmt.Errorf("unsupported memory episode role: %s", role)
 	}
 
-	now := nowUTC()
+	now := d.nowText()
 	result, err := d.db.ExecContext(ctx, fmt.Sprintf(`
 		UPDATE memory_segments
 		SET %s = ?,
@@ -235,7 +235,7 @@ func (d *DB) UpdateMemorySegmentEpisode(ctx context.Context, segmentID string, r
 		    extraction_status = CASE
 		        WHEN extraction_status IN ('succeeded', 'skipped')
 		         AND COALESCE(last_extracted_until_at, '') <> ''
-		         AND last_extracted_until_at < ?
+		         AND julianday(last_extracted_until_at) < julianday(?)
 		        THEN 'stale'
 		        ELSE extraction_status
 		    END
@@ -266,7 +266,7 @@ func (d *DB) UpdateMemorySegmentExtractionCompleted(ctx context.Context, segment
 	if status == "" {
 		status = MemorySegmentExtractionStatusSucceeded
 	}
-	now := nowUTC()
+	now := d.nowText()
 	result, err := d.db.ExecContext(ctx, `
 		UPDATE memory_segments
 		SET last_extracted_at = ?,

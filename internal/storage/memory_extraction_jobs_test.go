@@ -98,6 +98,69 @@ func TestMemoryExtractionJobLifecycle(t *testing.T) {
 	}
 }
 
+func TestClaimMemoryExtractionJobsUsesSubsecondRunAfterBoundary(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t)
+	claimAt := time.Date(2026, 6, 4, 16, 0, 0, 100_000_000, time.UTC)
+	runAfter := time.Date(2026, 6, 4, 16, 0, 0, 900_000_000, time.UTC)
+
+	job, enqueued, err := db.EnqueueMemoryExtractionJob(ctx, EnqueueMemoryExtractionJobParams{
+		PersonaID: "default",
+		Trigger:   MemoryExtractionTriggerPeriodicSweep,
+		Scope:     MemoryExtractionScopePersona,
+		RunAfter:  runAfter,
+	})
+	if err != nil {
+		t.Fatalf("EnqueueMemoryExtractionJob: %v", err)
+	}
+	if !enqueued {
+		t.Fatalf("enqueued = false, want new job")
+	}
+
+	claimed, err := db.ClaimMemoryExtractionJobs(ctx, "worker-early", 1, time.Minute, claimAt)
+	if err != nil {
+		t.Fatalf("ClaimMemoryExtractionJobs: %v", err)
+	}
+	if len(claimed) != 0 {
+		t.Fatalf("claimed = %#v, want none before run_after %s", claimed, job.RunAfter)
+	}
+}
+
+func TestClaimMemoryExtractionJobsUsesSubsecondClaimExpiry(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t)
+	claimAt := time.Date(2026, 6, 4, 16, 0, 0, 0, time.UTC)
+
+	job, enqueued, err := db.EnqueueMemoryExtractionJob(ctx, EnqueueMemoryExtractionJobParams{
+		PersonaID: "default",
+		Trigger:   MemoryExtractionTriggerPeriodicSweep,
+		Scope:     MemoryExtractionScopePersona,
+		RunAfter:  claimAt.Add(-time.Second),
+	})
+	if err != nil {
+		t.Fatalf("EnqueueMemoryExtractionJob: %v", err)
+	}
+	if !enqueued {
+		t.Fatalf("enqueued = false, want new job")
+	}
+
+	claimed, err := db.ClaimMemoryExtractionJobs(ctx, "worker-1", 1, 100*time.Millisecond, claimAt)
+	if err != nil {
+		t.Fatalf("ClaimMemoryExtractionJobs(first): %v", err)
+	}
+	if len(claimed) != 1 || claimed[0].ID != job.ID {
+		t.Fatalf("claimed first = %#v, want %s", claimed, job.ID)
+	}
+
+	claimed, err = db.ClaimMemoryExtractionJobs(ctx, "worker-2", 1, time.Minute, claimAt.Add(900*time.Millisecond))
+	if err != nil {
+		t.Fatalf("ClaimMemoryExtractionJobs(second): %v", err)
+	}
+	if len(claimed) != 1 || claimed[0].ID != job.ID || claimed[0].ClaimedBy != "worker-2" {
+		t.Fatalf("claimed second = %#v, want expired job %s for worker-2", claimed, job.ID)
+	}
+}
+
 func TestMemoryExtractionJobDedupeCoalescesManualPinIntoActiveJob(t *testing.T) {
 	ctx := context.Background()
 	db := testDB(t)
@@ -270,9 +333,9 @@ func TestFailExtractionJobRetriesAndThenFails(t *testing.T) {
 func TestScanEligibleMemorySegmentsForIdleExtraction(t *testing.T) {
 	ctx := context.Background()
 	db := testDB(t)
-	now := time.Now().UTC()
-	idleAt := now.Add(-20 * time.Minute).Format(time.RFC3339Nano)
-	recentAt := now.Add(-2 * time.Minute).Format(time.RFC3339Nano)
+	now := time.Now()
+	idleAt := db.formatTime(now.Add(-20 * time.Minute))
+	recentAt := db.formatTime(now.Add(-2 * time.Minute))
 
 	active := createExtractionJobSegment(t, db, "segment-active-idle", "chat-active-idle", "memory-active-idle")
 	finalized := createExtractionJobSegment(t, db, "segment-finalized-idle", "chat-finalized-idle", "memory-finalized-idle")
@@ -322,8 +385,8 @@ func TestScanEligibleMemorySegmentsForIdleExtraction(t *testing.T) {
 func TestScanEligibleMemorySegmentsSkipsExhaustedFailedSegments(t *testing.T) {
 	ctx := context.Background()
 	db := testDB(t)
-	now := time.Now().UTC()
-	idleAt := now.Add(-20 * time.Minute).Format(time.RFC3339Nano)
+	now := time.Now()
+	idleAt := db.formatTime(now.Add(-20 * time.Minute))
 
 	failed := createExtractionJobSegment(t, db, "segment-failed-exhausted", "chat-failed-exhausted", "memory-failed-exhausted")
 	setSegmentActivityForTest(t, db, failed.ID, idleAt, idleAt, "", MemorySegmentExtractionStatusFailed)
@@ -353,6 +416,63 @@ func TestScanEligibleMemorySegmentsSkipsExhaustedFailedSegments(t *testing.T) {
 			t.Fatalf("eligible ids include exhausted failed segment: %#v", got)
 		}
 	}
+}
+
+func TestScanEligibleMemorySegmentsUsesSubsecondIdleBoundary(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t)
+	now := time.Date(2026, 6, 4, 16, 15, 0, 100_000_000, time.UTC)
+	idleAfter := 15 * time.Minute
+	notYetIdleAt := db.formatTime(now.Add(-idleAfter).Add(800 * time.Millisecond))
+
+	segment := createExtractionJobSegment(t, db, "segment-subsecond-not-idle", "chat-subsecond-not-idle", "memory-subsecond-not-idle")
+	setSegmentActivityForTest(t, db, segment.ID, notYetIdleAt, "", "", MemorySegmentExtractionStatusNever)
+
+	got, err := db.ScanEligibleMemorySegments(ctx, ScanEligibleMemorySegmentsParams{
+		Now:                      now,
+		IdleAfter:                idleAfter,
+		IncludeActiveSegments:    true,
+		IncludeFinalizedSegments: true,
+		MinEpisodeCount:          2,
+		Limit:                    10,
+	})
+	if err != nil {
+		t.Fatalf("ScanEligibleMemorySegments: %v", err)
+	}
+	for _, candidate := range got {
+		if candidate.ID == segment.ID {
+			t.Fatalf("eligible segments = %#v, want %s excluded before idle boundary", got, segment.ID)
+		}
+	}
+}
+
+func TestScanEligibleMemorySegmentsUsesNormalizedTimeForMixedTimezoneStaleness(t *testing.T) {
+	ctx := context.Background()
+	db := testDBWithTimezone(t, "America/New_York")
+	now := time.Date(2026, 6, 4, 16, 0, 0, 0, time.UTC)
+	lastActivityAt := db.formatTime(now.Add(-time.Hour))
+	extractedUntilAt := now.Add(-time.Hour - time.Minute).UTC().Format(time.RFC3339Nano)
+
+	stale := createExtractionJobSegment(t, db, "segment-mixed-timezone-stale", "chat-mixed-timezone-stale", "memory-mixed-timezone-stale")
+	setSegmentActivityForTest(t, db, stale.ID, lastActivityAt, extractedUntilAt, "", MemorySegmentExtractionStatusSucceeded)
+
+	got, err := db.ScanEligibleMemorySegments(ctx, ScanEligibleMemorySegmentsParams{
+		Now:                      now,
+		IdleAfter:                15 * time.Minute,
+		IncludeActiveSegments:    true,
+		IncludeFinalizedSegments: true,
+		MinEpisodeCount:          2,
+		Limit:                    10,
+	})
+	if err != nil {
+		t.Fatalf("ScanEligibleMemorySegments: %v", err)
+	}
+	for _, segment := range got {
+		if segment.ID == stale.ID {
+			return
+		}
+	}
+	t.Fatalf("eligible segments = %#v, want %s", got, stale.ID)
 }
 
 func createExtractionJobSegment(t *testing.T, db *DB, segmentID string, chatSessionID string, memorySessionID string) *MemorySegment {

@@ -160,7 +160,7 @@ func (d *DB) EnqueueMemoryExtractionJob(ctx context.Context, params EnqueueMemor
 		params.MaxAttempts = 3
 	}
 	if params.RunAfter.IsZero() {
-		params.RunAfter = time.Now().UTC()
+		params.RunAfter = time.Now()
 	}
 	if strings.TrimSpace(params.ID) == "" {
 		params.ID = uuid.NewString()
@@ -178,7 +178,7 @@ func (d *DB) EnqueueMemoryExtractionJob(ctx context.Context, params EnqueueMemor
 	if err != nil {
 		return nil, false, fmt.Errorf("marshal episode ids: %w", err)
 	}
-	now := nowUTC()
+	now := d.nowText()
 	_, err = d.db.ExecContext(ctx, `
 		INSERT INTO memory_extraction_jobs (
 			id, persona_id, chat_session_id, segment_id, memory_session_id,
@@ -195,7 +195,7 @@ func (d *DB) EnqueueMemoryExtractionJob(ctx context.Context, params EnqueueMemor
 	`, params.ID, strings.TrimSpace(params.PersonaID), strings.TrimSpace(params.ChatSessionID), strings.TrimSpace(params.SegmentID), strings.TrimSpace(params.MemorySessionID),
 		strings.TrimSpace(params.Trigger), strings.TrimSpace(params.Scope), strings.TrimSpace(params.Mode), strings.TrimSpace(params.RequestedBy), params.Priority, boolInt(params.Force),
 		string(episodeIDsJSON), strings.TrimSpace(params.SinceAt), strings.TrimSpace(params.UntilAt), params.EpisodeLimit,
-		params.MaxAttempts, params.RunAfter.UTC().Format(time.RFC3339Nano), strings.TrimSpace(params.RequestJSON), dedupeKey,
+		params.MaxAttempts, d.formatTime(params.RunAfter), strings.TrimSpace(params.RequestJSON), dedupeKey,
 		now, now)
 	if err != nil {
 		if existing, getErr := d.getActiveMemoryExtractionJobByDedupeKey(ctx, dedupeKey); getErr == nil && existing != nil {
@@ -279,10 +279,10 @@ func (d *DB) ClaimMemoryExtractionJobs(ctx context.Context, workerID string, lim
 		claimTTL = 5 * time.Minute
 	}
 	if now.IsZero() {
-		now = time.Now().UTC()
+		now = time.Now()
 	}
-	nowText := now.UTC().Format(time.RFC3339Nano)
-	claimedUntil := now.Add(claimTTL).UTC().Format(time.RFC3339Nano)
+	nowText := d.formatTime(now)
+	claimedUntil := d.formatTime(now.Add(claimTTL))
 
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -293,8 +293,8 @@ func (d *DB) ClaimMemoryExtractionJobs(ctx context.Context, workerID string, lim
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id
 		FROM memory_extraction_jobs
-		WHERE (status = 'pending' AND run_after <= ?)
-		   OR (status = 'running' AND COALESCE(claimed_until, '') < ?)
+		WHERE (status = 'pending' AND julianday(run_after) <= julianday(?))
+		   OR (status = 'running' AND (COALESCE(claimed_until, '') = '' OR julianday(claimed_until) < julianday(?)))
 		ORDER BY priority ASC, created_at ASC
 		LIMIT ?
 	`, nowText, nowText, limit)
@@ -327,8 +327,8 @@ func (d *DB) ClaimMemoryExtractionJobs(ctx context.Context, workerID string, lim
 			    started_at = COALESCE(started_at, ?),
 			    updated_at = ?
 			WHERE id = ?
-			  AND ((status = 'pending' AND run_after <= ?)
-			       OR (status = 'running' AND COALESCE(claimed_until, '') < ?))
+			  AND ((status = 'pending' AND julianday(run_after) <= julianday(?))
+			       OR (status = 'running' AND (COALESCE(claimed_until, '') = '' OR julianday(claimed_until) < julianday(?))))
 		`, workerID, claimedUntil, nowText, nowText, id, nowText, nowText)
 		if err != nil {
 			return nil, err
@@ -400,7 +400,7 @@ func (d *DB) CompleteMemoryExtractionJob(ctx context.Context, jobID string, para
 		untilAt = strings.TrimSpace(params.ExtractedUntilAt)
 	}
 	expectedClaimedBy := strings.TrimSpace(params.ExpectedClaimedBy)
-	now := nowUTC()
+	now := d.nowText()
 	result, err := tx.ExecContext(ctx, `
 		UPDATE memory_extraction_jobs
 		SET status = ?,
@@ -457,16 +457,16 @@ func (d *DB) FailMemoryExtractionJob(ctx context.Context, jobID string, params F
 	if code == "" {
 		code = "unknown"
 	}
-	now := nowUTC()
+	now := d.nowText()
 	status := MemoryExtractionJobStatusFailed
 	runAfter := ""
 	finishedAt := now
 	if params.Retry {
 		status = MemoryExtractionJobStatusPending
 		if params.NextRunAfter.IsZero() {
-			params.NextRunAfter = time.Now().UTC()
+			params.NextRunAfter = time.Now()
 		}
-		runAfter = params.NextRunAfter.UTC().Format(time.RFC3339Nano)
+		runAfter = d.formatTime(params.NextRunAfter)
 		finishedAt = ""
 	}
 	tx, err := d.db.BeginTx(ctx, nil)
@@ -562,7 +562,7 @@ func (d *DB) ScanEligibleMemorySegments(ctx context.Context, params ScanEligible
 		return []MemorySegment{}, nil
 	}
 	if params.Now.IsZero() {
-		params.Now = time.Now().UTC()
+		params.Now = time.Now()
 	}
 	if params.IdleAfter <= 0 {
 		params.IdleAfter = 15 * time.Minute
@@ -573,12 +573,12 @@ func (d *DB) ScanEligibleMemorySegments(ctx context.Context, params ScanEligible
 	if !params.IncludeActiveSegments && !params.IncludeFinalizedSegments {
 		return []MemorySegment{}, nil
 	}
-	idleBefore := params.Now.Add(-params.IdleAfter).UTC().Format(time.RFC3339Nano)
+	idleBefore := d.formatTime(params.Now.Add(-params.IdleAfter))
 	query := memorySegmentSelectSQL() + `
-		WHERE last_activity_at <= ?
+		WHERE julianday(last_activity_at) <= julianday(?)
 		  AND (
 		      COALESCE(last_extracted_until_at, '') = ''
-		      OR last_extracted_until_at < last_activity_at
+		      OR julianday(last_extracted_until_at) < julianday(last_activity_at)
 		      OR COALESCE(extraction_status, 'never') = 'failed'
 		  )
 		  AND COALESCE(extraction_status, 'never') NOT IN ('pending', 'running')
@@ -674,12 +674,12 @@ func (d *DB) mergeActiveMemoryExtractionJob(ctx context.Context, existing *Memor
 	}
 	sinceAt := firstNonEmpty(existing.SinceAt, params.SinceAt)
 	untilAt := laterJobTime(existing.UntilAt, params.UntilAt)
-	runAfter := earlierJobTime(existing.RunAfter, params.RunAfter)
+	runAfter := d.earlierJobTime(existing.RunAfter, params.RunAfter)
 	maxAttempts := maxInt(existing.MaxAttempts, params.MaxAttempts)
 	if maxAttempts == 0 {
 		maxAttempts = 3
 	}
-	now := nowUTC()
+	now := d.nowText()
 	_, err = d.db.ExecContext(ctx, `
 		UPDATE memory_extraction_jobs
 		SET trigger = ?,
@@ -783,11 +783,11 @@ func laterJobTime(existing string, incoming string) string {
 	return chooseJobTime(existing, incoming, true)
 }
 
-func earlierJobTime(existing string, incoming time.Time) string {
+func (d *DB) earlierJobTime(existing string, incoming time.Time) string {
 	if incoming.IsZero() {
 		return strings.TrimSpace(existing)
 	}
-	return chooseJobTime(existing, incoming.UTC().Format(time.RFC3339Nano), false)
+	return chooseJobTime(existing, d.formatTime(incoming), false)
 }
 
 func chooseJobTime(existing string, incoming string, later bool) string {

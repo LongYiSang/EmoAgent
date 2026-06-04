@@ -5,17 +5,23 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
 
 type SQLiteJournal struct {
-	db *sql.DB
+	db  *sql.DB
+	loc *time.Location
 }
 
 func NewSQLiteJournal(db *sql.DB) *SQLiteJournal {
-	return &SQLiteJournal{db: db}
+	return NewSQLiteJournalWithTimezone(db, "Asia/Shanghai")
+}
+
+func NewSQLiteJournalWithTimezone(db *sql.DB, timezone string) *SQLiteJournal {
+	return &SQLiteJournal{db: db, loc: loadLocation(timezone)}
 }
 
 func (j *SQLiteJournal) StartTurn(ctx context.Context, record TurnRecord) error {
@@ -32,9 +38,9 @@ func (j *SQLiteJournal) StartTurn(ctx context.Context, record TurnRecord) error 
 		record.Status = "running"
 	}
 	if record.StartedAt.IsZero() {
-		record.StartedAt = time.Now().UTC()
+		record.StartedAt = time.Now()
 	}
-	now := time.Now().UTC()
+	now := time.Now()
 	_, err := j.db.ExecContext(ctx, `
 		INSERT INTO turns (
 			id, idempotency_key, source, source_event_id, kind, session_id, persona_key,
@@ -54,7 +60,7 @@ func (j *SQLiteJournal) StartTurn(ctx context.Context, record TurnRecord) error 
 			started_at = excluded.started_at,
 			updated_at = excluded.updated_at,
 			completed_at = excluded.completed_at
-	`, record.TurnID, nullEmpty(record.IdempotencyKey), string(record.Source), record.SourceEventID, string(record.Kind), record.SessionID, record.PersonaKey, string(record.State), record.Status, record.ErrorKind, formatTime(record.StartedAt), formatTime(now), nullableTime(record.CompletedAt))
+	`, record.TurnID, nullEmpty(record.IdempotencyKey), string(record.Source), record.SourceEventID, string(record.Kind), record.SessionID, record.PersonaKey, string(record.State), record.Status, record.ErrorKind, j.formatTime(record.StartedAt), j.formatTime(now), j.nullableTime(record.CompletedAt))
 	if err != nil {
 		return fmt.Errorf("start turn: %w", err)
 	}
@@ -77,8 +83,8 @@ func (j *SQLiteJournal) RecordTransition(ctx context.Context, turnID string, fro
 	}
 	defer tx.Rollback()
 
-	now := time.Now().UTC()
-	if _, err := tx.ExecContext(ctx, `UPDATE turns SET state = ?, updated_at = ? WHERE id = ?`, string(to), formatTime(now), turnID); err != nil {
+	now := time.Now()
+	if _, err := tx.ExecContext(ctx, `UPDATE turns SET state = ?, updated_at = ? WHERE id = ?`, string(to), j.formatTime(now), turnID); err != nil {
 		return fmt.Errorf("update turn transition: %w", err)
 	}
 	payload := map[string]any{
@@ -90,7 +96,7 @@ func (j *SQLiteJournal) RecordTransition(ctx context.Context, turnID string, fro
 	if err != nil {
 		return err
 	}
-	if err := insertTurnEvent(ctx, tx, turnID, seq, metrics.Stage, "state_transition", payload, now); err != nil {
+	if err := j.insertTurnEvent(ctx, tx, turnID, seq, metrics.Stage, "state_transition", payload, now); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -107,7 +113,7 @@ func (j *SQLiteJournal) RecordEvent(ctx context.Context, turnID string, event Jo
 		return fmt.Errorf("turn id is required")
 	}
 	if event.CreatedAt.IsZero() {
-		event.CreatedAt = time.Now().UTC()
+		event.CreatedAt = time.Now()
 	}
 	tx, err := j.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -122,10 +128,10 @@ func (j *SQLiteJournal) RecordEvent(ctx context.Context, turnID string, event Jo
 			return err
 		}
 	}
-	if err := insertTurnEvent(ctx, tx, turnID, seq, event.Stage, event.Type, sanitizePayload(event.Payload), event.CreatedAt); err != nil {
+	if err := j.insertTurnEvent(ctx, tx, turnID, seq, event.Stage, event.Type, sanitizePayload(event.Payload), event.CreatedAt); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE turns SET updated_at = ? WHERE id = ?`, formatTime(time.Now().UTC()), turnID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE turns SET updated_at = ? WHERE id = ?`, j.formatTime(time.Now()), turnID); err != nil {
 		return fmt.Errorf("update turn event: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -142,7 +148,7 @@ func (j *SQLiteJournal) RecordOutbound(ctx context.Context, turnID string, event
 		return fmt.Errorf("turn id is required")
 	}
 	if event.CreatedAt.IsZero() {
-		event.CreatedAt = time.Now().UTC()
+		event.CreatedAt = time.Now()
 	}
 	event.TurnID = turnID
 	event = sanitizeOutboundEvent(event)
@@ -165,10 +171,10 @@ func (j *SQLiteJournal) RecordOutbound(ctx context.Context, turnID string, event
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO turn_outbound_events (id, turn_id, seq, event_type, payload_json, delivery_status, created_at)
 		VALUES (?, ?, ?, ?, ?, 'delivered', ?)
-	`, uuid.NewString(), turnID, seq, event.Type, payload, formatTime(event.CreatedAt)); err != nil {
+	`, uuid.NewString(), turnID, seq, event.Type, payload, j.formatTime(event.CreatedAt)); err != nil {
 		return fmt.Errorf("insert outbound event: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE turns SET updated_at = ? WHERE id = ?`, formatTime(time.Now().UTC()), turnID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE turns SET updated_at = ? WHERE id = ?`, j.formatTime(time.Now()), turnID); err != nil {
 		return fmt.Errorf("update turn outbound: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -187,12 +193,12 @@ func (j *SQLiteJournal) CompleteTurn(ctx context.Context, turnID, status, errorK
 	if status == "" {
 		status = "done"
 	}
-	now := time.Now().UTC()
+	now := time.Now()
 	_, err := j.db.ExecContext(ctx, `
 		UPDATE turns
 		SET status = ?, error_kind = ?, updated_at = ?, completed_at = ?
 		WHERE id = ?
-	`, status, errorKind, formatTime(now), formatTime(now), turnID)
+	`, status, errorKind, j.formatTime(now), j.formatTime(now), turnID)
 	if err != nil {
 		return fmt.Errorf("complete turn: %w", err)
 	}
@@ -313,7 +319,7 @@ func (j *SQLiteJournal) ListOutbound(ctx context.Context, turnID string) ([]Outb
 	return events, nil
 }
 
-func insertTurnEvent(ctx context.Context, tx *sql.Tx, turnID string, seq int64, stage StageName, eventType string, payload map[string]any, createdAt time.Time) error {
+func (j *SQLiteJournal) insertTurnEvent(ctx context.Context, tx *sql.Tx, turnID string, seq int64, stage StageName, eventType string, payload map[string]any, createdAt time.Time) error {
 	payloadJSON, err := marshalJSONObject(payload)
 	if err != nil {
 		return err
@@ -321,7 +327,7 @@ func insertTurnEvent(ctx context.Context, tx *sql.Tx, turnID string, seq int64, 
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO turn_events (id, turn_id, seq, stage, event_type, payload_json, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, uuid.NewString(), turnID, seq, string(stage), eventType, payloadJSON, formatTime(createdAt)); err != nil {
+	`, uuid.NewString(), turnID, seq, string(stage), eventType, payloadJSON, j.formatTime(createdAt)); err != nil {
 		return fmt.Errorf("insert turn event: %w", err)
 	}
 	return nil
@@ -383,11 +389,11 @@ func payloadMapFromPayload(payload map[string]any, key string) map[string]any {
 	return sanitizePayload(value)
 }
 
-func formatTime(ts time.Time) string {
+func (j *SQLiteJournal) formatTime(ts time.Time) string {
 	if ts.IsZero() {
 		return ""
 	}
-	return ts.UTC().Format(time.RFC3339Nano)
+	return ts.In(j.location()).Format(time.RFC3339Nano)
 }
 
 func parseTime(raw string) time.Time {
@@ -398,11 +404,30 @@ func parseTime(raw string) time.Time {
 	return ts
 }
 
-func nullableTime(ts time.Time) any {
+func (j *SQLiteJournal) nullableTime(ts time.Time) any {
 	if ts.IsZero() {
 		return nil
 	}
-	return formatTime(ts)
+	return j.formatTime(ts)
+}
+
+func (j *SQLiteJournal) location() *time.Location {
+	if j != nil && j.loc != nil {
+		return j.loc
+	}
+	return time.FixedZone("Asia/Shanghai", 8*60*60)
+}
+
+func loadLocation(name string) *time.Location {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "Asia/Shanghai"
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return time.FixedZone("Asia/Shanghai", 8*60*60)
+	}
+	return loc
 }
 
 func nullEmpty(value string) any {

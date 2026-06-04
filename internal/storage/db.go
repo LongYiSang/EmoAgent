@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/longyisang/emoagent/internal/config"
@@ -19,6 +20,11 @@ import (
 type DB struct {
 	db     *sql.DB
 	logger *slog.Logger
+	loc    *time.Location
+}
+
+type StorageOptions struct {
+	Timezone string
 }
 
 // SessionRecord is the DB representation of a conversation session.
@@ -77,8 +83,16 @@ type RuntimeSetting struct {
 
 // Open creates or opens a SQLite database, sets pragmas, and runs migrations.
 func Open(path string, logger *slog.Logger) (*DB, error) {
+	return OpenWithOptions(path, logger, StorageOptions{Timezone: "Asia/Shanghai"})
+}
+
+func OpenWithOptions(path string, logger *slog.Logger, opts StorageOptions) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("create db dir: %w", err)
+	}
+	loc, err := loadLocation(opts.Timezone)
+	if err != nil {
+		return nil, err
 	}
 
 	db, err := sql.Open("sqlite", path)
@@ -105,7 +119,19 @@ func Open(path string, logger *slog.Logger) (*DB, error) {
 	}
 
 	logger.Info("database opened", "path", path)
-	return &DB{db: db, logger: logger}, nil
+	return &DB{db: db, logger: logger, loc: loc}, nil
+}
+
+func loadLocation(name string) (*time.Location, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "Asia/Shanghai"
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return nil, fmt.Errorf("load timezone %q: %w", name, err)
+	}
+	return loc, nil
 }
 
 // Close closes the database connection.
@@ -133,10 +159,11 @@ func (d *DB) GetRuntimeConfig(key string) (string, bool, error) {
 
 // SetRuntimeConfig upserts a runtime config key-value pair.
 func (d *DB) SetRuntimeConfig(key, value string) error {
+	now := d.nowText()
 	_, err := d.db.Exec(`
-		INSERT INTO config_runtime (key, value, updated_at) VALUES (?, ?, datetime('now'))
-		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
-	`, key, value)
+		INSERT INTO config_runtime (key, value, updated_at) VALUES (?, ?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+	`, key, value, now)
 	return err
 }
 
@@ -166,14 +193,15 @@ func (d *DB) UpsertRuntimeSetting(namespace, key, valueJSON, source string) erro
 	if source == "" {
 		source = "ui"
 	}
+	now := d.nowText()
 	_, err := d.db.Exec(`
 		INSERT INTO runtime_settings (namespace, key, value_json, source, updated_at)
-		VALUES (?, ?, ?, ?, datetime('now'))
+		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(namespace, key) DO UPDATE SET
 			value_json = excluded.value_json,
 			source = excluded.source,
-			updated_at = datetime('now')
-	`, namespace, key, valueJSON, source)
+			updated_at = excluded.updated_at
+	`, namespace, key, valueJSON, source, now)
 	return err
 }
 
@@ -245,11 +273,12 @@ func (d *DB) UpsertLLMProvider(provider config.LLMProvider) error {
 	if err != nil {
 		return err
 	}
+	now := d.nowText()
 	_, err = d.db.Exec(`
 		INSERT INTO llm_providers (
 			id, name, preset_id, protocol, base_url, api_key_env, model_discovery, enabled, capabilities_json, updated_at
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			preset_id = excluded.preset_id,
@@ -259,8 +288,8 @@ func (d *DB) UpsertLLMProvider(provider config.LLMProvider) error {
 			model_discovery = excluded.model_discovery,
 			enabled = excluded.enabled,
 			capabilities_json = excluded.capabilities_json,
-			updated_at = datetime('now')
-	`, provider.ID, provider.Name, provider.PresetID, provider.Protocol, provider.BaseURL, provider.APIKeyEnv, discovery, boolInt(provider.Enabled), capabilities)
+			updated_at = excluded.updated_at
+	`, provider.ID, provider.Name, provider.PresetID, provider.Protocol, provider.BaseURL, provider.APIKeyEnv, discovery, boolInt(provider.Enabled), capabilities, now)
 	return err
 }
 
@@ -323,11 +352,12 @@ func (d *DB) DeleteLLMProvider(id string) error {
 }
 
 func (d *DB) UpdateProviderModelsCache(id, modelsJSON, updatedAt string) error {
+	now := d.nowText()
 	_, err := d.db.Exec(`
 		UPDATE llm_providers
-		SET models_cache_json = ?, models_cache_updated_at = ?, updated_at = datetime('now')
+		SET models_cache_json = ?, models_cache_updated_at = ?, updated_at = ?
 		WHERE id = ?
-	`, modelsJSON, updatedAt, id)
+	`, modelsJSON, updatedAt, now, id)
 	return err
 }
 
@@ -352,6 +382,7 @@ func (d *DB) UpsertAgentConfig(agent config.AgentConfig) error {
 	if err != nil {
 		return fmt.Errorf("context_overrides: %w", err)
 	}
+	now := d.nowText()
 
 	_, err = d.db.Exec(`
 		INSERT INTO agent_configs (
@@ -362,7 +393,7 @@ func (d *DB) UpsertAgentConfig(agent config.AgentConfig) error {
 			work_summary_provider_id, work_summary_model, work_summary_params_json,
 			context_overrides_json, updated_at
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			persona_key = excluded.persona_key,
@@ -379,13 +410,13 @@ func (d *DB) UpsertAgentConfig(agent config.AgentConfig) error {
 			work_summary_model = excluded.work_summary_model,
 			work_summary_params_json = excluded.work_summary_params_json,
 			context_overrides_json = excluded.context_overrides_json,
-			updated_at = datetime('now')
+			updated_at = excluded.updated_at
 	`, agent.ID, agent.Name, agent.PersonaKey,
 		agent.Emotion.Main.ProviderID, agent.Emotion.Main.Model, emotionMainParams,
 		agent.Emotion.Summary.ProviderID, agent.Emotion.Summary.Model, emotionSummaryParams,
 		agent.Work.Main.ProviderID, agent.Work.Main.Model, workMainParams,
 		agent.Work.Summary.ProviderID, agent.Work.Summary.Model, workSummaryParams,
-		contextOverrides)
+		contextOverrides, now)
 	return err
 }
 
@@ -470,9 +501,10 @@ func (d *DB) UpsertPersona(
 	if progressValue == "" || progressValue == "null" {
 		progressValue = "{}"
 	}
+	now := d.nowText()
 	_, err := d.db.Exec(`
 		INSERT INTO personas (key, name, description, system_prompt, tone, quirks, greeting, work_progress_phrases, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(key) DO UPDATE SET
 			name = excluded.name,
 			description = excluded.description,
@@ -481,8 +513,8 @@ func (d *DB) UpsertPersona(
 			quirks = excluded.quirks,
 			greeting = excluded.greeting,
 			work_progress_phrases = excluded.work_progress_phrases,
-			updated_at = datetime('now')
-	`, key, name, description, systemPrompt, tone, string(quirksJSON), greeting, progressValue)
+			updated_at = excluded.updated_at
+	`, key, name, description, systemPrompt, tone, string(quirksJSON), greeting, progressValue, now)
 	return err
 }
 
@@ -538,7 +570,7 @@ func (d *DB) CreateSession(ctx context.Context, id, persona string) error {
 		persona = "default"
 	}
 
-	now := nowUTC()
+	now := d.nowText()
 	_, err := d.db.ExecContext(ctx, `
 		INSERT INTO sessions (id, persona, created_at, updated_at)
 		VALUES (?, ?, ?, ?)
@@ -672,7 +704,7 @@ func (d *DB) AddMessageWithMetadata(ctx context.Context, id, sessionID, role, co
 	_, err = d.db.ExecContext(ctx, `
 		INSERT INTO messages (id, session_id, role, content, metadata, created_at)
 		VALUES (?, ?, ?, ?, ?, ?)
-	`, id, sessionID, role, content, metadataJSON, nowUTC())
+	`, id, sessionID, role, content, metadataJSON, d.nowText())
 	return err
 }
 
@@ -740,12 +772,23 @@ func (d *DB) UpdateSessionTimestamp(ctx context.Context, id string) error {
 		UPDATE sessions
 		SET updated_at = ?
 		WHERE id = ?
-	`, nowUTC(), id)
+	`, d.nowText(), id)
 	return err
 }
 
-func nowUTC() string {
-	return time.Now().UTC().Format(time.RFC3339Nano)
+func (d *DB) nowText() string {
+	return d.formatTime(time.Now())
+}
+
+func (d *DB) formatTime(t time.Time) string {
+	if t.IsZero() {
+		t = time.Now()
+	}
+	loc := d.loc
+	if loc == nil {
+		loc = time.FixedZone("Asia/Shanghai", 8*60*60)
+	}
+	return t.In(loc).Format(time.RFC3339Nano)
 }
 
 func validateMessageRole(role string) error {

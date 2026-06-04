@@ -105,10 +105,10 @@ func (a *App) Init(ctx context.Context, configPath string) error {
 	}
 	a.Config = cfg
 
-	a.Logger = logger.Init(cfg.Log.Level, cfg.Log.Format)
+	a.Logger = logger.InitWithTimezone(cfg.Log.Level, cfg.Log.Format, cfg.Time.Timezone)
 	a.Logger.Info("config loaded", "path", configPath)
 
-	db, err := storage.Open(cfg.DB.Path, a.Logger)
+	db, err := storage.OpenWithOptions(cfg.DB.Path, a.Logger, storage.StorageOptions{Timezone: cfg.Time.Timezone})
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
@@ -356,7 +356,10 @@ func (a *App) Run(ctx context.Context) error {
 	})
 	a.approvalService = approvalService
 	startMemoryExtractionBackground(ctx, a.Memory, a.DB, a.Logger, cfg.Memory.Extraction)
-	chatOptions := []chat.HandlerOption{chat.WithTurnPipelineConfig(cfg.Chat.TurnPipeline)}
+	chatOptions := []chat.HandlerOption{
+		chat.WithTurnPipelineConfig(cfg.Chat.TurnPipeline),
+		chat.WithTurnTimezone(cfg.Time.Timezone),
+	}
 	if a.DB != nil {
 		chatOptions = append(chatOptions, chat.WithTurnDB(a.DB.SqlDB()))
 	}
@@ -1279,10 +1282,22 @@ func (a *App) RefreshLLMProviderModels(id string) ([]llm.ModelInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := a.DB.UpdateProviderModelsCache(id, string(payload), time.Now().UTC().Format(time.RFC3339)); err != nil {
+	if err := a.DB.UpdateProviderModelsCache(id, string(payload), a.nowText()); err != nil {
 		return nil, err
 	}
 	return models, nil
+}
+
+func (a *App) nowText() string {
+	timezone := "Asia/Shanghai"
+	if a != nil && a.Config != nil && strings.TrimSpace(a.Config.Time.Timezone) != "" {
+		timezone = a.Config.Time.Timezone
+	}
+	loc, err := time.LoadLocation(timezone)
+	if err != nil {
+		loc = time.FixedZone("Asia/Shanghai", 8*60*60)
+	}
+	return time.Now().In(loc).Format(time.RFC3339Nano)
 }
 
 func (a *App) GetLLMProviderModels(id string) ([]llm.ModelInfo, error) {

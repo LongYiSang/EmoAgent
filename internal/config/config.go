@@ -13,6 +13,7 @@ import (
 
 type Config struct {
 	Server       ServerConfig       `yaml:"server"`
+	Time         TimeConfig         `yaml:"time"`
 	Chat         ChatConfig         `yaml:"chat"`
 	Context      ContextConfig      `yaml:"context"`
 	Work         WorkConfig         `yaml:"work"`
@@ -27,6 +28,10 @@ type Config struct {
 	WebFetch     WebFetchConfig     `yaml:"webfetch"`
 	Bash         BashConfig         `yaml:"bash"`
 	Plugins      PluginsConfig      `yaml:"plugins"`
+}
+
+type TimeConfig struct {
+	Timezone string `yaml:"timezone" json:"timezone"`
 }
 
 type LLMProvider struct {
@@ -577,6 +582,9 @@ func DefaultConfig() *Config {
 			Host: "127.0.0.1",
 			Port: 8080,
 		},
+		Time: TimeConfig{
+			Timezone: "Asia/Shanghai",
+		},
 		Chat: ChatConfig{
 			RealtimeStreaming: false,
 			TurnPipeline: TurnPipelineConfig{
@@ -758,12 +766,14 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	explicitMemoryExtractionTimezone, memoryExtractionTimezone := memoryExtractionTimezoneValue(data)
 	cfg.Chat.TurnPipeline.applyDefaults()
 	cfg.Work.ApplyDefaults()
 	cfg.WebFetch.applyDefaults()
 	cfg.Bash.applyDefaults()
 	cfg.Memory.Sidecar.applyDefaults()
 	cfg.Memory.Extraction.applyDefaults()
+	cfg.applyTimezoneDefaults(explicitMemoryExtractionTimezone, memoryExtractionTimezone)
 	cfg.Plugins.applyDefaults()
 	for i := range cfg.LLMProviders {
 		provider, err := cfg.LLMProviders[i].WithPresetDefaults()
@@ -798,10 +808,39 @@ func (c *TurnPipelineConfig) applyDefaults() {
 	}
 }
 
+func memoryExtractionTimezoneValue(data []byte) (bool, string) {
+	var raw struct {
+		Memory struct {
+			Extraction struct {
+				Timezone *string `yaml:"timezone"`
+			} `yaml:"extraction"`
+		} `yaml:"memory"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return false, ""
+	}
+	if raw.Memory.Extraction.Timezone == nil {
+		return false, ""
+	}
+	return true, *raw.Memory.Extraction.Timezone
+}
+
+func (c *Config) applyTimezoneDefaults(explicitMemoryExtractionTimezone bool, memoryExtractionTimezone string) {
+	if strings.TrimSpace(c.Time.Timezone) == "" {
+		c.Time.Timezone = "Asia/Shanghai"
+	}
+	if !explicitMemoryExtractionTimezone || strings.TrimSpace(memoryExtractionTimezone) == "" {
+		c.Memory.Extraction.Timezone = c.Time.Timezone
+	}
+}
+
 // Validate checks that required fields are set.
 func (c *Config) Validate() error {
 	if c.Server.Port < 1 || c.Server.Port > 65535 {
 		return fmt.Errorf("server.port must be 1-65535, got %d", c.Server.Port)
+	}
+	if _, err := time.LoadLocation(strings.TrimSpace(c.Time.Timezone)); err != nil {
+		return fmt.Errorf("time.timezone must be a valid IANA timezone: %w", err)
 	}
 	if err := c.Chat.TurnPipeline.Validate(); err != nil {
 		return fmt.Errorf("chat.turn_pipeline: %w", err)
@@ -1063,6 +1102,9 @@ func (c MemoryExtractionConfig) Validate() error {
 	}
 	if strings.TrimSpace(c.Timezone) == "" {
 		return fmt.Errorf("timezone is required")
+	}
+	if _, err := time.LoadLocation(strings.TrimSpace(c.Timezone)); err != nil {
+		return fmt.Errorf("timezone must be a valid IANA timezone: %w", err)
 	}
 	if c.Async.Enabled {
 		if c.Async.WorkerConcurrency <= 0 {

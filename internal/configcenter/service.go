@@ -92,6 +92,7 @@ type MemoryCoreCoreEffective struct {
 	PersonaID   string `json:"persona_id"`
 	AutoMigrate bool   `json:"auto_migrate"`
 	EnableFTS   bool   `json:"enable_fts"`
+	Timezone    string `json:"timezone"`
 }
 
 type MemoryCoreRetrievalEffective struct {
@@ -234,7 +235,7 @@ func (s *Service) BuildMemoryCoreOpenConfig(ctx context.Context, status *sidecar
 	if err != nil {
 		return MemoryCoreOpenConfig{}, err
 	}
-	overrides := memoryCoreOverridesFromConfig(runtimeCfg.Memory)
+	overrides := memoryCoreOverridesFromConfig(runtimeCfg.Memory, runtimeCfg.Time.Timezone)
 	if status != nil {
 		mergeSidecarStatusOverrides(&overrides, *status)
 	}
@@ -388,7 +389,7 @@ func (s *Service) memoryCoreEffective(seed *config.Config, providers []config.LL
 	if path == "" {
 		return nil, nil
 	}
-	overrides := memoryCoreOverridesFromConfig(seed.Memory)
+	overrides := memoryCoreOverridesFromConfig(seed.Memory, seed.Time.Timezone)
 	if status != nil {
 		mergeSidecarStatusOverrides(&overrides, *status)
 	}
@@ -423,6 +424,7 @@ func (s *Service) memoryCoreEffective(seed *config.Config, providers []config.LL
 			PersonaID:   cfg.Core.PersonaID,
 			AutoMigrate: cfg.Core.AutoMigrate,
 			EnableFTS:   cfg.Core.EnableFTS,
+			Timezone:    cfg.Core.Timezone,
 		},
 		Retrieval: MemoryCoreRetrievalEffective{
 			UseFTS:              cfg.Retrieval.UseFTS,
@@ -510,8 +512,12 @@ func appendProviderMapping(registry *memconfig.ProviderRegistry, mapping memconf
 	registry.LLM = append(registry.LLM, mapping)
 }
 
-func memoryCoreOverridesFromConfig(memory config.MemoryConfig) memconfig.ConfigOverrides {
+func memoryCoreOverridesFromConfig(memory config.MemoryConfig, timezone string) memconfig.ConfigOverrides {
 	enabled := memory.Enabled
+	timezone = strings.TrimSpace(timezone)
+	if timezone == "" {
+		timezone = "Asia/Shanghai"
+	}
 	finalMemoryCount := memory.Retrieval.FinalMemoryCount
 	contextBudgetTokens := memory.Retrieval.ContextBudgetTokens
 	useFTS := memory.Retrieval.UseFTS
@@ -529,6 +535,9 @@ func memoryCoreOverridesFromConfig(memory config.MemoryConfig) memconfig.ConfigO
 	mirrorSyncLimit := memory.Extraction.MirrorSync.Limit
 	overrides := memconfig.ConfigOverrides{
 		Enabled: &enabled,
+		Core: &memconfig.CoreOverrides{
+			Timezone: &timezone,
+		},
 		Retrieval: &memconfig.RetrievalOverrides{
 			FinalMemoryCount:    &finalMemoryCount,
 			ContextBudgetTokens: &contextBudgetTokens,

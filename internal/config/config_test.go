@@ -211,6 +211,31 @@ func TestLoadMissingFile(t *testing.T) {
 	}
 }
 
+func TestLoadEmptyMemoryExtractionTimezoneInheritsGlobalTimezone(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+time:
+  timezone: UTC
+memory:
+  extraction:
+    timezone: ""
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Time.Timezone != "UTC" {
+		t.Fatalf("time.timezone = %q, want UTC", cfg.Time.Timezone)
+	}
+	if cfg.Memory.Extraction.Timezone != "UTC" {
+		t.Fatalf("memory.extraction.timezone = %q, want UTC", cfg.Memory.Extraction.Timezone)
+	}
+}
+
 func TestLoadValidYAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

@@ -199,3 +199,41 @@ func TestUpdateMemorySegmentEpisodeMarksSuccessfulExtractionStale(t *testing.T) 
 		t.Fatalf("LastExtractedUntilAt = %q, want %q", got.LastExtractedUntilAt, untilAt)
 	}
 }
+
+func TestUpdateMemorySegmentEpisodeMarksMixedTimezoneExtractionStale(t *testing.T) {
+	ctx := context.Background()
+	db := testDBWithTimezone(t, "America/New_York")
+
+	if err := db.CreateSession(ctx, "chat-stale-mixed-timezone", "default"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if _, err := db.CreateMemorySegment(ctx, CreateMemorySegmentParams{
+		ID:              "segment-stale-mixed-timezone",
+		ChatSessionID:   "chat-stale-mixed-timezone",
+		PersonaID:       "default",
+		MemorySessionID: "memory-stale-mixed-timezone",
+	}); err != nil {
+		t.Fatalf("CreateMemorySegment: %v", err)
+	}
+	extractedUntil := time.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339Nano)
+	if _, err := db.SqlDB().Exec(`
+		UPDATE memory_segments
+		SET last_extracted_until_at = ?,
+		    extraction_status = ?
+		WHERE id = ?
+	`, extractedUntil, MemorySegmentExtractionStatusSucceeded, "segment-stale-mixed-timezone"); err != nil {
+		t.Fatalf("seed mixed timezone extraction state: %v", err)
+	}
+
+	if err := db.UpdateMemorySegmentEpisode(ctx, "segment-stale-mixed-timezone", "user", "episode-new"); err != nil {
+		t.Fatalf("UpdateMemorySegmentEpisode: %v", err)
+	}
+
+	got, err := db.GetMemorySegment(ctx, "segment-stale-mixed-timezone")
+	if err != nil {
+		t.Fatalf("GetMemorySegment: %v", err)
+	}
+	if got.ExtractionStatus != MemorySegmentExtractionStatusStale {
+		t.Fatalf("ExtractionStatus = %q, want stale", got.ExtractionStatus)
+	}
+}

@@ -17,10 +17,15 @@ import (
 
 func testDB(t *testing.T) *DB {
 	t.Helper()
+	return testDBWithTimezone(t, "Asia/Shanghai")
+}
+
+func testDBWithTimezone(t *testing.T, timezone string) *DB {
+	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.db")
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	db, err := Open(path, logger)
+	db, err := OpenWithOptions(path, logger, StorageOptions{Timezone: timezone})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

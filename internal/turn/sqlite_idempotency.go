@@ -7,11 +7,16 @@ import (
 )
 
 type SQLiteIdempotencyStore struct {
-	db *sql.DB
+	db  *sql.DB
+	loc *time.Location
 }
 
 func NewSQLiteIdempotencyStore(db *sql.DB) *SQLiteIdempotencyStore {
-	return &SQLiteIdempotencyStore{db: db}
+	return NewSQLiteIdempotencyStoreWithTimezone(db, "Asia/Shanghai")
+}
+
+func NewSQLiteIdempotencyStoreWithTimezone(db *sql.DB, timezone string) *SQLiteIdempotencyStore {
+	return &SQLiteIdempotencyStore{db: db, loc: loadLocation(timezone)}
 }
 
 func (s *SQLiteIdempotencyStore) Begin(key, turnID string) (IdempotencyResult, error) {
@@ -24,7 +29,7 @@ func (s *SQLiteIdempotencyStore) Begin(key, turnID string) (IdempotencyResult, e
 	if turnID == "" {
 		return IdempotencyResult{}, fmt.Errorf("turn id is required")
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := s.nowText()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return IdempotencyResult{}, fmt.Errorf("begin idempotency tx: %w", err)
@@ -88,7 +93,7 @@ func (s *SQLiteIdempotencyStore) Complete(key, status string) error {
 		UPDATE turn_idempotency
 		SET status = ?, updated_at = ?
 		WHERE idempotency_key = ?
-	`, status, time.Now().UTC().Format(time.RFC3339Nano), key)
+	`, status, s.nowText(), key)
 	if err != nil {
 		return fmt.Errorf("complete idempotency: %w", err)
 	}
@@ -100,4 +105,12 @@ func (s *SQLiteIdempotencyStore) Complete(key, status string) error {
 		return fmt.Errorf("idempotency key %q not found", key)
 	}
 	return nil
+}
+
+func (s *SQLiteIdempotencyStore) nowText() string {
+	loc := time.FixedZone("Asia/Shanghai", 8*60*60)
+	if s != nil && s.loc != nil {
+		loc = s.loc
+	}
+	return time.Now().In(loc).Format(time.RFC3339Nano)
 }
