@@ -604,7 +604,43 @@
           <div class="pane-head"><div><h2>Memory Core</h2><div class="hint">Effective runtime view</div></div></div>
           <div class="items"><button class="item active" type="button"><div class="item-title"><span>Core</span><span class="badge" id="memory-core-enabled">unknown</span></div><div class="item-meta" id="memory-core-path">config path</div></button></div>
         </aside>
-        <section class="detail-pane"><div class="section anim-up"><div class="hero"><div><h2>Memory Core</h2><div class="meta">Seed + runtime + MemoryCore effective config</div></div><button class="btn primary" id="save-memory-core" type="button">Save</button></div><div class="grid"><label class="check"><input type="checkbox" id="memory-enabled"> Enabled</label><div class="field"><label for="memory-config-path">Config path</label><input id="memory-config-path" class="mono"></div><div class="field"><label for="memory-manual-rules">Manual rules path</label><input id="memory-manual-rules" class="mono"></div></div><pre class="code" id="memory-core-json">{}</pre></div></section>
+        <section class="detail-pane">
+          <div class="section anim-up">
+            <div class="hero"><div><h2>Memory Core</h2><div class="meta">Seed + runtime + MemoryCore effective config</div></div><button class="btn primary" id="save-memory-core" type="button">Save</button></div>
+            <div class="grid"><label class="check"><input type="checkbox" id="memory-enabled"> Enabled</label><div class="field"><label for="memory-config-path">Config path</label><input id="memory-config-path" class="mono"></div><div class="field"><label for="memory-manual-rules">Manual rules path</label><input id="memory-manual-rules" class="mono"></div></div>
+            <pre class="code" id="memory-core-json">{}</pre>
+          </div>
+          <div class="section anim-up" id="natural-memory-card">
+            <div class="hero">
+              <div><h2>Natural Memory</h2><div class="meta">Sleep-cycle maintenance and manual runs</div></div>
+              <div class="actions">
+                <button class="btn ghost" id="natural-memory-reload" type="button">Latest</button>
+                <button class="btn ghost" id="natural-memory-dry-run" type="button">Dry-run</button>
+                <button class="btn primary" id="natural-memory-run-now" type="button">Run now</button>
+                <button class="btn primary" id="save-natural-memory" type="button">Save</button>
+              </div>
+            </div>
+            <div class="grid">
+              <label class="check"><input type="checkbox" id="natural-memory-enabled"> Enabled</label>
+              <label class="check"><input type="checkbox" id="natural-memory-scheduler"> Scheduler</label>
+              <label class="check"><input type="checkbox" id="natural-memory-run-missed"> Run missed</label>
+              <div class="field"><label for="natural-memory-tick-interval">Tick seconds</label><input id="natural-memory-tick-interval" type="number" min="1"></div>
+              <div class="field"><label for="natural-memory-local-time">Local time</label><input id="natural-memory-local-time" class="mono" placeholder="03:30"></div>
+              <div class="field"><label for="natural-memory-timezone">Timezone</label><input id="natural-memory-timezone" class="mono" placeholder="inherit"></div>
+              <label class="check"><input type="checkbox" id="natural-memory-manual-enabled"> Manual</label>
+              <label class="check"><input type="checkbox" id="natural-memory-manual-dry-run"> Allow dry-run</label>
+              <label class="check"><input type="checkbox" id="natural-memory-manual-force"> Allow force</label>
+              <label class="check"><input type="checkbox" id="natural-memory-manual-mark-sleep"> Mark sleep</label>
+              <label class="check"><input type="checkbox" id="natural-memory-mirror-after"> Mirror after run</label>
+              <label class="check"><input type="checkbox" id="natural-memory-mirror-strict"> Strict mirror</label>
+              <div class="field"><label for="natural-memory-mirror-limit">Mirror limit</label><input id="natural-memory-mirror-limit" type="number" min="1"></div>
+              <div class="field"><label>Latest status</label><div><span class="badge" id="natural-memory-latest-status">none</span></div></div>
+              <div class="field"><label>Latest run</label><div class="item-meta" id="natural-memory-latest-run">none</div></div>
+              <div class="field"><label>Latest updates</label><div class="item-meta" id="natural-memory-latest-counts">none</div></div>
+            </div>
+            <pre class="code" id="natural-memory-json">{}</pre>
+          </div>
+        </section>
       </div>
 
       <div class="admin-page" id="tab-pipelines">
@@ -664,6 +700,7 @@
     selectedPersona: '',
     effectiveConfig: null,
     sidecarStatus: null,
+    naturalMemoryLatest: null,
     configIssues: [],
   };
   const slotParamFields = {
@@ -722,6 +759,9 @@
     });
     if (['memory-core','pipelines','retrieval-mirror','sidecar','privacy-forget','retention','diagnostics'].includes(name)) {
       loadEffectiveConfig().catch(showError);
+    }
+    if (name === 'memory-core') {
+      loadNaturalMemoryLatest().catch(showError);
     }
     if (name === 'sidecar') {
       loadSidecarStatus().catch(showError);
@@ -1322,6 +1362,63 @@
     if (!raw) return fallback;
     return JSON.parse(raw);
   }
+  function runField(run, snake, pascal, fallback = '') {
+    if (!run) return fallback;
+    return run[snake] ?? run[pascal] ?? fallback;
+  }
+  function naturalMemoryConfig(memory) {
+    return memory.natural_memory || {};
+  }
+  function renderNaturalMemoryLatest() {
+    const resp = state.naturalMemoryLatest || {};
+    const run = resp.natural_run || resp.NaturalRun || null;
+    const statusValue = runField(run, 'status', 'Status', 'none');
+    const statusBadge = $('natural-memory-latest-status');
+    if (statusBadge) {
+      statusBadge.textContent = statusValue;
+      statusBadge.className = `badge ${statusValue === 'completed' ? 'ok' : statusValue === 'none' ? '' : 'warn'}`;
+    }
+    const runID = runField(run, 'run_id', 'RunID', '');
+    const runKind = runField(run, 'run_kind', 'RunKind', '');
+    const dryRun = !!runField(run, 'dry_run', 'DryRun', false);
+    $('natural-memory-latest-run').textContent = [runKind, runID, dryRun ? 'dry-run' : ''].filter(Boolean).join(' · ') || 'none';
+    const tierUpdates = runField(run, 'search_tier_updates', 'SearchTierUpdates', 0);
+    const mirrorUpdates = runField(run, 'mirror_updates_enqueued', 'MirrorUpdatesEnqueued', 0);
+    const candidates = runField(run, 'compression_candidates', 'CompressionCandidates', 0);
+    $('natural-memory-latest-counts').textContent = `tier ${tierUpdates} · mirror ${mirrorUpdates} · compression ${candidates}`;
+    const memory = memoryConfigCopy();
+    const memoryCore = (state.effectiveConfig && state.effectiveConfig.memory_core) || {};
+    const output = $('natural-memory-json');
+    if (output) output.textContent = pretty({host: naturalMemoryConfig(memory), memory_core: memoryCore.natural_memory || {}, latest: resp});
+  }
+  function renderNaturalMemory(memory, memoryCore) {
+    const cfg = naturalMemoryConfig(memory);
+    const manual = cfg.manual || {};
+    setChecked('natural-memory-enabled', cfg.enabled);
+    setChecked('natural-memory-scheduler', cfg.scheduler_enabled);
+    setChecked('natural-memory-run-missed', cfg.run_missed_on_start);
+    setValue('natural-memory-tick-interval', cfg.tick_interval_seconds);
+    setValue('natural-memory-local-time', cfg.local_time);
+    setValue('natural-memory-timezone', cfg.timezone);
+    setChecked('natural-memory-manual-enabled', manual.enabled);
+    setChecked('natural-memory-manual-dry-run', manual.allow_dry_run);
+    setChecked('natural-memory-manual-force', manual.allow_force);
+    setChecked('natural-memory-manual-mark-sleep', manual.mark_sleep_cycle_by_default || cfg.mark_sleep_cycle_by_default);
+    setChecked('natural-memory-mirror-after', cfg.mirror_sync_after_run);
+    setChecked('natural-memory-mirror-strict', cfg.fail_on_sync_error);
+    setValue('natural-memory-mirror-limit', cfg.mirror_sync_limit);
+    renderNaturalMemoryLatest();
+  }
+  async function loadNaturalMemoryLatest() {
+    state.naturalMemoryLatest = await request('/api/memory/natural-runs/latest');
+    renderNaturalMemoryLatest();
+    status('Natural memory latest loaded');
+  }
+  async function runNaturalMemory(dryRun) {
+    state.naturalMemoryLatest = await request('/api/memory/natural-runs', {method: 'POST', body: {mode: 'manual', dry_run: !!dryRun, explain: true}});
+    renderNaturalMemoryLatest();
+    status(dryRun ? 'Natural memory dry-run completed' : 'Natural memory run completed');
+  }
   function renderPipelineBindingForm(memory) {
     const bindings = memory.provider_bindings || {};
     $('pipeline-binding-form').innerHTML = memoryPipelineBindings.map(([key, label]) => {
@@ -1370,6 +1467,7 @@
     setValue('memory-config-path', memory.config_path);
     setValue('memory-manual-rules', memory.manual_rules_path);
     $('memory-core-json').textContent = pretty({memory, memory_core: memoryCore});
+    renderNaturalMemory(memory, memoryCore);
     renderPipelineBindingForm(memory);
     $('pipelines-json').textContent = pretty(memoryCore.pipelines || {});
     const retrieval = memory.retrieval || {};
@@ -1434,6 +1532,9 @@
   $('reload-agents').addEventListener('click', () => loadAgents().catch(showError));
   $('reload-personas').addEventListener('click', () => loadPersonas().catch(showError));
   $('reload-effective-config').addEventListener('click', () => loadEffectiveConfig().catch(showError));
+  $('natural-memory-reload').addEventListener('click', () => loadNaturalMemoryLatest().catch(showError));
+  $('natural-memory-dry-run').addEventListener('click', () => runNaturalMemory(true).catch(showError));
+  $('natural-memory-run-now').addEventListener('click', () => runNaturalMemory(false).catch(showError));
   $('sidecar-reload').addEventListener('click', () => loadSidecarStatus().catch(showError));
   $('sidecar-start').addEventListener('click', async () => { try { state.sidecarStatus = await request('/api/sidecar/start', {method:'POST'}); await loadSidecarStatus(); status('Sidecar started'); } catch (error) { showError(error); } });
   $('sidecar-stop').addEventListener('click', async () => { try { state.sidecarStatus = await request('/api/sidecar/stop', {method:'POST'}); await loadSidecarStatus(); status('Sidecar stopped'); } catch (error) { showError(error); } });
@@ -1444,6 +1545,30 @@
     memory.config_path = text($('memory-config-path').value);
     memory.manual_rules_path = text($('memory-manual-rules').value);
     await saveMemoryConfig(memory, 'Memory core saved');
+  } catch (error) { showError(error); } });
+  $('save-natural-memory').addEventListener('click', async () => { try {
+    const memory = memoryConfigCopy();
+    memory.natural_memory = memory.natural_memory || {};
+    const markSleep = $('natural-memory-manual-mark-sleep').checked;
+    Object.assign(memory.natural_memory, {
+      enabled: $('natural-memory-enabled').checked,
+      scheduler_enabled: $('natural-memory-scheduler').checked,
+      tick_interval_seconds: intOrUndefined($('natural-memory-tick-interval').value) || 60,
+      local_time: text($('natural-memory-local-time').value),
+      timezone: text($('natural-memory-timezone').value),
+      run_missed_on_start: $('natural-memory-run-missed').checked,
+      mirror_sync_after_run: $('natural-memory-mirror-after').checked,
+      mirror_sync_limit: intOrUndefined($('natural-memory-mirror-limit').value) || 100,
+      fail_on_sync_error: $('natural-memory-mirror-strict').checked,
+      mark_sleep_cycle_by_default: markSleep,
+      manual: {
+        enabled: $('natural-memory-manual-enabled').checked,
+        allow_dry_run: $('natural-memory-manual-dry-run').checked,
+        allow_force: $('natural-memory-manual-force').checked,
+        mark_sleep_cycle_by_default: markSleep,
+      },
+    });
+    await saveMemoryConfig(memory, 'Natural memory saved');
   } catch (error) { showError(error); } });
   $('save-pipelines').addEventListener('click', async () => { try {
     const memory = memoryConfigCopy();

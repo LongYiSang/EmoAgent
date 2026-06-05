@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -11,10 +12,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 	"github.com/longyisang/emoagent/internal/apperrors"
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/configcenter"
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/memoryhost"
 	"github.com/longyisang/emoagent/internal/protocol"
 	sidecarruntime "github.com/longyisang/emoagent/internal/sidecar"
 	"github.com/longyisang/emoagent/internal/storage"
@@ -48,6 +51,10 @@ type fakeAdminApp struct {
 	lastExtractionReq   MemoryExtractionRequest
 	lastExtractionList  MemoryExtractionListRequest
 	extractionJobs      []storage.MemoryExtractionJob
+	lastNaturalReq      NaturalMemoryRunRequest
+	naturalRunResp      memoryhost.NaturalMemoryRunResponse
+	naturalRunErr       error
+	latestNaturalResp   *memoryhost.NaturalMemoryRunResponse
 	lastSegmentSession  string
 	memorySegments      []storage.MemorySegment
 	chatSettings        config.ChatConfig
@@ -205,6 +212,13 @@ func (f *fakeAdminApp) QueueMemoryExtraction(_ context.Context, req MemoryExtrac
 func (f *fakeAdminApp) ListMemoryExtractions(_ context.Context, req MemoryExtractionListRequest) ([]storage.MemoryExtractionJob, error) {
 	f.lastExtractionList = req
 	return append([]storage.MemoryExtractionJob(nil), f.extractionJobs...), nil
+}
+func (f *fakeAdminApp) RunNaturalMemory(_ context.Context, req NaturalMemoryRunRequest) (memoryhost.NaturalMemoryRunResponse, error) {
+	f.lastNaturalReq = req
+	return f.naturalRunResp, f.naturalRunErr
+}
+func (f *fakeAdminApp) LatestNaturalMemoryRun(_ context.Context) (*memoryhost.NaturalMemoryRunResponse, error) {
+	return f.latestNaturalResp, nil
 }
 func (f *fakeAdminApp) ListMemorySegments(_ context.Context, sessionID string) ([]storage.MemorySegment, error) {
 	f.lastSegmentSession = sessionID
@@ -837,6 +851,80 @@ func TestHandleListMemoryExtractions(t *testing.T) {
 	}
 	if len(payload.Jobs) != 1 || payload.Jobs[0].ID != "job-1" {
 		t.Fatalf("payload.Jobs = %#v, want job-1", payload.Jobs)
+	}
+}
+
+func TestHandleRunNaturalMemoryDryRun(t *testing.T) {
+	app := &fakeAdminApp{
+		naturalRunResp: memoryhost.NaturalMemoryRunResponse{
+			NaturalRun: &memorycore.RunNaturalMemoryCycleResult{
+				RunID:     "natural-run-1",
+				PersonaID: "default",
+				RunKind:   memorycore.NaturalMemoryRunManual,
+				DryRun:    true,
+				Status:    memorycore.NaturalMemoryRunStatusCompleted,
+			},
+		},
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	body := bytes.NewBufferString(`{"persona_id":"default","mode":"manual","dry_run":true,"force":false,"explain":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/memory/natural-runs", body)
+	rec := httptest.NewRecorder()
+	handler.HandleRunNaturalMemory(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if app.lastNaturalReq.PersonaID != "default" || app.lastNaturalReq.Mode != "manual" || !app.lastNaturalReq.DryRun || !app.lastNaturalReq.Explain {
+		t.Fatalf("lastNaturalReq = %#v", app.lastNaturalReq)
+	}
+	var payload memoryhost.NaturalMemoryRunResponse
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if payload.NaturalRun == nil || payload.NaturalRun.RunID != "natural-run-1" || !payload.NaturalRun.DryRun {
+		t.Fatalf("payload = %#v, want dry run result", payload)
+	}
+}
+
+func TestHandleRunNaturalMemoryMirrorSyncFailureReturnsInternalServerError(t *testing.T) {
+	app := &fakeAdminApp{naturalRunErr: errors.New("mirror_sync_failed")}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/memory/natural-runs", bytes.NewBufferString(`{"mode":"manual"}`))
+	rec := httptest.NewRecorder()
+	handler.HandleRunNaturalMemory(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+}
+
+func TestHandleLatestNaturalMemoryRun(t *testing.T) {
+	app := &fakeAdminApp{
+		latestNaturalResp: &memoryhost.NaturalMemoryRunResponse{
+			NaturalRun: &memorycore.RunNaturalMemoryCycleResult{
+				RunID:  "natural-run-latest",
+				Status: memorycore.NaturalMemoryRunStatusCompleted,
+			},
+		},
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/memory/natural-runs/latest", nil)
+	rec := httptest.NewRecorder()
+	handler.HandleLatestNaturalMemoryRun(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var payload memoryhost.NaturalMemoryRunResponse
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if payload.NaturalRun == nil || payload.NaturalRun.RunID != "natural-run-latest" {
+		t.Fatalf("payload = %#v, want latest natural run", payload)
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/configcenter"
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/memoryhost"
 	"github.com/longyisang/emoagent/internal/progress"
 	"github.com/longyisang/emoagent/internal/protocol"
 	sidecarruntime "github.com/longyisang/emoagent/internal/sidecar"
@@ -51,6 +52,8 @@ type AdminApp interface {
 	ListSessionApprovals(ctx context.Context, sessionID string) ([]protocol.ApprovalRequest, error)
 	QueueMemoryExtraction(ctx context.Context, req MemoryExtractionRequest) (MemoryExtractionQueueResponse, error)
 	ListMemoryExtractions(ctx context.Context, req MemoryExtractionListRequest) ([]storage.MemoryExtractionJob, error)
+	RunNaturalMemory(ctx context.Context, req NaturalMemoryRunRequest) (memoryhost.NaturalMemoryRunResponse, error)
+	LatestNaturalMemoryRun(ctx context.Context) (*memoryhost.NaturalMemoryRunResponse, error)
 	ListMemorySegments(ctx context.Context, sessionID string) ([]storage.MemorySegment, error)
 	GetChatSettings() config.ChatConfig
 	UpdateChatSettings(settings config.ChatConfig) error
@@ -161,6 +164,18 @@ type MemoryExtractionQueueResponse struct {
 	EnqueuedCount int                           `json:"enqueued_count"`
 	SkippedCount  int                           `json:"skipped_count"`
 	Jobs          []storage.MemoryExtractionJob `json:"jobs"`
+}
+
+type NaturalMemoryRunRequest struct {
+	PersonaID      string `json:"persona_id"`
+	Mode           string `json:"mode"`
+	DryRun         bool   `json:"dry_run"`
+	Force          bool   `json:"force"`
+	Explain        bool   `json:"explain"`
+	LocalDate      string `json:"local_date"`
+	LocalTime      string `json:"local_time"`
+	Timezone       string `json:"timezone"`
+	MarkSleepCycle bool   `json:"mark_sleep_cycle"`
 }
 
 type memoryConfigRequest struct {
@@ -769,6 +784,34 @@ func (h *APIHandler) HandleListMemoryExtractions(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, map[string]any{"jobs": jobs})
 }
 
+func (h *APIHandler) HandleRunNaturalMemory(w http.ResponseWriter, r *http.Request) {
+	var req NaturalMemoryRunRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	normalizeNaturalMemoryRunRequest(&req)
+	resp, err := h.app.RunNaturalMemory(r.Context(), req)
+	if err != nil {
+		h.writeNaturalMemoryError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *APIHandler) HandleLatestNaturalMemoryRun(w http.ResponseWriter, r *http.Request) {
+	resp, err := h.app.LatestNaturalMemoryRun(r.Context())
+	if err != nil {
+		h.writeNaturalMemoryError(w, err)
+		return
+	}
+	if resp == nil {
+		writeJSON(w, http.StatusOK, memoryhost.NaturalMemoryRunResponse{})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (h *APIHandler) HandleListMemorySegments(w http.ResponseWriter, r *http.Request) {
 	segments, err := h.app.ListMemorySegments(r.Context(), strings.TrimSpace(r.URL.Query().Get("session_id")))
 	if err != nil {
@@ -776,6 +819,15 @@ func (h *APIHandler) HandleListMemorySegments(w http.ResponseWriter, r *http.Req
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"segments": segments})
+}
+
+func (h *APIHandler) writeNaturalMemoryError(w http.ResponseWriter, err error) {
+	if isNaturalMemoryValidationError(err) {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	h.logger.Error("natural memory internal error", "error", err)
+	writeError(w, http.StatusInternalServerError, "internal server error")
 }
 
 func (h *APIHandler) writeLLMProviderError(w http.ResponseWriter, err error) {
@@ -914,6 +966,15 @@ func isMemoryExtractionValidationError(err error) bool {
 		strings.Contains(message, "memory extraction")
 }
 
+func isNaturalMemoryValidationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "natural memory") ||
+		strings.Contains(message, "mode")
+}
+
 func normalizeMemoryExtractionRequest(req *MemoryExtractionRequest) {
 	if req == nil {
 		return
@@ -923,6 +984,17 @@ func normalizeMemoryExtractionRequest(req *MemoryExtractionRequest) {
 	req.PersonaID = strings.TrimSpace(req.PersonaID)
 	req.Scope = strings.TrimSpace(req.Scope)
 	req.Mode = strings.TrimSpace(req.Mode)
+}
+
+func normalizeNaturalMemoryRunRequest(req *NaturalMemoryRunRequest) {
+	if req == nil {
+		return
+	}
+	req.PersonaID = strings.TrimSpace(req.PersonaID)
+	req.Mode = strings.TrimSpace(req.Mode)
+	req.LocalDate = strings.TrimSpace(req.LocalDate)
+	req.LocalTime = strings.TrimSpace(req.LocalTime)
+	req.Timezone = strings.TrimSpace(req.Timezone)
 }
 
 func normalizeQuirks(quirks []string) []string {

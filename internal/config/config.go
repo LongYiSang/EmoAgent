@@ -58,6 +58,7 @@ type MemoryConfig struct {
 	Extraction        MemoryExtractionConfig             `yaml:"extraction" json:"extraction"`
 	Sidecar           MemorySidecarConfig                `yaml:"sidecar" json:"sidecar"`
 	ProviderBindings  MemoryProviderBindingsConfig       `yaml:"provider_bindings" json:"provider_bindings"`
+	NaturalMemory     MemoryNaturalMemoryConfig          `yaml:"natural_memory" json:"natural_memory"`
 	Retention         *memconfig.RetentionConfig         `yaml:"retention,omitempty" json:"retention,omitempty"`
 	ForgettingPrivacy *memconfig.ForgettingPrivacyConfig `yaml:"forgetting_privacy,omitempty" json:"forgetting_privacy,omitempty"`
 	AgentAffect       *memconfig.AgentAffectConfig       `yaml:"agent_affect,omitempty" json:"agent_affect,omitempty"`
@@ -131,6 +132,27 @@ type MemoryExtractionMirrorConfig struct {
 	IntervalSeconds           int  `yaml:"interval_seconds" json:"interval_seconds"`
 	Limit                     int  `yaml:"limit" json:"limit"`
 	FailExtractionOnSyncError bool `yaml:"fail_extraction_on_sync_error" json:"fail_extraction_on_sync_error"`
+}
+
+type MemoryNaturalMemoryConfig struct {
+	Enabled                 bool                            `yaml:"enabled" json:"enabled"`
+	SchedulerEnabled        bool                            `yaml:"scheduler_enabled" json:"scheduler_enabled"`
+	TickIntervalSeconds     int                             `yaml:"tick_interval_seconds" json:"tick_interval_seconds"`
+	LocalTime               string                          `yaml:"local_time" json:"local_time"`
+	Timezone                string                          `yaml:"timezone" json:"timezone"`
+	RunMissedOnStart        bool                            `yaml:"run_missed_on_start" json:"run_missed_on_start"`
+	MirrorSyncAfterRun      bool                            `yaml:"mirror_sync_after_run" json:"mirror_sync_after_run"`
+	MirrorSyncLimit         int                             `yaml:"mirror_sync_limit" json:"mirror_sync_limit"`
+	FailOnSyncError         bool                            `yaml:"fail_on_sync_error" json:"fail_on_sync_error"`
+	Manual                  MemoryNaturalMemoryManualConfig `yaml:"manual" json:"manual"`
+	MarkSleepCycleByDefault bool                            `yaml:"mark_sleep_cycle_by_default" json:"mark_sleep_cycle_by_default"`
+}
+
+type MemoryNaturalMemoryManualConfig struct {
+	Enabled                 bool `yaml:"enabled" json:"enabled"`
+	AllowDryRun             bool `yaml:"allow_dry_run" json:"allow_dry_run"`
+	AllowForce              bool `yaml:"allow_force" json:"allow_force"`
+	MarkSleepCycleByDefault bool `yaml:"mark_sleep_cycle_by_default" json:"mark_sleep_cycle_by_default"`
 }
 
 type MemorySemanticDedupConfig struct {
@@ -692,6 +714,20 @@ func DefaultConfig() *Config {
 				RepairEnabled: true,
 				AuditEnabled:  true,
 			},
+			NaturalMemory: MemoryNaturalMemoryConfig{
+				Enabled:             false,
+				SchedulerEnabled:    true,
+				TickIntervalSeconds: 60,
+				LocalTime:           "03:30",
+				Timezone:            "",
+				MirrorSyncAfterRun:  true,
+				MirrorSyncLimit:     100,
+				Manual: MemoryNaturalMemoryManualConfig{
+					Enabled:     true,
+					AllowDryRun: true,
+					AllowForce:  true,
+				},
+			},
 		},
 		Log: LogConfig{
 			Level:  "info",
@@ -773,6 +809,7 @@ func Load(path string) (*Config, error) {
 	cfg.Bash.applyDefaults()
 	cfg.Memory.Sidecar.applyDefaults()
 	cfg.Memory.Extraction.applyDefaults()
+	cfg.Memory.NaturalMemory.applyDefaults()
 	cfg.applyTimezoneDefaults(explicitMemoryExtractionTimezone, memoryExtractionTimezone)
 	cfg.Plugins.applyDefaults()
 	for i := range cfg.LLMProviders {
@@ -864,6 +901,9 @@ func (c *Config) Validate() error {
 	}
 	if err := c.Memory.Extraction.Validate(); err != nil {
 		return fmt.Errorf("memory.extraction: %w", err)
+	}
+	if err := c.Memory.NaturalMemory.Validate(); err != nil {
+		return fmt.Errorf("memory.natural_memory.%w", err)
 	}
 	if err := c.Context.Validate(); err != nil {
 		return fmt.Errorf("context: %w", err)
@@ -1074,6 +1114,18 @@ func (c *MemorySidecarConfig) applyDefaults() {
 	}
 }
 
+func (c *MemoryNaturalMemoryConfig) applyDefaults() {
+	if c.TickIntervalSeconds == 0 {
+		c.TickIntervalSeconds = 60
+	}
+	if c.LocalTime == "" {
+		c.LocalTime = "03:30"
+	}
+	if c.MirrorSyncLimit == 0 {
+		c.MirrorSyncLimit = 100
+	}
+}
+
 func (c MemoryExtractionConfig) Validate() error {
 	if !c.Enabled {
 		return nil
@@ -1154,6 +1206,29 @@ func (c MemoryExtractionConfig) Validate() error {
 		if c.MirrorSync.Limit <= 0 {
 			return fmt.Errorf("mirror_sync.limit must be > 0")
 		}
+	}
+	return nil
+}
+
+func (c MemoryNaturalMemoryConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	if c.SchedulerEnabled && c.TickIntervalSeconds <= 0 {
+		return fmt.Errorf("tick_interval_seconds must be > 0")
+	}
+	if strings.TrimSpace(c.LocalTime) != "" {
+		if _, err := time.Parse("15:04", strings.TrimSpace(c.LocalTime)); err != nil {
+			return fmt.Errorf("local_time must be HH:mm")
+		}
+	}
+	if strings.TrimSpace(c.Timezone) != "" {
+		if _, err := time.LoadLocation(strings.TrimSpace(c.Timezone)); err != nil {
+			return fmt.Errorf("timezone must be a valid IANA timezone: %w", err)
+		}
+	}
+	if c.MirrorSyncAfterRun && c.MirrorSyncLimit <= 0 {
+		return fmt.Errorf("mirror_sync_limit must be > 0")
 	}
 	return nil
 }

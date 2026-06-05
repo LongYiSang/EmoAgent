@@ -166,6 +166,18 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Memory.Extraction.MirrorSync.FailExtractionOnSyncError {
 		t.Error("default memory.extraction.mirror_sync.fail_extraction_on_sync_error = true, want false")
 	}
+	if cfg.Memory.NaturalMemory.Enabled {
+		t.Error("default memory.natural_memory.enabled = true, want false")
+	}
+	if !cfg.Memory.NaturalMemory.Manual.Enabled {
+		t.Error("default memory.natural_memory.manual.enabled = false, want true")
+	}
+	if !cfg.Memory.NaturalMemory.Manual.AllowDryRun || !cfg.Memory.NaturalMemory.Manual.AllowForce {
+		t.Fatalf("default memory.natural_memory.manual = %#v, want dry-run and force allowed", cfg.Memory.NaturalMemory.Manual)
+	}
+	if cfg.Memory.NaturalMemory.TickIntervalSeconds != 60 {
+		t.Errorf("default memory.natural_memory.tick_interval_seconds = %d, want 60", cfg.Memory.NaturalMemory.TickIntervalSeconds)
+	}
 	if cfg.Memory.Extraction.AllowSensitiveExtraction {
 		t.Error("default memory.extraction.allow_sensitive_extraction = true, want false")
 	}
@@ -233,6 +245,31 @@ memory:
 	}
 	if cfg.Memory.Extraction.Timezone != "UTC" {
 		t.Fatalf("memory.extraction.timezone = %q, want UTC", cfg.Memory.Extraction.Timezone)
+	}
+}
+
+func TestLoadMemoryNaturalMemoryManualCanBeExplicitlyDisabled(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+memory:
+  natural_memory:
+    enabled: true
+    manual:
+      enabled: false
+      allow_dry_run: false
+      allow_force: false
+      mark_sleep_cycle_by_default: false
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Memory.NaturalMemory.Manual.Enabled || cfg.Memory.NaturalMemory.Manual.AllowDryRun || cfg.Memory.NaturalMemory.Manual.AllowForce || cfg.Memory.NaturalMemory.Manual.MarkSleepCycleByDefault {
+		t.Fatalf("memory.natural_memory.manual = %#v, want explicitly disabled", cfg.Memory.NaturalMemory.Manual)
 	}
 }
 
@@ -371,6 +408,21 @@ memory:
       threshold_profile: default_v0
     repair_enabled: false
     audit_enabled: true
+  natural_memory:
+    enabled: true
+    scheduler_enabled: true
+    tick_interval_seconds: 90
+    local_time: "03:30"
+    timezone: Asia/Shanghai
+    run_missed_on_start: true
+    mirror_sync_after_run: true
+    mirror_sync_limit: 25
+    fail_on_sync_error: false
+    manual:
+      enabled: true
+      allow_dry_run: true
+      allow_force: false
+      mark_sleep_cycle_by_default: true
 `), 0o644)
 
 	cfg, err := Load(path)
@@ -514,6 +566,18 @@ memory:
 	if !cfg.Memory.Extraction.RawLog.Enabled || cfg.Memory.Extraction.RawLog.Directory != "./debug/memory_extraction_raw" {
 		t.Fatalf("memory.extraction.raw_log = %#v", cfg.Memory.Extraction.RawLog)
 	}
+	if !cfg.Memory.NaturalMemory.Enabled || !cfg.Memory.NaturalMemory.SchedulerEnabled {
+		t.Fatalf("memory.natural_memory enabled flags = %#v", cfg.Memory.NaturalMemory)
+	}
+	if cfg.Memory.NaturalMemory.TickIntervalSeconds != 90 || cfg.Memory.NaturalMemory.LocalTime != "03:30" || cfg.Memory.NaturalMemory.Timezone != "Asia/Shanghai" {
+		t.Fatalf("memory.natural_memory schedule = %#v", cfg.Memory.NaturalMemory)
+	}
+	if !cfg.Memory.NaturalMemory.RunMissedOnStart || !cfg.Memory.NaturalMemory.MirrorSyncAfterRun || cfg.Memory.NaturalMemory.MirrorSyncLimit != 25 || cfg.Memory.NaturalMemory.FailOnSyncError {
+		t.Fatalf("memory.natural_memory run/mirror = %#v", cfg.Memory.NaturalMemory)
+	}
+	if !cfg.Memory.NaturalMemory.Manual.Enabled || !cfg.Memory.NaturalMemory.Manual.AllowDryRun || cfg.Memory.NaturalMemory.Manual.AllowForce || !cfg.Memory.NaturalMemory.Manual.MarkSleepCycleByDefault {
+		t.Fatalf("memory.natural_memory.manual = %#v", cfg.Memory.NaturalMemory.Manual)
+	}
 	// Default should still apply for unset fields.
 	if cfg.DB.Path != "./data/emo.db" {
 		t.Errorf("db.path = %q, want default", cfg.DB.Path)
@@ -647,6 +711,60 @@ func TestValidateMemoryExtractionHostModes(t *testing.T) {
 	err := cfg.Validate()
 	if err == nil || !strings.Contains(err.Error(), "manual_pin_mode must be validate, dry_run, or apply") {
 		t.Fatalf("Validate error = %v", err)
+	}
+}
+
+func TestValidateMemoryNaturalMemoryConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		mut  func(*Config)
+		want string
+	}{
+		{
+			name: "invalid local time",
+			mut: func(cfg *Config) {
+				cfg.Memory.NaturalMemory.Enabled = true
+				cfg.Memory.NaturalMemory.LocalTime = "25:00"
+			},
+			want: "memory.natural_memory.local_time must be HH:mm",
+		},
+		{
+			name: "scheduler interval",
+			mut: func(cfg *Config) {
+				cfg.Memory.NaturalMemory.Enabled = true
+				cfg.Memory.NaturalMemory.SchedulerEnabled = true
+				cfg.Memory.NaturalMemory.TickIntervalSeconds = 0
+			},
+			want: "memory.natural_memory.tick_interval_seconds must be > 0",
+		},
+		{
+			name: "invalid timezone",
+			mut: func(cfg *Config) {
+				cfg.Memory.NaturalMemory.Enabled = true
+				cfg.Memory.NaturalMemory.Timezone = "Mars/Base"
+			},
+			want: "memory.natural_memory.timezone must be a valid IANA timezone",
+		},
+		{
+			name: "mirror limit",
+			mut: func(cfg *Config) {
+				cfg.Memory.NaturalMemory.Enabled = true
+				cfg.Memory.NaturalMemory.MirrorSyncAfterRun = true
+				cfg.Memory.NaturalMemory.MirrorSyncLimit = 0
+			},
+			want: "memory.natural_memory.mirror_sync_limit must be > 0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			tt.mut(cfg)
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Validate error = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 

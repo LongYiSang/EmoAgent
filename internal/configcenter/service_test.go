@@ -174,6 +174,9 @@ func TestBuildEffectiveMergesRuntimeSettingsIntoMemoryCoreAndSidecar(t *testing.
 	if effective.MemoryCore.SemanticOps.Curation.LLM.Thinking.Type != "enabled" {
 		t.Fatalf("curation thinking = %#v", effective.MemoryCore.SemanticOps.Curation.LLM.Thinking)
 	}
+	if effective.MemoryCore.NaturalMemory.SleepCycle.LocalTime != "03:30" {
+		t.Fatalf("natural memory local time = %q, want 03:30", effective.MemoryCore.NaturalMemory.SleepCycle.LocalTime)
+	}
 	for _, want := range []string{
 		`provider = "openai-compatible"`,
 		`base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"`,
@@ -184,6 +187,31 @@ func TestBuildEffectiveMergesRuntimeSettingsIntoMemoryCoreAndSidecar(t *testing.
 		if !strings.Contains(effective.SidecarGeneratedConfig, want) {
 			t.Fatalf("generated sidecar TOML missing %q:\n%s", want, effective.SidecarGeneratedConfig)
 		}
+	}
+}
+
+func TestBuildMemoryCoreOpenConfigCarriesNaturalMemoryRuntimeOverrides(t *testing.T) {
+	db := openConfigCenterDB(t)
+	seed := config.DefaultConfig()
+	seed.Memory.Enabled = true
+	seed.Memory.ConfigPath = writeConfigCenterMemoryCoreConfig(t)
+	if err := db.UpsertRuntimeSetting("memory.natural_memory", "config", `{"enabled":true,"local_time":"04:10","timezone":"UTC","run_missed_on_start":true,"manual":{"enabled":true,"allow_dry_run":true,"allow_force":false,"mark_sleep_cycle_by_default":true}}`, "ui"); err != nil {
+		t.Fatalf("UpsertRuntimeSetting natural_memory: %v", err)
+	}
+
+	svc := NewService(seed, db)
+	openCfg, err := svc.BuildMemoryCoreOpenConfig(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("BuildMemoryCoreOpenConfig: %v", err)
+	}
+	if !openCfg.NaturalMemory.Configured || !openCfg.NaturalMemory.Enabled {
+		t.Fatalf("natural memory overrides = %#v, want configured enabled", openCfg.NaturalMemory)
+	}
+	if openCfg.NaturalMemory.LocalTime != "04:10" || openCfg.NaturalMemory.Timezone != "UTC" || !openCfg.NaturalMemory.RunMissedOnStart {
+		t.Fatalf("natural memory schedule overrides = %#v", openCfg.NaturalMemory)
+	}
+	if !openCfg.NaturalMemory.ManualEnabled || !openCfg.NaturalMemory.AllowDryRun || openCfg.NaturalMemory.AllowForce || !openCfg.NaturalMemory.MarkSleepCycleByDefault {
+		t.Fatalf("natural memory manual overrides = %#v", openCfg.NaturalMemory)
 	}
 }
 

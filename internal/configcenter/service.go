@@ -38,6 +38,7 @@ type MemoryCoreOpenConfig struct {
 	Overrides        memconfig.ConfigOverrides
 	ProviderRegistry memconfig.ProviderRegistry
 	Runtime          memconfig.RuntimeValidationOptions
+	NaturalMemory    memoryhost.NaturalMemoryCoreOverrides
 	Memory           config.MemoryConfig
 	Issues           []ConfigIssue
 }
@@ -82,6 +83,7 @@ type MemoryCoreEffective struct {
 	Sidecar           MemoryCoreSidecarEffective        `json:"sidecar"`
 	Mirror            MemoryCoreMirrorEffective         `json:"mirror"`
 	SemanticOps       memconfig.SemanticOpsConfig       `json:"semantic_ops"`
+	NaturalMemory     memconfig.NaturalMemoryConfig     `json:"natural_memory"`
 	Retention         memconfig.RetentionConfig         `json:"retention"`
 	ForgettingPrivacy memconfig.ForgettingPrivacyConfig `json:"forgetting_privacy"`
 	AgentAffect       memconfig.AgentAffectConfig       `json:"agent_affect"`
@@ -250,8 +252,9 @@ func (s *Service) BuildMemoryCoreOpenConfig(ctx context.Context, status *sidecar
 				return value
 			},
 		},
-		Memory: runtimeCfg.Memory,
-		Issues: runtimeIssues,
+		NaturalMemory: naturalMemoryCoreOverridesFromConfig(runtimeCfg.Memory.NaturalMemory),
+		Memory:        runtimeCfg.Memory,
+		Issues:        runtimeIssues,
 	}, nil
 }
 
@@ -393,6 +396,7 @@ func (s *Service) memoryCoreEffective(seed *config.Config, providers []config.LL
 	if status != nil {
 		mergeSidecarStatusOverrides(&overrides, *status)
 	}
+	naturalMemoryOverrides := naturalMemoryCoreOverridesFromConfig(seed.Memory.NaturalMemory)
 	cfg, err := memconfig.LoadEffective(memconfig.LoadEffectiveOptions{
 		ConfigPath:       path,
 		ProviderRegistry: s.providerRegistry(providers, seed.Memory),
@@ -408,6 +412,7 @@ func (s *Service) memoryCoreEffective(seed *config.Config, providers []config.LL
 			Message:  fmt.Sprintf("load memorycore config %q: %v", path, err),
 		}}
 	}
+	memoryhost.ApplyNaturalMemoryCoreOverrides(&cfg, naturalMemoryOverrides)
 	issues := []ConfigIssue{}
 	if err := memoryhost.ValidateLLMProviderBindings(cfg); err != nil {
 		issues = append(issues, ConfigIssue{
@@ -444,10 +449,25 @@ func (s *Service) memoryCoreEffective(seed *config.Config, providers []config.LL
 			RebuildOnStart: cfg.Mirror.RebuildOnStart,
 		},
 		SemanticOps:       cfg.SemanticOps,
+		NaturalMemory:     cfg.NaturalMemory,
 		Retention:         cfg.Retention,
 		ForgettingPrivacy: cfg.ForgettingPrivacy,
 		AgentAffect:       cfg.AgentAffect,
 	}, issues
+}
+
+func naturalMemoryCoreOverridesFromConfig(cfg config.MemoryNaturalMemoryConfig) memoryhost.NaturalMemoryCoreOverrides {
+	return memoryhost.NaturalMemoryCoreOverrides{
+		Configured:              true,
+		Enabled:                 cfg.Enabled,
+		LocalTime:               strings.TrimSpace(cfg.LocalTime),
+		Timezone:                strings.TrimSpace(cfg.Timezone),
+		RunMissedOnStart:        cfg.RunMissedOnStart,
+		ManualEnabled:           cfg.Manual.Enabled,
+		AllowDryRun:             cfg.Manual.AllowDryRun,
+		AllowForce:              cfg.Manual.AllowForce,
+		MarkSleepCycleByDefault: cfg.Manual.MarkSleepCycleByDefault || cfg.MarkSleepCycleByDefault,
+	}
 }
 
 func (s *Service) providerRegistry(providers []config.LLMProvider, memory config.MemoryConfig) memconfig.ProviderRegistry {

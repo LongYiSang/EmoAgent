@@ -24,6 +24,7 @@ type OpenConfigOptions struct {
 	Overrides        memconfig.ConfigOverrides
 	ProviderRegistry memconfig.ProviderRegistry
 	Runtime          memconfig.RuntimeValidationOptions
+	NaturalMemory    NaturalMemoryCoreOverrides
 	Logger           *slog.Logger
 }
 
@@ -53,6 +54,7 @@ func OpenFromConfigWithOptions(ctx context.Context, opts OpenConfigOptions) (*Ho
 	if err := ValidateLLMProviderBindings(cfg); err != nil {
 		return nil, fmt.Errorf("validate memorycore provider bindings: %w", err)
 	}
+	ApplyNaturalMemoryCoreOverrides(&cfg, opts.NaturalMemory)
 	if !cfg.Enabled {
 		return nil, fmt.Errorf("memorycore config enabled must be true")
 	}

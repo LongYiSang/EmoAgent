@@ -198,6 +198,22 @@ memory:
     repair_enabled: true
     audit_enabled: true
 
+  natural_memory:
+    enabled: true
+    scheduler_enabled: true
+    tick_interval_seconds: 60
+    local_time: "03:30"
+    timezone: ""
+    run_missed_on_start: false
+    mirror_sync_after_run: true
+    mirror_sync_limit: 100
+    fail_on_sync_error: false
+    manual:
+      enabled: true
+      allow_dry_run: true
+      allow_force: true
+      mark_sleep_cycle_by_default: false
+
   sidecar:
     enabled: true
     managed: true

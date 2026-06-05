@@ -19,6 +19,7 @@ import (
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/configcenter"
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/memoryhost"
 	"github.com/longyisang/emoagent/internal/plugin"
 	"github.com/longyisang/emoagent/internal/protocol"
 	sidecarruntime "github.com/longyisang/emoagent/internal/sidecar"
@@ -122,6 +123,12 @@ func (a *routeTestAdminApp) QueueMemoryExtraction(ctx context.Context, req web.M
 	return web.MemoryExtractionQueueResponse{}, nil
 }
 func (a *routeTestAdminApp) ListMemoryExtractions(ctx context.Context, req web.MemoryExtractionListRequest) ([]storage.MemoryExtractionJob, error) {
+	return nil, nil
+}
+func (a *routeTestAdminApp) RunNaturalMemory(ctx context.Context, req web.NaturalMemoryRunRequest) (memoryhost.NaturalMemoryRunResponse, error) {
+	return memoryhost.NaturalMemoryRunResponse{}, nil
+}
+func (a *routeTestAdminApp) LatestNaturalMemoryRun(ctx context.Context) (*memoryhost.NaturalMemoryRunResponse, error) {
 	return nil, nil
 }
 func (a *routeTestAdminApp) ListMemorySegments(ctx context.Context, sessionID string) ([]storage.MemorySegment, error) {
@@ -548,6 +555,28 @@ func TestRegisterRoutesAgentConfigDispatch(t *testing.T) {
 
 	t.Run("memory config route dispatches", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/memory/config", nil)
+		rec := httptest.NewRecorder()
+
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+	})
+
+	t.Run("natural memory route dispatches", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/memory/natural-runs", strings.NewReader(`{"mode":"manual","dry_run":true}`))
+		rec := httptest.NewRecorder()
+
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+	})
+
+	t.Run("natural memory latest route dispatches", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/memory/natural-runs/latest", nil)
 		rec := httptest.NewRecorder()
 
 		mux.ServeHTTP(rec, req)

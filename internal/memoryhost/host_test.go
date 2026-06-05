@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	memconfig "github.com/longyisang/emoagent-memorycore/config"
 	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/storage"
@@ -124,6 +125,124 @@ func TestOpenFromConfigWithOptionsUsesProviderRegistry(t *testing.T) {
 
 	if _, err := os.Stat(dbPath); err != nil {
 		t.Fatalf("memory db was not created: %v", err)
+	}
+}
+
+func TestOpenFromConfigWithOptionsAppliesNaturalMemoryRuntimeOverrides(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "memory.db")
+	configPath := writeMemoryCoreConfig(t, dir, true, true, dbPath)
+
+	host, err := OpenFromConfigWithOptions(context.Background(), OpenConfigOptions{
+		ConfigPath: configPath,
+		NaturalMemory: NaturalMemoryCoreOverrides{
+			Configured:              true,
+			Enabled:                 true,
+			LocalTime:               "04:20",
+			Timezone:                "UTC",
+			RunMissedOnStart:        false,
+			ManualEnabled:           true,
+			AllowDryRun:             true,
+			AllowForce:              false,
+			MarkSleepCycleByDefault: true,
+		},
+		Logger: testMemoryLogger(),
+	})
+	if err != nil {
+		t.Fatalf("OpenFromConfigWithOptions: %v", err)
+	}
+	t.Cleanup(func() { _ = host.Close() })
+
+	result, err := host.Service.RunNaturalMemoryTick(context.Background(), memorycore.RunNaturalMemoryTickRequest{
+		PersonaID: "default",
+		Now:       time.Date(2026, 6, 6, 3, 45, 0, 0, time.UTC),
+		Explain:   true,
+	})
+	if err != nil {
+		t.Fatalf("RunNaturalMemoryTick: %v", err)
+	}
+	if result.Status != memorycore.NaturalMemoryRunStatusSkipped || !naturalExplainHasReason(result.Explain, "sleep cycle local_time not reached") {
+		t.Fatalf("natural tick result = %#v, want skipped by overlaid local_time", result)
+	}
+
+	_, err = host.Service.RunNaturalMemoryCycle(context.Background(), memorycore.RunNaturalMemoryCycleRequest{
+		PersonaID: "default",
+		RunKind:   memorycore.NaturalMemoryRunManual,
+		Force:     true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "allow_force is false") {
+		t.Fatalf("RunNaturalMemoryCycle force error = %v, want allow_force false", err)
+	}
+}
+
+func naturalExplainHasReason(items []memorycore.NaturalMemoryExplainItem, reason string) bool {
+	for _, item := range items {
+		if strings.Contains(item.SafeReasonSummary, reason) {
+			return true
+		}
+		for _, code := range item.ReasonCodes {
+			if strings.Contains(code, reason) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func TestProjectMemoryCoreConfigLoadsWithInjectedProviders(t *testing.T) {
+	path := filepath.Join("..", "..", "config", "memorycore.yaml")
+	cfg, err := memconfig.LoadEffective(memconfig.LoadEffectiveOptions{
+		ConfigPath: path,
+		ProviderRegistry: BuildProviderRegistry([]config.LLMProvider{
+			{
+				ID:        "deepseek",
+				Name:      "DeepSeek",
+				Protocol:  "openai_compatible",
+				BaseURL:   "https://api.deepseek.com",
+				APIKeyEnv: "DEEPSEEK_API_KEY",
+				Enabled:   true,
+			},
+			{
+				ID:        "dashscope_embedding",
+				Name:      "DashScope Embedding",
+				Protocol:  "openai_compatible",
+				BaseURL:   "https://dashscope.aliyuncs.com/compatible-mode/v1",
+				APIKeyEnv: "DASHSCOPE_API_KEY",
+				Enabled:   true,
+			},
+			{
+				ID:        "dashscope_rerank",
+				Name:      "DashScope Rerank",
+				Protocol:  "dashscope_vl",
+				BaseURL:   "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
+				APIKeyEnv: "DASHSCOPE_API_KEY",
+				Enabled:   true,
+			},
+		}),
+	})
+	if err != nil {
+		t.Fatalf("LoadEffective(%s): %v", path, err)
+	}
+	if !cfg.NaturalMemory.Enabled || !cfg.NaturalMemory.SleepCycle.Enabled || !cfg.NaturalMemory.ManualTrigger.Enabled {
+		t.Fatalf("NaturalMemory = %#v, want enabled sleep/manual", cfg.NaturalMemory)
+	}
+	if cfg.NaturalMemory.SleepCycle.LocalTime != "03:30" {
+		t.Fatalf("natural memory local time = %q, want 03:30", cfg.NaturalMemory.SleepCycle.LocalTime)
+	}
+	if cfg.NaturalMemory.Scoring.Model != "power_law_with_reactivation" || cfg.NaturalMemory.Scoring.DefaultDecayExponent != 0.6 || cfg.NaturalMemory.Scoring.ReactivationThreshold != 0.55 {
+		t.Fatalf("natural memory scoring = %#v, want explicit scoring defaults", cfg.NaturalMemory.Scoring)
+	}
+	if cfg.NaturalMemory.FactDefaults["transient_context"].TauDays != 7 || cfg.NaturalMemory.FactDefaults["transient_context"].Alpha != 0.90 {
+		t.Fatalf("transient_context defaults = %#v, want explicit tau/alpha", cfg.NaturalMemory.FactDefaults["transient_context"])
+	}
+	if !cfg.NaturalMemory.Protection.ProtectPinned || cfg.NaturalMemory.Protection.ProtectedMinTier != "warm" {
+		t.Fatalf("natural memory protection = %#v, want explicit protection defaults", cfg.NaturalMemory.Protection)
+	}
+	if !cfg.NaturalMemory.Compression.Enabled || cfg.NaturalMemory.Compression.RequireMinConfidence != 0.70 || cfg.NaturalMemory.Compression.MaxCandidatesPerRun != 20 {
+		t.Fatalf("natural memory compression = %#v, want explicit compression defaults", cfg.NaturalMemory.Compression)
+	}
+	if cfg.NaturalMemory.Limits.MaxCandidatesPerRun != 5000 || cfg.NaturalMemory.Limits.MaxWritesPerRun != 1000 || cfg.NaturalMemory.Limits.BatchSize != 200 {
+		t.Fatalf("natural memory limits = %#v, want explicit limits", cfg.NaturalMemory.Limits)
 	}
 }
 

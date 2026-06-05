@@ -57,6 +57,7 @@ type App struct {
 	Config             *config.Config
 	DB                 *storage.DB
 	Memory             *memoryhost.Host
+	NaturalMemory      *memoryhost.NaturalMemoryRunner
 	ManualMemoryRules  *memoryhost.ManualRules
 	LLM                llm.Client
 	Logger             *slog.Logger
@@ -202,6 +203,7 @@ func (a *App) Init(ctx context.Context, configPath string) error {
 			Overrides:        memoryOpen.Overrides,
 			ProviderRegistry: memoryOpen.ProviderRegistry,
 			Runtime:          memoryOpen.Runtime,
+			NaturalMemory:    memoryOpen.NaturalMemory,
 			Logger:           a.Logger,
 		})
 		if err != nil {
@@ -356,6 +358,7 @@ func (a *App) Run(ctx context.Context) error {
 	})
 	a.approvalService = approvalService
 	startMemoryExtractionBackground(ctx, a.Memory, a.DB, a.Logger, cfg.Memory.Extraction)
+	a.NaturalMemory = startNaturalMemoryBackground(ctx, a.Memory, a.Logger, cfg.Memory.NaturalMemory)
 	chatOptions := []chat.HandlerOption{
 		chat.WithTurnPipelineConfig(cfg.Chat.TurnPipeline),
 		chat.WithTurnTimezone(cfg.Time.Timezone),
@@ -455,6 +458,8 @@ func registerRoutes(mux *http.ServeMux, api *web.APIHandler, chatHandler http.Ha
 	mux.HandleFunc("DELETE /api/sessions/{id}", api.HandleDeleteSession)
 	mux.HandleFunc("POST /api/memory/extractions", api.HandleQueueMemoryExtraction)
 	mux.HandleFunc("GET /api/memory/extractions", api.HandleListMemoryExtractions)
+	mux.HandleFunc("POST /api/memory/natural-runs", api.HandleRunNaturalMemory)
+	mux.HandleFunc("GET /api/memory/natural-runs/latest", api.HandleLatestNaturalMemoryRun)
 	mux.HandleFunc("GET /api/memory/segments", api.HandleListMemorySegments)
 	mux.Handle("/ws", chatHandler)
 	mux.Handle("/", staticHandler)
@@ -483,6 +488,12 @@ func (a *App) Shutdown() error {
 		a.pluginRunner = nil
 	}
 	a.PluginHost = nil
+	if a.NaturalMemory != nil {
+		if err := a.NaturalMemory.Stop(context.Background()); err != nil {
+			closeErr = errors.Join(closeErr, fmt.Errorf("stop natural memory runner: %w", err))
+		}
+		a.NaturalMemory = nil
+	}
 	if a.Memory != nil {
 		if err := a.Memory.Close(); err != nil {
 			closeErr = errors.Join(closeErr, fmt.Errorf("close memorycore: %w", err))

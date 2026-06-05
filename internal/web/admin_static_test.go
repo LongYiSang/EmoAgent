@@ -67,3 +67,28 @@ func TestAdminHTMLContainsConfigCenterControls(t *testing.T) {
 		}
 	}
 }
+
+func TestAdminHTMLContainsNaturalMemoryControls(t *testing.T) {
+	raw, err := os.ReadFile("static/admin.html")
+	if err != nil {
+		t.Fatalf("read admin.html: %v", err)
+	}
+	html := string(raw)
+	for _, want := range []string{
+		`id="natural-memory-enabled"`,
+		`id="natural-memory-scheduler"`,
+		`id="natural-memory-local-time"`,
+		`id="natural-memory-dry-run"`,
+		`id="natural-memory-run-now"`,
+		`id="natural-memory-latest-status"`,
+		`renderNaturalMemory`,
+		`loadNaturalMemoryLatest`,
+		`runNaturalMemory`,
+		`/api/memory/natural-runs/latest`,
+		`/api/memory/natural-runs`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("admin.html missing %q", want)
+		}
+	}
+}

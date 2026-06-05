@@ -46,6 +46,8 @@ func applyRuntimeSetting(cfg *config.Config, setting storage.RuntimeSetting) err
 		return overlayJSONSetting(&cfg.Memory.Sidecar, setting)
 	case "memory.provider_bindings":
 		return overlayJSONSetting(&cfg.Memory.ProviderBindings, setting)
+	case "memory.natural_memory":
+		return overlayJSONSetting(&cfg.Memory.NaturalMemory, setting)
 	case "memory.retention":
 		return overlayJSONSetting(&cfg.Memory.Retention, setting)
 	case "memory.forgetting_privacy":
