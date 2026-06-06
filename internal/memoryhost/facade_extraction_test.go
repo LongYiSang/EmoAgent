@@ -219,6 +219,7 @@ func TestManualForgetPreviewQueuesConfirmationNoticeWithoutExecute(t *testing.T)
 		previewForgetResult: &memorycore.ForgetPreviewResult{
 			PersonaID:            "default",
 			RequestID:            "manual-forget-1",
+			OperationID:          "operation-1",
 			PreviewHash:          "hash-1",
 			RequestedLevel:       memorycore.ForgetLevelSoft,
 			ScopeMode:            memorycore.ForgetScopeSemanticQuery,
@@ -242,6 +243,9 @@ func TestManualForgetPreviewQueuesConfirmationNoticeWithoutExecute(t *testing.T)
 	req := fixture.service.previewForgetCalls[0]
 	if req.ScopeMode != memorycore.ForgetScopeSemanticQuery || req.SemanticQuery == nil || *req.SemanticQuery != "我喜欢手冲咖啡" {
 		t.Fatalf("PreviewForget request = %#v", req)
+	}
+	if req.ChatSessionID != "chat-manual-forget-preview" || req.RequestEpisodeID == "" {
+		t.Fatalf("PreviewForget metadata = %#v, want chat session and request episode", req)
 	}
 	if len(fixture.service.executeForgetCalls) != 0 {
 		t.Fatalf("ExecuteForget calls = %d, want 0", len(fixture.service.executeForgetCalls))
@@ -271,6 +275,7 @@ func TestManualForgetConfirmationExecutesExactTargetsWithPreviewHash(t *testing.
 		previewForgetResult: &memorycore.ForgetPreviewResult{
 			PersonaID:            "default",
 			RequestID:            "manual-forget-1",
+			OperationID:          "operation-1",
 			PreviewHash:          "hash-1",
 			RequestedLevel:       memorycore.ForgetLevelSoft,
 			ScopeMode:            memorycore.ForgetScopeSemanticQuery,
@@ -301,7 +306,7 @@ func TestManualForgetConfirmationExecutesExactTargetsWithPreviewHash(t *testing.
 		t.Fatalf("ExecuteForget calls = %d, want 1", len(fixture.service.executeForgetCalls))
 	}
 	req := fixture.service.executeForgetCalls[0]
-	if req.PreviewHash != "hash-1" || req.Level != memorycore.ForgetLevelSoft || !req.Confirmed {
+	if req.OperationID != "operation-1" || req.PreviewHash != "hash-1" || req.Level != memorycore.ForgetLevelSoft || !req.Confirmed {
 		t.Fatalf("ExecuteForget request = %#v", req)
 	}
 	if len(req.ConfirmedTargets) != 1 || req.ConfirmedTargets[0] != (memorycore.ExactNodeRef{NodeType: memorycore.ForgetNodeFact, NodeID: "fact-coffee"}) {
@@ -310,6 +315,112 @@ func TestManualForgetConfirmationExecutesExactTargetsWithPreviewHash(t *testing.
 	notice, ok := fixture.bridge.TakeManualMemoryNotice("chat-manual-forget-confirm")
 	if !ok || !strings.Contains(notice, "已执行长期记忆删除：1 条。") {
 		t.Fatalf("notice = %q ok=%v, want executed notice", notice, ok)
+	}
+}
+
+func TestManualForgetConfirmationSurvivesBridgeRestart(t *testing.T) {
+	fixture := openFacadeBridgeFixture(t, "chat-manual-forget-restart", &fakeMemoryService{
+		previewForgetResult: &memorycore.ForgetPreviewResult{
+			PersonaID:            "default",
+			RequestID:            "manual-forget-1",
+			OperationID:          "operation-restart",
+			PreviewHash:          "hash-restart",
+			RequestedLevel:       memorycore.ForgetLevelSoft,
+			ScopeMode:            memorycore.ForgetScopeSemanticQuery,
+			RequiresConfirmation: true,
+			Targets: []memorycore.ForgetResolvedTarget{
+				{
+					NodeType:    memorycore.ForgetNodeFact,
+					NodeID:      "fact-coffee",
+					SafeSummary: "用户喜欢手冲咖啡。",
+				},
+			},
+		},
+		executeForgetResult: &memorycore.ForgetExecuteResult{
+			PersonaID:   "default",
+			Executed:    1,
+			PreviewHash: "hash-restart",
+		},
+	})
+
+	if _, err := fixture.bridge.AppendUserEpisode(fixture.ctx, fixture.segment.SegmentID, "msg-forget", "忘记我喜欢手冲咖啡"); err != nil {
+		t.Fatalf("AppendUserEpisode(forget): %v", err)
+	}
+	_, _ = fixture.bridge.TakeManualMemoryNotice("chat-manual-forget-restart")
+	restarted := NewBridge(fixture.serviceHost(), fixture.db, nil, DefaultManualRules())
+	if _, err := restarted.AppendUserEpisode(fixture.ctx, fixture.segment.SegmentID, "msg-confirm", "确认删除"); err != nil {
+		t.Fatalf("AppendUserEpisode(confirm after restart): %v", err)
+	}
+	if len(fixture.service.executeForgetCalls) != 1 {
+		t.Fatalf("ExecuteForget calls = %d, want 1", len(fixture.service.executeForgetCalls))
+	}
+	req := fixture.service.executeForgetCalls[0]
+	if req.OperationID != "operation-restart" || req.PreviewHash != "hash-restart" {
+		t.Fatalf("ExecuteForget request = %#v", req)
+	}
+}
+
+func TestManualForgetCancelUpdatesPendingOperation(t *testing.T) {
+	fixture := openFacadeBridgeFixture(t, "chat-manual-forget-cancel", &fakeMemoryService{
+		previewForgetResult: &memorycore.ForgetPreviewResult{
+			PersonaID:            "default",
+			RequestID:            "manual-forget-1",
+			OperationID:          "operation-cancel",
+			PreviewHash:          "hash-cancel",
+			RequestedLevel:       memorycore.ForgetLevelSoft,
+			ScopeMode:            memorycore.ForgetScopeSemanticQuery,
+			RequiresConfirmation: true,
+			Targets: []memorycore.ForgetResolvedTarget{
+				{
+					NodeType:    memorycore.ForgetNodeFact,
+					NodeID:      "fact-coffee",
+					SafeSummary: "用户喜欢手冲咖啡。",
+				},
+			},
+		},
+	})
+
+	if _, err := fixture.bridge.AppendUserEpisode(fixture.ctx, fixture.segment.SegmentID, "msg-forget", "忘记我喜欢手冲咖啡"); err != nil {
+		t.Fatalf("AppendUserEpisode(forget): %v", err)
+	}
+	_, _ = fixture.bridge.TakeManualMemoryNotice("chat-manual-forget-cancel")
+	if _, err := fixture.bridge.AppendUserEpisode(fixture.ctx, fixture.segment.SegmentID, "msg-cancel", "取消"); err != nil {
+		t.Fatalf("AppendUserEpisode(cancel): %v", err)
+	}
+	if len(fixture.service.cancelPendingForgetCalls) != 1 {
+		t.Fatalf("CancelPendingManualForgetOperation calls = %d, want 1", len(fixture.service.cancelPendingForgetCalls))
+	}
+	if len(fixture.service.executeForgetCalls) != 0 {
+		t.Fatalf("ExecuteForget calls = %d, want 0", len(fixture.service.executeForgetCalls))
+	}
+	notice, ok := fixture.bridge.TakeManualMemoryNotice("chat-manual-forget-cancel")
+	if !ok || !strings.Contains(notice, "已取消删除，未更改长期记忆。") {
+		t.Fatalf("notice = %q ok=%v, want cancelled notice", notice, ok)
+	}
+}
+
+func TestManualForgetExpiredPendingOperationReturnsNotice(t *testing.T) {
+	fixture := openFacadeBridgeFixture(t, "chat-manual-forget-expired", &fakeMemoryService{
+		pendingForgetOperation: &memorycore.PendingManualForgetOperation{
+			OperationID:    "operation-expired",
+			PersonaID:      "default",
+			ChatSessionID:  "chat-manual-forget-expired",
+			Status:         memorycore.ManualForgetOperationStatusExpired,
+			RequestedLevel: memorycore.ForgetLevelSoft,
+			PreviewHash:    "hash-expired",
+			Targets:        []memorycore.ForgetResolvedTarget{{NodeType: memorycore.ForgetNodeFact, NodeID: "fact-coffee"}},
+		},
+	})
+
+	if _, err := fixture.bridge.AppendUserEpisode(fixture.ctx, fixture.segment.SegmentID, "msg-confirm", "确认删除"); err != nil {
+		t.Fatalf("AppendUserEpisode(confirm): %v", err)
+	}
+	if len(fixture.service.executeForgetCalls) != 0 {
+		t.Fatalf("ExecuteForget calls = %d, want 0", len(fixture.service.executeForgetCalls))
+	}
+	notice, ok := fixture.bridge.TakeManualMemoryNotice("chat-manual-forget-expired")
+	if !ok || !strings.Contains(notice, "删除确认已过期，未更改长期记忆。") {
+		t.Fatalf("notice = %q ok=%v, want expired notice", notice, ok)
 	}
 }
 
@@ -403,23 +514,27 @@ func openFacadeBridgeFixtureWithLogger(t *testing.T, chatSessionID string, logge
 type fakeMemoryService struct {
 	memorycore.Service
 
-	startSessionID      string
-	appendEpisodeSeq    int
-	endSessionCalls     int
-	runExtractionCalls  []memorycore.RunExtractionRequest
-	runExtractionBlock  <-chan struct{}
-	runExtractionResult *memorycore.ExtractionRunResult
-	runExtractionErr    error
-	consolidateCalls    int
-	previewForgetCalls  []memorycore.ForgetPreviewRequest
-	previewForgetResult *memorycore.ForgetPreviewResult
-	previewForgetErr    error
-	executeForgetCalls  []memorycore.ForgetExecuteRequest
-	executeForgetResult *memorycore.ForgetExecuteResult
-	executeForgetErr    error
-	mirrorSyncCalls     int
-	mirrorSyncResult    *memorycore.RunMirrorSyncResult
-	mirrorSyncErr       error
+	startSessionID           string
+	appendEpisodeSeq         int
+	endSessionCalls          int
+	runExtractionCalls       []memorycore.RunExtractionRequest
+	runExtractionBlock       <-chan struct{}
+	runExtractionResult      *memorycore.ExtractionRunResult
+	runExtractionErr         error
+	consolidateCalls         int
+	previewForgetCalls       []memorycore.ForgetPreviewRequest
+	previewForgetResult      *memorycore.ForgetPreviewResult
+	previewForgetErr         error
+	executeForgetCalls       []memorycore.ForgetExecuteRequest
+	executeForgetResult      *memorycore.ForgetExecuteResult
+	executeForgetErr         error
+	getPendingForgetCalls    []memorycore.GetPendingManualForgetOperationRequest
+	cancelPendingForgetCalls []memorycore.CancelPendingManualForgetOperationRequest
+	pendingForgetOperation   *memorycore.PendingManualForgetOperation
+	cancelPendingForgetErr   error
+	mirrorSyncCalls          int
+	mirrorSyncResult         *memorycore.RunMirrorSyncResult
+	mirrorSyncErr            error
 }
 
 func (f *fakeMemoryService) StartSession(context.Context, memorycore.StartSessionRequest) (*memorycore.Session, error) {
@@ -471,6 +586,20 @@ func (f *fakeMemoryService) RunMirrorSync(context.Context, memorycore.RunMirrorS
 func (f *fakeMemoryService) PreviewForget(_ context.Context, req memorycore.ForgetPreviewRequest) (*memorycore.ForgetPreviewResult, error) {
 	f.previewForgetCalls = append(f.previewForgetCalls, req)
 	if f.previewForgetResult != nil || f.previewForgetErr != nil {
+		if f.previewForgetResult != nil && f.previewForgetResult.OperationID != "" && strings.TrimSpace(req.ChatSessionID) != "" {
+			f.pendingForgetOperation = &memorycore.PendingManualForgetOperation{
+				OperationID:      f.previewForgetResult.OperationID,
+				PersonaID:        f.previewForgetResult.PersonaID,
+				SessionID:        req.SessionID,
+				ChatSessionID:    req.ChatSessionID,
+				RequestEpisodeID: req.RequestEpisodeID,
+				Status:           memorycore.ManualForgetOperationStatusPendingConfirmation,
+				RequestedLevel:   f.previewForgetResult.RequestedLevel,
+				ScopeMode:        f.previewForgetResult.ScopeMode,
+				PreviewHash:      f.previewForgetResult.PreviewHash,
+				Targets:          append([]memorycore.ForgetResolvedTarget(nil), f.previewForgetResult.Targets...),
+			}
+		}
 		return f.previewForgetResult, f.previewForgetErr
 	}
 	return &memorycore.ForgetPreviewResult{PersonaID: req.PersonaID, RequestID: req.RequestID, PreviewHash: "hash-1", RequestedLevel: req.RequestedLevel}, nil
@@ -482,4 +611,27 @@ func (f *fakeMemoryService) ExecuteForget(_ context.Context, req memorycore.Forg
 		return f.executeForgetResult, f.executeForgetErr
 	}
 	return &memorycore.ForgetExecuteResult{PersonaID: req.PersonaID, Executed: len(req.ConfirmedTargets), PreviewHash: req.PreviewHash}, nil
+}
+
+func (f *fakeMemoryService) GetPendingManualForgetOperation(_ context.Context, req memorycore.GetPendingManualForgetOperationRequest) (*memorycore.PendingManualForgetOperation, error) {
+	f.getPendingForgetCalls = append(f.getPendingForgetCalls, req)
+	if f.pendingForgetOperation == nil {
+		return nil, nil
+	}
+	if strings.TrimSpace(req.ChatSessionID) != "" && req.ChatSessionID != f.pendingForgetOperation.ChatSessionID {
+		return nil, nil
+	}
+	return f.pendingForgetOperation, nil
+}
+
+func (f *fakeMemoryService) CancelPendingManualForgetOperation(_ context.Context, req memorycore.CancelPendingManualForgetOperationRequest) (*memorycore.PendingManualForgetOperation, error) {
+	f.cancelPendingForgetCalls = append(f.cancelPendingForgetCalls, req)
+	if f.cancelPendingForgetErr != nil {
+		return nil, f.cancelPendingForgetErr
+	}
+	if f.pendingForgetOperation == nil {
+		return nil, nil
+	}
+	f.pendingForgetOperation.Status = memorycore.ManualForgetOperationStatusCancelled
+	return f.pendingForgetOperation, nil
 }

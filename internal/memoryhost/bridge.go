@@ -20,13 +20,7 @@ type Bridge struct {
 	manualRules     *ManualRules
 	retrievalPolicy memorycore.RetrievalPolicy
 	manualMu        sync.Mutex
-	pendingForgets  map[string]manualForgetPreview
 	manualNotices   map[string]string
-}
-
-type manualForgetPreview struct {
-	Request memorycore.ForgetPreviewRequest
-	Preview memorycore.ForgetPreviewResult
 }
 
 func NewBridge(host *Host, db *storage.DB, logger *slog.Logger, manualRules *ManualRules, retrievalPolicy ...memorycore.RetrievalPolicy) *Bridge {
@@ -326,6 +320,8 @@ func (b *Bridge) applyManualForgetIntent(ctx context.Context, segment *storage.M
 		RequestedLevel:      memorycore.ForgetLevelSoft,
 		ScopeMode:           memorycore.ForgetScopeSemanticQuery,
 		SessionID:           segment.MemorySessionID,
+		ChatSessionID:       segment.ChatSessionID,
+		RequestEpisodeID:    strings.TrimSpace(segment.LastUserEpisodeID),
 		Limit:               5,
 		SemanticQuery:       &query,
 		RequireConfirmation: true,
@@ -336,13 +332,15 @@ func (b *Bridge) applyManualForgetIntent(ctx context.Context, segment *storage.M
 		return nil
 	}
 	if preview == nil || len(preview.Targets) == 0 {
-		b.clearPendingForget(segment.ChatSessionID)
 		b.queueManualMemoryNotice(segment.ChatSessionID, "我没有找到可安全删除的候选，未执行删除。")
 		return nil
 	}
 	if strings.TrimSpace(preview.PreviewHash) == "" {
-		b.clearPendingForget(segment.ChatSessionID)
 		b.queueManualMemoryNotice(segment.ChatSessionID, "删除预览缺少校验信息，未执行删除。")
+		return nil
+	}
+	if strings.TrimSpace(preview.OperationID) == "" {
+		b.queueManualMemoryNotice(segment.ChatSessionID, "删除预览缺少确认操作信息，未执行删除。")
 		return nil
 	}
 	if strings.TrimSpace(preview.RequestID) == "" {
@@ -354,10 +352,6 @@ func (b *Bridge) applyManualForgetIntent(ctx context.Context, segment *storage.M
 	if strings.TrimSpace(preview.ScopeMode) == "" {
 		preview.ScopeMode = memorycore.ForgetScopeSemanticQuery
 	}
-	b.storePendingForget(segment.ChatSessionID, manualForgetPreview{
-		Request: previewReq,
-		Preview: *preview,
-	})
 	b.queueManualMemoryNotice(segment.ChatSessionID, buildManualForgetPreviewNotice(*preview))
 	return nil
 }
@@ -367,40 +361,66 @@ func (b *Bridge) applyPendingManualForgetDecision(ctx context.Context, segment *
 		return false, nil
 	}
 	text := strings.TrimSpace(content)
-	if text == "" || !b.hasPendingForget(segment.ChatSessionID) {
+	if text == "" {
 		return false, nil
 	}
-	if isManualForgetCancel(text) {
-		b.clearPendingForget(segment.ChatSessionID)
+	isCancel := isManualForgetCancel(text)
+	isConfirm := isManualForgetConfirm(text)
+	if !isCancel && !isConfirm {
+		return false, nil
+	}
+	personaID := defaultPersonaID(segmentPersona(segment, b.db, ctx))
+	pending, err := b.host.Service.GetPendingManualForgetOperation(ctx, memorycore.GetPendingManualForgetOperationRequest{
+		PersonaID:     personaID,
+		ChatSessionID: segment.ChatSessionID,
+	})
+	if err != nil {
+		b.queueManualMemoryNotice(segment.ChatSessionID, "我暂时无法读取待确认删除操作，未更改长期记忆。")
+		return true, nil
+	}
+	if pending == nil {
+		return false, nil
+	}
+	if pending.Status == memorycore.ManualForgetOperationStatusExpired {
+		b.queueManualMemoryNotice(segment.ChatSessionID, "删除确认已过期，未更改长期记忆。")
+		return true, nil
+	}
+	if pending.Status != memorycore.ManualForgetOperationStatusPendingConfirmation {
+		return false, nil
+	}
+	if isCancel {
+		cancelled, err := b.host.Service.CancelPendingManualForgetOperation(ctx, memorycore.CancelPendingManualForgetOperationRequest{
+			PersonaID:     personaID,
+			OperationID:   pending.OperationID,
+			ChatSessionID: segment.ChatSessionID,
+		})
+		if err != nil {
+			b.queueManualMemoryNotice(segment.ChatSessionID, "取消删除失败，长期记忆未确认更改。")
+			return true, nil
+		}
+		if cancelled != nil && cancelled.Status == memorycore.ManualForgetOperationStatusExpired {
+			b.queueManualMemoryNotice(segment.ChatSessionID, "删除确认已过期，未更改长期记忆。")
+			return true, nil
+		}
 		b.queueManualMemoryNotice(segment.ChatSessionID, "已取消删除，未更改长期记忆。")
 		return true, nil
 	}
-	if !isManualForgetConfirm(text) {
-		return false, nil
-	}
-	pending, ok := b.pendingForget(segment.ChatSessionID)
-	if !ok {
-		return false, nil
-	}
-	targets := exactForgetTargets(pending.Preview.Targets)
+	targets := exactForgetTargets(pending.Targets)
 	if len(targets) == 0 {
-		b.clearPendingForget(segment.ChatSessionID)
 		b.queueManualMemoryNotice(segment.ChatSessionID, "没有可执行的 exact-node 删除目标，未更改长期记忆。")
 		return true, nil
 	}
-	level := strings.TrimSpace(pending.Preview.RequestedLevel)
+	level := strings.TrimSpace(pending.RequestedLevel)
 	if level == "" {
 		level = memorycore.ForgetLevelSoft
 	}
-	personaID := defaultPersonaID(segmentPersona(segment, b.db, ctx))
 	result, err := b.host.Service.ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
 		PersonaID:        personaID,
+		OperationID:      pending.OperationID,
 		Actor:            memorycore.ForgetActorUser,
 		ReasonCode:       memorycore.ForgetReasonUserRequested,
 		Level:            level,
-		PreviewRequest:   pending.Request,
-		Preview:          pending.Preview,
-		PreviewHash:      pending.Preview.PreviewHash,
+		PreviewHash:      pending.PreviewHash,
 		ConfirmedTargets: targets,
 		Confirmed:        true,
 	})
@@ -408,7 +428,6 @@ func (b *Bridge) applyPendingManualForgetDecision(ctx context.Context, segment *
 		b.queueManualMemoryNotice(segment.ChatSessionID, "删除执行失败，长期记忆未确认更改。")
 		return true, nil
 	}
-	b.clearPendingForget(segment.ChatSessionID)
 	b.queueManualMemoryNotice(segment.ChatSessionID, buildManualForgetExecutedNotice(result))
 	return true, nil
 }
@@ -432,45 +451,6 @@ func (b *Bridge) TakeManualMemoryNotice(chatSessionID string) (string, bool) {
 	}
 	delete(b.manualNotices, chatSessionID)
 	return notice, true
-}
-
-func (b *Bridge) storePendingForget(chatSessionID string, pending manualForgetPreview) {
-	chatSessionID = strings.TrimSpace(chatSessionID)
-	if b == nil || chatSessionID == "" {
-		return
-	}
-	b.manualMu.Lock()
-	defer b.manualMu.Unlock()
-	if b.pendingForgets == nil {
-		b.pendingForgets = make(map[string]manualForgetPreview)
-	}
-	b.pendingForgets[chatSessionID] = pending
-}
-
-func (b *Bridge) pendingForget(chatSessionID string) (manualForgetPreview, bool) {
-	chatSessionID = strings.TrimSpace(chatSessionID)
-	if b == nil || chatSessionID == "" {
-		return manualForgetPreview{}, false
-	}
-	b.manualMu.Lock()
-	defer b.manualMu.Unlock()
-	pending, ok := b.pendingForgets[chatSessionID]
-	return pending, ok
-}
-
-func (b *Bridge) hasPendingForget(chatSessionID string) bool {
-	_, ok := b.pendingForget(chatSessionID)
-	return ok
-}
-
-func (b *Bridge) clearPendingForget(chatSessionID string) {
-	chatSessionID = strings.TrimSpace(chatSessionID)
-	if b == nil || chatSessionID == "" {
-		return
-	}
-	b.manualMu.Lock()
-	defer b.manualMu.Unlock()
-	delete(b.pendingForgets, chatSessionID)
 }
 
 func (b *Bridge) queueManualMemoryNotice(chatSessionID string, notice string) {
