@@ -184,12 +184,9 @@ func TestRunAllowsStartupWithoutLLM(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	a := &App{
-		Config: &config.Config{
-			Server: config.ServerConfig{Host: "127.0.0.1", Port: 0},
-		},
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}
+	a := newTestApp(&config.Config{
+		Server: config.ServerConfig{Host: "127.0.0.1", Port: 0},
+	}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	if err := a.Run(ctx); err != nil {
 		t.Fatalf("Run() with canceled context should still shut down cleanly, got %v", err)
@@ -255,8 +252,8 @@ func TestInitMemoryDisabledDoesNotRequireMemoryCoreConfig(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 
-	if a.Memory != nil {
-		t.Fatalf("App.Memory = %#v, want nil when memory.enabled=false", a.Memory)
+	if testMemoryHost(a) != nil {
+		t.Fatalf("Memory host = %#v, want nil when memory.enabled=false", testMemoryHost(a))
 	}
 	if _, err := os.Stat(memoryDBPath); !os.IsNotExist(err) {
 		t.Fatalf("memory db stat error = %v, want not exist", err)
@@ -275,8 +272,8 @@ func TestInitMemoryEnabledOpensMemoryCore(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 
-	if a.Memory == nil {
-		t.Fatal("App.Memory = nil, want initialized host")
+	if testMemoryHost(a) == nil {
+		t.Fatal("Memory host = nil, want initialized host")
 	}
 	if _, err := os.Stat(memoryDBPath); err != nil {
 		t.Fatalf("memory db was not created: %v", err)
@@ -295,8 +292,8 @@ func TestInitMemoryEnabledUsesProviderCenterForMemoryCore(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 
-	if a.Memory == nil {
-		t.Fatal("App.Memory = nil, want initialized host")
+	if testMemoryHost(a) == nil {
+		t.Fatal("Memory host = nil, want initialized host")
 	}
 	if _, err := os.Stat(memoryDBPath); err != nil {
 		t.Fatalf("memory db was not created: %v", err)
@@ -353,8 +350,8 @@ func TestInitMemorySidecarExternalInjectsURL(t *testing.T) {
 	if err := a.Init(context.Background(), configPath); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	if a.Memory == nil {
-		t.Fatal("App.Memory = nil, want initialized host")
+	if testMemoryHost(a) == nil {
+		t.Fatal("Memory host = nil, want initialized host")
 	}
 }
 
@@ -375,10 +372,10 @@ func TestInitMemorySidecarFailOpenDisablesMirror(t *testing.T) {
 	if err := a.Init(context.Background(), configPath); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	if a.Memory == nil {
-		t.Fatal("App.Memory = nil, want initialized host")
+	if testMemoryHost(a) == nil {
+		t.Fatal("Memory host = nil, want initialized host")
 	}
-	if a.Memory.Source == "" {
+	if testMemoryHost(a).Source == "" {
 		t.Fatal("memory source is empty")
 	}
 }
@@ -421,7 +418,7 @@ func TestGetSidecarLogsUsesRuntimeSettingsLogPath(t *testing.T) {
 		t.Fatalf("UpsertRuntimeSetting: %v", err)
 	}
 
-	a := &App{Config: config.DefaultConfig(), DB: db, Logger: logger}
+	a := newTestApp(config.DefaultConfig(), db, logger)
 	logs, err := a.GetSidecarLogs(context.Background(), 1024)
 	if err != nil {
 		t.Fatalf("GetSidecarLogs: %v", err)
@@ -474,9 +471,8 @@ pin_rules:
 }
 
 func TestGetDefaultPersonaName(t *testing.T) {
-	a := &App{
-		ActiveAgentRuntime: &ActiveAgentRuntime{PersonaKey: "default"},
-	}
+	a := newTestApp(nil, nil, nil)
+	setTestActiveRuntime(a, &ActiveAgentRuntime{PersonaKey: "default"})
 
 	if got := a.GetDefaultPersonaName(); got != "default" {
 		t.Fatalf("GetDefaultPersonaName = %q, want default", got)
@@ -485,21 +481,19 @@ func TestGetDefaultPersonaName(t *testing.T) {
 
 func TestActiveAgentRuntimeCloneKeepsRequestParamsIsolated(t *testing.T) {
 	temp := 0.2
-	a := &App{
-		ActiveAgentRuntime: &ActiveAgentRuntime{
-			PersonaKey: "default",
-			EmotionMain: ModelRuntime{
-				Model:  "gpt-4o",
-				Params: llm.RequestParams{Temperature: &temp},
-			},
+	runtime := &ActiveAgentRuntime{
+		PersonaKey: "default",
+		EmotionMain: ModelRuntime{
+			Model:  "gpt-4o",
+			Params: llm.RequestParams{Temperature: &temp},
 		},
 	}
 
-	cp := cloneActiveAgentRuntime(a.ActiveAgentRuntime)
+	cp := cloneActiveAgentRuntime(runtime)
 	*cp.EmotionMain.Params.Temperature = 0.9
 
-	if *a.ActiveAgentRuntime.EmotionMain.Params.Temperature != 0.2 {
-		t.Fatalf("ActiveAgentRuntime params mutated through copy, got %v", *a.ActiveAgentRuntime.EmotionMain.Params.Temperature)
+	if *runtime.EmotionMain.Params.Temperature != 0.2 {
+		t.Fatalf("ActiveAgentRuntime params mutated through copy, got %v", *runtime.EmotionMain.Params.Temperature)
 	}
 }
 
@@ -686,15 +680,11 @@ func TestUpdateChatSettingsPersistsRuntimeOverrideAndHotUpdatesEngine(t *testing
 		MaxTokens:   128,
 		Temperature: 0.2,
 	})
-	a := &App{
-		Config: &config.Config{Chat: config.ChatConfig{
-			RealtimeStreaming: false,
-			TurnPipeline:      config.TurnPipelineConfig{Shadow: true, Enabled: true, MemoryStages: true, ApprovalStages: true},
-		}},
-		DB:     db,
-		Logger: logger,
-		engine: engine,
-	}
+	a := newTestApp(&config.Config{Chat: config.ChatConfig{
+		RealtimeStreaming: false,
+		TurnPipeline:      config.TurnPipelineConfig{Shadow: true, Enabled: true, MemoryStages: true, ApprovalStages: true},
+	}}, db, logger)
+	a.kernel.Services.Chat.engine = engine
 
 	if err := a.UpdateChatSettings(config.ChatConfig{RealtimeStreaming: true}); err != nil {
 		t.Fatalf("UpdateChatSettings: %v", err)
@@ -707,13 +697,13 @@ func TestUpdateChatSettingsPersistsRuntimeOverrideAndHotUpdatesEngine(t *testing
 	if !ok || value != "true" {
 		t.Fatalf("runtime chat.realtime_streaming = %q/%t, want true/true", value, ok)
 	}
-	if !a.Config.Chat.RealtimeStreaming {
+	if !testConfig(a).Chat.RealtimeStreaming {
 		t.Fatal("Config.Chat.RealtimeStreaming = false, want true")
 	}
 	if !engine.RuntimeConfig().RealtimeStreaming {
 		t.Fatal("engine realtime streaming = false, want true")
 	}
-	if got := a.Config.Chat.TurnPipeline; !got.Shadow || !got.Enabled || !got.MemoryStages || !got.ApprovalStages {
+	if got := testConfig(a).Chat.TurnPipeline; !got.Shadow || !got.Enabled || !got.MemoryStages || !got.ApprovalStages {
 		t.Fatalf("turn pipeline config = %#v, want preserved", got)
 	}
 }
@@ -725,23 +715,25 @@ func TestConfigurePluginHostHonorsEnabledConfig(t *testing.T) {
 	cfg.Plugins.BuiltinEnabled = []string{plugin.TurnAuditPluginID}
 	cfg.Chat.TurnPipeline.Enabled = true
 	cfg.Chat.TurnPipeline.RolloutPercent = 100
-	a := &App{Config: cfg, Logger: logger, toolRegistry: tool.NewRegistry()}
-	dispatcher := tool.NewDispatcher(a.toolRegistry, tool.MinimalSchemaValidator{}, logger)
+	a := newTestApp(cfg, nil, logger)
+	setTestToolRegistry(a, tool.NewRegistry())
+	dispatcher := tool.NewDispatcher(a.kernel.Services.Tools.Registry(), tool.MinimalSchemaValidator{}, logger)
 
-	if err := a.configurePluginHost(context.Background(), dispatcher, nil); err != nil {
+	if err := a.kernel.Services.Plugins.Configure(context.Background(), dispatcher, nil); err != nil {
 		t.Fatalf("configurePluginHost: %v", err)
 	}
-	if a.PluginHost == nil || !a.PluginHost.Enabled() {
-		t.Fatalf("PluginHost = %#v, want enabled host", a.PluginHost)
+	if testPluginHost(a) == nil || !testPluginHost(a).Enabled() {
+		t.Fatalf("PluginHost = %#v, want enabled host", testPluginHost(a))
 	}
 
-	disabled := &App{Config: config.DefaultConfig(), Logger: logger, toolRegistry: tool.NewRegistry()}
-	dispatcher = tool.NewDispatcher(disabled.toolRegistry, tool.MinimalSchemaValidator{}, logger)
-	if err := disabled.configurePluginHost(context.Background(), dispatcher, nil); err != nil {
+	disabled := newTestApp(config.DefaultConfig(), nil, logger)
+	setTestToolRegistry(disabled, tool.NewRegistry())
+	dispatcher = tool.NewDispatcher(disabled.kernel.Services.Tools.Registry(), tool.MinimalSchemaValidator{}, logger)
+	if err := disabled.kernel.Services.Plugins.Configure(context.Background(), dispatcher, nil); err != nil {
 		t.Fatalf("disabled configurePluginHost: %v", err)
 	}
-	if disabled.PluginHost != nil {
-		t.Fatalf("disabled PluginHost = %#v, want nil", disabled.PluginHost)
+	if testPluginHost(disabled) != nil {
+		t.Fatalf("disabled PluginHost = %#v, want nil", testPluginHost(disabled))
 	}
 }
 
@@ -770,7 +762,7 @@ func TestQueueMemoryExtractionEnqueuesSessionSegmentsImmediately(t *testing.T) {
 	}
 	cfg := config.DefaultConfig()
 	cfg.Memory.Extraction.Enabled = true
-	a := &App{Config: cfg, DB: db, Logger: logger}
+	a := newTestApp(cfg, db, logger)
 
 	resp, err := a.QueueMemoryExtraction(ctx, web.MemoryExtractionRequest{SessionID: "chat-memory", Scope: "session", Mode: "apply"})
 	if err != nil {
@@ -813,7 +805,7 @@ func TestQueueMemoryExtractionSkipsSucceededSegmentUnlessForced(t *testing.T) {
 	}
 	cfg := config.DefaultConfig()
 	cfg.Memory.Extraction.Enabled = true
-	a := &App{Config: cfg, DB: db, Logger: logger}
+	a := newTestApp(cfg, db, logger)
 
 	resp, err := a.QueueMemoryExtraction(ctx, web.MemoryExtractionRequest{SessionID: "chat-memory-force", Scope: "session", Mode: "apply"})
 	if err != nil {
@@ -841,7 +833,7 @@ func TestQueueMemoryExtractionRespectsManualConfig(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.DefaultConfig()
 	cfg.Memory.Extraction.Enabled = true
-	a := &App{Config: cfg, DB: db, Logger: logger}
+	a := newTestApp(cfg, db, logger)
 
 	if _, err := a.QueueMemoryExtraction(ctx, web.MemoryExtractionRequest{Scope: "invalid"}); err == nil || !strings.Contains(err.Error(), "scope") {
 		t.Fatalf("QueueMemoryExtraction invalid scope error = %v", err)
@@ -922,13 +914,9 @@ func TestActivateAgentConfigBuildsRuntimeAndHotUpdatesEngine(t *testing.T) {
 	}
 
 	engine := chat.NewEngine(chat.EngineConfig{DB: db, Logger: logger, Model: "old", MaxTokens: 1, Temperature: 1})
-	a := &App{
-		Config:   config.DefaultConfig(),
-		DB:       db,
-		Logger:   logger,
-		engine:   engine,
-		Personas: map[string]*config.Persona{"default": {Name: "Default"}},
-	}
+	a := newTestApp(config.DefaultConfig(), db, logger)
+	a.kernel.Services.Chat.engine = engine
+	setTestPersonas(a, map[string]*config.Persona{"default": {Name: "Default"}})
 
 	if err := a.ActivateAgentConfig("default"); err != nil {
 		t.Fatalf("ActivateAgentConfig: %v", err)
@@ -936,8 +924,8 @@ func TestActivateAgentConfigBuildsRuntimeAndHotUpdatesEngine(t *testing.T) {
 	if got := a.GetDefaultPersonaName(); got != "default" {
 		t.Fatalf("GetDefaultPersonaName = %q, want default", got)
 	}
-	if a.ActiveAgentRuntime == nil || a.ActiveAgentRuntime.WorkSummary.Model != "work-summary" {
-		t.Fatalf("ActiveAgentRuntime = %#v", a.ActiveAgentRuntime)
+	if runtime := testActiveRuntime(a); runtime == nil || runtime.WorkSummary.Model != "work-summary" {
+		t.Fatalf("ActiveAgentRuntime = %#v", runtime)
 	}
 	runtimeCfg := engine.RuntimeConfig()
 	if runtimeCfg.Model != "emotion-main" || runtimeCfg.SummaryModel != "emotion-summary" {
@@ -962,14 +950,10 @@ func TestCreatePersonaStoresByKeyInDB(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	a := &App{
-		Config: &config.Config{
-			Personas: config.PersonasConfig{Dir: t.TempDir()},
-		},
-		DB:       db,
-		Logger:   logger,
-		Personas: map[string]*config.Persona{},
-	}
+	a := newTestApp(&config.Config{
+		Personas: config.PersonasConfig{Dir: t.TempDir()},
+	}, db, logger)
+	setTestPersonas(a, map[string]*config.Persona{})
 
 	err = a.CreatePersona("neko", &config.Persona{
 		Name:         "Tami",
@@ -1006,18 +990,15 @@ func TestUpdatePersonaKeepsStableDBKeyWhenDisplayNameChanges(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	a := &App{
-		Config: &config.Config{
-			Personas: config.PersonasConfig{Dir: personaDir},
-		},
-		DB:     db,
-		Logger: logger,
-		Personas: map[string]*config.Persona{
-			"neko": {Name: "Tami", Description: "cat roommate"},
-		},
-	}
+	a := newTestApp(&config.Config{
+		Personas: config.PersonasConfig{Dir: personaDir},
+	}, db, logger)
+	setTestPersonas(a, map[string]*config.Persona{
+		"neko": {Name: "Tami", Description: "cat roommate"},
+	})
 
-	if err := config.SavePersona(personaDir, "neko", a.Personas["neko"]); err != nil {
+	personas := a.ListPersonas()
+	if err := config.SavePersona(personaDir, "neko", personas["neko"]); err != nil {
 		t.Fatalf("SavePersona: %v", err)
 	}
 	if err := db.UpsertPersona("neko", "Tami", "cat roommate", "prompt", "snarky", nil, "meow", nil); err != nil {
@@ -1051,16 +1032,15 @@ func TestUpdatePersonaKeepsStableDBKeyWhenDisplayNameChanges(t *testing.T) {
 }
 
 func TestGetPersonaReturnsDeepCopyOfWorkProgressPhrases(t *testing.T) {
-	a := &App{
-		Personas: map[string]*config.Persona{
-			"default": {
-				Name: "default",
-				WorkProgressPhrases: map[string][]string{
-					"read_file": {"看看文件"},
-				},
+	a := newTestApp(nil, nil, nil)
+	setTestPersonas(a, map[string]*config.Persona{
+		"default": {
+			Name: "default",
+			WorkProgressPhrases: map[string][]string{
+				"read_file": {"看看文件"},
 			},
 		},
-	}
+	})
 
 	persona, ok := a.GetPersona("default")
 	if !ok || persona == nil {
@@ -1069,7 +1049,7 @@ func TestGetPersonaReturnsDeepCopyOfWorkProgressPhrases(t *testing.T) {
 	persona.WorkProgressPhrases["read_file"][0] = "mutated"
 	persona.WorkProgressPhrases["new_key"] = []string{"new"}
 
-	original := a.Personas["default"].WorkProgressPhrases
+	original := a.ListPersonas()["default"].WorkProgressPhrases
 	if original["read_file"][0] != "看看文件" {
 		t.Fatalf("original read_file phrase = %q, want untouched", original["read_file"][0])
 	}
@@ -1092,16 +1072,12 @@ func TestUpdateProgressPhrasesPersistsToFileDBAndMemory(t *testing.T) {
 		Description: "desc",
 	}
 
-	a := &App{
-		Config: &config.Config{
-			Personas: config.PersonasConfig{Dir: personaDir},
-		},
-		DB:     db,
-		Logger: logger,
-		Personas: map[string]*config.Persona{
-			"default": initial,
-		},
-	}
+	a := newTestApp(&config.Config{
+		Personas: config.PersonasConfig{Dir: personaDir},
+	}, db, logger)
+	setTestPersonas(a, map[string]*config.Persona{
+		"default": initial,
+	})
 
 	if err := config.SavePersona(personaDir, "default", initial); err != nil {
 		t.Fatalf("SavePersona: %v", err)
@@ -1118,8 +1094,8 @@ func TestUpdateProgressPhrasesPersistsToFileDBAndMemory(t *testing.T) {
 		t.Fatalf("UpdateProgressPhrases: %v", err)
 	}
 
-	if got := a.Personas["default"].WorkProgressPhrases["read_file"]; len(got) != 1 || got[0] != "看看文件" {
-		t.Fatalf("memory phrases = %#v, want read_file phrase", a.Personas["default"].WorkProgressPhrases)
+	if got := a.ListPersonas()["default"].WorkProgressPhrases["read_file"]; len(got) != 1 || got[0] != "看看文件" {
+		t.Fatalf("memory phrases = %#v, want read_file phrase", a.ListPersonas()["default"].WorkProgressPhrases)
 	}
 
 	loaded, err := config.LoadPersona(filepath.Join(personaDir, "default.yaml"))
@@ -1154,7 +1130,7 @@ func TestDeleteSessionReturnsNotFoundForMissingSession(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	a := &App{DB: db, Logger: logger}
+	a := newTestApp(nil, db, logger)
 
 	err = a.DeleteSession(context.Background(), "missing")
 	if err == nil {
@@ -1361,7 +1337,7 @@ func TestGetSessionDetailReturnsMessages(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	a := &App{DB: db, Logger: logger}
+	a := newTestApp(nil, db, logger)
 	ctx := context.Background()
 	if err := db.CreateSession(ctx, "session-1", "default"); err != nil {
 		t.Fatalf("CreateSession: %v", err)

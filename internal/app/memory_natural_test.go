@@ -65,11 +65,7 @@ func TestRunNaturalMemoryManualDryRunCallsMemoryHost(t *testing.T) {
 	cfg.Memory.NaturalMemory.Manual.Enabled = true
 	cfg.Memory.NaturalMemory.Manual.AllowDryRun = true
 	cfg.Memory.NaturalMemory.Manual.AllowForce = true
-	a := &App{
-		Config: cfg,
-		Memory: &memoryhost.Host{Core: service},
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}
+	a := newTestAppWithMemory(cfg, &memoryhost.Host{Core: service}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	resp, err := a.RunNaturalMemory(context.Background(), web.NaturalMemoryRunRequest{
 		PersonaID: "default",
@@ -98,11 +94,7 @@ func TestRunNaturalMemoryRejectsForceWhenDisabled(t *testing.T) {
 	cfg.Memory.NaturalMemory.Enabled = true
 	cfg.Memory.NaturalMemory.Manual.Enabled = true
 	cfg.Memory.NaturalMemory.Manual.AllowForce = false
-	a := &App{
-		Config: cfg,
-		Memory: &memoryhost.Host{Core: &appNaturalMemoryTestService{}},
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}
+	a := newTestAppWithMemory(cfg, &memoryhost.Host{Core: &appNaturalMemoryTestService{}}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	_, err := a.RunNaturalMemory(context.Background(), web.NaturalMemoryRunRequest{Mode: "manual", Force: true})
 	if err == nil || !strings.Contains(err.Error(), "natural memory force is disabled") {
@@ -127,11 +119,7 @@ func TestRunNaturalMemoryReturnsMirrorFailureWhenStrict(t *testing.T) {
 	cfg.Memory.NaturalMemory.Manual.Enabled = true
 	cfg.Memory.NaturalMemory.MirrorSyncAfterRun = true
 	cfg.Memory.NaturalMemory.FailOnSyncError = true
-	a := &App{
-		Config: cfg,
-		Memory: &memoryhost.Host{Core: service},
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}
+	a := newTestAppWithMemory(cfg, &memoryhost.Host{Core: service}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	_, err := a.RunNaturalMemory(context.Background(), web.NaturalMemoryRunRequest{Mode: "manual"})
 	if err == nil || !strings.Contains(err.Error(), "mirror_sync_failed") {
