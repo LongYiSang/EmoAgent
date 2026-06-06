@@ -9,7 +9,9 @@ import (
 
 	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/configcenter"
 	"github.com/longyisang/emoagent/internal/memoryhost"
+	"github.com/longyisang/emoagent/internal/memoryruntime"
 	sidecarruntime "github.com/longyisang/emoagent/internal/sidecar"
 	"github.com/longyisang/emoagent/internal/storage"
 	"github.com/longyisang/emoagent/internal/web"
@@ -83,6 +85,7 @@ func (s *MemoryService) Open(ctx context.Context) error {
 	memoryHost.ConfigureExtractionPolicy(memoryExtractionHostConfig(memoryOpen.Memory.Extraction))
 	s.host = memoryHost
 	s.manualRules = manualRules
+	s.writeRuntimeSnapshot(memoryOpen.Memory, memoryOpen.MemoryCore, sidecarStatus)
 	return nil
 }
 
@@ -93,6 +96,17 @@ func (s *MemoryService) StartBackground(ctx context.Context) {
 
 func (s *MemoryService) Bridge() *memoryhost.Bridge {
 	return memoryhost.NewBridge(s.host, s.infra.DB, s.infra.Logger, s.manualRules, memoryRetrievalPolicy(s.infra.Config.Memory.Retrieval))
+}
+
+func (s *MemoryService) writeRuntimeSnapshot(memory config.MemoryConfig, memoryCore *configcenter.MemoryCoreEffective, sidecarStatus *sidecarruntime.Status) {
+	snapshot := memoryruntime.BuildSnapshot(memoryruntime.Input{
+		Memory:        memory,
+		MemoryCore:    memoryCore,
+		SidecarStatus: sidecarStatus,
+	})
+	if err := memoryruntime.WriteSnapshot(memoryruntime.DefaultSnapshotPath, snapshot); err != nil && s.infra.Logger != nil {
+		s.infra.Logger.Warn("write memory runtime snapshot failed", "path", memoryruntime.DefaultSnapshotPath, "error", err)
+	}
 }
 
 func (s *MemoryService) QueueExtraction(ctx context.Context, req web.MemoryExtractionRequest) (web.MemoryExtractionQueueResponse, error) {
@@ -339,13 +353,7 @@ func (s *MemoryService) Close(ctx context.Context) error {
 }
 
 func memoryRetrievalPolicy(cfg config.MemoryRetrievalConfig) memorycore.RetrievalPolicy {
-	return memorycore.RetrievalPolicy{
-		SensitivityPermission: memorycore.SensitivityNormal,
-		FinalMemoryCount:      cfg.FinalMemoryCount,
-		ContextBudgetTokens:   cfg.ContextBudgetTokens,
-		UseFTS:                cfg.UseFTS,
-		UseMirror:             cfg.UseMirror,
-	}
+	return memoryruntime.ChatPromptRetrievalPolicy(cfg)
 }
 
 func manualExtractionEligible(status string) bool {

@@ -20,6 +20,7 @@ import (
 	"github.com/longyisang/emoagent/internal/configcenter"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/memoryhost"
+	"github.com/longyisang/emoagent/internal/memoryruntime"
 	"github.com/longyisang/emoagent/internal/plugin"
 	"github.com/longyisang/emoagent/internal/protocol"
 	sidecarruntime "github.com/longyisang/emoagent/internal/sidecar"
@@ -242,6 +243,7 @@ personas:
 
 func TestInitMemoryDisabledDoesNotRequireMemoryCoreConfig(t *testing.T) {
 	dir := t.TempDir()
+	t.Chdir(dir)
 	missingMemoryConfig := filepath.Join(dir, "missing-memorycore.yaml")
 	memoryDBPath := filepath.Join(dir, "memory.db")
 	configPath := writeAppInitConfig(t, dir, false, missingMemoryConfig)
@@ -257,6 +259,17 @@ func TestInitMemoryDisabledDoesNotRequireMemoryCoreConfig(t *testing.T) {
 	}
 	if _, err := os.Stat(memoryDBPath); !os.IsNotExist(err) {
 		t.Fatalf("memory db stat error = %v, want not exist", err)
+	}
+	raw, err := os.ReadFile(memoryruntime.DefaultSnapshotPath)
+	if err != nil {
+		t.Fatalf("ReadFile memory runtime snapshot: %v", err)
+	}
+	var snapshot memoryruntime.Snapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatalf("Unmarshal snapshot: %v", err)
+	}
+	if snapshot.MemoryEnabled || snapshot.Sidecar.Status != "disabled" || snapshot.MemoryCoreDB != "" {
+		t.Fatalf("disabled snapshot = %#v", snapshot)
 	}
 }
 
@@ -277,6 +290,32 @@ func TestInitMemoryEnabledOpensMemoryCore(t *testing.T) {
 	}
 	if _, err := os.Stat(memoryDBPath); err != nil {
 		t.Fatalf("memory db was not created: %v", err)
+	}
+}
+
+func TestMemoryRetrievalPolicyMatchesRuntimeSnapshotPolicy(t *testing.T) {
+	cfg := config.DefaultConfig().Memory
+	cfg.Enabled = true
+	cfg.Retrieval.UseFTS = true
+	cfg.Retrieval.UseMirror = true
+	cfg.Retrieval.FinalMemoryCount = 6
+	cfg.Retrieval.ContextBudgetTokens = 2048
+
+	policy := memoryRetrievalPolicy(cfg.Retrieval)
+	snapshot := memoryruntime.BuildSnapshot(memoryruntime.Input{Memory: cfg})
+	snapshotPolicy := snapshot.Retrieval.ChatPromptPolicy
+
+	if policy.SensitivityPermission != snapshotPolicy.SensitivityPermission ||
+		policy.AllowHistorical != snapshotPolicy.AllowHistorical ||
+		policy.AllowDeepArchive != snapshotPolicy.AllowDeepArchive ||
+		policy.FinalMemoryCount != snapshotPolicy.FinalMemoryCount ||
+		policy.ContextBudgetTokens != snapshotPolicy.ContextBudgetTokens ||
+		policy.UseFTS != snapshotPolicy.UseFTS ||
+		policy.UseMirror != snapshotPolicy.UseMirror {
+		t.Fatalf("app policy = %#v, snapshot policy = %#v", policy, snapshotPolicy)
+	}
+	if snapshotPolicy.Source != "emoagent.chat_prompt_policy" {
+		t.Fatalf("snapshot policy source = %q", snapshotPolicy.Source)
 	}
 }
 

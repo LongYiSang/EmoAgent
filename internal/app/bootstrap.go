@@ -9,6 +9,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/logger"
+	"github.com/longyisang/emoagent/internal/memoryruntime"
 	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/storage"
 )
@@ -82,6 +83,11 @@ func (b Bootstrapper) Build(ctx context.Context) (kernel *Kernel, cancel context
 	if cfg.Memory.Enabled {
 		if err := kernel.Services.Memory.Open(ctx); err != nil {
 			return nil, nil, err
+		}
+	} else {
+		snapshot := memoryruntime.BuildSnapshot(memoryruntime.Input{Memory: cfg.Memory})
+		if err := memoryruntime.WriteSnapshot(memoryruntime.DefaultSnapshotPath, snapshot); err != nil {
+			log.Warn("write memory runtime snapshot failed", "path", memoryruntime.DefaultSnapshotPath, "error", err)
 		}
 	}
 

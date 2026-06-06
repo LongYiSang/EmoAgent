@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/longyisang/emoagent/internal/config"
+	sidecarruntime "github.com/longyisang/emoagent/internal/sidecar"
 	"github.com/longyisang/emoagent/internal/storage"
 )
 
@@ -153,6 +154,11 @@ func TestBuildEffectiveMergesRuntimeSettingsIntoMemoryCoreAndSidecar(t *testing.
 	if effective.MemoryCore.Retrieval.FinalMemoryCount != 9 {
 		t.Fatalf("memorycore final_memory_count = %d, want 9", effective.MemoryCore.Retrieval.FinalMemoryCount)
 	}
+	if effective.MemoryCore.Retrieval.SensitivityPermission != "normal" ||
+		effective.MemoryCore.Retrieval.AllowHistorical ||
+		effective.MemoryCore.Retrieval.AllowDeepArchive {
+		t.Fatalf("memorycore retrieval archive/sensitivity policy = %#v", effective.MemoryCore.Retrieval)
+	}
 	if effective.MemoryCore.Pipelines.Extraction.ProviderID != "moonshot" || effective.MemoryCore.Pipelines.Extraction.Model != "memory-model" {
 		t.Fatalf("extraction pipeline = %#v", effective.MemoryCore.Pipelines.Extraction)
 	}
@@ -187,6 +193,55 @@ func TestBuildEffectiveMergesRuntimeSettingsIntoMemoryCoreAndSidecar(t *testing.
 		if !strings.Contains(effective.SidecarGeneratedConfig, want) {
 			t.Fatalf("generated sidecar TOML missing %q:\n%s", want, effective.SidecarGeneratedConfig)
 		}
+	}
+}
+
+func TestBuildMemoryCoreOpenConfigDegradedSidecarOnlyDisablesMirror(t *testing.T) {
+	db := openConfigCenterDB(t)
+	if err := db.UpsertLLMProvider(config.LLMProvider{
+		ID:        "llm_main",
+		Name:      "LLM Main",
+		Protocol:  "openai_compatible",
+		BaseURL:   "https://api.example.test/v1",
+		APIKeyEnv: "LLM_MAIN_API_KEY",
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("UpsertLLMProvider: %v", err)
+	}
+	seed := config.DefaultConfig()
+	seed.Memory.Enabled = true
+	seed.Memory.ConfigPath = writeConfigCenterMemoryCoreConfig(t)
+	seed.Memory.Retrieval.FinalMemoryCount = 11
+	seed.Memory.Retrieval.ContextBudgetTokens = 2222
+	seed.Memory.Retrieval.UseFTS = true
+	seed.Memory.Retrieval.UseMirror = true
+	seed.Memory.Sidecar.Enabled = true
+
+	svc := NewService(seed, db)
+	status := sidecarruntime.Status{
+		State:   sidecarruntime.StateDegraded,
+		Managed: false,
+		URL:     "http://127.0.0.1:8765",
+		Adapter: "trivium",
+		Error:   "health check failed",
+	}
+
+	openCfg, err := svc.BuildMemoryCoreOpenConfig(context.Background(), &status)
+	if err != nil {
+		t.Fatalf("BuildMemoryCoreOpenConfig: %v", err)
+	}
+	if openCfg.MemoryCore == nil {
+		t.Fatalf("MemoryCore effective is nil; issues = %#v", openCfg.Issues)
+	}
+	retrieval := openCfg.MemoryCore.Retrieval
+	if retrieval.FinalMemoryCount != 11 || retrieval.ContextBudgetTokens != 2222 || !retrieval.UseFTS {
+		t.Fatalf("retrieval policy lost non-mirror overrides after degradation: %#v", retrieval)
+	}
+	if retrieval.UseMirror {
+		t.Fatalf("retrieval use_mirror = true, want false after degraded sidecar")
+	}
+	if openCfg.MemoryCore.Sidecar.Enabled || openCfg.MemoryCore.Mirror.Enabled {
+		t.Fatalf("sidecar/mirror effective = %#v/%#v, want both disabled", openCfg.MemoryCore.Sidecar, openCfg.MemoryCore.Mirror)
 	}
 }
 

@@ -40,6 +40,7 @@ type MemoryCoreOpenConfig struct {
 	Runtime          memconfig.RuntimeValidationOptions
 	NaturalMemory    memoryhost.NaturalMemoryCoreOverrides
 	Memory           config.MemoryConfig
+	MemoryCore       *MemoryCoreEffective
 	Issues           []ConfigIssue
 }
 
@@ -75,18 +76,19 @@ type ProviderEnvStatus struct {
 }
 
 type MemoryCoreEffective struct {
-	Enabled           bool                              `json:"enabled"`
-	ConfigPath        string                            `json:"config_path"`
-	Core              MemoryCoreCoreEffective           `json:"core"`
-	Retrieval         MemoryCoreRetrievalEffective      `json:"retrieval"`
-	Pipelines         memconfig.PipelinesConfig         `json:"pipelines"`
-	Sidecar           MemoryCoreSidecarEffective        `json:"sidecar"`
-	Mirror            MemoryCoreMirrorEffective         `json:"mirror"`
-	SemanticOps       memconfig.SemanticOpsConfig       `json:"semantic_ops"`
-	NaturalMemory     memconfig.NaturalMemoryConfig     `json:"natural_memory"`
-	Retention         memconfig.RetentionConfig         `json:"retention"`
-	ForgettingPrivacy memconfig.ForgettingPrivacyConfig `json:"forgetting_privacy"`
-	AgentAffect       memconfig.AgentAffectConfig       `json:"agent_affect"`
+	Enabled           bool                                 `json:"enabled"`
+	ConfigPath        string                               `json:"config_path"`
+	Core              MemoryCoreCoreEffective              `json:"core"`
+	Retrieval         MemoryCoreRetrievalEffective         `json:"retrieval"`
+	Pipelines         memconfig.PipelinesConfig            `json:"pipelines"`
+	Sidecar           MemoryCoreSidecarEffective           `json:"sidecar"`
+	SidecarResilience MemoryCoreSidecarResilienceEffective `json:"sidecar_resilience"`
+	Mirror            MemoryCoreMirrorEffective            `json:"mirror"`
+	SemanticOps       memconfig.SemanticOpsConfig          `json:"semantic_ops"`
+	NaturalMemory     memconfig.NaturalMemoryConfig        `json:"natural_memory"`
+	Retention         memconfig.RetentionConfig            `json:"retention"`
+	ForgettingPrivacy memconfig.ForgettingPrivacyConfig    `json:"forgetting_privacy"`
+	AgentAffect       memconfig.AgentAffectConfig          `json:"agent_affect"`
 }
 
 type MemoryCoreCoreEffective struct {
@@ -98,16 +100,41 @@ type MemoryCoreCoreEffective struct {
 }
 
 type MemoryCoreRetrievalEffective struct {
-	UseFTS              bool `json:"use_fts"`
-	UseMirror           bool `json:"use_mirror"`
-	FinalMemoryCount    int  `json:"final_memory_count"`
-	ContextBudgetTokens int  `json:"context_budget_tokens"`
+	UseFTS                bool   `json:"use_fts"`
+	UseMirror             bool   `json:"use_mirror"`
+	AllowHistorical       bool   `json:"allow_historical"`
+	AllowDeepArchive      bool   `json:"allow_deep_archive"`
+	SensitivityPermission string `json:"sensitivity_permission"`
+	FinalMemoryCount      int    `json:"final_memory_count"`
+	ContextBudgetTokens   int    `json:"context_budget_tokens"`
 }
 
 type MemoryCoreSidecarEffective struct {
 	Enabled bool   `json:"enabled"`
 	URL     string `json:"url"`
 	Adapter string `json:"adapter"`
+}
+
+type MemoryCoreSidecarResilienceEffective struct {
+	TotalTimeoutMS      int                                        `json:"total_timeout_ms"`
+	MirrorTimeoutMS     int                                        `json:"mirror_timeout_ms"`
+	ActivationTimeoutMS int                                        `json:"activation_timeout_ms"`
+	RerankTimeoutMS     int                                        `json:"rerank_timeout_ms"`
+	CircuitBreaker      MemoryCoreSidecarBreakerEffective          `json:"circuit_breaker"`
+	ActivationBudget    MemoryCoreSidecarActivationBudgetEffective `json:"activation_budget"`
+}
+
+type MemoryCoreSidecarBreakerEffective struct {
+	Enabled          bool `json:"enabled"`
+	Window           int  `json:"window"`
+	FailureThreshold int  `json:"failure_threshold"`
+	OpenMS           int  `json:"open_ms"`
+}
+
+type MemoryCoreSidecarActivationBudgetEffective struct {
+	MaxEdgesScannedPerRequest int `json:"max_edges_scanned_per_request"`
+	MaxNeighborsPerNode       int `json:"max_neighbors_per_node"`
+	MaxWallMS                 int `json:"max_wall_ms"`
 }
 
 type MemoryCoreMirrorEffective struct {
@@ -241,6 +268,8 @@ func (s *Service) BuildMemoryCoreOpenConfig(ctx context.Context, status *sidecar
 	if status != nil {
 		mergeSidecarStatusOverrides(&overrides, *status)
 	}
+	memoryCore, memoryCoreIssues := s.memoryCoreEffective(&runtimeCfg, providers, status)
+	runtimeIssues = append(runtimeIssues, memoryCoreIssues...)
 	return MemoryCoreOpenConfig{
 		ConfigPath:       runtimeCfg.Memory.ConfigPath,
 		Overrides:        overrides,
@@ -254,6 +283,7 @@ func (s *Service) BuildMemoryCoreOpenConfig(ctx context.Context, status *sidecar
 		},
 		NaturalMemory: naturalMemoryCoreOverridesFromConfig(runtimeCfg.Memory.NaturalMemory),
 		Memory:        runtimeCfg.Memory,
+		MemoryCore:    memoryCore,
 		Issues:        runtimeIssues,
 	}, nil
 }
@@ -432,16 +462,36 @@ func (s *Service) memoryCoreEffective(seed *config.Config, providers []config.LL
 			Timezone:    cfg.Core.Timezone,
 		},
 		Retrieval: MemoryCoreRetrievalEffective{
-			UseFTS:              cfg.Retrieval.UseFTS,
-			UseMirror:           cfg.Retrieval.UseMirror,
-			FinalMemoryCount:    cfg.Retrieval.FinalMemoryCount,
-			ContextBudgetTokens: cfg.Retrieval.ContextBudgetTokens,
+			UseFTS:                cfg.Retrieval.UseFTS,
+			UseMirror:             cfg.Retrieval.UseMirror,
+			AllowHistorical:       cfg.Retrieval.AllowHistorical,
+			AllowDeepArchive:      cfg.Retrieval.AllowDeepArchive,
+			SensitivityPermission: cfg.Retrieval.SensitivityPermission,
+			FinalMemoryCount:      cfg.Retrieval.FinalMemoryCount,
+			ContextBudgetTokens:   cfg.Retrieval.ContextBudgetTokens,
 		},
 		Pipelines: cfg.Pipelines,
 		Sidecar: MemoryCoreSidecarEffective{
 			Enabled: cfg.Sidecar.Enabled,
 			URL:     cfg.Sidecar.URL,
 			Adapter: cfg.Sidecar.Adapter,
+		},
+		SidecarResilience: MemoryCoreSidecarResilienceEffective{
+			TotalTimeoutMS:      cfg.Sidecar.TotalTimeoutMS,
+			MirrorTimeoutMS:     cfg.Sidecar.MirrorTimeoutMS,
+			ActivationTimeoutMS: cfg.Sidecar.ActivationTimeoutMS,
+			RerankTimeoutMS:     cfg.Sidecar.RerankTimeoutMS,
+			CircuitBreaker: MemoryCoreSidecarBreakerEffective{
+				Enabled:          cfg.Sidecar.CircuitBreaker.Enabled,
+				Window:           cfg.Sidecar.CircuitBreaker.Window,
+				FailureThreshold: cfg.Sidecar.CircuitBreaker.FailureThreshold,
+				OpenMS:           cfg.Sidecar.CircuitBreaker.OpenMS,
+			},
+			ActivationBudget: MemoryCoreSidecarActivationBudgetEffective{
+				MaxEdgesScannedPerRequest: cfg.Sidecar.ActivationBudget.MaxEdgesScannedPerRequest,
+				MaxNeighborsPerNode:       cfg.Sidecar.ActivationBudget.MaxNeighborsPerNode,
+				MaxWallMS:                 cfg.Sidecar.ActivationBudget.MaxWallMS,
+			},
 		},
 		Mirror: MemoryCoreMirrorEffective{
 			Enabled:        cfg.Mirror.Enabled,
@@ -666,9 +716,18 @@ func mergeSidecarStatusOverrides(overrides *memconfig.ConfigOverrides, status si
 		return
 	}
 	disabled := false
-	overrides.Retrieval = &memconfig.RetrievalOverrides{UseMirror: &disabled}
-	overrides.Sidecar = &memconfig.SidecarOverrides{Enabled: &disabled}
-	overrides.Mirror = &memconfig.MirrorOverrides{Enabled: &disabled}
+	if overrides.Retrieval == nil {
+		overrides.Retrieval = &memconfig.RetrievalOverrides{}
+	}
+	overrides.Retrieval.UseMirror = &disabled
+	if overrides.Sidecar == nil {
+		overrides.Sidecar = &memconfig.SidecarOverrides{}
+	}
+	overrides.Sidecar.Enabled = &disabled
+	if overrides.Mirror == nil {
+		overrides.Mirror = &memconfig.MirrorOverrides{}
+	}
+	overrides.Mirror.Enabled = &disabled
 }
 
 func (s *Service) sidecarSpec(memory config.MemoryConfig, providers []config.LLMProvider) (sidecarruntime.Spec, []ConfigIssue) {

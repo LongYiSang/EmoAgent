@@ -1,0 +1,85 @@
+{
+  "schema_version": "emoagent.memory_runtime_snapshot.v1",
+  "memory_enabled": true,
+  "memorycore_db": "D:/Dev/Project/Agent/EmoAgent/data/memory.db",
+  "sqlite_fts_enabled": true,
+  "mirror_enabled": true,
+  "sidecar": {
+    "mode": "managed",
+    "status": "healthy",
+    "url": "http://127.0.0.1:8765",
+    "adapter": "trivium"
+  },
+  "sidecar_resilience": {
+    "total_timeout_ms": 45000,
+    "mirror_timeout_ms": 18000,
+    "activation_timeout_ms": 15000,
+    "rerank_timeout_ms": 18000,
+    "circuit_breaker": {
+      "enabled": true,
+      "window": 20,
+      "failure_threshold": 3,
+      "open_ms": 60000
+    },
+    "activation_budget": {
+      "max_edges_scanned_per_request": 10000,
+      "max_neighbors_per_node": 100,
+      "max_wall_ms": 120
+    }
+  },
+  "retrieval": {
+    "chat_prompt_policy": {
+      "source": "emoagent.chat_prompt_policy",
+      "sensitivity_permission": "normal",
+      "allow_historical": false,
+      "allow_deep_archive": false,
+      "final_memory_count": 8,
+      "context_budget_tokens": 1500,
+      "use_fts": true,
+      "use_mirror": true
+    },
+    "memorycore_default_policy": {
+      "source": "memorycore.effective_config",
+      "sensitivity_permission": "normal",
+      "allow_historical": false,
+      "allow_deep_archive": false,
+      "final_memory_count": 8,
+      "context_budget_tokens": 1500,
+      "use_fts": true,
+      "use_mirror": true
+    }
+  },
+  "query_analysis": {
+    "enabled": true,
+    "mode": "sidecar",
+    "runtime_mode": "adaptive_safe",
+    "fallback_mode": "rule_only",
+    "provider_id": "deepseek",
+    "model": "deepseek-v4-flash",
+    "scorer_version": "query_analysis_scorer_v1",
+    "router_version": "semantic_router_v1",
+    "semantic_budget": {
+      "max_semantic_calls_per_session": 8,
+      "max_semantic_calls_per_session_window_ms": 1800000,
+      "max_semantic_calls_per_1000_queries": 250,
+      "max_semantic_latency_ms": 1500
+    },
+    "diagnostics": {
+      "include_score_breakdown": true,
+      "include_reason_codes": true,
+      "sample_rate": 1
+    }
+  },
+  "extraction": {
+    "enabled": true,
+    "async_enabled": true,
+    "worker_enabled": true,
+    "manual_pin": true,
+    "session_end": true
+  },
+  "natural_memory": {
+    "enabled": true,
+    "scheduler_enabled": true,
+    "manual_trigger": true
+  }
+}
