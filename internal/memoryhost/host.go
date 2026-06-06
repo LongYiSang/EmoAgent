@@ -11,7 +11,7 @@ import (
 )
 
 type Host struct {
-	Service          memorycore.Service
+	Core             CoreClient
 	Source           string
 	DBPath           string
 	retrievalPolicy  memorycore.RetrievalPolicy
@@ -79,10 +79,10 @@ func (h *Host) Close() error {
 		return nil
 	}
 	var closeErr error
-	if h.Service == nil {
+	if h.Core == nil {
 		return closeErr
 	}
-	if err := h.Service.Close(); err != nil {
+	if err := h.Core.Close(); err != nil {
 		if closeErr == nil {
 			closeErr = err
 		}
@@ -90,7 +90,7 @@ func (h *Host) Close() error {
 	if h.logger != nil {
 		h.logger.Info("memorycore stopped", "db_path", h.DBPath)
 	}
-	h.Service = nil
+	h.Core = nil
 	return closeErr
 }
 
@@ -119,7 +119,7 @@ func (h *Host) ConfigureExtractionPolicy(policy ExtractionHostPolicy) {
 }
 
 func (h *Host) ExtractionEnabled() bool {
-	return h != nil && h.Service != nil && h.extractionPolicy.Enabled
+	return h.configured() && h.extractionPolicy.Enabled
 }
 
 func (h *Host) extractionTriggerOnFinalizeSegment() bool {
@@ -137,6 +137,10 @@ func (h *Host) ExtractSessionEnd(ctx context.Context, personaID string, memorySe
 	return nil, sanitizedExtractionError("async_extraction_required", "")
 }
 
+func (h *Host) configured() bool {
+	return h != nil && h.Core != nil
+}
+
 func open(ctx context.Context, opts memorycore.Options, retrievalPolicy memorycore.RetrievalPolicy, logger *slog.Logger, source string) (*Host, error) {
 	if strings.TrimSpace(opts.DBPath) == "" {
 		return nil, fmt.Errorf("memorycore DBPath is required")
@@ -145,13 +149,13 @@ func open(ctx context.Context, opts memorycore.Options, retrievalPolicy memoryco
 		return nil, fmt.Errorf("memorycore AutoMigrate must be true")
 	}
 
-	svc, err := memorycore.Open(ctx, opts)
+	client, err := memorycore.Open(ctx, opts)
 	if err != nil {
-		return nil, fmt.Errorf("open memorycore service: %w", err)
+		return nil, fmt.Errorf("open memorycore client: %w", err)
 	}
 
 	host := &Host{
-		Service:          svc,
+		Core:             newMemoryCoreClientAdapter(client),
 		Source:           source,
 		DBPath:           opts.DBPath,
 		retrievalPolicy:  retrievalPolicy,

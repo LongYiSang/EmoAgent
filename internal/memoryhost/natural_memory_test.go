@@ -22,7 +22,7 @@ func TestNaturalMemoryRunnerTickRunsAndSyncsMirror(t *testing.T) {
 		},
 		mirrorResult: &memorycore.RunMirrorSyncResult{Claimed: 2, Completed: 2},
 	}
-	runner := NewNaturalMemoryRunner(&Host{Service: service}, NaturalMemoryHostConfig{
+	runner := NewNaturalMemoryRunner(&Host{Core: service}, NaturalMemoryHostConfig{
 		Enabled:            true,
 		SchedulerEnabled:   true,
 		TickInterval:       time.Minute,
@@ -68,7 +68,7 @@ func TestNaturalMemoryRunnerManualDryRunDoesNotSyncMirror(t *testing.T) {
 			MirrorUpdatesEnqueued: 3,
 		},
 	}
-	runner := NewNaturalMemoryRunner(&Host{Service: service}, NaturalMemoryHostConfig{
+	runner := NewNaturalMemoryRunner(&Host{Core: service}, NaturalMemoryHostConfig{
 		Enabled:            true,
 		MirrorSyncAfterRun: true,
 		MirrorSyncLimit:    100,
@@ -114,7 +114,7 @@ func TestNaturalMemoryRunnerSkippedTickDoesNotReplaceLatestCompletedRun(t *testi
 			Status:  memorycore.NaturalMemoryRunStatusSkipped,
 		},
 	}
-	runner := NewNaturalMemoryRunner(&Host{Service: service}, NaturalMemoryHostConfig{
+	runner := NewNaturalMemoryRunner(&Host{Core: service}, NaturalMemoryHostConfig{
 		Enabled:       true,
 		ManualEnabled: true,
 		AllowDryRun:   true,
@@ -145,7 +145,7 @@ func TestNaturalMemoryRunnerMirrorFailureDegradesByDefault(t *testing.T) {
 		},
 		mirrorErr: errors.New("sidecar down with raw path D:/private"),
 	}
-	runner := NewNaturalMemoryRunner(&Host{Service: service}, NaturalMemoryHostConfig{
+	runner := NewNaturalMemoryRunner(&Host{Core: service}, NaturalMemoryHostConfig{
 		Enabled:            true,
 		MirrorSyncAfterRun: true,
 		MirrorSyncLimit:    100,
@@ -174,7 +174,7 @@ func TestNaturalMemoryRunnerMirrorFailureDegradesByDefault(t *testing.T) {
 }
 
 type naturalMemoryTestService struct {
-	memorycore.Service
+	CoreClient
 
 	tickCalls       []memorycore.RunNaturalMemoryTickRequest
 	cycleCalls      []memorycore.RunNaturalMemoryCycleRequest

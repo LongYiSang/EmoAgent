@@ -153,7 +153,7 @@ func TestOpenFromConfigWithOptionsAppliesNaturalMemoryRuntimeOverrides(t *testin
 	}
 	t.Cleanup(func() { _ = host.Close() })
 
-	result, err := host.Service.RunNaturalMemoryTick(context.Background(), memorycore.RunNaturalMemoryTickRequest{
+	result, err := host.Core.RunNaturalMemoryTick(context.Background(), memorycore.RunNaturalMemoryTickRequest{
 		PersonaID: "default",
 		Now:       time.Date(2026, 6, 6, 3, 45, 0, 0, time.UTC),
 		Explain:   true,
@@ -165,7 +165,7 @@ func TestOpenFromConfigWithOptionsAppliesNaturalMemoryRuntimeOverrides(t *testin
 		t.Fatalf("natural tick result = %#v, want skipped by overlaid local_time", result)
 	}
 
-	_, err = host.Service.RunNaturalMemoryCycle(context.Background(), memorycore.RunNaturalMemoryCycleRequest{
+	_, err = host.Core.RunNaturalMemoryCycle(context.Background(), memorycore.RunNaturalMemoryCycleRequest{
 		PersonaID: "default",
 		RunKind:   memorycore.NaturalMemoryRunManual,
 		Force:     true,
@@ -435,7 +435,7 @@ func TestBridgeRetrievePromptBlockReturnsSeededFact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AppendUserEpisode: %v", err)
 	}
-	user, err := host.Service.EnsureEntity(ctx, memorycore.EnsureEntityRequest{
+	user, err := host.Core.EnsureEntity(ctx, memorycore.EnsureEntityRequest{
 		CanonicalName: "Long",
 		EntityType:    memorycore.EntityTypeUser,
 	})
@@ -443,7 +443,7 @@ func TestBridgeRetrievePromptBlockReturnsSeededFact(t *testing.T) {
 		t.Fatalf("EnsureEntity: %v", err)
 	}
 	coffee := "咖啡"
-	result, err := host.Service.ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
+	result, err := host.Core.ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
 		SessionID: &segment.MemorySessionID,
 		Trigger:   memorycore.ConsolidationTriggerManual,
 		Candidate: memorycore.ManualFactCandidate{

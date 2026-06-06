@@ -16,15 +16,11 @@ type ExtractionRunner struct {
 }
 
 func NewExtractionRunner(ctx context.Context, host *Host, cfg ExtractionConfig, logger *slog.Logger) (*ExtractionRunner, error) {
-	return NewExtractionRunnerWithLLM(ctx, host, cfg, logger, nil)
-}
-
-func NewExtractionRunnerWithLLM(_ context.Context, host *Host, cfg ExtractionConfig, _ *slog.Logger, _ memorycore.ExtractionLLM) (*ExtractionRunner, error) {
 	cfg = cfg.normalized()
 	if !cfg.Enabled {
 		return nil, nil
 	}
-	if host == nil || host.Service == nil {
+	if !host.configured() {
 		return nil, fmt.Errorf("memory host is not configured")
 	}
 	return &ExtractionRunner{host: host, cfg: cfg}, nil

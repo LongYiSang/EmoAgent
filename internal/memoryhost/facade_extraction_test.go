@@ -17,7 +17,7 @@ import (
 func TestHostExtractSessionEndIsAsyncOnly(t *testing.T) {
 	fake := &fakeMemoryService{}
 	host := &Host{
-		Service: fake,
+		Core: fake,
 		extractionPolicy: ExtractionHostPolicy{
 			Enabled:                  true,
 			TriggerOnFinalizeSegment: true,
@@ -48,7 +48,7 @@ func TestHostExtractSessionEndIsAsyncOnly(t *testing.T) {
 func TestHostExtractSessionEndDisabledDoesNotCallRunExtraction(t *testing.T) {
 	fake := &fakeMemoryService{}
 	host := &Host{
-		Service: fake,
+		Core: fake,
 		extractionPolicy: ExtractionHostPolicy{
 			Enabled:                  false,
 			TriggerOnFinalizeSegment: true,
@@ -69,7 +69,7 @@ func TestHostExtractSessionEndDisabledDoesNotCallRunExtraction(t *testing.T) {
 
 func TestHostConfigureExtractionPolicyPreservesMemoryCoreSemanticDedup(t *testing.T) {
 	host := &Host{
-		Service: &fakeMemoryService{},
+		Core: &fakeMemoryService{},
 		extractionPolicy: ExtractionHostPolicy{
 			Enabled: true,
 			SemanticDedup: memorycore.SemanticDedupOptions{
@@ -482,8 +482,8 @@ func openFacadeBridgeFixtureWithLogger(t *testing.T, chatSessionID string, logge
 	}
 
 	host := &Host{
-		Service: service,
-		DBPath:  filepath.Join(t.TempDir(), "memory.db"),
+		Core:   service,
+		DBPath: filepath.Join(t.TempDir(), "memory.db"),
 		extractionPolicy: ExtractionHostPolicy{
 			Enabled:                  true,
 			AsyncEnabled:             true,
@@ -512,7 +512,7 @@ func openFacadeBridgeFixtureWithLogger(t *testing.T, chatSessionID string, logge
 }
 
 type fakeMemoryService struct {
-	memorycore.Service
+	CoreClient
 
 	startSessionID           string
 	appendEpisodeSeq         int

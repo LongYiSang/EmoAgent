@@ -30,7 +30,7 @@ func memoryNaturalMemoryRunnerConfig(cfg config.MemoryNaturalMemoryConfig) memor
 }
 
 func startNaturalMemoryBackground(ctx context.Context, host *memoryhost.Host, logger *slog.Logger, cfg config.MemoryNaturalMemoryConfig) *memoryhost.NaturalMemoryRunner {
-	if host == nil || host.Service == nil || !cfg.Enabled {
+	if host == nil || host.Core == nil || !cfg.Enabled {
 		return nil
 	}
 	runner := memoryhost.NewNaturalMemoryRunner(host, memoryNaturalMemoryRunnerConfig(cfg), logger)
@@ -74,7 +74,7 @@ func (a *App) ensureNaturalMemoryRunner() (*memoryhost.NaturalMemoryRunner, erro
 	if a == nil || a.Config == nil || !a.Config.Memory.Enabled || !a.Config.Memory.NaturalMemory.Enabled {
 		return nil, fmt.Errorf("natural memory is disabled")
 	}
-	if a.Memory == nil || a.Memory.Service == nil {
+	if a.Memory == nil || a.Memory.Core == nil {
 		return nil, fmt.Errorf("memorycore is not configured")
 	}
 	a.mu.Lock()

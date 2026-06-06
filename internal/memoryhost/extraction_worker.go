@@ -78,7 +78,7 @@ func (w *ExtractionWorker) Run(ctx context.Context, interval time.Duration) {
 }
 
 func (w *ExtractionWorker) RunOnce(ctx context.Context) (int, error) {
-	if w == nil || w.host == nil || w.host.Service == nil || w.db == nil {
+	if w == nil || !w.host.configured() || w.db == nil {
 		return 0, nil
 	}
 	jobs, err := w.db.ClaimMemoryExtractionJobs(ctx, w.cfg.WorkerID, w.cfg.ClaimLimit, w.cfg.ClaimTTL, time.Now().UTC())
@@ -103,7 +103,7 @@ func (w *ExtractionWorker) runJob(ctx context.Context, job storage.MemoryExtract
 		})
 		return err
 	}
-	result, runErr := w.host.Service.RunExtraction(ctx, req)
+	result, runErr := w.host.Core.RunExtraction(ctx, req)
 	if runErr != nil || result == nil || !successfulExtractionStatus(result.Status) {
 		return w.recordJobFailure(ctx, job, result, runErr)
 	}
@@ -215,7 +215,7 @@ func (w *ExtractionWorker) runMirrorSyncAfterApply(ctx context.Context, job stor
 	if !w.cfg.MirrorSyncAfterApply || status == storage.MemoryExtractionJobStatusSkipped || memorycore.ExtractionRunMode(job.Mode) != memorycore.ExtractionRunModeApply {
 		return "", nil
 	}
-	mirror, err := w.host.Service.RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{
+	mirror, err := w.host.Core.RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{
 		PersonaID: defaultPersonaID(job.PersonaID),
 		Limit:     w.cfg.MirrorSyncLimit,
 	})

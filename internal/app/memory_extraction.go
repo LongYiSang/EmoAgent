@@ -112,7 +112,7 @@ func startMemoryExtractionBackground(ctx context.Context, host *memoryhost.Host,
 }
 
 func runMemoryMirrorSyncLoop(ctx context.Context, host *memoryhost.Host, logger *slog.Logger, cfg config.MemoryExtractionMirrorConfig) {
-	if host == nil || host.Service == nil {
+	if host == nil || host.Core == nil {
 		return
 	}
 	interval := time.Duration(cfg.IntervalSeconds) * time.Second
@@ -130,7 +130,7 @@ func runMemoryMirrorSyncLoop(ctx context.Context, host *memoryhost.Host, logger 
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if _, err := host.Service.RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: limit}); err != nil && logger != nil {
+			if _, err := host.Core.RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: limit}); err != nil && logger != nil {
 				logger.Warn("periodic memory mirror sync failed", "error_code", "mirror_sync_failed")
 			}
 		}

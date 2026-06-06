@@ -67,7 +67,7 @@ func TestRunNaturalMemoryManualDryRunCallsMemoryHost(t *testing.T) {
 	cfg.Memory.NaturalMemory.Manual.AllowForce = true
 	a := &App{
 		Config: cfg,
-		Memory: &memoryhost.Host{Service: service},
+		Memory: &memoryhost.Host{Core: service},
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
@@ -100,7 +100,7 @@ func TestRunNaturalMemoryRejectsForceWhenDisabled(t *testing.T) {
 	cfg.Memory.NaturalMemory.Manual.AllowForce = false
 	a := &App{
 		Config: cfg,
-		Memory: &memoryhost.Host{Service: &appNaturalMemoryTestService{}},
+		Memory: &memoryhost.Host{Core: &appNaturalMemoryTestService{}},
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
@@ -129,7 +129,7 @@ func TestRunNaturalMemoryReturnsMirrorFailureWhenStrict(t *testing.T) {
 	cfg.Memory.NaturalMemory.FailOnSyncError = true
 	a := &App{
 		Config: cfg,
-		Memory: &memoryhost.Host{Service: service},
+		Memory: &memoryhost.Host{Core: service},
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
@@ -140,7 +140,7 @@ func TestRunNaturalMemoryReturnsMirrorFailureWhenStrict(t *testing.T) {
 }
 
 type appNaturalMemoryTestService struct {
-	memorycore.Service
+	memoryhost.CoreClient
 
 	cycleCalls      []memorycore.RunNaturalMemoryCycleRequest
 	mirrorSyncCalls []memorycore.RunMirrorSyncRequest

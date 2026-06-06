@@ -3,7 +3,6 @@ package memoryhost
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,7 +24,7 @@ func TestBridgeFinalizeSegmentDryRunExtractionDoesNotWriteFacts(t *testing.T) {
 			Model: "fake-model",
 		},
 		AuditEnabled: true,
-	}, &fakeExtractionLLM{})
+	})
 
 	if _, err := fixture.bridge.AppendUserEpisode(fixture.ctx, fixture.segment.SegmentID, "msg-user", "我喜欢手冲咖啡，尤其是浅烘。"); err != nil {
 		t.Fatalf("AppendUserEpisode: %v", err)
@@ -58,7 +57,7 @@ func TestBridgeFinalizeSegmentExtractionWritesRawLogWhenEnabled(t *testing.T) {
 			Model: "fake-model",
 		},
 		AuditEnabled: true,
-	}, &fakeExtractionLLM{})
+	})
 
 	if _, err := fixture.bridge.AppendUserEpisode(fixture.ctx, fixture.segment.SegmentID, "msg-user", "我喜欢手冲咖啡。"); err != nil {
 		t.Fatalf("AppendUserEpisode: %v", err)
@@ -88,7 +87,7 @@ func TestBridgeFinalizeSegmentApplyExtractionWritesRetrievableFact(t *testing.T)
 			Model: "fake-model",
 		},
 		AuditEnabled: true,
-	}, &fakeExtractionLLM{})
+	})
 
 	if _, err := fixture.bridge.AppendUserEpisode(fixture.ctx, fixture.segment.SegmentID, "msg-user", "我喜欢手冲咖啡，尤其是浅烘。"); err != nil {
 		t.Fatalf("AppendUserEpisode: %v", err)
@@ -125,7 +124,7 @@ func TestBridgeFinalizeSegmentExtractionFailureDoesNotFailFinalize(t *testing.T)
 			Kind: memorycore.ExtractionProviderDisabled,
 		},
 		AuditEnabled: false,
-	}, nil)
+	})
 
 	if _, err := fixture.bridge.AppendUserEpisode(fixture.ctx, fixture.segment.SegmentID, "msg-user", "我喜欢手冲咖啡。"); err != nil {
 		t.Fatalf("AppendUserEpisode: %v", err)
@@ -146,7 +145,7 @@ func TestExtractSessionEndDoesNotRunExtractionDirectly(t *testing.T) {
 			Kind: memorycore.ExtractionProviderDisabled,
 		},
 		AuditEnabled: false,
-	}, nil)
+	})
 
 	if _, err := fixture.bridge.AppendUserEpisode(fixture.ctx, fixture.segment.SegmentID, "msg-user", "我喜欢手冲咖啡。"); err != nil {
 		t.Fatalf("AppendUserEpisode: %v", err)
@@ -174,7 +173,7 @@ func TestBridgeFinalizeSegmentRepeatedCallDoesNotRepeatExtraction(t *testing.T) 
 			Model: "fake-model",
 		},
 		AuditEnabled: true,
-	}, nil)
+	})
 
 	if _, err := fixture.bridge.AppendUserEpisode(fixture.ctx, fixture.segment.SegmentID, "msg-user", "我喜欢手冲咖啡。"); err != nil {
 		t.Fatalf("AppendUserEpisode: %v", err)
@@ -196,7 +195,7 @@ func TestBridgeFinalizeSegmentExtractionDisabledDoesNotCallLLM(t *testing.T) {
 		Enabled:                  false,
 		Mode:                     memorycore.ExtractionRunModeApply,
 		TriggerOnFinalizeSegment: true,
-	}, nil)
+	})
 
 	if _, err := fixture.bridge.AppendUserEpisode(fixture.ctx, fixture.segment.SegmentID, "msg-user", "我喜欢手冲咖啡。"); err != nil {
 		t.Fatalf("AppendUserEpisode: %v", err)
@@ -217,7 +216,7 @@ type extractionBridgeFixture struct {
 	memoryDBPath string
 }
 
-func openExtractionBridgeFixture(t *testing.T, chatSessionID string, cfg ExtractionConfig, llm memorycore.ExtractionLLM) extractionBridgeFixture {
+func openExtractionBridgeFixture(t *testing.T, chatSessionID string, cfg ExtractionConfig) extractionBridgeFixture {
 	t.Helper()
 
 	ctx := context.Background()
@@ -314,88 +313,6 @@ func extractionProviderKindForTest(kind string) string {
 	default:
 		return kind
 	}
-}
-
-type fakeExtractionLLM struct {
-	err          error
-	extractCalls int
-}
-
-func (f *fakeExtractionLLM) CompleteJSON(_ context.Context, req memorycore.ExtractionLLMRequest) (memorycore.ExtractionLLMResponse, error) {
-	if req.Purpose != memorycore.ExtractionLLMPurposeExtraction {
-		return memorycore.ExtractionLLMResponse{Text: "{}"}, nil
-	}
-	f.extractCalls++
-	if f.err != nil {
-		return memorycore.ExtractionLLMResponse{}, f.err
-	}
-
-	var extractReq memorycore.ExtractionRequest
-	_ = json.Unmarshal([]byte(req.UserPrompt), &extractReq)
-	episodeIDs := make([]string, 0, len(extractReq.Episodes))
-	for _, episode := range extractReq.Episodes {
-		episodeIDs = append(episodeIDs, episode.EpisodeID)
-	}
-	if len(episodeIDs) == 0 {
-		episodeIDs = []string{"unknown"}
-	}
-
-	body := map[string]any{
-		"schema_version": memorycore.ExtractionResponseSchemaVersion,
-		"request_id":     extractReq.RequestID,
-		"persona_id":     extractReq.PersonaID,
-		"session_id":     extractReq.SessionID,
-		"trigger":        extractReq.Trigger,
-		"source_window":  map[string]any{"episode_ids": episodeIDs, "started_at": nil, "ended_at": nil},
-		"entities":       []any{},
-		"facts": []any{map[string]any{
-			"candidate_id":                "fact_1",
-			"subject_entity_candidate_id": "user",
-			"predicate":                   "likes",
-			"object_entity_candidate_id":  nil,
-			"object_literal":              "手冲咖啡",
-			"content_summary":             "用户喜欢手冲咖啡。",
-			"fact_type":                   memorycore.FactTypeStablePreference,
-			"valid_from":                  nil,
-			"valid_to":                    nil,
-			"temporal_precision":          "unknown",
-			"extraction_confidence":       memorycore.ConfidenceExplicit,
-			"extraction_confidence_score": 0.9,
-			"importance":                  0.7,
-			"valence":                     0.2,
-			"arousal":                     0.2,
-			"sensitivity_level":           memorycore.SensitivityNormal,
-			"source_episode_ids":          []string{episodeIDs[0]},
-			"evidence_notes":              nil,
-			"reasoning":                   nil,
-			"operation_hint":              "insert_candidate",
-			"pinned":                      false,
-			"user_requested":              false,
-			"searchable_hint":             true,
-			"quality_decision":            "accept_for_consolidation",
-			"quality_reasons":             []string{"test"},
-		}},
-		"links":               []any{},
-		"affect_events":       []any{},
-		"deletion_intents":    []any{},
-		"pin_intents":         []any{},
-		"correction_hints":    []any{},
-		"rejected_candidates": []any{},
-		"quality_flags":       []any{},
-		"gate_summary": map[string]any{
-			"accepted_fact_count":   1,
-			"needs_review_count":    0,
-			"rejected_count":        0,
-			"has_deletion_intent":   false,
-			"has_pin_intent":        false,
-			"requires_human_review": false,
-			"notes":                 "test",
-			"routed_count":          0,
-			"not_applied_count":     0,
-		},
-	}
-	data, _ := json.Marshal(body)
-	return memorycore.ExtractionLLMResponse{Text: string(data), Model: "fake-model"}, nil
 }
 
 func requireMemoryExtractionAuditStatus(t *testing.T, dbPath string, want memorycore.ExtractionRunStatus) {

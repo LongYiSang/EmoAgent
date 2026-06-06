@@ -24,7 +24,7 @@ type Bridge struct {
 }
 
 func NewBridge(host *Host, db *storage.DB, logger *slog.Logger, manualRules *ManualRules, retrievalPolicy ...memorycore.RetrievalPolicy) *Bridge {
-	if host == nil || host.Service == nil || db == nil {
+	if !host.configured() || db == nil {
 		return nil
 	}
 	policy := host.retrievalPolicy
@@ -35,7 +35,7 @@ func NewBridge(host *Host, db *storage.DB, logger *slog.Logger, manualRules *Man
 }
 
 func (b *Bridge) EnsureSegment(ctx context.Context, chatSessionID string, personaID string) (storage.MemorySegmentRef, error) {
-	if b == nil || b.host == nil || b.host.Service == nil || b.db == nil {
+	if b == nil || !b.host.configured() || b.db == nil {
 		return storage.MemorySegmentRef{}, fmt.Errorf("memory bridge is not configured")
 	}
 	if strings.TrimSpace(chatSessionID) == "" {
@@ -54,7 +54,7 @@ func (b *Bridge) EnsureSegment(ctx context.Context, chatSessionID string, person
 }
 
 func (b *Bridge) RolloverSegment(ctx context.Context, chatSessionID string, personaID string, reason string) (storage.MemorySegmentRef, error) {
-	if b == nil || b.host == nil || b.host.Service == nil || b.db == nil {
+	if b == nil || !b.host.configured() || b.db == nil {
 		return storage.MemorySegmentRef{}, fmt.Errorf("memory bridge is not configured")
 	}
 	if strings.TrimSpace(chatSessionID) == "" {
@@ -92,7 +92,7 @@ func (b *Bridge) RetrievePromptBlock(ctx context.Context, chatSessionID string, 
 }
 
 func (b *Bridge) RetrievePromptSnapshot(ctx context.Context, chatSessionID string, query string, includePipelineTrace bool, excludedEpisodeIDs ...string) (string, any, error) {
-	if b == nil || b.host == nil || b.host.Service == nil || b.db == nil {
+	if b == nil || !b.host.configured() || b.db == nil {
 		return "", nil, fmt.Errorf("memory bridge is not configured")
 	}
 	chatSessionID = strings.TrimSpace(chatSessionID)
@@ -117,7 +117,7 @@ func (b *Bridge) RetrievePromptSnapshot(ctx context.Context, chatSessionID strin
 	if includePipelineTrace {
 		diagnosticsLevel = memorycore.RetrievalDiagnosticsLevelPipelineSummary
 	}
-	contextResult, err := b.host.Service.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := b.host.Core.Retrieve(ctx, memorycore.RetrievalRequest{
 		PersonaID:        defaultPersonaID(segmentPersona(current, b.db, ctx)),
 		SessionID:        &memorySessionID,
 		QueryText:        query,
@@ -131,7 +131,7 @@ func (b *Bridge) RetrievePromptSnapshot(ctx context.Context, chatSessionID strin
 }
 
 func (b *Bridge) FinalizeSegment(ctx context.Context, segmentID string, reason string, summary string) error {
-	if b == nil || b.host == nil || b.host.Service == nil || b.db == nil {
+	if b == nil || !b.host.configured() || b.db == nil {
 		return fmt.Errorf("memory bridge is not configured")
 	}
 	segment, err := b.db.GetMemorySegment(ctx, segmentID)
@@ -151,7 +151,7 @@ func (b *Bridge) FinalizeSegment(ctx context.Context, segmentID string, reason s
 		summaryPtr = &summaryCopy
 	}
 	personaID := defaultPersonaID(segmentPersona(segment, b.db, ctx))
-	if _, err := b.host.Service.EndSession(ctx, memorycore.EndSessionRequest{
+	if _, err := b.host.Core.EndSession(ctx, memorycore.EndSessionRequest{
 		PersonaID: personaID,
 		SessionID: segment.MemorySessionID,
 		EndedAt:   time.Now().UTC(),
@@ -174,7 +174,7 @@ func (b *Bridge) FinalizeSegment(ctx context.Context, segmentID string, reason s
 }
 
 func (b *Bridge) startSegment(ctx context.Context, chatSessionID string, personaID string) (storage.MemorySegmentRef, error) {
-	session, err := b.host.Service.StartSession(ctx, memorycore.StartSessionRequest{
+	session, err := b.host.Core.StartSession(ctx, memorycore.StartSessionRequest{
 		PersonaID: personaID,
 		Channel:   memorycore.ChannelAPI,
 		StartedAt: time.Now().UTC(),
@@ -198,7 +198,7 @@ func (b *Bridge) startSegment(ctx context.Context, chatSessionID string, persona
 }
 
 func (b *Bridge) appendEpisode(ctx context.Context, segmentID string, messageID string, content string, role string) (string, error) {
-	if b == nil || b.host == nil || b.host.Service == nil || b.db == nil {
+	if b == nil || !b.host.configured() || b.db == nil {
 		return "", fmt.Errorf("memory bridge is not configured")
 	}
 	segment, err := b.db.GetMemorySegment(ctx, segmentID)
@@ -214,7 +214,7 @@ func (b *Bridge) appendEpisode(ctx context.Context, segmentID string, messageID 
 		sourceRefPtr = &sourceRef
 	}
 
-	episode, err := b.host.Service.AppendEpisode(ctx, memorycore.AppendEpisodeRequest{
+	episode, err := b.host.Core.AppendEpisode(ctx, memorycore.AppendEpisodeRequest{
 		PersonaID:  defaultPersonaID(segmentPersona(segment, b.db, ctx)),
 		SessionID:  segment.MemorySessionID,
 		Role:       role,
@@ -238,7 +238,7 @@ func (b *Bridge) appendEpisode(ctx context.Context, segmentID string, messageID 
 }
 
 func (b *Bridge) applyManualMemoryIntent(ctx context.Context, segmentID string, content string) error {
-	if b == nil || b.manualRules == nil || b.host == nil || b.host.Service == nil || b.db == nil {
+	if b == nil || b.manualRules == nil || !b.host.configured() || b.db == nil {
 		return nil
 	}
 	segment, err := b.db.GetMemorySegment(ctx, segmentID)
@@ -271,7 +271,7 @@ func (b *Bridge) applyManualMemoryIntent(ctx context.Context, segmentID string, 
 }
 
 func (b *Bridge) applyManualPinIntent(ctx context.Context, segment *storage.MemorySegment, sourceEpisodeID string) error {
-	if b == nil || b.host == nil || b.host.Service == nil || segment == nil {
+	if b == nil || !b.host.configured() || segment == nil {
 		return nil
 	}
 	if !b.host.ExtractionEnabled() || !b.host.extractionPolicy.TriggerOnManualPin {
@@ -304,7 +304,7 @@ func (b *Bridge) applyManualPinIntent(ctx context.Context, segment *storage.Memo
 }
 
 func (b *Bridge) applyManualForgetIntent(ctx context.Context, segment *storage.MemorySegment, query string) error {
-	if b == nil || b.host == nil || b.host.Service == nil || segment == nil {
+	if b == nil || !b.host.configured() || segment == nil {
 		return nil
 	}
 	query = strings.TrimSpace(query)
@@ -326,7 +326,7 @@ func (b *Bridge) applyManualForgetIntent(ctx context.Context, segment *storage.M
 		SemanticQuery:       &query,
 		RequireConfirmation: true,
 	}
-	preview, err := b.host.Service.PreviewForget(ctx, previewReq)
+	preview, err := b.host.Core.PreviewForget(ctx, previewReq)
 	if err != nil {
 		b.queueManualMemoryNotice(segment.ChatSessionID, "我暂时无法生成可删除候选，未执行删除。")
 		return nil
@@ -370,7 +370,7 @@ func (b *Bridge) applyPendingManualForgetDecision(ctx context.Context, segment *
 		return false, nil
 	}
 	personaID := defaultPersonaID(segmentPersona(segment, b.db, ctx))
-	pending, err := b.host.Service.GetPendingManualForgetOperation(ctx, memorycore.GetPendingManualForgetOperationRequest{
+	pending, err := b.host.Core.GetPendingManualForgetOperation(ctx, memorycore.GetPendingManualForgetOperationRequest{
 		PersonaID:     personaID,
 		ChatSessionID: segment.ChatSessionID,
 	})
@@ -389,7 +389,7 @@ func (b *Bridge) applyPendingManualForgetDecision(ctx context.Context, segment *
 		return false, nil
 	}
 	if isCancel {
-		cancelled, err := b.host.Service.CancelPendingManualForgetOperation(ctx, memorycore.CancelPendingManualForgetOperationRequest{
+		cancelled, err := b.host.Core.CancelPendingManualForgetOperation(ctx, memorycore.CancelPendingManualForgetOperationRequest{
 			PersonaID:     personaID,
 			OperationID:   pending.OperationID,
 			ChatSessionID: segment.ChatSessionID,
@@ -414,7 +414,7 @@ func (b *Bridge) applyPendingManualForgetDecision(ctx context.Context, segment *
 	if level == "" {
 		level = memorycore.ForgetLevelSoft
 	}
-	result, err := b.host.Service.ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
+	result, err := b.host.Core.ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
 		PersonaID:        personaID,
 		OperationID:      pending.OperationID,
 		Actor:            memorycore.ForgetActorUser,

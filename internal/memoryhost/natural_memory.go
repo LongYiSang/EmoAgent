@@ -108,7 +108,7 @@ func (r *NaturalMemoryRunner) Tick(ctx context.Context, now time.Time) (*Natural
 }
 
 func (r *NaturalMemoryRunner) RunManual(ctx context.Context, req NaturalMemoryManualRunRequest) (*NaturalMemoryRunResponse, error) {
-	if r == nil || r.host == nil || r.host.Service == nil {
+	if r == nil || !r.host.configured() {
 		return nil, nil
 	}
 	if !r.cfg.Enabled {
@@ -127,7 +127,7 @@ func (r *NaturalMemoryRunner) RunManual(ctx context.Context, req NaturalMemoryMa
 	if err != nil {
 		return nil, err
 	}
-	result, err := r.host.Service.RunNaturalMemoryCycle(ctx, memorycore.RunNaturalMemoryCycleRequest{
+	result, err := r.host.Core.RunNaturalMemoryCycle(ctx, memorycore.RunNaturalMemoryCycleRequest{
 		PersonaID:      defaultPersonaID(req.PersonaID),
 		Now:            req.Now,
 		DryRun:         req.DryRun,
@@ -180,13 +180,13 @@ func (r *NaturalMemoryRunner) run(ctx context.Context) {
 }
 
 func (r *NaturalMemoryRunner) tick(ctx context.Context, now time.Time, startup bool) (*NaturalMemoryRunResponse, error) {
-	if r == nil || r.host == nil || r.host.Service == nil {
+	if r == nil || !r.host.configured() {
 		return nil, nil
 	}
 	if !r.cfg.Enabled {
 		return nil, nil
 	}
-	result, err := r.host.Service.RunNaturalMemoryTick(ctx, memorycore.RunNaturalMemoryTickRequest{
+	result, err := r.host.Core.RunNaturalMemoryTick(ctx, memorycore.RunNaturalMemoryTickRequest{
 		PersonaID: defaultPersonaID(""),
 		Now:       now,
 		Startup:   startup,
@@ -217,7 +217,7 @@ func (r *NaturalMemoryRunner) finishRun(ctx context.Context, result *memorycore.
 }
 
 func (r *NaturalMemoryRunner) runMirrorSyncAfterNaturalRun(ctx context.Context, result *memorycore.RunNaturalMemoryCycleResult) (*NaturalMemoryMirrorSyncResult, error) {
-	if r == nil || r.host == nil || r.host.Service == nil || result == nil {
+	if r == nil || !r.host.configured() || result == nil {
 		return nil, nil
 	}
 	if !r.cfg.MirrorSyncAfterRun || result.DryRun || result.MirrorUpdatesEnqueued <= 0 {
@@ -227,7 +227,7 @@ func (r *NaturalMemoryRunner) runMirrorSyncAfterNaturalRun(ctx context.Context, 
 	if limit <= 0 {
 		limit = 100
 	}
-	mirror, err := r.host.Service.RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{
+	mirror, err := r.host.Core.RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{
 		PersonaID: defaultPersonaID(result.PersonaID),
 		Limit:     limit,
 	})
