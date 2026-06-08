@@ -1,10 +1,12 @@
 import { classNames } from '../../shared/lib/classNames';
+import { Avatar } from '../../shared/components/Avatar';
 import type { TimelineItem } from '../state/chatTypes';
 
 export function MessageBubble({ item, onRetry }: { item: Extract<TimelineItem, { kind: 'message' }>; onRetry: () => void }) {
+  const role = item.role === 'user' ? 'user' : item.role === 'error' ? 'error' : 'emotion';
   return (
     <div className={classNames('msg', item.role, item.status === 'pending' && 'pending', item.status === 'failed' && 'failed')}>
-      <div className="msg-av">{item.role === 'user' ? 'U' : item.role === 'error' ? '!' : 'E'}</div>
+      <Avatar role={role} />
       <div className="bubble">
         <div className="message-content">{item.content}</div>
         {item.status === 'pending' && <div className="message-status">正在发送...</div>}

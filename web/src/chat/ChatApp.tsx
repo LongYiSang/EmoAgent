@@ -101,7 +101,7 @@ export function ChatApp() {
 
   return (
     <div className="app-shell">
-      <AppRail active="chat" avatar="AI" />
+      <AppRail active="chat" />
       <main className="chat-page">
         <SessionSidebar
           open={sidebarOpen}

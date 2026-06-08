@@ -137,7 +137,7 @@ export function useChatSession({ state, dispatch, contextRef, closeSocketRef, se
   }, [closeSocketRef, contextRef, dispatch, refreshApprovals, refreshMemoryStatus, refreshSessions, setSidebarOpen]);
 
   const removeSession = useCallback(async (sessionID: string) => {
-    if (!sessionID || !window.confirm('确认删除这个会话？')) return;
+    if (!sessionID) return;
     try {
       await deleteSession(sessionID);
       if (sessionID === contextRef.current.sessionID) await startNewChat();

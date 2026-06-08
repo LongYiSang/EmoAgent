@@ -140,7 +140,7 @@ export function AdminApp() {
 
   return (
     <div className="app-shell">
-      <AppRail active="admin" avatar="AD" />
+      <AppRail active="admin" />
       <main className="admin-page-wrap">
         <header className="admin-header">
           <div>

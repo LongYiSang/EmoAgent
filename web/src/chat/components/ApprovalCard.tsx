@@ -1,5 +1,6 @@
 import { arrayField, formatTime, stringField } from '../../shared/lib/data';
 import { classNames } from '../../shared/lib/classNames';
+import { Avatar } from '../../shared/components/Avatar';
 import type { ApprovalRequest } from '../protocol/wsTypes';
 
 export function ApprovalCard({ item, pending, sending, onAction, onDismiss }: {
@@ -19,7 +20,7 @@ export function ApprovalCard({ item, pending, sending, onAction, onDismiss }: {
   const statusLabel = status === 'approved' ? '已批准' : status === 'rejected' ? '已拒绝' : consumed ? '已处理' : '等待审批';
   return (
     <div className="msg assistant msg-approval">
-      <div className="msg-av">E</div>
+      <Avatar role="emotion" />
       <div className={classNames('approval', consumed && 'consumed settled')}>
         <div className="approval-top">
           <div className="approval-tag"><span className="glyph">{consumed ? '✓' : '!'}</span>{consumed ? '审批已完成' : '需要人工审批'}</div>

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { classNames } from '../../shared/lib/classNames';
 import { numberField, stringField } from '../../shared/lib/data';
+import { Avatar } from '../../shared/components/Avatar';
 import type { ReasoningActivity } from '../protocol/wsTypes';
 import { formatReasoningDuration } from '../lib/chatViewData';
 
@@ -31,7 +32,7 @@ export function ReasoningCard({ reasoning, collapsed, open: controlledOpen, onOp
   };
   return (
     <div className={classNames('reasoning', status, actualOpen && 'expanded')}>
-      <div className="reasoning-av">思</div>
+      <Avatar role="reasoning" />
       <div className="reasoning-card">
         <div className="reasoning-head">
           <button className="reasoning-toggle" type="button" aria-expanded={actualOpen} onClick={toggleOpen}>
