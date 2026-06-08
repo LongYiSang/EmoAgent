@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import type { Dispatch, MutableRefObject } from 'react';
 import type { ChatAction } from '../state/chatTypes';
-import type { WSIncoming, WSOutgoing } from '../protocol/wsTypes';
+import type { ReasoningActivity, WSIncoming, WSOutgoing } from '../protocol/wsTypes';
 
 export type ChatWebSocketControls = {
   ensureConnected: () => Promise<void>;
@@ -34,6 +34,8 @@ export function useChatWebSocket({ dispatch, contextRef, refreshSessions, refres
   const connectAttemptRef = useRef<ConnectAttempt | null>(null);
   const streamDeltaBufferRef = useRef('');
   const streamDeltaFrameRef = useRef<number | null>(null);
+  const reasoningDeltaBufferRef = useRef(new Map<string, ReasoningActivity>());
+  const reasoningDeltaFrameRef = useRef<number | null>(null);
 
   const flushStreamDelta = useCallback(() => {
     const content = streamDeltaBufferRef.current;
@@ -65,6 +67,39 @@ export function useChatWebSocket({ dispatch, contextRef, refreshSessions, refres
     }
   }, [flushStreamDelta]);
 
+  const flushReasoningDeltas = useCallback(() => {
+    const buffered = Array.from(reasoningDeltaBufferRef.current.values());
+    reasoningDeltaBufferRef.current.clear();
+    reasoningDeltaFrameRef.current = null;
+    for (const reasoning of buffered) {
+      dispatch({ type: 'UPSERT_REASONING', reasoning, collapsed: false, append: true });
+    }
+  }, [dispatch]);
+
+  const flushPendingReasoningDeltas = useCallback(() => {
+    if (reasoningDeltaFrameRef.current !== null) {
+      window.cancelAnimationFrame(reasoningDeltaFrameRef.current);
+    }
+    flushReasoningDeltas();
+  }, [flushReasoningDeltas]);
+
+  const clearPendingReasoningDeltas = useCallback(() => {
+    if (reasoningDeltaFrameRef.current !== null) {
+      window.cancelAnimationFrame(reasoningDeltaFrameRef.current);
+      reasoningDeltaFrameRef.current = null;
+    }
+    reasoningDeltaBufferRef.current.clear();
+  }, []);
+
+  const queueReasoningDelta = useCallback((reasoning: ReasoningActivity) => {
+    if (!reasoning.id) return;
+    const buffered = reasoningDeltaBufferRef.current.get(reasoning.id);
+    reasoningDeltaBufferRef.current.set(reasoning.id, buffered ? mergeReasoningDelta(buffered, reasoning) : reasoning);
+    if (reasoningDeltaFrameRef.current === null) {
+      reasoningDeltaFrameRef.current = window.requestAnimationFrame(flushReasoningDeltas);
+    }
+  }, [flushReasoningDeltas]);
+
   const closeSocket = useCallback(async () => {
     if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
     reconnectTimerRef.current = null;
@@ -94,14 +129,14 @@ export function useChatWebSocket({ dispatch, contextRef, refreshSessions, refres
 
   const sendWS = useCallback((message: WSOutgoing) => {
     const socket = socketRef.current;
-    if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error('WebSocket is not connected');
+    if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error('WebSocket 尚未连接');
     socket.send(JSON.stringify(message));
   }, []);
 
   const connect = useCallback(() => {
     if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
     manuallyClosedRef.current = false;
-    dispatch({ type: 'SET_STATUS', status: 'Connecting...' });
+    dispatch({ type: 'SET_STATUS', status: '正在连接...' });
 
     const socket = new WebSocket(wsURL());
     let handshakeFailed = false;
@@ -112,7 +147,7 @@ export function useChatWebSocket({ dispatch, contextRef, refreshSessions, refres
       if (socketRef.current !== socket) return;
       reconnectDelayRef.current = 1000;
       dispatch({ type: 'SET_CONNECTED', connected: true });
-      dispatch({ type: 'SET_STATUS', status: 'Connected' });
+      dispatch({ type: 'SET_STATUS', status: '已连接' });
     });
 
     socket.addEventListener('message', async event => {
@@ -136,6 +171,7 @@ export function useChatWebSocket({ dispatch, contextRef, refreshSessions, refres
           break;
         case 'stream_start':
           clearPendingStreamDelta();
+          clearPendingReasoningDeltas();
           dispatch({ type: 'STREAM_START' });
           break;
         case 'stream_delta':
@@ -143,6 +179,7 @@ export function useChatWebSocket({ dispatch, contextRef, refreshSessions, refres
           break;
         case 'stream_end':
           flushPendingStreamDelta();
+          flushPendingReasoningDeltas();
           dispatch({ type: 'STREAM_END' });
           dispatch({ type: 'COLLAPSE_ACTIVITIES' });
           dispatch({ type: 'CLEAR_WORK_PROGRESS' });
@@ -155,15 +192,28 @@ export function useChatWebSocket({ dispatch, contextRef, refreshSessions, refres
           await Promise.all([refreshApprovals(), refreshMemoryStatus()]);
           break;
         case 'reasoning_start':
-        case 'reasoning_delta':
+          flushPendingReasoningDeltas();
+          {
+            const reasoning = payload.reasoning || payload.Reasoning;
+            if (reasoning?.id) {
+              dispatch({ type: 'UPSERT_REASONING', reasoning, collapsed: false, append: false });
+            }
+          }
+          break;
+        case 'reasoning_delta': {
+          const reasoning = payload.reasoning || payload.Reasoning;
+          if (reasoning?.id) queueReasoningDelta(reasoning);
+          break;
+        }
         case 'reasoning_end': {
+          flushPendingReasoningDeltas();
           const reasoning = payload.reasoning || payload.Reasoning;
           if (reasoning?.id) {
             dispatch({
               type: 'UPSERT_REASONING',
               reasoning,
-              collapsed: payload.type === 'reasoning_end',
-              append: payload.type === 'reasoning_delta',
+              collapsed: true,
+              append: false,
             });
           }
           break;
@@ -188,7 +238,8 @@ export function useChatWebSocket({ dispatch, contextRef, refreshSessions, refres
           break;
         case 'error':
           flushPendingStreamDelta();
-          dispatch({ type: 'ADD_MESSAGE', role: 'error', content: payload.content || 'Unknown error' });
+          flushPendingReasoningDeltas();
+          dispatch({ type: 'ADD_MESSAGE', role: 'error', content: payload.content || '未知错误' });
           dispatch({ type: 'STREAM_END' });
           dispatch({ type: 'CLEAR_WORK_PROGRESS' });
           await Promise.all([refreshSessions(), refreshApprovals(), refreshMemoryStatus()]);
@@ -201,21 +252,22 @@ export function useChatWebSocket({ dispatch, contextRef, refreshSessions, refres
     socket.addEventListener('close', () => {
       if (socketRef.current !== socket) return;
       flushPendingStreamDelta();
+      flushPendingReasoningDeltas();
       dispatch({ type: 'SET_CONNECTED', connected: false });
       dispatch({ type: 'STREAM_END' });
       dispatch({ type: 'CLEAR_WORK_PROGRESS' });
       const pendingHandshake = Boolean(connectAttemptRef.current?.awaitingSessionReady) || handshakeFailed;
       if (pendingHandshake && connectAttemptRef.current) {
-        connectAttemptRef.current.reject(new Error('Failed to connect'));
+        connectAttemptRef.current.reject(new Error('连接失败'));
         connectAttemptRef.current = null;
       }
       socketRef.current = null;
       if (manuallyClosedRef.current) return;
       if (pendingHandshake) {
-        dispatch({ type: 'SET_STATUS', status: 'Failed to connect' });
+        dispatch({ type: 'SET_STATUS', status: '连接失败' });
         return;
       }
-      dispatch({ type: 'SET_STATUS', status: 'Disconnected, retrying in ' + Math.round(reconnectDelayRef.current / 1000) + 's' });
+      dispatch({ type: 'SET_STATUS', status: '连接已断开，' + Math.round(reconnectDelayRef.current / 1000) + ' 秒后重试' });
       reconnectTimerRef.current = window.setTimeout(() => {
         reloadSessionHistory().catch(() => undefined);
         refreshApprovals().catch(() => undefined);
@@ -229,12 +281,12 @@ export function useChatWebSocket({ dispatch, contextRef, refreshSessions, refres
       if (socketRef.current !== socket) return;
       if (connectAttemptRef.current?.awaitingSessionReady) {
         handshakeFailed = true;
-        connectAttemptRef.current.reject(new Error('Connection error'));
+        connectAttemptRef.current.reject(new Error('连接异常'));
         connectAttemptRef.current = null;
       }
-      dispatch({ type: 'SET_STATUS', status: 'Connection error' });
+      dispatch({ type: 'SET_STATUS', status: '连接异常' });
     });
-  }, [clearPendingStreamDelta, contextRef, dispatch, flushPendingStreamDelta, queueStreamDelta, refreshApprovals, refreshMemoryStatus, refreshSessions, reloadSessionHistory, wsURL]);
+  }, [clearPendingReasoningDeltas, clearPendingStreamDelta, contextRef, dispatch, flushPendingReasoningDeltas, flushPendingStreamDelta, queueReasoningDelta, queueStreamDelta, refreshApprovals, refreshMemoryStatus, refreshSessions, reloadSessionHistory, wsURL]);
 
   const ensureConnected = useCallback(async () => {
     if (socketRef.current?.readyState === WebSocket.OPEN) return;
@@ -255,6 +307,7 @@ export function useChatWebSocket({ dispatch, contextRef, refreshSessions, refres
   useEffect(() => {
     const close = () => {
       flushPendingStreamDelta();
+      flushPendingReasoningDeltas();
       manuallyClosedRef.current = true;
       if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
       if (socketRef.current?.readyState && socketRef.current.readyState < WebSocket.CLOSING) socketRef.current.close();
@@ -264,7 +317,15 @@ export function useChatWebSocket({ dispatch, contextRef, refreshSessions, refres
       window.removeEventListener('beforeunload', close);
       close();
     };
-  }, [flushPendingStreamDelta]);
+  }, [flushPendingReasoningDeltas, flushPendingStreamDelta]);
 
   return { ensureConnected, sendWS, closeSocket };
+}
+
+function mergeReasoningDelta(current: ReasoningActivity, incoming: ReasoningActivity): ReasoningActivity {
+  return {
+    ...current,
+    ...incoming,
+    content: (current.content || '') + (incoming.content || ''),
+  };
 }

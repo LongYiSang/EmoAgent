@@ -67,7 +67,7 @@ export function useProviderAdmin({ setStatus, showError }: ProviderAdminOptions)
   }, [providers]);
 
   const reloadProviders = useCallback(async (preferredID = selectedProvider) => {
-    setStatus('Loading providers...');
+    setStatus('正在加载 Provider...');
     const next = await loadProviders();
     setProviders(next);
     if (preferredID && next.some(item => item.id === preferredID)) {
@@ -81,7 +81,7 @@ export function useProviderAdmin({ setStatus, showError }: ProviderAdminOptions)
       setProviderDraft(emptyProvider());
       setProviderEnv({});
     }
-    setStatus('Ready');
+    setStatus('就绪');
   }, [selectedProvider, selectProvider, setStatus]);
 
   const patchProviderDraft = useCallback((key: string, value: unknown) => {
@@ -129,7 +129,7 @@ export function useProviderAdmin({ setStatus, showError }: ProviderAdminOptions)
       selectedProviderRef.current = nextID;
       setSelectedProvider(nextID);
       await reloadProviders(nextID);
-      setStatus('Provider saved');
+      setStatus('Provider 已保存');
     } catch (error) {
       showError(error);
     }
@@ -141,7 +141,7 @@ export function useProviderAdmin({ setStatus, showError }: ProviderAdminOptions)
     try {
       const models = await refreshProviderModels(id);
       setProviderModels(current => ({ ...current, [id]: models }));
-      if (selectedProviderRef.current === id) setStatus('Models refreshed');
+      if (selectedProviderRef.current === id) setStatus('模型已刷新');
     } catch (error) {
       if (selectedProviderRef.current === id) showError(error);
     }
@@ -155,14 +155,14 @@ export function useProviderAdmin({ setStatus, showError }: ProviderAdminOptions)
       const result = await testProvider(id);
       if (providerDetailRequestRef.current !== requestID || selectedProviderRef.current !== id) return;
       setProviderEnv(result);
-      setStatus(result.ok ? 'Provider test passed' : 'Provider test failed');
+      setStatus(result.ok ? 'Provider 测试通过' : 'Provider 测试失败');
     } catch (error) {
       if (providerDetailRequestRef.current === requestID && selectedProviderRef.current === id) showError(error);
     }
   }, [selectedProvider, setStatus, showError]);
 
   const deleteSelectedProvider = useCallback(async () => {
-    if (!selectedProvider || !window.confirm(`Delete provider "${selectedProvider}"?`)) return;
+    if (!selectedProvider || !window.confirm(`删除 Provider "${selectedProvider}"？`)) return;
     try {
       await deleteProvider(selectedProvider);
       await reloadProviders('');

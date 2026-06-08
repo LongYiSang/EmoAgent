@@ -42,10 +42,10 @@ export function useMemoryAdmin({ setStatus, showError }: MemoryAdminOptions) {
   }, []);
 
   const reloadEffectiveConfig = useCallback(async () => {
-    setStatus('Loading effective config...');
+    setStatus('正在加载生效配置...');
     const effective = await loadEffectiveConfig();
     syncEffectiveConfig(effective);
-    setStatus('Ready');
+    setStatus('就绪');
   }, [syncEffectiveConfig, setStatus]);
 
   const reloadConfigIssues = useCallback(async () => {
@@ -66,7 +66,7 @@ export function useMemoryAdmin({ setStatus, showError }: MemoryAdminOptions) {
   const reloadNaturalLatest = useCallback(async () => {
     const latest = await loadNaturalMemoryLatest();
     setNaturalMemoryLatest(latest);
-    setStatus('Natural memory latest loaded');
+    setStatus('Natural Memory 最新运行已加载');
   }, [setStatus]);
 
   const patchMemoryDraft = useCallback((key: string, value: unknown) => {
@@ -92,22 +92,22 @@ export function useMemoryAdmin({ setStatus, showError }: MemoryAdminOptions) {
     try {
       const effective = await saveMemoryFeatures(memoryDraft);
       setEffectiveConfig(effective);
-      setStatus('Memory features saved');
+      setStatus('记忆功能已保存');
     } catch (error) {
       showError(error);
     }
   }, [memoryDraft, setStatus, showError]);
 
-  const saveMemoryCore = useCallback(() => persistMemory(memoryDraft, 'Memory core saved'), [memoryDraft, persistMemory]);
-  const savePipelines = useCallback(() => persistMemory(memoryDraft, 'Pipeline bindings saved'), [memoryDraft, persistMemory]);
-  const saveRetrieval = useCallback(() => persistMemory(memoryDraft, 'Retrieval saved'), [memoryDraft, persistMemory]);
-  const saveSidecarConfig = useCallback(() => persistMemory(memoryDraft, 'Sidecar config saved'), [memoryDraft, persistMemory]);
+  const saveMemoryCore = useCallback(() => persistMemory(memoryDraft, 'Memory Core 已保存'), [memoryDraft, persistMemory]);
+  const savePipelines = useCallback(() => persistMemory(memoryDraft, 'Pipeline 绑定已保存'), [memoryDraft, persistMemory]);
+  const saveRetrieval = useCallback(() => persistMemory(memoryDraft, 'Retrieval 已保存'), [memoryDraft, persistMemory]);
+  const saveSidecarConfig = useCallback(() => persistMemory(memoryDraft, 'Sidecar 配置已保存'), [memoryDraft, persistMemory]);
 
   const runNaturalMemoryNow = useCallback(async (dryRun: boolean) => {
     try {
       const data = await runNaturalMemory(dryRun);
       setNaturalMemoryLatest(data);
-      setStatus(dryRun ? 'Natural memory dry-run completed' : 'Natural memory run completed');
+      setStatus(dryRun ? 'Natural Memory dry-run 已完成' : 'Natural Memory 运行已完成');
     } catch (error) {
       showError(error);
     }
@@ -120,7 +120,7 @@ export function useMemoryAdmin({ setStatus, showError }: MemoryAdminOptions) {
       next.forgetting_privacy = payload.forgetting_privacy || payload;
       if (payload.agent_affect) next.agent_affect = payload.agent_affect;
       setMemoryDraft(next);
-      await persistMemory(next, 'Privacy/forget saved');
+      await persistMemory(next, 'Privacy/Forget 已保存');
     } catch (error) {
       showError(error);
     }
@@ -131,7 +131,7 @@ export function useMemoryAdmin({ setStatus, showError }: MemoryAdminOptions) {
       const next = cloneRecord(memoryDraft);
       next.retention = parseJSONRecord(retentionDraft);
       setMemoryDraft(next);
-      await persistMemory(next, 'Retention saved');
+      await persistMemory(next, 'Retention 已保存');
     } catch (error) {
       showError(error);
     }
@@ -141,7 +141,7 @@ export function useMemoryAdmin({ setStatus, showError }: MemoryAdminOptions) {
     try {
       const result = await validateConfig();
       setConfigIssues(Array.isArray(result.issues) ? result.issues as AnyRecord[] : []);
-      setStatus('Config validated');
+      setStatus('配置校验完成');
     } catch (error) {
       showError(error);
     }

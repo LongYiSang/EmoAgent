@@ -55,7 +55,7 @@ export function useChatSession({ state, dispatch, contextRef, closeSocketRef, se
       dispatch({ type: 'SET_SESSIONS', sessions: await loadSessions(personaKey) });
     } catch (error) {
       dispatch({ type: 'SET_SESSIONS', sessions: [] });
-      dispatch({ type: 'SET_STATUS', status: error instanceof Error ? error.message : 'Failed to load sessions' });
+      dispatch({ type: 'SET_STATUS', status: error instanceof Error ? error.message : '会话加载失败' });
     }
   }, [contextRef, dispatch]);
 
@@ -68,7 +68,7 @@ export function useChatSession({ state, dispatch, contextRef, closeSocketRef, se
   useEffect(() => {
     let cancelled = false;
     async function bootstrapChat() {
-      dispatch({ type: 'SET_STATUS', status: 'Loading...' });
+      dispatch({ type: 'SET_STATUS', status: '加载中...' });
       const params = new URLSearchParams(location.search);
       let personaKey = params.get('persona') || '';
       let sessionID = params.get('session_id') || '';
@@ -97,12 +97,12 @@ export function useChatSession({ state, dispatch, contextRef, closeSocketRef, se
       }
       if (!cancelled) {
         await refreshSessions(personaKey);
-        dispatch({ type: 'SET_STATUS', status: 'Ready' });
+        dispatch({ type: 'SET_STATUS', status: '就绪' });
       }
     }
     bootstrapChat().catch(error => {
-      dispatch({ type: 'SET_STATUS', status: error instanceof Error ? error.message : 'Failed to initialize chat' });
-      dispatch({ type: 'ADD_MESSAGE', role: 'error', content: error instanceof Error ? error.message : 'Failed to initialize chat' });
+      dispatch({ type: 'SET_STATUS', status: error instanceof Error ? error.message : '聊天初始化失败' });
+      dispatch({ type: 'ADD_MESSAGE', role: 'error', content: error instanceof Error ? error.message : '聊天初始化失败' });
     });
     return () => {
       cancelled = true;
@@ -115,12 +115,12 @@ export function useChatSession({ state, dispatch, contextRef, closeSocketRef, se
     contextRef.current = { ...contextRef.current, sessionID: '' };
     dispatch({ type: 'CLEAR_TIMELINE' });
     dispatch({ type: 'SET_MEMORY_STATUS', segments: [], jobs: [] });
-    dispatch({ type: 'SET_STATUS', status: 'Ready' });
+    dispatch({ type: 'SET_STATUS', status: '就绪' });
     await refreshSessions();
   }, [closeSocketRef, contextRef, dispatch, refreshSessions]);
 
   const switchSession = useCallback(async (sessionID: string, personaKey: string) => {
-    dispatch({ type: 'SET_STATUS', status: 'Loading session...' });
+    dispatch({ type: 'SET_STATUS', status: '正在加载会话...' });
     try {
       const detail = await loadSessionDetail(sessionID);
       await closeSocketRef.current();
@@ -130,20 +130,20 @@ export function useChatSession({ state, dispatch, contextRef, closeSocketRef, se
       dispatch({ type: 'SET_HISTORY', messages: detail.messages || detail.Messages || [] });
       await Promise.all([refreshApprovals(sessionID), refreshMemoryStatus(sessionID), refreshSessions(nextPersona)]);
       setSidebarOpen(false);
-      dispatch({ type: 'SET_STATUS', status: 'Ready' });
+      dispatch({ type: 'SET_STATUS', status: '就绪' });
     } catch (error) {
-      dispatch({ type: 'SET_STATUS', status: error instanceof Error ? error.message : 'Failed to load session' });
+      dispatch({ type: 'SET_STATUS', status: error instanceof Error ? error.message : '会话加载失败' });
     }
   }, [closeSocketRef, contextRef, dispatch, refreshApprovals, refreshMemoryStatus, refreshSessions, setSidebarOpen]);
 
   const removeSession = useCallback(async (sessionID: string) => {
-    if (!sessionID || !window.confirm('Delete this session?')) return;
+    if (!sessionID || !window.confirm('确认删除这个会话？')) return;
     try {
       await deleteSession(sessionID);
       if (sessionID === contextRef.current.sessionID) await startNewChat();
       else await refreshSessions();
     } catch (error) {
-      dispatch({ type: 'SET_STATUS', status: error instanceof Error ? error.message : 'Failed to delete session' });
+      dispatch({ type: 'SET_STATUS', status: error instanceof Error ? error.message : '会话删除失败' });
     }
   }, [contextRef, dispatch, refreshSessions, startNewChat]);
 

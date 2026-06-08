@@ -7,11 +7,11 @@ export function MessageBubble({ item, onRetry }: { item: Extract<TimelineItem, {
       <div className="msg-av">{item.role === 'user' ? 'U' : item.role === 'error' ? '!' : 'E'}</div>
       <div className="bubble">
         <div className="message-content">{item.content}</div>
-        {item.status === 'pending' && <div className="message-status">Sending...</div>}
+        {item.status === 'pending' && <div className="message-status">正在发送...</div>}
         {item.status === 'failed' && (
           <>
-            <div className="message-status">Send failed</div>
-            <button className="message-retry" type="button" onClick={onRetry}>Retry</button>
+            <div className="message-status">发送失败</div>
+            <button className="message-retry" type="button" onClick={onRetry}>重试</button>
           </>
         )}
       </div>

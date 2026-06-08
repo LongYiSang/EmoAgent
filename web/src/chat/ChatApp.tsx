@@ -9,7 +9,7 @@ import { ConversationHeader } from './components/ConversationHeader';
 import { MemoryStatusPanel } from './components/MemoryStatusPanel';
 import { PipelinePanel } from './components/PipelinePanel';
 import { SessionSidebar } from './components/SessionSidebar';
-import { TimelineEntry } from './components/TimelineEntry';
+import { VirtualTimeline } from './components/VirtualTimeline';
 import { syncURL } from './lib/chatViewData';
 import { useChatSession } from './hooks/useChatSession';
 import { useChatWebSocket } from './hooks/useChatWebSocket';
@@ -20,7 +20,6 @@ export function ChatApp() {
   const [composer, setComposer] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [pipelineSnapshot, setPipelineSnapshot] = useState<unknown>(null);
-  const timelineRef = useRef<HTMLDivElement | null>(null);
   const contextRef = useRef({ personaKey: '', sessionID: '' });
   const closeSocketRef = useRef<() => Promise<void>>(async () => undefined);
 
@@ -28,10 +27,6 @@ export function ChatApp() {
     contextRef.current = { personaKey: state.currentPersonaKey, sessionID: state.currentSessionId };
     syncURL(state.currentPersonaKey, state.currentSessionId);
   }, [state.currentPersonaKey, state.currentSessionId]);
-
-  useEffect(() => {
-    timelineRef.current?.scrollTo({ top: timelineRef.current.scrollHeight });
-  }, [state.timeline.length, state.pendingAssistantId]);
 
   const session = useChatSession({ state, dispatch, contextRef, closeSocketRef, setSidebarOpen });
   const { ensureConnected, sendWS, closeSocket } = useChatWebSocket({
@@ -57,7 +52,7 @@ export function ChatApp() {
     } catch (error) {
       dispatch({ type: 'SET_MESSAGE_STATUS', id: localID, status: 'failed' });
       dispatch({ type: 'SET_SENDING', sending: false });
-      dispatch({ type: 'SET_STATUS', status: error instanceof Error ? error.message : 'Failed to connect' });
+      dispatch({ type: 'SET_STATUS', status: error instanceof Error ? error.message : '连接失败' });
     }
   }, [ensureConnected, sendWS]);
 
@@ -78,7 +73,7 @@ export function ChatApp() {
       sendWS({ type: 'approval_action', request_id: requestID, action, option_id: optionID });
     } catch (error) {
       dispatch({ type: 'SET_APPROVAL_PENDING', id: requestID, pending: false });
-      dispatch({ type: 'SET_STATUS', status: error instanceof Error ? error.message : 'Failed to send approval action' });
+      dispatch({ type: 'SET_STATUS', status: error instanceof Error ? error.message : '审批操作发送失败' });
     }
   }, [ensureConnected, sendWS, state.pendingApprovalIDs]);
 
@@ -98,11 +93,11 @@ export function ChatApp() {
       dispatch({ type: 'SET_STATUS', status: '记忆扫描已提交' });
       await session.refreshMemoryStatus(state.currentSessionId);
     } catch (error) {
-      dispatch({ type: 'SET_STATUS', status: error instanceof Error ? error.message : 'Failed to queue memory extraction' });
+      dispatch({ type: 'SET_STATUS', status: error instanceof Error ? error.message : '记忆扫描提交失败' });
     }
   }, [session, state.currentSessionId]);
 
-  const subtitle = state.currentPersonaKey ? 'Persona: ' + state.currentPersonaKey : 'EmoAgent';
+  const subtitle = state.currentPersonaKey ? 'Persona：' + state.currentPersonaKey : 'EmoAgent';
 
   return (
     <div className="app-shell">
@@ -129,23 +124,20 @@ export function ChatApp() {
             onScanMemory={scanMemory}
           />
           <MemoryStatusPanel visible={state.memoryStatusVisible} segments={state.memorySegments} jobs={state.memoryJobs} />
-          <div className="messages" id="messages" ref={timelineRef}>
-            {state.timeline.map(item => (
-              <TimelineEntry
-                key={item.kind + ':' + item.id}
-                item={item}
-                pendingApprovalIDs={state.pendingApprovalIDs}
-                sending={state.sending}
-                onApprovalAction={sendApprovalAction}
-                onDismissApproval={dismissApproval}
-                onOpenPipeline={setPipelineSnapshot}
-                onRetry={retryMessage}
-              />
-            ))}
-          </div>
+          <VirtualTimeline
+            items={state.timeline}
+            pendingApprovalIDs={state.pendingApprovalIDs}
+            sending={state.sending}
+            sessionID={state.currentSessionId}
+            pendingAssistantId={state.pendingAssistantId}
+            onApprovalAction={sendApprovalAction}
+            onDismissApproval={dismissApproval}
+            onOpenPipeline={setPipelineSnapshot}
+            onRetry={retryMessage}
+          />
           <Composer value={composer} sending={state.sending} onChange={setComposer} onSubmit={submitMessage} />
           <div className="session-hint" id="session-hint">
-            {state.currentSessionId ? 'Session · ' + state.currentSessionId.substring(0, 13) : 'No active session'}
+            {state.currentSessionId ? '会话 · ' + state.currentSessionId.substring(0, 13) : '暂无活动会话'}
           </div>
         </section>
         <PipelinePanel snapshot={pipelineSnapshot} onClose={() => setPipelineSnapshot(null)} />

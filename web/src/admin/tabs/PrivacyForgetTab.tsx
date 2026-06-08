@@ -14,7 +14,7 @@ export type PrivacyForgetTabProps = {
 export default memo(function PrivacyForgetTab({ memoryDraft, effectiveConfig, privacyDraft, setPrivacyDraft, savePrivacyForget }: PrivacyForgetTabProps) {
   return (
     <JsonSavePanel
-      title="Privacy/Forget"
+      title="隐私/遗忘"
       id="privacy-forget"
       value={privacyDraft}
       onValue={setPrivacyDraft}

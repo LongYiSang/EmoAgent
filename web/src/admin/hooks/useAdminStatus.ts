@@ -7,7 +7,7 @@ export type AdminStatusControls = {
 };
 
 export function useAdminStatus(): AdminStatusControls {
-  const [status, setStatus] = useState('Loading...');
+  const [status, setStatus] = useState('加载中...');
 
   const showError = useCallback((error: unknown) => {
     console.error(error);

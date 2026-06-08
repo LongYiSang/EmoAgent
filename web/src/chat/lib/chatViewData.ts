@@ -18,7 +18,7 @@ export function sessionPersonaOf(item: unknown): string {
 }
 
 export function previewText(item: unknown): string {
-  return stringField(item, 'last_message') || stringField(item, 'lastMessage') || stringField(item, 'LastMessage') || 'No messages yet';
+  return stringField(item, 'last_message') || stringField(item, 'lastMessage') || stringField(item, 'LastMessage') || '还没有消息';
 }
 
 export function memoryStatusOf(item: unknown): string {
@@ -28,7 +28,7 @@ export function memoryStatusOf(item: unknown): string {
 export function memorySegmentLabel(item: unknown): string {
   const index = field<number | string>(item, 'segment_index', field(item, 'SegmentIndex', ''));
   const id = sessionIDOf(item);
-  return index ? `Segment ${index}` : id ? `Segment · ${String(id).slice(0, 8)}` : 'Segment';
+  return index ? `片段 ${index}` : id ? `片段 · ${String(id).slice(0, 8)}` : '片段';
 }
 
 export function formatReasoningDuration(ms: number): string {
@@ -38,7 +38,9 @@ export function formatReasoningDuration(ms: number): string {
 }
 
 export function toolStatusLabel(status: string): string {
-  if (status === 'success') return 'done';
-  if (status === 'approval_required') return 'approval';
-  return status || 'tool';
+  if (status === 'success' || status === 'done') return '完成';
+  if (status === 'running') return '运行中';
+  if (status === 'approval_required') return '待审批';
+  if (status === 'error' || status === 'failed') return '失败';
+  return status || '工具';
 }

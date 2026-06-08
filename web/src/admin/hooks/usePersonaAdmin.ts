@@ -54,7 +54,7 @@ export function usePersonaAdmin({ setStatus, showError }: PersonaAdminOptions) {
   }, [personas, syncProgressDraft]);
 
   const reloadPersonas = useCallback(async (preferredKey = selectedPersona) => {
-    setStatus('Loading personas...');
+    setStatus('正在加载 Persona...');
     const next = await loadPersonas();
     setPersonas(next);
     const preferred = preferredKey && next.some(item => item.key === preferredKey) ? preferredKey : next[0]?.key || '';
@@ -65,7 +65,7 @@ export function usePersonaAdmin({ setStatus, showError }: PersonaAdminOptions) {
       setPersonaDraft(emptyPersona());
       syncProgressDraft({});
     }
-    setStatus('Ready');
+    setStatus('就绪');
   }, [selectedPersona, selectPersonaDetail, setStatus, syncProgressDraft]);
 
   const reloadProgressDefaults = useCallback(async () => {
@@ -110,14 +110,14 @@ export function usePersonaAdmin({ setStatus, showError }: PersonaAdminOptions) {
       if (key) await saveProgressPhrases(key, parsedProgress);
       setSelectedPersona(key);
       await reloadPersonas(key);
-      setStatus('Persona saved');
+      setStatus('Persona 已保存');
     } catch (error) {
       showError(error);
     }
   }, [personaDraft, selectedPersona, progressDraftJSON, reloadPersonas, setStatus, showError]);
 
   const deleteSelectedPersona = useCallback(async () => {
-    if (!selectedPersona || !window.confirm(`Delete persona "${selectedPersona}"?`)) return;
+    if (!selectedPersona || !window.confirm(`删除 Persona "${selectedPersona}"？`)) return;
     try {
       await deletePersona(selectedPersona);
       await reloadPersonas('');

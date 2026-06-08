@@ -612,11 +612,22 @@ code {
 
 .messages {
   min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
   overflow: auto;
+  contain: strict;
+  overflow-anchor: none;
   padding: 22px;
+}
+
+.timeline-virtualizer {
+  position: relative;
+  width: 100%;
+}
+
+.timeline-virtual-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
 }
 
 .msg,
@@ -706,7 +717,8 @@ code {
 .progress-label,
 .approval-tag,
 .tool-head,
-.reasoning-toggle {
+.reasoning-toggle,
+.reasoning-state-toggle {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -716,6 +728,39 @@ code {
   color: var(--color-tooltip-bg);
   font-weight: 850;
   text-align: left;
+}
+
+.reasoning-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.reasoning-head .reasoning-toggle {
+  min-width: 0;
+  flex: 1;
+  width: auto;
+  padding: 0;
+}
+
+.reasoning-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reasoning-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.reasoning-state-toggle {
+  width: auto;
+  padding: 0;
+  gap: 5px;
 }
 
 .sparkle {
@@ -736,6 +781,35 @@ code {
   color: var(--color-lavender-ink);
   font-size: 11px;
   font-weight: 850;
+}
+
+.reasoning-state-toggle .reasoning-badge {
+  margin-left: 0;
+}
+
+.reasoning-disclosure {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  color: var(--color-lavender-ink);
+  background: rgba(113, 95, 164, 0.1);
+}
+
+.reasoning-disclosure::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 5px;
+  height: 5px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translate(-50%, -60%) rotate(45deg);
+}
+
+.reasoning.expanded .reasoning-disclosure::before {
+  transform: translate(-50%, -40%) rotate(225deg);
 }
 
 .tool-body,
@@ -825,6 +899,13 @@ code {
 .memory-pipeline-btn {
   color: var(--color-mint-ink);
   background: var(--color-mint-soft);
+}
+
+.reasoning-head .memory-pipeline-btn {
+  min-height: 28px;
+  border-radius: 999px;
+  padding: 0 10px;
+  white-space: nowrap;
 }
 
 .approval-btn.deny,

@@ -55,6 +55,7 @@ tmp/
 
 # Generated frontend bundle embedded by release builds.
 /internal/web/static/dist/
+/mcps/
 
 # Agent
 /docs/superpowers/

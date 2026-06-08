@@ -27,7 +27,7 @@ export function SessionSidebar({
       <div className="side-head">
         <div>
           <div className="label">Persona</div>
-          <strong id="sidebar-persona">{currentPersonaKey || 'loading...'}</strong>
+          <strong id="sidebar-persona">{currentPersonaKey || '加载中...'}</strong>
         </div>
         <button className="btn ghost" id="refresh-sessions" type="button" onClick={onRefresh}>刷新</button>
       </div>
@@ -55,7 +55,7 @@ function SessionRow({ item, active, onOpen, onDelete }: { item: SessionSummary; 
   return (
     <button className={classNames('session', active && 'active')} type="button" onClick={onOpen}>
       <span className="s-title">{title || time}</span>
-      <span className="s-meta">{time} · {count} messages</span>
+      <span className="s-meta">{time} · {count} 条消息</span>
       <span className="s-preview">{previewText(item)}</span>
       <span className="s-del" role="button" tabIndex={0} onClick={event => { event.stopPropagation(); onDelete(); }}>删除</span>
       <span className="sr-only">{id}</span>

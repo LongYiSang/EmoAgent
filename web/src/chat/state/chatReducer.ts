@@ -5,7 +5,7 @@ import type { ApprovalRequest, ReasoningActivity, ToolActivity } from '../protoc
 import type { ChatAction, ChatState, TimelineItem } from './chatTypes';
 
 export const initialChatState: ChatState = {
-  status: 'Loading...',
+  status: '加载中...',
   connected: false,
   sending: false,
   currentSessionId: '',
@@ -83,7 +83,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case 'UPSERT_TOOL':
       return { ...state, timeline: upsertItem(state.timeline, toolToItem(action.tool, action.collapsed)) };
     case 'UPSERT_REASONING':
-      return { ...state, timeline: upsertItem(state.timeline, reasoningToItem(state.timeline, action.reasoning, action.collapsed, action.append, action.createdAt)) };
+      return { ...state, timeline: upsertReasoning(state.timeline, action.reasoning, action.collapsed, action.append, action.createdAt) };
     case 'COLLAPSE_ACTIVITIES':
       return {
         ...state,
@@ -175,19 +175,6 @@ function toolToItem(tool: ToolActivity, collapsed: boolean): TimelineItem {
   return { kind: 'tool', id: tool.id, tool, collapsed, createdAt: new Date().toISOString() };
 }
 
-function reasoningToItem(timeline: TimelineItem[], incoming: ReasoningActivity, collapsed: boolean, append: boolean, createdAt?: string): TimelineItem {
-  const current = timeline.find(item => item.kind === 'reasoning' && item.id === incoming.id);
-  const previousContent = current?.kind === 'reasoning' ? current.reasoning.content || '' : '';
-  const nextContent = incoming.content ? (append ? previousContent + incoming.content : incoming.content) : previousContent;
-  return {
-    kind: 'reasoning',
-    id: incoming.id,
-    reasoning: { ...incoming, content: nextContent },
-    collapsed,
-    createdAt: current?.createdAt || createdAt || new Date().toISOString(),
-  };
-}
-
 function approvalToItem(approval: ApprovalRequest): TimelineItem {
   const id = stringField(approval, 'id');
   return {
@@ -202,6 +189,26 @@ function upsertItem(timeline: TimelineItem[], item: TimelineItem): TimelineItem[
   const next = timeline.filter(existing => existing.kind !== item.kind || existing.id !== item.id);
   next.push(item);
   return orderTimeline(next);
+}
+
+function upsertReasoning(timeline: TimelineItem[], incoming: ReasoningActivity, collapsed: boolean, append: boolean, createdAt?: string): TimelineItem[] {
+  const index = timeline.findIndex(item => item.kind === 'reasoning' && item.id === incoming.id);
+  const current = index >= 0 ? timeline[index] : undefined;
+  const previous = current?.kind === 'reasoning' ? current.reasoning : undefined;
+  const previousContent = previous?.content || '';
+  const incomingContent = incoming.content || '';
+  const content = incomingContent ? (append ? previousContent + incomingContent : incomingContent) : previousContent;
+  const item: TimelineItem = {
+    kind: 'reasoning',
+    id: incoming.id,
+    reasoning: { ...(previous || {}), ...incoming, content },
+    collapsed,
+    createdAt: current?.createdAt || createdAt || new Date().toISOString(),
+  };
+  if (index < 0) return orderTimeline([...timeline, item]);
+  const next = timeline.slice();
+  next[index] = item;
+  return next;
 }
 
 function appendMessageContent(timeline: TimelineItem[], id: string, content: string): TimelineItem[] {

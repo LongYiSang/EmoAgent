@@ -21,6 +21,8 @@ type BootstrapOptions = {
 export function useAdminBootstrap(activeTab: TabID, { providers, agents, personas, chatSettings, memory, sidecar, status }: BootstrapOptions) {
   const loadedResourcesRef = useRef(new Set<string>());
   const resourceRequestsRef = useRef(new Map<string, Promise<void>>());
+  const loadersRef = useRef({ providers, agents, personas, chatSettings, memory, sidecar, status });
+  loadersRef.current = { providers, agents, personas, chatSettings, memory, sidecar, status };
 
   useEffect(() => {
     let cancelled = false;
@@ -45,14 +47,15 @@ export function useAdminBootstrap(activeTab: TabID, { providers, agents, persona
     }
 
     async function init() {
+      const loaders = loadersRef.current;
       try {
         const loadProviderBasics = () => Promise.all([
-          loadOnce('provider-presets', providers.reloadProviderPresets),
-          loadOnce('providers', () => providers.reloadProviders()),
+          loadOnce('provider-presets', loaders.providers.reloadProviderPresets),
+          loadOnce('providers', () => loaders.providers.reloadProviders()),
         ]);
-        const loadPersonaBasics = () => loadOnce('personas', () => personas.reloadPersonas());
-        const loadAgentBasics = () => loadOnce('agents', () => agents.reloadAgents());
-        const loadEffectiveConfig = () => loadOnce('effective-config', memory.reloadEffectiveConfig);
+        const loadPersonaBasics = () => loadOnce('personas', () => loaders.personas.reloadPersonas());
+        const loadAgentBasics = () => loadOnce('agents', () => loaders.agents.reloadAgents());
+        const loadEffectiveConfig = () => loadOnce('effective-config', loaders.memory.reloadEffectiveConfig);
 
         switch (activeTab) {
           case 'providers':
@@ -64,18 +67,18 @@ export function useAdminBootstrap(activeTab: TabID, { providers, agents, persona
           case 'personas':
             await Promise.all([
               loadPersonaBasics(),
-              loadOnce('progress-defaults', personas.reloadProgressDefaults),
+              loadOnce('progress-defaults', loaders.personas.reloadProgressDefaults),
               loadAgentBasics(),
             ]);
             break;
           case 'chat-settings':
-            await loadOnce('chat-settings', chatSettings.reloadChatSettings);
+            await loadOnce('chat-settings', loaders.chatSettings.reloadChatSettings);
             break;
           case 'memory-core':
             await Promise.all([
               loadEffectiveConfig(),
-              loadOnce('memory-surfaces', memory.reloadMemorySurfaces),
-              loadOnce('natural-latest', memory.reloadNaturalLatest),
+              loadOnce('memory-surfaces', loaders.memory.reloadMemorySurfaces),
+              loadOnce('natural-latest', loaders.memory.reloadNaturalLatest),
             ]);
             break;
           case 'pipelines':
@@ -89,37 +92,23 @@ export function useAdminBootstrap(activeTab: TabID, { providers, agents, persona
           case 'sidecar':
             await Promise.all([
               loadEffectiveConfig(),
-              loadOnce('sidecar', sidecar.reloadSidecar),
+              loadOnce('sidecar', loaders.sidecar.reloadSidecar),
             ]);
             break;
           case 'diagnostics':
             await Promise.all([
               loadEffectiveConfig(),
-              loadOnce('config-issues', memory.reloadConfigIssues),
+              loadOnce('config-issues', loaders.memory.reloadConfigIssues),
             ]);
             break;
         }
       } catch (error) {
-        if (!cancelled) status.showError(error);
+        if (!cancelled) loadersRef.current.status.showError(error);
       }
     }
     init();
     return () => {
       cancelled = true;
     };
-  }, [
-    activeTab,
-    providers.reloadProviderPresets,
-    providers.reloadProviders,
-    agents.reloadAgents,
-    personas.reloadPersonas,
-    personas.reloadProgressDefaults,
-    chatSettings.reloadChatSettings,
-    memory.reloadEffectiveConfig,
-    memory.reloadMemorySurfaces,
-    memory.reloadConfigIssues,
-    memory.reloadNaturalLatest,
-    sidecar.reloadSidecar,
-    status.showError,
-  ]);
+  }, [activeTab]);
 }

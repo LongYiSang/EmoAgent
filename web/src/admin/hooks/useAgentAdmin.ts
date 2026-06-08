@@ -27,13 +27,13 @@ export function useAgentAdmin({ setStatus, showError }: AgentAdminOptions) {
   }, [agents]);
 
   const reloadAgents = useCallback(async (preferredID = selectedAgent) => {
-    setStatus('Loading agent configs...');
+    setStatus('正在加载 Agent 配置...');
     const next = await loadAgents();
     setAgents(next.configs);
     setActiveAgentID(next.activeID);
     const preferred = preferredID && next.configs.some(item => item.id === preferredID) ? preferredID : next.activeID || next.configs[0]?.id || '';
     selectAgent(preferred, next.configs);
-    setStatus('Ready');
+    setStatus('就绪');
   }, [selectedAgent, selectAgent, setStatus]);
 
   const patchAgentDraft = useCallback((key: string, value: unknown) => {
@@ -60,7 +60,7 @@ export function useAgentAdmin({ setStatus, showError }: AgentAdminOptions) {
       const nextID = String(agentDraft.id || selectedAgent);
       setSelectedAgent(nextID);
       await reloadAgents(nextID);
-      setStatus('Agent config saved');
+      setStatus('Agent 配置已保存');
     } catch (error) {
       showError(error);
     }
@@ -77,7 +77,7 @@ export function useAgentAdmin({ setStatus, showError }: AgentAdminOptions) {
   }, [selectedAgent, reloadAgents, showError]);
 
   const deleteSelectedAgent = useCallback(async () => {
-    if (!selectedAgent || !window.confirm(`Delete agent config "${selectedAgent}"?`)) return;
+    if (!selectedAgent || !window.confirm(`删除 Agent 配置 "${selectedAgent}"？`)) return;
     try {
       await deleteAgent(selectedAgent);
       await reloadAgents('');

@@ -22,9 +22,9 @@ export function ApprovalCard({ item, pending, sending, onAction, onDismiss }: {
       <div className="msg-av">E</div>
       <div className={classNames('approval', consumed && 'consumed settled')}>
         <div className="approval-top">
-          <div className="approval-tag"><span className="glyph">{consumed ? '✓' : '!'}</span>{consumed ? 'Human Approval Resolved' : 'Human Approval Required'}</div>
+          <div className="approval-tag"><span className="glyph">{consumed ? '✓' : '!'}</span>{consumed ? '审批已完成' : '需要人工审批'}</div>
           <div className="approval-meta-row">
-            <span className="approval-expire">Expires: {formatTime(stringField(item, 'expires_at') || stringField(item, 'expiresAt'))}</span>
+            <span className="approval-expire">有效期至：{formatTime(stringField(item, 'expires_at') || stringField(item, 'expiresAt'))}</span>
             <span className="approval-badge">{statusLabel}</span>
             {consumed && <button className="approval-close" type="button" onClick={() => onDismiss(id)}>×</button>}
           </div>

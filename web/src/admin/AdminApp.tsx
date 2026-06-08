@@ -144,8 +144,8 @@ export function AdminApp() {
       <main className="admin-page-wrap">
         <header className="admin-header">
           <div>
-            <h1>Admin</h1>
-            <p>Providers, personas, memory, sidecar and effective runtime config</p>
+            <h1>管理配置</h1>
+            <p>模型服务、Persona、记忆、Sidecar 与运行时生效配置</p>
           </div>
           <span className="status-chip"><span className="dot" /><span id="status">{status.status}</span></span>
         </header>
@@ -154,7 +154,7 @@ export function AdminApp() {
             {tabs.map(item => <button className={classNames('admin-tab', tab === item.id && 'active')} data-tab={item.id} type="button" key={item.id} onClick={() => setTab(item.id)}>{item.label}</button>)}
           </aside>
           <section className="admin-content">
-            <Suspense fallback={<div className="section">Loading...</div>}>
+            <Suspense fallback={<div className="section">加载中...</div>}>
               {renderActiveTab()}
             </Suspense>
           </section>

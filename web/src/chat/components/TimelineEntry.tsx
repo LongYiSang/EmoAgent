@@ -9,8 +9,10 @@ import { MemoryPipelineEntry } from './MemoryPipelineEntry';
 
 export const TimelineEntry = memo(function TimelineEntry(props: {
   item: TimelineItem;
+  activityOpen?: boolean;
   pendingApprovalIDs: string[];
   sending: boolean;
+  onActivityOpenChange?: (open: boolean) => void;
   onApprovalAction: (id: string, action: string, optionID?: string) => void;
   onDismissApproval: (id: string) => void;
   onOpenPipeline: (snapshot: unknown) => void;
@@ -21,8 +23,8 @@ export const TimelineEntry = memo(function TimelineEntry(props: {
   if (item.kind === 'approval') {
     return <ApprovalCard item={item.approval} pending={props.pendingApprovalIDs.includes(item.id)} sending={props.sending} onAction={props.onApprovalAction} onDismiss={props.onDismissApproval} />;
   }
-  if (item.kind === 'tool') return <ToolCard tool={item.tool} collapsed={item.collapsed} />;
-  if (item.kind === 'reasoning') return <ReasoningCard reasoning={item.reasoning} collapsed={item.collapsed} onOpenPipeline={props.onOpenPipeline} />;
+  if (item.kind === 'tool') return <ToolCard tool={item.tool} collapsed={item.collapsed} open={props.activityOpen} onOpenChange={props.onActivityOpenChange} />;
+  if (item.kind === 'reasoning') return <ReasoningCard reasoning={item.reasoning} collapsed={item.collapsed} open={props.activityOpen} onOpenChange={props.onActivityOpenChange} onOpenPipeline={props.onOpenPipeline} />;
   if (item.kind === 'work') return <WorkProgress content={item.content} />;
   return <MemoryPipelineEntry snapshot={item.snapshot} onOpen={props.onOpenPipeline} />;
 });

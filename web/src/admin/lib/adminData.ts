@@ -5,34 +5,34 @@ import type { AgentConfig, Persona, Provider, ProviderPreset } from '../protocol
 export type TabID = 'providers' | 'agents' | 'personas' | 'chat-settings' | 'memory-core' | 'pipelines' | 'retrieval-mirror' | 'sidecar' | 'privacy-forget' | 'retention' | 'diagnostics';
 
 export const tabs: Array<{ id: TabID; label: string }> = [
-  { id: 'providers', label: 'Providers' },
-  { id: 'agents', label: 'Agent Configs' },
-  { id: 'personas', label: 'Personas' },
-  { id: 'chat-settings', label: 'Chat Settings' },
+  { id: 'providers', label: '模型服务' },
+  { id: 'agents', label: 'Agent 配置' },
+  { id: 'personas', label: 'Persona' },
+  { id: 'chat-settings', label: '聊天设置' },
   { id: 'memory-core', label: 'Memory Core' },
-  { id: 'pipelines', label: 'Pipelines' },
-  { id: 'retrieval-mirror', label: 'Retrieval' },
+  { id: 'pipelines', label: 'Pipeline' },
+  { id: 'retrieval-mirror', label: '检索' },
   { id: 'sidecar', label: 'Sidecar' },
-  { id: 'privacy-forget', label: 'Privacy' },
-  { id: 'retention', label: 'Retention' },
-  { id: 'diagnostics', label: 'Diagnostics' },
+  { id: 'privacy-forget', label: '隐私' },
+  { id: 'retention', label: '保留策略' },
+  { id: 'diagnostics', label: '诊断' },
 ];
 
 export const slotDefs = [
-  ['emotion-main', 'Emotion Main'],
-  ['emotion-summary', 'Emotion Summary'],
-  ['work-main', 'Work Main'],
-  ['work-summary', 'Work Summary'],
+  ['emotion-main', '聊天主模型'],
+  ['emotion-summary', '聊天摘要模型'],
+  ['work-main', '干活主模型'],
+  ['work-summary', '干活摘要模型'],
 ] as const;
 
 export const memoryPipelineBindings = [
-  ['prefilter', 'Prefilter'],
-  ['extraction', 'Extraction'],
-  ['extraction_repair', 'Extraction Repair'],
+  ['prefilter', '预筛选'],
+  ['extraction', '提取'],
+  ['extraction_repair', '提取修复'],
   ['embedding', 'Embedding'],
-  ['query_analysis', 'Query Analysis'],
+  ['query_analysis', '查询分析'],
   ['rerank', 'Rerank'],
-  ['curation', 'Curation'],
+  ['curation', '整理'],
 ] as const;
 
 export const llmPipelineKeys = new Set(['prefilter', 'extraction', 'extraction_repair', 'query_analysis', 'curation']);
@@ -73,7 +73,7 @@ export function parseJSONRecord(value: string, fallback?: unknown): AnyRecord {
   try {
     const parsed = JSON.parse(value || '{}');
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as AnyRecord;
-    throw new Error('JSON must be an object');
+    throw new Error('JSON 必须是对象');
   } catch (error) {
     if (fallback && typeof fallback === 'object' && !Array.isArray(fallback)) return fallback as AnyRecord;
     throw error;
@@ -120,12 +120,18 @@ export function pipelineProviderOptions(providers: Provider[], key: string, sele
     if (key === 'rerank') return caps.includes('rerank') || provider.id === selected;
     return caps.includes('chat') || provider.id === selected;
   };
-  return [{ value: '', label: 'Select provider' }, ...providers.filter(accepts).map(provider => ({ value: String(provider.id || ''), label: String(provider.name || provider.id || '') }))];
+  return [{ value: '', label: '选择 Provider' }, ...providers.filter(accepts).map(provider => ({ value: String(provider.id || ''), label: String(provider.name || provider.id || '') }))];
 }
 
 export function pipelineThinkingOptions(selected: string): Array<{ value: string; label: string }> {
   const values = ['', 'disabled', 'optional', 'required'];
-  return values.map(value => ({ value, label: value || (selected ? 'inherit' : 'inherit') }));
+  const labels: Record<string, string> = {
+    '': '继承',
+    disabled: '关闭',
+    optional: '可选',
+    required: '必需',
+  };
+  return values.map(value => ({ value, label: labels[value] || value || (selected ? '继承' : '继承') }));
 }
 
 export function matchesQuery(query: string, ...values: unknown[]) {
@@ -200,9 +206,9 @@ export function slotParamMeta(slot: string, params: AnyRecord, preset: ProviderP
   const supported = !visible || visible.has(param);
   const hasValue = hasSlotParamValue(params, param);
   const recommended = recommendedParamValue(slotDefaults(slot, preset), param);
-  if (!supported && hasValue) return { hidden: false, warn: true, note: 'Current provider may ignore this value.' };
+  if (!supported && hasValue) return { hidden: false, warn: true, note: '当前 Provider 可能会忽略该值。' };
   if (!supported) return { hidden: true, warn: false, note: '' };
-  if (recommended !== undefined) return { hidden: false, warn: false, note: `Recommended: ${formatRecommendedValue(recommended)}` };
+  if (recommended !== undefined) return { hidden: false, warn: false, note: `推荐值：${formatRecommendedValue(recommended)}` };
   return { hidden: false, warn: false, note: '' };
 }
 

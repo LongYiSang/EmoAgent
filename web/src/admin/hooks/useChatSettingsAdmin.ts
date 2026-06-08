@@ -20,7 +20,7 @@ export function useChatSettingsAdmin({ setStatus, showError }: ChatSettingsAdmin
     try {
       const next = await saveChatSettings(chatSettings);
       setChatSettings(next);
-      setStatus('Chat settings saved');
+      setStatus('聊天设置已保存');
     } catch (error) {
       showError(error);
     }

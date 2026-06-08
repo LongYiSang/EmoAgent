@@ -13,7 +13,7 @@ export type RetentionTabProps = {
 export default memo(function RetentionTab({ effectiveConfig, retentionDraft, setRetentionDraft, saveRetention }: RetentionTabProps) {
   return (
     <JsonSavePanel
-      title="Retention"
+      title="保留策略"
       id="retention"
       value={retentionDraft}
       onValue={setRetentionDraft}
