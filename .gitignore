@@ -53,6 +53,9 @@ tmp/
 
 /task_report.json
 
+# Generated frontend bundle embedded by release builds.
+/internal/web/static/dist/
+
 # Agent
 /docs/superpowers/
 /.superpowers/

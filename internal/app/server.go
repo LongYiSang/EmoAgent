@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"io/fs"
 	"net/http"
 	"time"
 
@@ -43,15 +42,10 @@ func BuildServer(ctx context.Context, kernel *Kernel, facade *App) (*Server, err
 	kernel.Services.Chat.StartBackground(ctx)
 	chatHandler := chat.NewHandler(engine, facade, kernel.Infra.Logger, kernel.Services.Chat.HandlerOptions()...)
 
-	staticSub, err := fs.Sub(web.StaticFS, "static")
-	if err != nil {
-		return nil, fmt.Errorf("load embedded web assets: %w", err)
-	}
-
 	api := web.NewAPIHandler(facade, kernel.Infra.Logger)
 
 	mux := http.NewServeMux()
-	registerRoutes(mux, api, chatHandler, http.FileServer(http.FS(staticSub)))
+	registerRoutes(mux, api, chatHandler, web.NewStaticHandler(web.StaticFS))
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	return &Server{

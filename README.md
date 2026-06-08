@@ -131,7 +131,14 @@ go build -o ./bin/emoagent ./cmd/emoagent
 go test ./...
 ```
 
-默认服务监听 `127.0.0.1:8080`。WebUI 和 Admin 静态资源通过 `embed.FS` 打包在 Go 二进制内。
+默认服务监听 `127.0.0.1:8080`。WebUI 和 Admin 的源码在 `web/`；仓库不提交 Vite 编译产物。需要打包完整 WebUI 的 release 二进制时，先运行：
+
+```powershell
+npm --prefix web run build
+go build -o ./bin/emoagent ./cmd/emoagent
+```
+
+`web` build 会生成被 `.gitignore` 忽略的 `internal/web/static/dist/`，随后通过 `embed.FS` 打包进 Go 二进制。未先构建前端时，Go 服务仍可编译，但访问 WebUI 会返回构建提示。
 
 主要配置入口：
 

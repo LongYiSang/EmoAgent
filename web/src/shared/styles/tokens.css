@@ -1,0 +1,67 @@
+@theme {
+  --font-ui: "Manrope", "PingFang SC", "Hiragino Sans GB", sans-serif;
+  --font-data: "Inter", "PingFang SC", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --color-surface: #fff8ff;
+  --color-surface-2: #f3eeff;
+  --color-surface-3: #ede8f5;
+  --color-ink: #3d2e5e;
+  --color-ink-2: #5f5176;
+  --color-ink-soft: #5e4a5c;
+  --color-muted: #8a7aa0;
+  --color-muted-2: #a08da0;
+  --color-white: #fff;
+  --color-bg-start: #faf6ff;
+  --color-bg-cool: #e8f0f8;
+  --color-tooltip-bg: #3d2b3a;
+  --color-peach: #ffe5c8;
+  --color-peach-ink: #715fa4;
+  --color-peach-soft: #fff2e0;
+  --color-coral: #e8a38d;
+  --color-lavender: #a791c0;
+  --color-lavender-ink: #715fa4;
+  --color-lavender-soft: #ede8f5;
+  --color-mint: #7db9a8;
+  --color-mint-ink: #3a7a6a;
+  --color-mint-soft: #e0f2ec;
+  --color-sky: #aecadf;
+  --color-rose: #d88aa8;
+  --color-rose-ink: #8a3a5b;
+  --color-danger: #d67b7b;
+  --color-danger-ink: #8a3a3a;
+  --color-danger-soft: #f5e0e0;
+  --color-warning-ink: #7a5f2a;
+
+  --radius-emo-sm: 14px;
+  --radius-emo-md: 18px;
+  --radius-emo-lg: 22px;
+  --radius-emo-xl: 26px;
+
+  --shadow-emo-sm: 0 2px 8px rgb(61 46 94 / 0.04), 0 1px 3px rgb(61 46 94 / 0.02);
+  --shadow-emo-md: 0 8px 32px rgb(61 46 94 / 0.06), 0 4px 12px rgb(61 46 94 / 0.04);
+  --shadow-emo-lg: 0 12px 48px rgb(61 46 94 / 0.1), 0 6px 16px rgb(61 46 94 / 0.05);
+}
+
+:root {
+  --hair: rgba(201, 185, 210, 0.5);
+  --line: rgba(167, 145, 192, 0.34);
+  --primary-grad: linear-gradient(135deg, var(--color-lavender-ink) 0%, var(--color-lavender) 100%);
+  --app-viewport-height: 100vh;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@supports (height: 100dvh) {
+  :root {
+    --app-viewport-height: 100dvh;
+  }
+}
+
+@utility bg-primary-grad {
+  background-image: var(--primary-grad);
+}
+
+@utility border-hair {
+  border-color: var(--hair);
+}
