@@ -73,6 +73,60 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Plugins.Audit.IncludePayload {
 		t.Error("default plugins.audit.include_payload = true, want false")
 	}
+	if cfg.AgentAffect.Enabled {
+		t.Error("default agent_affect.enabled = true, want false")
+	}
+	if !cfg.AgentAffect.StorageEnabled {
+		t.Error("default agent_affect.storage_enabled = false, want true")
+	}
+	if cfg.AgentAffect.Evaluator.Mode != "llm" {
+		t.Errorf("default agent_affect.evaluator.mode = %q, want llm", cfg.AgentAffect.Evaluator.Mode)
+	}
+	if cfg.AgentAffect.Evaluator.TimeoutMS != 30000 {
+		t.Errorf("default agent_affect.evaluator.timeout_ms = %d, want 30000", cfg.AgentAffect.Evaluator.TimeoutMS)
+	}
+	if cfg.AgentAffect.Evaluator.StoreHiddenThinking {
+		t.Error("default agent_affect.evaluator.store_hidden_thinking = true, want false")
+	}
+	if cfg.AgentAffect.Context.Mode != "raw_window" {
+		t.Errorf("default agent_affect.context.mode = %q, want raw_window", cfg.AgentAffect.Context.Mode)
+	}
+	if cfg.AgentAffect.Context.RawKeepLastRequests != 20 {
+		t.Errorf("default agent_affect.context.raw_keep_last_requests = %d, want 20", cfg.AgentAffect.Context.RawKeepLastRequests)
+	}
+	if cfg.AgentAffect.Context.RawKeepLastTokens != 12000 {
+		t.Errorf("default agent_affect.context.raw_keep_last_tokens = %d, want 12000", cfg.AgentAffect.Context.RawKeepLastTokens)
+	}
+	if !cfg.AgentAffect.Context.IncludePreviousEvaluations {
+		t.Error("default agent_affect.context.include_previous_evaluations = false, want true")
+	}
+	if cfg.AgentAffect.Context.SummaryEnabled {
+		t.Error("default agent_affect.context.summary_enabled = true, want false")
+	}
+	if !cfg.AgentAffect.Context.StoreRawInputs {
+		t.Error("default agent_affect.context.store_raw_inputs = false, want true")
+	}
+	if cfg.AgentAffect.Context.StorePromptSnapshot {
+		t.Error("default agent_affect.context.store_prompt_snapshot = true, want false")
+	}
+	if !cfg.AgentAffect.Externalization.Attachment.Enabled {
+		t.Error("default agent_affect.externalization.attachment.enabled = false, want true")
+	}
+	if cfg.AgentAffect.Externalization.Attachment.DefaultStyle != "gentle_explicit" {
+		t.Errorf("default attachment style = %q, want gentle_explicit", cfg.AgentAffect.Externalization.Attachment.DefaultStyle)
+	}
+	if cfg.AgentAffect.Externalization.Attachment.MaxVisibleIntensity != 0.65 {
+		t.Errorf("default attachment max visible intensity = %v, want 0.65", cfg.AgentAffect.Externalization.Attachment.MaxVisibleIntensity)
+	}
+	if cfg.AgentAffect.Externalization.Frustration.Enabled {
+		t.Error("default agent_affect.externalization.frustration.enabled = true, want false")
+	}
+	if !cfg.AgentAffect.Prompt.IncludeMoodBlock || !cfg.AgentAffect.Prompt.IncludeReason || !cfg.AgentAffect.Prompt.IncludeNumericValues {
+		t.Fatalf("default agent_affect.prompt = %#v, want mood/reason/numeric enabled", cfg.AgentAffect.Prompt)
+	}
+	if cfg.AgentAffect.Prompt.IncludeExpressionGuidance {
+		t.Error("default agent_affect.prompt.include_expression_guidance = true, want false")
+	}
 	if cfg.Memory.Enabled {
 		t.Error("default memory.enabled = true, want false")
 	}
@@ -270,6 +324,124 @@ memory:
 	}
 	if cfg.Memory.NaturalMemory.Manual.Enabled || cfg.Memory.NaturalMemory.Manual.AllowDryRun || cfg.Memory.NaturalMemory.Manual.AllowForce || cfg.Memory.NaturalMemory.Manual.MarkSleepCycleByDefault {
 		t.Fatalf("memory.natural_memory.manual = %#v, want explicitly disabled", cfg.Memory.NaturalMemory.Manual)
+	}
+}
+
+func TestLoadAgentAffectTopLevelConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+agent_affect:
+  enabled: true
+  storage_enabled: true
+  evaluator:
+    mode: disabled
+    provider_id: moonshot
+    model: affect-evaluator
+    thinking_enabled: true
+    reasoning_effort: medium
+    timeout_ms: 1234
+    max_output_tokens: 222
+    temperature: 0.3
+    store_hidden_thinking: false
+  context:
+    mode: raw_window
+    raw_keep_last_requests: 7
+    raw_keep_last_tokens: 700
+    include_previous_evaluations: true
+    previous_evaluation_keep_last: 9
+    summary_enabled: false
+    store_raw_inputs: true
+    store_prompt_snapshot: false
+  externalization:
+    attachment:
+      enabled: true
+      default_style: gentle_explicit
+      max_visible_intensity: 0.5
+    frustration:
+      enabled: false
+  plugin_api:
+    enabled: true
+    plugin_safe_include_reason: true
+    plugin_safe_include_raw_text: false
+    ordinary_plugins_can_commit: true
+    ordinary_plugins_can_write_delta: true
+    trusted_plugins_can_write_target: true
+  limits:
+    per_request_delta:
+      valence: 0.11
+      arousal: 0.12
+      dominance: 0.13
+      energy: 0.14
+      warmth: 0.15
+      concern: 0.16
+      curiosity: 0.17
+      playfulness: 0.18
+      attachment: 0.19
+      frustration: 0.2
+      uncertainty: 0.21
+    absolute:
+      attachment_max: 0.6
+      frustration_max: 0.25
+  prompt:
+    include_mood_block: true
+    include_reason: true
+    include_expression_guidance: true
+    include_numeric_values: true
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.AgentAffect.Enabled {
+		t.Fatal("agent_affect.enabled = false, want true")
+	}
+	if cfg.AgentAffect.Evaluator.Mode != "disabled" || cfg.AgentAffect.Evaluator.ProviderID != "moonshot" || cfg.AgentAffect.Evaluator.Model != "affect-evaluator" {
+		t.Fatalf("agent_affect.evaluator = %#v", cfg.AgentAffect.Evaluator)
+	}
+	if cfg.AgentAffect.Evaluator.TimeoutMS != 1234 || cfg.AgentAffect.Evaluator.MaxOutputTokens != 222 || cfg.AgentAffect.Evaluator.Temperature != 0.3 {
+		t.Fatalf("agent_affect.evaluator numeric fields = %#v", cfg.AgentAffect.Evaluator)
+	}
+	if !cfg.AgentAffect.Evaluator.ThinkingEnabled || cfg.AgentAffect.Evaluator.ReasoningEffort != "medium" {
+		t.Fatalf("agent_affect.evaluator thinking fields = %#v", cfg.AgentAffect.Evaluator)
+	}
+	if cfg.AgentAffect.Context.RawKeepLastRequests != 7 || cfg.AgentAffect.Context.RawKeepLastTokens != 700 || cfg.AgentAffect.Context.PreviousEvaluationKeepLast != 9 {
+		t.Fatalf("agent_affect.context = %#v", cfg.AgentAffect.Context)
+	}
+	if cfg.AgentAffect.Externalization.Attachment.MaxVisibleIntensity != 0.5 {
+		t.Fatalf("attachment max visible intensity = %v", cfg.AgentAffect.Externalization.Attachment.MaxVisibleIntensity)
+	}
+	if !cfg.AgentAffect.PluginAPI.Enabled || !cfg.AgentAffect.PluginAPI.OrdinaryPluginsCanCommit || !cfg.AgentAffect.PluginAPI.OrdinaryPluginsCanWriteDelta || !cfg.AgentAffect.PluginAPI.TrustedPluginsCanWriteTarget {
+		t.Fatalf("agent_affect.plugin_api = %#v", cfg.AgentAffect.PluginAPI)
+	}
+	if cfg.AgentAffect.PluginAPI.PluginSafeIncludeRawText {
+		t.Fatalf("plugin_safe_include_raw_text = true, want false")
+	}
+	if cfg.AgentAffect.Limits.PerRequestDelta.Valence != 0.11 || cfg.AgentAffect.Limits.PerRequestDelta.Uncertainty != 0.21 {
+		t.Fatalf("agent_affect.limits.per_request_delta = %#v", cfg.AgentAffect.Limits.PerRequestDelta)
+	}
+	if cfg.AgentAffect.Limits.Absolute.AttachmentMax != 0.6 || cfg.AgentAffect.Limits.Absolute.FrustrationMax != 0.25 {
+		t.Fatalf("agent_affect.limits.absolute = %#v", cfg.AgentAffect.Limits.Absolute)
+	}
+	if !cfg.AgentAffect.Prompt.IncludeExpressionGuidance {
+		t.Fatalf("agent_affect.prompt = %#v", cfg.AgentAffect.Prompt)
+	}
+}
+
+func TestPluginFailClosedHooksAcceptAgentAffectHooks(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Plugins.FailClosedHooks = []string{
+		"before_agent_affect_evaluate",
+		"after_agent_affect_evaluate",
+		"before_agent_affect_commit",
+		"after_agent_affect_commit",
+		"agent_affect_get_state",
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
 	}
 }
 

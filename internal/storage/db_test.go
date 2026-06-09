@@ -37,7 +37,30 @@ func TestOpenAndMigrate(t *testing.T) {
 	db := testDB(t)
 
 	// Verify tables exist by querying them.
-	tables := []string{"sessions", "messages", "personas", "config_runtime", "runtime_settings", "llm_providers", "agent_configs", "schema_version", "pending_decisions", "archived_decisions", "memory_chat_links", "memory_segments", "memory_extraction_jobs", "turns", "turn_events", "turn_outbound_events", "turn_idempotency"}
+	tables := []string{
+		"sessions",
+		"messages",
+		"personas",
+		"config_runtime",
+		"runtime_settings",
+		"llm_providers",
+		"agent_configs",
+		"schema_version",
+		"pending_decisions",
+		"archived_decisions",
+		"memory_chat_links",
+		"memory_segments",
+		"memory_extraction_jobs",
+		"turns",
+		"turn_events",
+		"turn_outbound_events",
+		"turn_idempotency",
+		"agent_affect_profiles",
+		"agent_affect_states",
+		"agent_affect_evaluations",
+		"agent_affect_events",
+		"agent_affect_plugin_writes",
+	}
 	for _, table := range tables {
 		var name string
 		err := db.SqlDB().QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&name)
@@ -94,6 +117,14 @@ func TestOpenAndMigrate(t *testing.T) {
 	}
 	if !keyIsPK {
 		t.Fatal("personas.key should be the primary key")
+	}
+
+	var latestVersion int
+	if err := db.SqlDB().QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_version").Scan(&latestVersion); err != nil {
+		t.Fatalf("read latest schema_version: %v", err)
+	}
+	if latestVersion != 20 {
+		t.Fatalf("latest schema_version = %d, want 20", latestVersion)
 	}
 }
 

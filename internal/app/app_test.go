@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/longyisang/emoagent/internal/agentaffect"
 	"github.com/longyisang/emoagent/internal/apperrors"
 	"github.com/longyisang/emoagent/internal/chat"
 	"github.com/longyisang/emoagent/internal/config"
@@ -26,6 +27,7 @@ import (
 	sidecarruntime "github.com/longyisang/emoagent/internal/sidecar"
 	"github.com/longyisang/emoagent/internal/storage"
 	"github.com/longyisang/emoagent/internal/tool"
+	"github.com/longyisang/emoagent/internal/turn"
 	"github.com/longyisang/emoagent/internal/web"
 )
 
@@ -179,6 +181,18 @@ func (a *routeTestAdminApp) GetSidecarGeneratedConfig(ctx context.Context) (stri
 }
 func (a *routeTestAdminApp) GetSidecarLogs(ctx context.Context, maxBytes int) (string, error) {
 	return "", nil
+}
+func (a *routeTestAdminApp) GetAgentAffectCurrent(ctx context.Context, req web.AgentAffectCurrentRequest) (web.AgentAffectCurrentResponse, error) {
+	return web.AgentAffectCurrentResponse{}, nil
+}
+func (a *routeTestAdminApp) EvaluateAgentAffect(ctx context.Context, req web.AgentAffectEvaluateRequest) (web.AgentAffectEvaluateResponse, error) {
+	return web.AgentAffectEvaluateResponse{}, nil
+}
+func (a *routeTestAdminApp) SubmitAgentAffect(ctx context.Context, req web.AgentAffectSubmitRequest) (web.AgentAffectSubmitResponse, error) {
+	return web.AgentAffectSubmitResponse{}, nil
+}
+func (a *routeTestAdminApp) ApplyAgentAffectDelta(ctx context.Context, req web.AgentAffectDeltaRequest) (web.AgentAffectDeltaResponse, error) {
+	return web.AgentAffectDeltaResponse{}, nil
 }
 
 func TestRunAllowsStartupWithoutLLM(t *testing.T) {
@@ -533,6 +547,73 @@ func TestActiveAgentRuntimeCloneKeepsRequestParamsIsolated(t *testing.T) {
 
 	if *runtime.EmotionMain.Params.Temperature != 0.2 {
 		t.Fatalf("ActiveAgentRuntime params mutated through copy, got %v", *runtime.EmotionMain.Params.Temperature)
+	}
+}
+
+type fakeAgentAffectService struct{}
+
+func (fakeAgentAffectService) GetCurrentMood(context.Context, agentaffect.GetCurrentMoodRequest) (agentaffect.GetCurrentMoodResponse, error) {
+	return agentaffect.GetCurrentMoodResponse{}, nil
+}
+func (fakeAgentAffectService) EvaluateMoodImpact(context.Context, agentaffect.EvaluateMoodImpactRequest) (agentaffect.EvaluateMoodImpactResponse, error) {
+	return agentaffect.EvaluateMoodImpactResponse{}, nil
+}
+func (fakeAgentAffectService) SubmitMoodImpact(context.Context, agentaffect.SubmitMoodImpactRequest) (agentaffect.SubmitMoodImpactResponse, error) {
+	return agentaffect.SubmitMoodImpactResponse{EventID: "event-1"}, nil
+}
+func (fakeAgentAffectService) ApplyMoodDelta(context.Context, agentaffect.ApplyMoodDeltaRequest) (agentaffect.ApplyMoodDeltaResponse, error) {
+	return agentaffect.ApplyMoodDeltaResponse{EventID: "event-1"}, nil
+}
+func (fakeAgentAffectService) BuildPromptAffectBlock(context.Context, agentaffect.BuildPromptAffectBlockRequest) (string, error) {
+	return "", nil
+}
+
+func TestHookedAgentAffectRuntimeDispatchesPluginHooks(t *testing.T) {
+	host := plugin.NewPluginHost(config.PluginsConfig{Enabled: true, DefaultTimeoutMS: 80, MaxTimeoutMS: 1000}, turn.NewMemoryJournal(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	counts := map[plugin.HookName]int{}
+	for _, hook := range []plugin.HookName{
+		plugin.HookBeforeAgentAffectEvaluate,
+		plugin.HookAfterAgentAffectEvaluate,
+		plugin.HookBeforeAgentAffectCommit,
+		plugin.HookAfterAgentAffectCommit,
+	} {
+		hook := hook
+		if err := host.HookBus().Register(plugin.RegisteredHook{
+			PluginID:      "com.example.affect",
+			Authorizer:    plugin.NewAuthorizer(plugin.Manifest{Capabilities: []plugin.Capability{plugin.CapabilityAgentAffectObserve}}),
+			Hook:          hook,
+			Mode:          plugin.HookModeObserve,
+			FailurePolicy: plugin.FailurePolicyFailOpen,
+			TimeoutMS:     50,
+			Handler: func(context.Context, plugin.HookContext) (plugin.HookResult, error) {
+				counts[hook]++
+				return plugin.HookResult{}, nil
+			},
+		}); err != nil {
+			t.Fatalf("Register %s: %v", hook, err)
+		}
+	}
+
+	runtime := hookedAgentAffectRuntime{inner: fakeAgentAffectService{}, plugins: &PluginService{host: host}}
+	_, err := runtime.SubmitMoodImpact(context.Background(), agentaffect.SubmitMoodImpactRequest{
+		PersonaID:  "default",
+		SessionID:  "session-1",
+		TurnID:     "turn-1",
+		Trigger:    agentaffect.TriggerDescriptor{TriggerType: "user_message"},
+		CommitMode: agentaffect.CommitModeCommitIfAllowed,
+	})
+	if err != nil {
+		t.Fatalf("SubmitMoodImpact: %v", err)
+	}
+	for _, hook := range []plugin.HookName{
+		plugin.HookBeforeAgentAffectEvaluate,
+		plugin.HookAfterAgentAffectEvaluate,
+		plugin.HookBeforeAgentAffectCommit,
+		plugin.HookAfterAgentAffectCommit,
+	} {
+		if counts[hook] != 1 {
+			t.Fatalf("%s count = %d, want 1 (all=%#v)", hook, counts[hook], counts)
+		}
 	}
 }
 

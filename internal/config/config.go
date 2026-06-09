@@ -20,6 +20,7 @@ type Config struct {
 	LLMProviders []LLMProvider      `yaml:"llm_providers"`
 	AgentConfigs []AgentConfig      `yaml:"agent_configs"`
 	Agent        AgentRuntimeConfig `yaml:"agent"`
+	AgentAffect  AgentAffectConfig  `yaml:"agent_affect" json:"agent_affect"`
 	Memory       MemoryConfig       `yaml:"memory"`
 	DB           DBConfig           `yaml:"db"`
 	Log          LogConfig          `yaml:"log"`
@@ -48,6 +49,100 @@ type LLMProvider struct {
 
 type AgentRuntimeConfig struct {
 	ActiveConfig string `yaml:"active_config" json:"active_config"`
+}
+
+type AgentAffectConfig struct {
+	Enabled         bool                             `yaml:"enabled" json:"enabled"`
+	StorageEnabled  bool                             `yaml:"storage_enabled" json:"storage_enabled"`
+	Evaluator       AgentAffectEvaluatorConfig       `yaml:"evaluator" json:"evaluator"`
+	Context         AgentAffectContextConfig         `yaml:"context" json:"context"`
+	Dimensions      AgentAffectDimensionsConfig      `yaml:"dimensions" json:"dimensions"`
+	Externalization AgentAffectExternalizationConfig `yaml:"externalization" json:"externalization"`
+	PluginAPI       AgentAffectPluginAPIConfig       `yaml:"plugin_api" json:"plugin_api"`
+	Limits          AgentAffectLimitsConfig          `yaml:"limits" json:"limits"`
+	Features        AgentAffectFeaturesConfig        `yaml:"features" json:"features"`
+	Prompt          AgentAffectPromptConfig          `yaml:"prompt" json:"prompt"`
+}
+
+type AgentAffectEvaluatorConfig struct {
+	Mode                string  `yaml:"mode" json:"mode"`
+	ProviderID          string  `yaml:"provider_id" json:"provider_id"`
+	Model               string  `yaml:"model" json:"model"`
+	ThinkingEnabled     bool    `yaml:"thinking_enabled" json:"thinking_enabled"`
+	ReasoningEffort     string  `yaml:"reasoning_effort" json:"reasoning_effort"`
+	TimeoutMS           int     `yaml:"timeout_ms" json:"timeout_ms"`
+	MaxOutputTokens     int     `yaml:"max_output_tokens" json:"max_output_tokens"`
+	Temperature         float64 `yaml:"temperature" json:"temperature"`
+	StoreHiddenThinking bool    `yaml:"store_hidden_thinking" json:"store_hidden_thinking"`
+}
+
+type AgentAffectContextConfig struct {
+	Mode                       string `yaml:"mode" json:"mode"`
+	RawKeepLastRequests        int    `yaml:"raw_keep_last_requests" json:"raw_keep_last_requests"`
+	RawKeepLastTokens          int    `yaml:"raw_keep_last_tokens" json:"raw_keep_last_tokens"`
+	IncludePreviousEvaluations bool   `yaml:"include_previous_evaluations" json:"include_previous_evaluations"`
+	PreviousEvaluationKeepLast int    `yaml:"previous_evaluation_keep_last" json:"previous_evaluation_keep_last"`
+	SummaryEnabled             bool   `yaml:"summary_enabled" json:"summary_enabled"`
+	StoreRawInputs             bool   `yaml:"store_raw_inputs" json:"store_raw_inputs"`
+	StorePromptSnapshot        bool   `yaml:"store_prompt_snapshot" json:"store_prompt_snapshot"`
+}
+
+type AgentAffectDimensionsConfig struct {
+}
+
+type AgentAffectExternalizationConfig struct {
+	Attachment  ExternalizedDimensionConfig `yaml:"attachment" json:"attachment"`
+	Frustration ExternalizedDimensionConfig `yaml:"frustration" json:"frustration"`
+}
+
+type ExternalizedDimensionConfig struct {
+	Enabled             bool    `yaml:"enabled" json:"enabled"`
+	DefaultStyle        string  `yaml:"default_style" json:"default_style"`
+	MaxVisibleIntensity float64 `yaml:"max_visible_intensity" json:"max_visible_intensity"`
+}
+
+type AgentAffectPluginAPIConfig struct {
+	Enabled                      bool `yaml:"enabled" json:"enabled"`
+	PluginSafeIncludeReason      bool `yaml:"plugin_safe_include_reason" json:"plugin_safe_include_reason"`
+	PluginSafeIncludeRawText     bool `yaml:"plugin_safe_include_raw_text" json:"plugin_safe_include_raw_text"`
+	OrdinaryPluginsCanCommit     bool `yaml:"ordinary_plugins_can_commit" json:"ordinary_plugins_can_commit"`
+	OrdinaryPluginsCanWriteDelta bool `yaml:"ordinary_plugins_can_write_delta" json:"ordinary_plugins_can_write_delta"`
+	TrustedPluginsCanWriteTarget bool `yaml:"trusted_plugins_can_write_target" json:"trusted_plugins_can_write_target"`
+}
+
+type AgentAffectLimitsConfig struct {
+	PerRequestDelta       AgentAffectVectorLimitsConfig   `yaml:"per_request_delta" json:"per_request_delta"`
+	Absolute              AgentAffectAbsoluteLimitsConfig `yaml:"absolute" json:"absolute"`
+	PluginDeltaMultiplier float64                         `yaml:"plugin_delta_multiplier" json:"plugin_delta_multiplier"`
+}
+
+type AgentAffectVectorLimitsConfig struct {
+	Valence     float64 `yaml:"valence" json:"valence"`
+	Arousal     float64 `yaml:"arousal" json:"arousal"`
+	Dominance   float64 `yaml:"dominance" json:"dominance"`
+	Energy      float64 `yaml:"energy" json:"energy"`
+	Warmth      float64 `yaml:"warmth" json:"warmth"`
+	Concern     float64 `yaml:"concern" json:"concern"`
+	Curiosity   float64 `yaml:"curiosity" json:"curiosity"`
+	Playfulness float64 `yaml:"playfulness" json:"playfulness"`
+	Attachment  float64 `yaml:"attachment" json:"attachment"`
+	Frustration float64 `yaml:"frustration" json:"frustration"`
+	Uncertainty float64 `yaml:"uncertainty" json:"uncertainty"`
+}
+
+type AgentAffectAbsoluteLimitsConfig struct {
+	AttachmentMax  float64 `yaml:"attachment_max" json:"attachment_max"`
+	FrustrationMax float64 `yaml:"frustration_max" json:"frustration_max"`
+}
+
+type AgentAffectFeaturesConfig struct {
+}
+
+type AgentAffectPromptConfig struct {
+	IncludeMoodBlock          bool `yaml:"include_mood_block" json:"include_mood_block"`
+	IncludeReason             bool `yaml:"include_reason" json:"include_reason"`
+	IncludeExpressionGuidance bool `yaml:"include_expression_guidance" json:"include_expression_guidance"`
+	IncludeNumericValues      bool `yaml:"include_numeric_values" json:"include_numeric_values"`
 }
 
 type MemoryConfig struct {
@@ -444,7 +539,12 @@ func knownPluginHookName(hook string) bool {
 		"on_approval_resolved",
 		"on_approval_consumed",
 		"on_turn_error",
-		"after_turn_end":
+		"after_turn_end",
+		"before_agent_affect_evaluate",
+		"after_agent_affect_evaluate",
+		"before_agent_affect_commit",
+		"after_agent_affect_commit",
+		"agent_affect_get_state":
 		return true
 	default:
 		return false
@@ -632,6 +732,68 @@ func DefaultConfig() *Config {
 		},
 		DB: DBConfig{
 			Path: "./data/emo.db",
+		},
+		AgentAffect: AgentAffectConfig{
+			Enabled:        false,
+			StorageEnabled: true,
+			Evaluator: AgentAffectEvaluatorConfig{
+				Mode:            "llm",
+				TimeoutMS:       30000,
+				MaxOutputTokens: 4096,
+				Temperature:     0.2,
+			},
+			Context: AgentAffectContextConfig{
+				Mode:                       "raw_window",
+				RawKeepLastRequests:        20,
+				RawKeepLastTokens:          12000,
+				IncludePreviousEvaluations: true,
+				PreviousEvaluationKeepLast: 30,
+				SummaryEnabled:             false,
+				StoreRawInputs:             true,
+				StorePromptSnapshot:        false,
+			},
+			Externalization: AgentAffectExternalizationConfig{
+				Attachment: ExternalizedDimensionConfig{
+					Enabled:             true,
+					DefaultStyle:        "gentle_explicit",
+					MaxVisibleIntensity: 0.65,
+				},
+				Frustration: ExternalizedDimensionConfig{Enabled: false},
+			},
+			PluginAPI: AgentAffectPluginAPIConfig{
+				Enabled:                      true,
+				PluginSafeIncludeReason:      true,
+				PluginSafeIncludeRawText:     false,
+				OrdinaryPluginsCanCommit:     true,
+				OrdinaryPluginsCanWriteDelta: true,
+				TrustedPluginsCanWriteTarget: true,
+			},
+			Limits: AgentAffectLimitsConfig{
+				PluginDeltaMultiplier: 1.0,
+				PerRequestDelta: AgentAffectVectorLimitsConfig{
+					Valence:     0.15,
+					Arousal:     0.18,
+					Dominance:   0.12,
+					Energy:      0.12,
+					Warmth:      0.15,
+					Concern:     0.18,
+					Curiosity:   0.18,
+					Playfulness: 0.15,
+					Attachment:  0.08,
+					Frustration: 0.08,
+					Uncertainty: 0.12,
+				},
+				Absolute: AgentAffectAbsoluteLimitsConfig{
+					AttachmentMax:  0.75,
+					FrustrationMax: 0.35,
+				},
+			},
+			Prompt: AgentAffectPromptConfig{
+				IncludeMoodBlock:          true,
+				IncludeReason:             true,
+				IncludeExpressionGuidance: false,
+				IncludeNumericValues:      true,
+			},
 		},
 		Memory: MemoryConfig{
 			Enabled:         false,

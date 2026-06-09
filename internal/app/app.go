@@ -168,6 +168,38 @@ func (a *App) GetLLMProviderModels(id string) ([]llm.ModelInfo, error) {
 	return services.LLMProviders.Models(id)
 }
 
+func (a *App) GetAgentAffectCurrent(ctx context.Context, req web.AgentAffectCurrentRequest) (web.AgentAffectCurrentResponse, error) {
+	services, err := a.services()
+	if err != nil {
+		return web.AgentAffectCurrentResponse{}, err
+	}
+	return services.AgentAffect.GetCurrentMood(ctx, req)
+}
+
+func (a *App) EvaluateAgentAffect(ctx context.Context, req web.AgentAffectEvaluateRequest) (web.AgentAffectEvaluateResponse, error) {
+	services, err := a.services()
+	if err != nil {
+		return web.AgentAffectEvaluateResponse{}, err
+	}
+	return services.AgentAffect.EvaluateMoodImpact(ctx, req)
+}
+
+func (a *App) SubmitAgentAffect(ctx context.Context, req web.AgentAffectSubmitRequest) (web.AgentAffectSubmitResponse, error) {
+	services, err := a.services()
+	if err != nil {
+		return web.AgentAffectSubmitResponse{}, err
+	}
+	return services.AgentAffect.SubmitMoodImpact(ctx, req)
+}
+
+func (a *App) ApplyAgentAffectDelta(ctx context.Context, req web.AgentAffectDeltaRequest) (web.AgentAffectDeltaResponse, error) {
+	services, err := a.services()
+	if err != nil {
+		return web.AgentAffectDeltaResponse{}, err
+	}
+	return services.AgentAffect.ApplyMoodDelta(ctx, req)
+}
+
 func (a *App) GetLLMProviderEnvStatus(id string) (configcenter.ProviderEnvStatus, error) {
 	services, err := a.services()
 	if err != nil {

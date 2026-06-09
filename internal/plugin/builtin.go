@@ -22,9 +22,10 @@ type BuiltinPlugin interface {
 }
 
 type BuiltinRunner struct {
-	host     *PluginHost
-	registry *tool.Registry
-	loaded   map[string]BuiltinPlugin
+	host        *PluginHost
+	registry    *tool.Registry
+	agentAffect AgentAffectRuntime
+	loaded      map[string]BuiltinPlugin
 }
 
 func NewBuiltinRunner(host *PluginHost, registry *tool.Registry) *BuiltinRunner {
@@ -32,6 +33,12 @@ func NewBuiltinRunner(host *PluginHost, registry *tool.Registry) *BuiltinRunner 
 		host.registry = NewPluginRegistry()
 	}
 	return &BuiltinRunner{host: host, registry: registry, loaded: map[string]BuiltinPlugin{}}
+}
+
+func (r *BuiltinRunner) SetAgentAffectRuntime(runtime AgentAffectRuntime) {
+	if r != nil {
+		r.agentAffect = runtime
+	}
 }
 
 func (r *BuiltinRunner) Load(ctx context.Context, plugins []BuiltinPlugin, enabledIDs []string) error {
@@ -59,7 +66,7 @@ func (r *BuiltinRunner) Load(ctx context.Context, plugins []BuiltinPlugin, enabl
 		if err := r.host.registry.Register(manifest, ManifestValidationOptions{MaxTimeoutMS: r.host.config.MaxTimeoutMS}); err != nil {
 			return fmt.Errorf("register builtin plugin manifest %s: %w", manifest.ID, err)
 		}
-		registrar := NewRegistrarForManifest(manifest, r.registry, r.host.bus)
+		registrar := newRegistrar(manifest.ID, NewAuthorizer(manifest), r.registry, r.host.bus, manifest.Hooks, r.agentAffect)
 		if err := builtin.Register(ctx, registrar); err != nil {
 			return fmt.Errorf("register builtin plugin %s: %w", manifest.ID, err)
 		}

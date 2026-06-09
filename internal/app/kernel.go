@@ -37,6 +37,7 @@ type Services struct {
 	Personas     *PersonaService
 	LLMProviders *LLMProviderService
 	AgentRuntime *AgentRuntimeService
+	AgentAffect  *AgentAffectService
 	Sidecar      *SidecarService
 	Memory       *MemoryService
 	Tools        *ToolService
@@ -60,10 +61,12 @@ func newServices(infra *Infra) *Services {
 	services.Personas = &PersonaService{infra: infra}
 	services.LLMProviders = &LLMProviderService{infra: infra}
 	services.AgentRuntime = &AgentRuntimeService{infra: infra, personas: services.Personas}
+	services.AgentAffect = &AgentAffectService{infra: infra, agentRuntime: services.AgentRuntime}
 	services.Sidecar = &SidecarService{infra: infra, config: services.Config}
 	services.Memory = &MemoryService{infra: infra, config: services.Config, sidecar: services.Sidecar}
 	services.Tools = &ToolService{infra: infra}
-	services.Plugins = &PluginService{infra: infra, tools: services.Tools}
+	services.Plugins = &PluginService{infra: infra, tools: services.Tools, agentAffect: services.AgentAffect}
+	services.AgentAffect.plugins = services.Plugins
 	services.Work = &WorkService{
 		infra:        infra,
 		tools:        services.Tools,
@@ -77,6 +80,7 @@ func newServices(infra *Infra) *Services {
 		plugins:      services.Plugins,
 		work:         services.Work,
 		memory:       services.Memory,
+		agentAffect:  services.AgentAffect,
 	}
 	services.Sessions = &SessionService{infra: infra, work: services.Work}
 	services.AgentRuntime.chat = services.Chat

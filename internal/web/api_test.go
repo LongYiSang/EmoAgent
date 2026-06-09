@@ -24,50 +24,57 @@ import (
 )
 
 type fakeAdminApp struct {
-	providers           []config.LLMProvider
-	agentConfigs        []config.AgentConfig
-	activeAgent         *config.AgentConfig
-	personas            map[string]*config.Persona
-	progressPhrases     map[string]map[string][]string
-	sessions            []storage.SessionSummary
-	sessionDetail       *storage.SessionRecord
-	sessionMessages     []storage.MessageRecord
-	createErr           error
-	activateErr         error
-	sessionErr          error
-	deleteSessionErr    error
-	approvals           []protocol.ApprovalRequest
-	lastProvider        config.LLMProvider
-	lastAgentConfig     config.AgentConfig
-	lastActivate        string
-	lastPersonaKey      string
-	lastPersona         *config.Persona
-	lastSessionPersona  string
-	lastSessionLimit    int
-	lastDeleteSessionID string
-	lastPhrasesKey      string
-	lastPhrasesValue    map[string][]string
-	lastApprovalSession string
-	lastExtractionReq   MemoryExtractionRequest
-	lastExtractionList  MemoryExtractionListRequest
-	extractionJobs      []storage.MemoryExtractionJob
-	lastNaturalReq      NaturalMemoryRunRequest
-	naturalRunResp      memoryhost.NaturalMemoryRunResponse
-	naturalRunErr       error
-	latestNaturalResp   *memoryhost.NaturalMemoryRunResponse
-	lastSegmentSession  string
-	memorySegments      []storage.MemorySegment
-	chatSettings        config.ChatConfig
-	lastChatSettings    config.ChatConfig
-	updateChatErr       error
-	effectiveConfig     configcenter.EffectiveConfig
-	configIssues        []configcenter.ConfigIssue
-	providerEnvStatus   configcenter.ProviderEnvStatus
-	memoryConfig        configcenter.MemoryConfigResponse
-	lastMemoryConfig    config.MemoryConfig
-	sidecarStatus       sidecarruntime.Status
-	sidecarConfig       string
-	sidecarLogs         string
+	providers             []config.LLMProvider
+	agentConfigs          []config.AgentConfig
+	activeAgent           *config.AgentConfig
+	personas              map[string]*config.Persona
+	progressPhrases       map[string]map[string][]string
+	sessions              []storage.SessionSummary
+	sessionDetail         *storage.SessionRecord
+	sessionMessages       []storage.MessageRecord
+	createErr             error
+	activateErr           error
+	sessionErr            error
+	deleteSessionErr      error
+	approvals             []protocol.ApprovalRequest
+	lastProvider          config.LLMProvider
+	lastAgentConfig       config.AgentConfig
+	lastActivate          string
+	lastPersonaKey        string
+	lastPersona           *config.Persona
+	lastSessionPersona    string
+	lastSessionLimit      int
+	lastDeleteSessionID   string
+	lastPhrasesKey        string
+	lastPhrasesValue      map[string][]string
+	lastApprovalSession   string
+	lastExtractionReq     MemoryExtractionRequest
+	lastExtractionList    MemoryExtractionListRequest
+	extractionJobs        []storage.MemoryExtractionJob
+	lastNaturalReq        NaturalMemoryRunRequest
+	naturalRunResp        memoryhost.NaturalMemoryRunResponse
+	naturalRunErr         error
+	latestNaturalResp     *memoryhost.NaturalMemoryRunResponse
+	lastSegmentSession    string
+	memorySegments        []storage.MemorySegment
+	chatSettings          config.ChatConfig
+	lastChatSettings      config.ChatConfig
+	updateChatErr         error
+	effectiveConfig       configcenter.EffectiveConfig
+	configIssues          []configcenter.ConfigIssue
+	providerEnvStatus     configcenter.ProviderEnvStatus
+	memoryConfig          configcenter.MemoryConfigResponse
+	lastMemoryConfig      config.MemoryConfig
+	sidecarStatus         sidecarruntime.Status
+	sidecarConfig         string
+	sidecarLogs           string
+	agentAffectCurrent    AgentAffectCurrentResponse
+	lastAgentAffectEval   AgentAffectEvaluateRequest
+	agentAffectEvalResp   AgentAffectEvaluateResponse
+	lastAgentAffectSubmit AgentAffectSubmitRequest
+	agentAffectSubmitResp AgentAffectSubmitResponse
+	lastAgentAffectDelta  AgentAffectDeltaRequest
+	agentAffectDeltaResp  AgentAffectDeltaResponse
 }
 
 func (f *fakeAdminApp) ListLLMProviders() ([]config.LLMProvider, error) {
@@ -274,6 +281,117 @@ func (f *fakeAdminApp) GetSidecarGeneratedConfig(ctx context.Context) (string, e
 }
 func (f *fakeAdminApp) GetSidecarLogs(ctx context.Context, maxBytes int) (string, error) {
 	return f.sidecarLogs, nil
+}
+func (f *fakeAdminApp) GetAgentAffectCurrent(ctx context.Context, req AgentAffectCurrentRequest) (AgentAffectCurrentResponse, error) {
+	if f.agentAffectCurrent.Mood.PersonaID == "" {
+		f.agentAffectCurrent.Mood.PersonaID = req.PersonaID
+	}
+	return f.agentAffectCurrent, nil
+}
+func (f *fakeAdminApp) EvaluateAgentAffect(ctx context.Context, req AgentAffectEvaluateRequest) (AgentAffectEvaluateResponse, error) {
+	f.lastAgentAffectEval = req
+	return f.agentAffectEvalResp, nil
+}
+func (f *fakeAdminApp) SubmitAgentAffect(ctx context.Context, req AgentAffectSubmitRequest) (AgentAffectSubmitResponse, error) {
+	f.lastAgentAffectSubmit = req
+	return f.agentAffectSubmitResp, nil
+}
+func (f *fakeAdminApp) ApplyAgentAffectDelta(ctx context.Context, req AgentAffectDeltaRequest) (AgentAffectDeltaResponse, error) {
+	f.lastAgentAffectDelta = req
+	return f.agentAffectDeltaResp, nil
+}
+
+func TestHandleAgentAffectCurrentAndEvaluate(t *testing.T) {
+	app := &fakeAdminApp{
+		agentAffectCurrent: AgentAffectCurrentResponse{
+			Enabled: true,
+		},
+		agentAffectEvalResp: AgentAffectEvaluateResponse{
+			Enabled:      true,
+			EvaluationID: "eval-1",
+		},
+	}
+	app.agentAffectCurrent.Mood.PersonaID = "default"
+	app.agentAffectCurrent.Mood.Vector.Valence = 0.2
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	currentReq := httptest.NewRequest(http.MethodGet, "/api/agent-affect/current?persona_id=default&session_id=s1&view=plugin_safe", nil)
+	currentRec := httptest.NewRecorder()
+	handler.HandleGetAgentAffectCurrent(currentRec, currentReq)
+	if currentRec.Code != http.StatusOK {
+		t.Fatalf("current status = %d", currentRec.Code)
+	}
+	var currentResp AgentAffectCurrentResponse
+	if err := json.Unmarshal(currentRec.Body.Bytes(), &currentResp); err != nil {
+		t.Fatalf("decode current: %v", err)
+	}
+	if currentResp.Mood.PersonaID != "default" || currentResp.Mood.Vector.Valence != 0.2 {
+		t.Fatalf("current resp = %#v", currentResp)
+	}
+
+	evalReq := httptest.NewRequest(http.MethodPost, "/api/agent-affect/evaluate", bytes.NewBufferString(`{
+		"persona_id": "default",
+		"session_id": "s1",
+		"trigger": {"trigger_type": "debug"},
+		"input": {"mode": "summary", "summary": "preview only"}
+	}`))
+	evalRec := httptest.NewRecorder()
+	handler.HandleEvaluateAgentAffect(evalRec, evalReq)
+	if evalRec.Code != http.StatusOK {
+		t.Fatalf("evaluate status = %d body=%s", evalRec.Code, evalRec.Body.String())
+	}
+	if app.lastAgentAffectEval.Input.Summary != "preview only" {
+		t.Fatalf("last eval req = %#v", app.lastAgentAffectEval)
+	}
+}
+
+func TestHandleAgentAffectSubmitAndDelta(t *testing.T) {
+	app := &fakeAdminApp{
+		agentAffectSubmitResp: AgentAffectSubmitResponse{
+			EvaluationID: "eval-1",
+			EventID:      "event-1",
+		},
+		agentAffectDeltaResp: AgentAffectDeltaResponse{
+			EventID: "event-2",
+		},
+	}
+	app.agentAffectDeltaResp.ClampedDelta.Valence = 0.15
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	submitReq := httptest.NewRequest(http.MethodPost, "/api/agent-affect/submit", bytes.NewBufferString(`{
+		"persona_id": "default",
+		"session_id": "s1",
+		"trigger": {"trigger_type": "debug"},
+		"input": {"mode": "summary", "summary": "commit this"},
+		"commit_mode": "commit_if_allowed"
+	}`))
+	submitRec := httptest.NewRecorder()
+	handler.HandleSubmitAgentAffect(submitRec, submitReq)
+	if submitRec.Code != http.StatusOK {
+		t.Fatalf("submit status = %d body=%s", submitRec.Code, submitRec.Body.String())
+	}
+	if app.lastAgentAffectSubmit.CommitMode != "commit_if_allowed" || app.lastAgentAffectSubmit.Input.Summary != "commit this" {
+		t.Fatalf("last submit req = %#v", app.lastAgentAffectSubmit)
+	}
+
+	deltaReq := httptest.NewRequest(http.MethodPost, "/api/agent-affect/delta", bytes.NewBufferString(`{
+		"persona_id": "default",
+		"session_id": "s1",
+		"trigger": {"trigger_type": "debug"},
+		"delta": {"valence": 0.9}
+	}`))
+	deltaRec := httptest.NewRecorder()
+	handler.HandleApplyAgentAffectDelta(deltaRec, deltaReq)
+	if deltaRec.Code != http.StatusOK {
+		t.Fatalf("delta status = %d body=%s", deltaRec.Code, deltaRec.Body.String())
+	}
+	var deltaResp AgentAffectDeltaResponse
+	if err := json.Unmarshal(deltaRec.Body.Bytes(), &deltaResp); err != nil {
+		t.Fatalf("decode delta: %v", err)
+	}
+	if app.lastAgentAffectDelta.Delta.Valence != 0.9 || deltaResp.ClampedDelta.Valence != 0.15 {
+		t.Fatalf("last delta req = %#v resp=%#v", app.lastAgentAffectDelta, deltaResp)
+	}
 }
 
 func TestHandleCreateLLMProviderNormalizesPayload(t *testing.T) {

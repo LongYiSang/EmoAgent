@@ -41,30 +41,43 @@ const (
 	CapabilityToolRegister            Capability = "tool.register"
 	CapabilityToolObserve             Capability = "tool.observe"
 	CapabilityToolRequireApproval     Capability = "tool.require_approval"
+	CapabilityAgentAffectRead         Capability = "agent_affect.read"
+	CapabilityAgentAffectReadReason   Capability = "agent_affect.read.reason"
+	CapabilityAgentAffectEvaluate     Capability = "agent_affect.evaluate"
+	CapabilityAgentAffectSubmit       Capability = "agent_affect.submit"
+	CapabilityAgentAffectWriteDelta   Capability = "agent_affect.write_delta"
+	CapabilityAgentAffectWriteTarget  Capability = "agent_affect.write_target"
+	CapabilityAgentAffectConfigure    Capability = "agent_affect.configure"
+	CapabilityAgentAffectObserve      Capability = "agent_affect.observe"
 )
 
 const (
-	HookBeforeIngressNormalize HookName = "before_ingress_normalize"
-	HookAfterIngressNormalize  HookName = "after_ingress_normalize"
-	HookBeforeMemoryPrepare    HookName = "before_memory_prepare"
-	HookAfterMemoryPrepare     HookName = "after_memory_prepare"
-	HookBeforeMemoryRetrieve   HookName = "before_memory_retrieve"
-	HookAfterMemoryRetrieve    HookName = "after_memory_retrieve"
-	HookBeforeMemoryCommit     HookName = "before_memory_commit"
-	HookAfterMemoryCommit      HookName = "after_memory_commit"
-	HookBeforeOutbound         HookName = "before_outbound"
-	HookAfterOutbound          HookName = "after_outbound"
-	HookBeforeToolCall         HookName = "before_tool_call"
-	HookAfterToolCall          HookName = "after_tool_call"
-	HookMemoryCandidateSubmit  HookName = "memory.candidate.submit"
-	HookMemoryForgetRequest    HookName = "memory.forget.request"
-	HookWorkDispatchAnnotate   HookName = "work.dispatch.annotate"
-	HookOnDecisionPacket       HookName = "on_decision_packet"
-	HookOnApprovalRequested    HookName = "on_approval_requested"
-	HookOnApprovalResolved     HookName = "on_approval_resolved"
-	HookOnApprovalConsumed     HookName = "on_approval_consumed"
-	HookOnTurnError            HookName = "on_turn_error"
-	HookAfterTurnEnd           HookName = "after_turn_end"
+	HookBeforeIngressNormalize    HookName = "before_ingress_normalize"
+	HookAfterIngressNormalize     HookName = "after_ingress_normalize"
+	HookBeforeMemoryPrepare       HookName = "before_memory_prepare"
+	HookAfterMemoryPrepare        HookName = "after_memory_prepare"
+	HookBeforeMemoryRetrieve      HookName = "before_memory_retrieve"
+	HookAfterMemoryRetrieve       HookName = "after_memory_retrieve"
+	HookBeforeMemoryCommit        HookName = "before_memory_commit"
+	HookAfterMemoryCommit         HookName = "after_memory_commit"
+	HookBeforeOutbound            HookName = "before_outbound"
+	HookAfterOutbound             HookName = "after_outbound"
+	HookBeforeToolCall            HookName = "before_tool_call"
+	HookAfterToolCall             HookName = "after_tool_call"
+	HookMemoryCandidateSubmit     HookName = "memory.candidate.submit"
+	HookMemoryForgetRequest       HookName = "memory.forget.request"
+	HookWorkDispatchAnnotate      HookName = "work.dispatch.annotate"
+	HookOnDecisionPacket          HookName = "on_decision_packet"
+	HookOnApprovalRequested       HookName = "on_approval_requested"
+	HookOnApprovalResolved        HookName = "on_approval_resolved"
+	HookOnApprovalConsumed        HookName = "on_approval_consumed"
+	HookOnTurnError               HookName = "on_turn_error"
+	HookAfterTurnEnd              HookName = "after_turn_end"
+	HookBeforeAgentAffectEvaluate HookName = "before_agent_affect_evaluate"
+	HookAfterAgentAffectEvaluate  HookName = "after_agent_affect_evaluate"
+	HookBeforeAgentAffectCommit   HookName = "before_agent_affect_commit"
+	HookAfterAgentAffectCommit    HookName = "after_agent_affect_commit"
+	HookAgentAffectGetState       HookName = "agent_affect_get_state"
 )
 
 const (
@@ -197,7 +210,15 @@ func KnownCapability(capability Capability) bool {
 		CapabilityOutboundSafeDebug,
 		CapabilityToolRegister,
 		CapabilityToolObserve,
-		CapabilityToolRequireApproval:
+		CapabilityToolRequireApproval,
+		CapabilityAgentAffectRead,
+		CapabilityAgentAffectReadReason,
+		CapabilityAgentAffectEvaluate,
+		CapabilityAgentAffectSubmit,
+		CapabilityAgentAffectWriteDelta,
+		CapabilityAgentAffectWriteTarget,
+		CapabilityAgentAffectConfigure,
+		CapabilityAgentAffectObserve:
 		return true
 	default:
 		return false
@@ -226,7 +247,12 @@ func KnownHook(hook HookName) bool {
 		HookOnApprovalResolved,
 		HookOnApprovalConsumed,
 		HookOnTurnError,
-		HookAfterTurnEnd:
+		HookAfterTurnEnd,
+		HookBeforeAgentAffectEvaluate,
+		HookAfterAgentAffectEvaluate,
+		HookBeforeAgentAffectCommit,
+		HookAfterAgentAffectCommit,
+		HookAgentAffectGetState:
 		return true
 	default:
 		return false

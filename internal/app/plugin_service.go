@@ -10,10 +10,11 @@ import (
 )
 
 type PluginService struct {
-	infra  *Infra
-	tools  *ToolService
-	host   *plugin.PluginHost
-	runner *plugin.BuiltinRunner
+	infra       *Infra
+	tools       *ToolService
+	agentAffect *AgentAffectService
+	host        *plugin.PluginHost
+	runner      *plugin.BuiltinRunner
 }
 
 func (s *PluginService) Host() *plugin.PluginHost {
@@ -30,6 +31,9 @@ func (s *PluginService) Configure(ctx context.Context, dispatcher *tool.Dispatch
 	}
 	host := plugin.NewPluginHost(s.infra.Config.Plugins, journal, s.infra.Logger)
 	runner := plugin.NewBuiltinRunner(host, s.tools.Registry())
+	if s.agentAffect != nil {
+		runner.SetAgentAffectRuntime(s.agentAffect.PluginAPI())
+	}
 	if err := runner.Load(ctx, plugin.DefaultBuiltinPlugins(), s.infra.Config.Plugins.BuiltinEnabled); err != nil {
 		return fmt.Errorf("load builtin plugins: %w", err)
 	}

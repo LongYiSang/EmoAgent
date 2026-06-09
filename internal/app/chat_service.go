@@ -16,6 +16,7 @@ type ChatService struct {
 	plugins      *PluginService
 	work         *WorkService
 	memory       *MemoryService
+	agentAffect  *AgentAffectService
 	engine       *chat.Engine
 }
 
@@ -54,6 +55,10 @@ func (s *ChatService) BuildEngine(dispatcher *tool.Dispatcher) *chat.Engine {
 		providerName = providerDisplayName(activeRuntime.EmotionMain.Provider)
 		contextCfg = activeRuntime.Context
 	}
+	var affectRuntime chat.AgentAffectRuntime
+	if s.agentAffect != nil {
+		affectRuntime = s.agentAffect.Runtime()
+	}
 
 	s.engine = chat.NewEngine(chat.EngineConfig{
 		LLM:                currentClient,
@@ -79,6 +84,7 @@ func (s *ChatService) BuildEngine(dispatcher *tool.Dispatcher) *chat.Engine {
 		RealtimeStreaming:  cfg.Chat.RealtimeStreaming,
 		Memory:             s.memory.Bridge(),
 		MemoryRetrieval:    cfg.Memory.Retrieval,
+		AgentAffect:        affectRuntime,
 	})
 	return s.engine
 }
@@ -119,6 +125,9 @@ func (s *ChatService) UpdateAgentRuntime(runtime *ActiveAgentRuntime) {
 		runtime.EmotionSummary.Params,
 		runtime.Context,
 	)
+	if s.agentAffect != nil {
+		s.engine.UpdateAgentAffect(s.agentAffect.Runtime())
+	}
 }
 
 func (s *ChatService) StartBackground(ctx context.Context) {

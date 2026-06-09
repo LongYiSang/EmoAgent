@@ -492,6 +492,180 @@ CREATE TABLE IF NOT EXISTS runtime_settings (
 		Version: 19,
 		SQL:     `SELECT 1;`,
 	},
+	{
+		Version: 20,
+		SQL: `
+CREATE TABLE IF NOT EXISTS agent_affect_profiles (
+    id TEXT PRIMARY KEY,
+    persona_id TEXT NOT NULL,
+    profile_name TEXT NOT NULL DEFAULT 'default',
+
+    baseline_valence REAL NOT NULL DEFAULT 0.0 CHECK (baseline_valence >= -1.0 AND baseline_valence <= 1.0),
+    baseline_arousal REAL NOT NULL DEFAULT 0.2 CHECK (baseline_arousal >= 0.0 AND baseline_arousal <= 1.0),
+    baseline_dominance REAL NOT NULL DEFAULT 0.0 CHECK (baseline_dominance >= -1.0 AND baseline_dominance <= 1.0),
+    baseline_energy REAL NOT NULL DEFAULT 0.5 CHECK (baseline_energy >= 0.0 AND baseline_energy <= 1.0),
+    baseline_warmth REAL NOT NULL DEFAULT 0.6 CHECK (baseline_warmth >= 0.0 AND baseline_warmth <= 1.0),
+    baseline_concern REAL NOT NULL DEFAULT 0.3 CHECK (baseline_concern >= 0.0 AND baseline_concern <= 1.0),
+    baseline_curiosity REAL NOT NULL DEFAULT 0.3 CHECK (baseline_curiosity >= 0.0 AND baseline_curiosity <= 1.0),
+    baseline_playfulness REAL NOT NULL DEFAULT 0.2 CHECK (baseline_playfulness >= 0.0 AND baseline_playfulness <= 1.0),
+    baseline_attachment REAL NOT NULL DEFAULT 0.0 CHECK (baseline_attachment >= 0.0 AND baseline_attachment <= 1.0),
+    baseline_frustration REAL NOT NULL DEFAULT 0.0 CHECK (baseline_frustration >= 0.0 AND baseline_frustration <= 1.0),
+    baseline_uncertainty REAL NOT NULL DEFAULT 0.1 CHECK (baseline_uncertainty >= 0.0 AND baseline_uncertainty <= 1.0),
+
+    dimension_config_json TEXT NOT NULL DEFAULT '{}',
+    externalization_config_json TEXT NOT NULL DEFAULT '{}',
+    llm_config_json TEXT NOT NULL DEFAULT '{}',
+    context_policy_json TEXT NOT NULL DEFAULT '{}',
+    clamp_policy_json TEXT NOT NULL DEFAULT '{}',
+
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT,
+    UNIQUE(persona_id, profile_name)
+);
+
+CREATE TABLE IF NOT EXISTS agent_affect_states (
+    id TEXT PRIMARY KEY,
+    persona_id TEXT NOT NULL,
+    session_id TEXT,
+    profile_id TEXT,
+
+    valence REAL NOT NULL DEFAULT 0.0 CHECK (valence >= -1.0 AND valence <= 1.0),
+    arousal REAL NOT NULL DEFAULT 0.2 CHECK (arousal >= 0.0 AND arousal <= 1.0),
+    dominance REAL NOT NULL DEFAULT 0.0 CHECK (dominance >= -1.0 AND dominance <= 1.0),
+    energy REAL NOT NULL DEFAULT 0.5 CHECK (energy >= 0.0 AND energy <= 1.0),
+    warmth REAL NOT NULL DEFAULT 0.0 CHECK (warmth >= 0.0 AND warmth <= 1.0),
+    concern REAL NOT NULL DEFAULT 0.0 CHECK (concern >= 0.0 AND concern <= 1.0),
+    curiosity REAL NOT NULL DEFAULT 0.0 CHECK (curiosity >= 0.0 AND curiosity <= 1.0),
+    playfulness REAL NOT NULL DEFAULT 0.0 CHECK (playfulness >= 0.0 AND playfulness <= 1.0),
+    attachment REAL NOT NULL DEFAULT 0.0 CHECK (attachment >= 0.0 AND attachment <= 1.0),
+    frustration REAL NOT NULL DEFAULT 0.0 CHECK (frustration >= 0.0 AND frustration <= 1.0),
+    uncertainty REAL NOT NULL DEFAULT 0.0 CHECK (uncertainty >= 0.0 AND uncertainty <= 1.0),
+
+    label TEXT,
+    confidence REAL NOT NULL DEFAULT 0.5 CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    state_vector_json TEXT NOT NULL DEFAULT '{}',
+    cause_summary TEXT NOT NULL DEFAULT '',
+    visible_cause_summary TEXT NOT NULL DEFAULT '',
+    cause_stack_json TEXT NOT NULL DEFAULT '[]',
+    last_evaluation_id TEXT,
+
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at TEXT,
+    visibility_status TEXT NOT NULL DEFAULT 'visible' CHECK (visibility_status IN ('visible','hidden','purged')),
+    searchable INTEGER NOT NULL DEFAULT 0 CHECK (searchable IN (0,1))
+);
+
+CREATE TABLE IF NOT EXISTS agent_affect_evaluations (
+    id TEXT PRIMARY KEY,
+    persona_id TEXT NOT NULL,
+    session_id TEXT,
+    turn_id TEXT,
+
+    trigger_type TEXT NOT NULL,
+    custom_type TEXT,
+    custom_type_desc TEXT,
+    source_kind TEXT NOT NULL DEFAULT '',
+    source_ref_type TEXT,
+    source_ref_id TEXT,
+    source_ref_hash TEXT,
+    plugin_id TEXT,
+
+    input_mode TEXT NOT NULL DEFAULT 'raw' CHECK (input_mode IN ('raw','summary','mixed','none')),
+    input_text TEXT,
+    input_summary TEXT,
+    context_window_policy_json TEXT NOT NULL DEFAULT '{}',
+    context_window_snapshot_json TEXT,
+
+    before_state_id TEXT,
+    before_state_json TEXT NOT NULL DEFAULT '{}',
+
+    llm_provider TEXT,
+    llm_model TEXT,
+    llm_thinking_enabled INTEGER NOT NULL DEFAULT 0 CHECK (llm_thinking_enabled IN (0,1)),
+    prompt_version TEXT NOT NULL DEFAULT 'agent_affect_v2.prompt.v1',
+    prompt_hash TEXT NOT NULL DEFAULT '',
+    prompt_snapshot TEXT,
+    response_json TEXT,
+
+    proposed_delta_json TEXT NOT NULL DEFAULT '{}',
+    clamped_delta_json TEXT NOT NULL DEFAULT '{}',
+    predicted_state_json TEXT NOT NULL DEFAULT '{}',
+
+    cause_summary TEXT NOT NULL DEFAULT '',
+    visible_cause_summary TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL DEFAULT 0.5 CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    clamp_notes_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'preview' CHECK (status IN ('preview','committed','rejected','failed')),
+
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    visibility_status TEXT NOT NULL DEFAULT 'visible' CHECK (visibility_status IN ('visible','hidden','purged')),
+    searchable INTEGER NOT NULL DEFAULT 0 CHECK (searchable IN (0,1))
+);
+
+CREATE TABLE IF NOT EXISTS agent_affect_events (
+    id TEXT PRIMARY KEY,
+    persona_id TEXT NOT NULL,
+    session_id TEXT,
+    turn_id TEXT,
+
+    evaluation_id TEXT,
+    trigger_type TEXT NOT NULL,
+    custom_type TEXT,
+    plugin_id TEXT,
+
+    before_state_id TEXT,
+    after_state_id TEXT,
+
+    proposed_delta_json TEXT NOT NULL DEFAULT '{}',
+    clamped_delta_json TEXT NOT NULL DEFAULT '{}',
+    committed_delta_json TEXT NOT NULL DEFAULT '{}',
+
+    label_before TEXT,
+    label_after TEXT,
+    cause_summary TEXT NOT NULL DEFAULT '',
+    significance REAL NOT NULL DEFAULT 0.5 CHECK (significance >= 0.0 AND significance <= 1.0),
+    confidence REAL NOT NULL DEFAULT 0.5 CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    committed_by TEXT NOT NULL DEFAULT 'core' CHECK (committed_by IN ('core','plugin','user_debug','system')),
+
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    visibility_status TEXT NOT NULL DEFAULT 'visible' CHECK (visibility_status IN ('visible','hidden','purged')),
+    searchable INTEGER NOT NULL DEFAULT 0 CHECK (searchable IN (0,1))
+);
+
+CREATE TABLE IF NOT EXISTS agent_affect_plugin_writes (
+    id TEXT PRIMARY KEY,
+    persona_id TEXT NOT NULL,
+    session_id TEXT,
+    turn_id TEXT,
+
+    plugin_id TEXT NOT NULL,
+    capability TEXT NOT NULL,
+    request_kind TEXT NOT NULL CHECK (request_kind IN ('submit','write_delta','write_target','configure')),
+    request_json TEXT NOT NULL DEFAULT '{}',
+
+    accepted INTEGER NOT NULL DEFAULT 0 CHECK (accepted IN (0,1)),
+    rejection_reason TEXT,
+    clamp_notes_json TEXT NOT NULL DEFAULT '[]',
+
+    evaluation_id TEXT,
+    affect_event_id TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_affect_profiles_persona
+    ON agent_affect_profiles(persona_id, profile_name);
+CREATE INDEX IF NOT EXISTS idx_agent_affect_states_current
+    ON agent_affect_states(persona_id, session_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_affect_evaluations_session
+    ON agent_affect_evaluations(persona_id, session_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_affect_evaluations_trigger
+    ON agent_affect_evaluations(persona_id, trigger_type, custom_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_affect_events_session
+    ON agent_affect_events(persona_id, session_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_affect_plugin_writes_plugin
+    ON agent_affect_plugin_writes(plugin_id, created_at DESC);
+`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.

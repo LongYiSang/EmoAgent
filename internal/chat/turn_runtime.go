@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/longyisang/emoagent/internal/agentaffect"
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/turn"
@@ -362,6 +363,7 @@ func (r *chatTurnRuntime) emotionPrepareStage() turn.Stage {
 			anchor, _ := tc.Diagnostics["memory_anchor"].(turnMemoryAnchor)
 			engine.mu.RLock()
 			memoryRetrieval := engine.memoryRetrieval
+			agentAffect := engine.agentAffect
 			engine.mu.RUnlock()
 			snapshot, err := engine.retrieveMemoryPrompt(ctx, tc.Inbound.SessionID, tc.Inbound.UserMessage.Content, anchor.userEpisodeID, memoryRetrieval)
 			if err != nil {
@@ -370,6 +372,42 @@ func (r *chatTurnRuntime) emotionPrepareStage() turn.Stage {
 			if snapshot != nil && snapshot.PromptBlock != "" {
 				tc.Diagnostics["memory_prompt_block"] = snapshot.PromptBlock
 				tc.Diagnostics["memory_prompt_snapshot"] = snapshot
+			}
+			if agentAffect != nil && tc.Inbound.Kind == turn.InboundUserMessage && tc.Inbound.UserMessage != nil {
+				memoryBlock := ""
+				if snapshot != nil {
+					memoryBlock = snapshot.PromptBlock
+				}
+				affectResp, err := agentAffect.SubmitMoodImpact(ctx, agentaffect.SubmitMoodImpactRequest{
+					PersonaID:         tc.Inbound.PersonaKey,
+					SessionID:         tc.Inbound.SessionID,
+					TurnID:            tc.TurnID,
+					MemoryPromptBlock: memoryBlock,
+					CommitMode:        agentaffect.CommitModeCommitIfAllowed,
+					Trigger: agentaffect.TriggerDescriptor{
+						TriggerType:   "user_message",
+						SourceKind:    "turn",
+						SourceRefType: "episode",
+						SourceRefID:   anchor.userEpisodeID,
+					},
+					Input: agentaffect.MoodImpactInput{Mode: "raw", Text: tc.Inbound.UserMessage.Content},
+				})
+				if err != nil {
+					tc.Diagnostics["agent_affect_error"] = err.Error()
+				} else {
+					tc.Diagnostics["agent_affect_snapshot"] = affectResp.Mood
+					tc.Diagnostics["agent_affect_evaluation"] = affectResp
+					block, err := agentAffect.BuildPromptAffectBlock(ctx, agentaffect.BuildPromptAffectBlockRequest{
+						PersonaID: tc.Inbound.PersonaKey,
+						SessionID: tc.Inbound.SessionID,
+						Mood:      affectResp.Mood,
+					})
+					if err != nil {
+						tc.Diagnostics["agent_affect_error"] = err.Error()
+					} else if strings.TrimSpace(block) != "" {
+						tc.Diagnostics["agent_affect_prompt_block"] = block
+					}
+				}
 			}
 			return turn.StageResult{NextState: turn.StateEmotionPrepared}, nil
 		},
@@ -404,6 +442,25 @@ func ensureDiagnostics(tc *turn.TurnContext) {
 	if tc.Diagnostics == nil {
 		tc.Diagnostics = map[string]any{}
 	}
+}
+
+func stringDiagnostic(tc *turn.TurnContext, key string) string {
+	if tc == nil || tc.Diagnostics == nil {
+		return ""
+	}
+	value, _ := tc.Diagnostics[key].(string)
+	return value
+}
+
+func joinSystemBlocks(blocks ...string) string {
+	out := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		block = strings.TrimSpace(block)
+		if block != "" {
+			out = append(out, block)
+		}
+	}
+	return strings.Join(out, "\n\n")
 }
 
 func (r *chatTurnRuntime) normalizeStage() turn.Stage {
@@ -463,7 +520,10 @@ func (r *chatTurnRuntime) messageStage(persona *config.Persona) turn.Stage {
 			var err error
 			if r.cfg.MemoryStages {
 				if engine, ok := r.engine.(*Engine); ok {
-					extraSystem, _ := tc.Diagnostics["memory_prompt_block"].(string)
+					extraSystem := joinSystemBlocks(
+						stringDiagnostic(tc, "memory_prompt_block"),
+						stringDiagnostic(tc, "agent_affect_prompt_block"),
+					)
 					var output deferredTurnOutput
 					reply, err = engine.sendTurn(ctx, tc.Inbound.SessionID, persona, func(delta string) {
 						if delta == "" || tc.Stream == nil {

@@ -6,20 +6,81 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/longyisang/emoagent/internal/agentaffect"
 )
 
 type Facades struct {
-	Memory   *MemoryFacade
-	Work     *WorkFacade
-	Approval *ApprovalFacade
+	Memory      *MemoryFacade
+	Work        *WorkFacade
+	Approval    *ApprovalFacade
+	AgentAffect *AgentAffectFacade
 }
 
 func NewFacades(pluginID string, authorizer *Authorizer) Facades {
+	return NewFacadesWithAgentAffect(pluginID, authorizer, nil)
+}
+
+func NewFacadesWithAgentAffect(pluginID string, authorizer *Authorizer, runtime AgentAffectRuntime) Facades {
 	return Facades{
-		Memory:   &MemoryFacade{pluginID: pluginID, authorizer: authorizer},
-		Work:     &WorkFacade{pluginID: pluginID, authorizer: authorizer},
-		Approval: &ApprovalFacade{pluginID: pluginID, authorizer: authorizer},
+		Memory:      &MemoryFacade{pluginID: pluginID, authorizer: authorizer},
+		Work:        &WorkFacade{pluginID: pluginID, authorizer: authorizer},
+		Approval:    &ApprovalFacade{pluginID: pluginID, authorizer: authorizer},
+		AgentAffect: &AgentAffectFacade{pluginID: pluginID, authorizer: authorizer, runtime: runtime},
 	}
+}
+
+type AgentAffectRuntime interface {
+	GetCurrentMood(context.Context, string, agentaffect.GetCurrentMoodRequest) (agentaffect.GetCurrentMoodResponse, error)
+	EvaluateMoodImpact(context.Context, string, agentaffect.EvaluateMoodImpactRequest) (agentaffect.EvaluateMoodImpactResponse, error)
+	SubmitMoodImpact(context.Context, string, agentaffect.SubmitMoodImpactRequest) (agentaffect.SubmitMoodImpactResponse, error)
+	ApplyMoodDelta(context.Context, string, agentaffect.ApplyMoodDeltaRequest) (agentaffect.ApplyMoodDeltaResponse, error)
+}
+
+type AgentAffectFacade struct {
+	pluginID   string
+	authorizer *Authorizer
+	runtime    AgentAffectRuntime
+}
+
+func (f *AgentAffectFacade) GetCurrentMood(ctx context.Context, req agentaffect.GetCurrentMoodRequest) (agentaffect.GetCurrentMoodResponse, error) {
+	if err := f.authorizer.Require(CapabilityAgentAffectRead); err != nil {
+		return agentaffect.GetCurrentMoodResponse{}, err
+	}
+	if f.runtime == nil {
+		return agentaffect.GetCurrentMoodResponse{}, fmt.Errorf("agent affect runtime is not configured")
+	}
+	req.View = "plugin_safe"
+	return f.runtime.GetCurrentMood(ctx, f.pluginID, req)
+}
+
+func (f *AgentAffectFacade) EvaluateMoodImpact(ctx context.Context, req agentaffect.EvaluateMoodImpactRequest) (agentaffect.EvaluateMoodImpactResponse, error) {
+	if err := f.authorizer.Require(CapabilityAgentAffectEvaluate); err != nil {
+		return agentaffect.EvaluateMoodImpactResponse{}, err
+	}
+	if f.runtime == nil {
+		return agentaffect.EvaluateMoodImpactResponse{}, fmt.Errorf("agent affect runtime is not configured")
+	}
+	return f.runtime.EvaluateMoodImpact(ctx, f.pluginID, req)
+}
+
+func (f *AgentAffectFacade) SubmitMoodImpact(ctx context.Context, req agentaffect.SubmitMoodImpactRequest) (agentaffect.SubmitMoodImpactResponse, error) {
+	if err := f.authorizer.Require(CapabilityAgentAffectSubmit); err != nil {
+		return agentaffect.SubmitMoodImpactResponse{}, err
+	}
+	if f.runtime == nil {
+		return agentaffect.SubmitMoodImpactResponse{}, fmt.Errorf("agent affect runtime is not configured")
+	}
+	return f.runtime.SubmitMoodImpact(ctx, f.pluginID, req)
+}
+
+func (f *AgentAffectFacade) ApplyMoodDelta(ctx context.Context, req agentaffect.ApplyMoodDeltaRequest) (agentaffect.ApplyMoodDeltaResponse, error) {
+	if err := f.authorizer.Require(CapabilityAgentAffectWriteDelta); err != nil {
+		return agentaffect.ApplyMoodDeltaResponse{}, err
+	}
+	if f.runtime == nil {
+		return agentaffect.ApplyMoodDeltaResponse{}, fmt.Errorf("agent affect runtime is not configured")
+	}
+	return f.runtime.ApplyMoodDelta(ctx, f.pluginID, req)
 }
 
 type MemoryFacade struct {

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/longyisang/emoagent/internal/agentaffect"
 	"github.com/longyisang/emoagent/internal/apperrors"
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/configcenter"
@@ -70,7 +71,20 @@ type AdminApp interface {
 	RestartSidecar(ctx context.Context) (sidecarruntime.Status, error)
 	GetSidecarGeneratedConfig(ctx context.Context) (string, error)
 	GetSidecarLogs(ctx context.Context, maxBytes int) (string, error)
+	GetAgentAffectCurrent(ctx context.Context, req AgentAffectCurrentRequest) (AgentAffectCurrentResponse, error)
+	EvaluateAgentAffect(ctx context.Context, req AgentAffectEvaluateRequest) (AgentAffectEvaluateResponse, error)
+	SubmitAgentAffect(ctx context.Context, req AgentAffectSubmitRequest) (AgentAffectSubmitResponse, error)
+	ApplyAgentAffectDelta(ctx context.Context, req AgentAffectDeltaRequest) (AgentAffectDeltaResponse, error)
 }
+
+type AgentAffectCurrentRequest = agentaffect.GetCurrentMoodRequest
+type AgentAffectCurrentResponse = agentaffect.GetCurrentMoodResponse
+type AgentAffectEvaluateRequest = agentaffect.EvaluateMoodImpactRequest
+type AgentAffectEvaluateResponse = agentaffect.EvaluateMoodImpactResponse
+type AgentAffectSubmitRequest = agentaffect.SubmitMoodImpactRequest
+type AgentAffectSubmitResponse = agentaffect.SubmitMoodImpactResponse
+type AgentAffectDeltaRequest = agentaffect.ApplyMoodDeltaRequest
+type AgentAffectDeltaResponse = agentaffect.ApplyMoodDeltaResponse
 
 type APIHandler struct {
 	app    AdminApp

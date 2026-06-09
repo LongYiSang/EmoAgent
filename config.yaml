@@ -126,6 +126,65 @@ agent_configs:
 agent:
   active_config: "default"
 
+agent_affect:
+  enabled: false
+  storage_enabled: true
+  evaluator:
+    mode: llm
+    provider_id: deepseek
+    model: deepseek-v4-flash
+    thinking_enabled: true
+    reasoning_effort: medium
+    temperature: 0.2
+    timeout_ms: 30000
+    max_output_tokens: 4096
+    store_hidden_thinking: false
+  context:
+    mode: raw_window
+    raw_keep_last_requests: 20
+    raw_keep_last_tokens: 12000
+    include_previous_evaluations: true
+    previous_evaluation_keep_last: 30
+    summary_enabled: false
+    store_raw_inputs: true
+    store_prompt_snapshot: false
+  externalization:
+    attachment:
+      enabled: true
+      default_style: gentle_explicit
+      max_visible_intensity: 0.65
+    frustration:
+      enabled: false
+  plugin_api:
+    enabled: true
+    plugin_safe_include_reason: true
+    plugin_safe_include_raw_text: false
+    ordinary_plugins_can_commit: true
+    ordinary_plugins_can_write_delta: true
+    trusted_plugins_can_write_target: true
+  limits:
+    plugin_delta_multiplier: 1
+    per_request_delta:
+      valence: 0.15
+      arousal: 0.18
+      dominance: 0.12
+      energy: 0.12
+      warmth: 0.15
+      concern: 0.18
+      curiosity: 0.18
+      playfulness: 0.15
+      attachment: 0.08
+      frustration: 0.08
+      uncertainty: 0.12
+    absolute:
+      attachment_max: 0.75
+      frustration_max: 0.35
+  prompt:
+    include_mood_block: true
+    include_reason: true
+    include_expression_guidance: false
+    include_numeric_values: true
+
 memory:
   enabled: true
   config_path: "./config/memorycore.yaml"

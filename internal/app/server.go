@@ -139,6 +139,10 @@ func registerRoutes(mux *http.ServeMux, api *web.APIHandler, chatHandler http.Ha
 	mux.HandleFunc("POST /api/memory/natural-runs", api.HandleRunNaturalMemory)
 	mux.HandleFunc("GET /api/memory/natural-runs/latest", api.HandleLatestNaturalMemoryRun)
 	mux.HandleFunc("GET /api/memory/segments", api.HandleListMemorySegments)
+	mux.HandleFunc("GET /api/agent-affect/current", api.HandleGetAgentAffectCurrent)
+	mux.HandleFunc("POST /api/agent-affect/evaluate", api.HandleEvaluateAgentAffect)
+	mux.HandleFunc("POST /api/agent-affect/submit", api.HandleSubmitAgentAffect)
+	mux.HandleFunc("POST /api/agent-affect/delta", api.HandleApplyAgentAffectDelta)
 	mux.Handle("/ws", chatHandler)
 	mux.Handle("/", staticHandler)
 }

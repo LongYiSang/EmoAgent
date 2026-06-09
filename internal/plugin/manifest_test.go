@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/longyisang/emoagent/internal/agentaffect"
 	"github.com/longyisang/emoagent/internal/tool"
 	"github.com/longyisang/emoagent/internal/turn"
 )
@@ -84,6 +85,33 @@ func TestManifestValidateStrictContract(t *testing.T) {
 				t.Fatalf("Validate error = %v, want substring %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestManifestValidateAgentAffectCapabilitiesAndHooks(t *testing.T) {
+	manifest := validManifest()
+	manifest.Capabilities = append(manifest.Capabilities,
+		CapabilityAgentAffectRead,
+		CapabilityAgentAffectEvaluate,
+		CapabilityAgentAffectSubmit,
+	)
+	manifest.Hooks = append(manifest.Hooks, HookSpec{
+		Name:          HookAfterAgentAffectCommit,
+		Mode:          HookModeObserve,
+		FailurePolicy: FailurePolicyFailOpen,
+		TimeoutMS:     50,
+	})
+	if err := manifest.Validate(ManifestValidationOptions{MaxTimeoutMS: 1000}); err != nil {
+		t.Fatalf("Validate agent affect manifest: %v", err)
+	}
+	if !KnownHook(HookAfterAgentAffectCommit) {
+		t.Fatal("KnownHook(after_agent_affect_commit) = false, want true")
+	}
+
+	manifest.Capabilities = append(manifest.Capabilities, Capability("agent_affect.bad"))
+	err := manifest.Validate(ManifestValidationOptions{MaxTimeoutMS: 1000})
+	if err == nil || !strings.Contains(err.Error(), "unknown capability") {
+		t.Fatalf("Validate unknown agent affect capability error = %v, want unknown capability", err)
 	}
 }
 
@@ -461,6 +489,44 @@ func TestAdvancedFacadesAreSafeStubs(t *testing.T) {
 
 	if err := facades.Work.ObserveDecisionPacket(context.Background(), DecisionPacketView{TaskID: "task-1", Category: "tool_approval", RiskLevel: "high"}); err != nil {
 		t.Fatalf("Work.ObserveDecisionPacket: %v", err)
+	}
+}
+
+type fakeAgentAffectFacadeRuntime struct {
+	currentCalled bool
+}
+
+func (f *fakeAgentAffectFacadeRuntime) GetCurrentMood(context.Context, string, agentaffect.GetCurrentMoodRequest) (agentaffect.GetCurrentMoodResponse, error) {
+	f.currentCalled = true
+	return agentaffect.GetCurrentMoodResponse{Enabled: true, Mood: agentaffect.MoodSnapshot{PersonaID: "default"}}, nil
+}
+func (f *fakeAgentAffectFacadeRuntime) EvaluateMoodImpact(context.Context, string, agentaffect.EvaluateMoodImpactRequest) (agentaffect.EvaluateMoodImpactResponse, error) {
+	return agentaffect.EvaluateMoodImpactResponse{}, nil
+}
+func (f *fakeAgentAffectFacadeRuntime) SubmitMoodImpact(context.Context, string, agentaffect.SubmitMoodImpactRequest) (agentaffect.SubmitMoodImpactResponse, error) {
+	return agentaffect.SubmitMoodImpactResponse{}, nil
+}
+func (f *fakeAgentAffectFacadeRuntime) ApplyMoodDelta(context.Context, string, agentaffect.ApplyMoodDeltaRequest) (agentaffect.ApplyMoodDeltaResponse, error) {
+	return agentaffect.ApplyMoodDeltaResponse{}, nil
+}
+
+func TestAgentAffectFacadeRequiresCapabilityAndUsesRuntime(t *testing.T) {
+	manifest := validManifest()
+	runtime := &fakeAgentAffectFacadeRuntime{}
+	facades := NewFacadesWithAgentAffect("com.example.audit", NewAuthorizer(manifest), runtime)
+	_, err := facades.AgentAffect.GetCurrentMood(context.Background(), agentaffect.GetCurrentMoodRequest{PersonaID: "default"})
+	if err == nil || !errors.Is(err, ErrCapabilityDenied) {
+		t.Fatalf("GetCurrentMood without capability error = %v, want ErrCapabilityDenied", err)
+	}
+
+	manifest.Capabilities = append(manifest.Capabilities, CapabilityAgentAffectRead)
+	facades = NewFacadesWithAgentAffect("com.example.audit", NewAuthorizer(manifest), runtime)
+	resp, err := facades.AgentAffect.GetCurrentMood(context.Background(), agentaffect.GetCurrentMoodRequest{PersonaID: "default"})
+	if err != nil {
+		t.Fatalf("GetCurrentMood with capability: %v", err)
+	}
+	if !runtime.currentCalled || resp.Mood.PersonaID != "default" {
+		t.Fatalf("runtime called=%v resp=%#v", runtime.currentCalled, resp)
 	}
 }
 

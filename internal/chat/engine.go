@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/longyisang/emoagent/internal/agentaffect"
 	"github.com/longyisang/emoagent/internal/config"
 	contextutil "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/llm"
@@ -36,6 +37,11 @@ type MemoryBridge interface {
 	RetrievePromptBlock(ctx context.Context, chatSessionID string, query string, excludedEpisodeIDs ...string) (string, error)
 	RetrievePromptSnapshot(ctx context.Context, chatSessionID string, query string, includePipelineTrace bool, excludedEpisodeIDs ...string) (string, any, error)
 	FinalizeSegment(ctx context.Context, segmentID string, reason string, summary string) error
+}
+
+type AgentAffectRuntime interface {
+	SubmitMoodImpact(ctx context.Context, req agentaffect.SubmitMoodImpactRequest) (agentaffect.SubmitMoodImpactResponse, error)
+	BuildPromptAffectBlock(ctx context.Context, req agentaffect.BuildPromptAffectBlockRequest) (string, error)
 }
 
 type memoryPromptSnapshot struct {
@@ -73,6 +79,7 @@ type EngineConfig struct {
 	RealtimeStreaming  bool
 	Memory             MemoryBridge
 	MemoryRetrieval    config.MemoryRetrievalConfig
+	AgentAffect        AgentAffectRuntime
 }
 
 // RuntimeConfig is the hot-swappable subset of EngineConfig used for new requests.
@@ -117,6 +124,7 @@ type Engine struct {
 	realtimeStreaming  bool
 	memory             MemoryBridge
 	memoryRetrieval    config.MemoryRetrievalConfig
+	agentAffect        AgentAffectRuntime
 }
 
 // UpdateConfig hot-swaps the active LLM client and request parameters for new sends.
@@ -164,6 +172,12 @@ func (e *Engine) UpdateAgentRuntime(mainClient, summaryClient llm.Client, provid
 	}
 }
 
+func (e *Engine) UpdateAgentAffect(runtime AgentAffectRuntime) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.agentAffect = runtime
+}
+
 // UpdateRealtimeStreaming hot-swaps the browser streaming mode for new sends.
 func (e *Engine) UpdateRealtimeStreaming(enabled bool) {
 	e.mu.Lock()
@@ -202,6 +216,7 @@ func NewEngine(cfg EngineConfig) *Engine {
 		realtimeStreaming:  cfg.RealtimeStreaming,
 		memory:             cfg.Memory,
 		memoryRetrieval:    cfg.MemoryRetrieval,
+		agentAffect:        cfg.AgentAffect,
 	}
 }
 

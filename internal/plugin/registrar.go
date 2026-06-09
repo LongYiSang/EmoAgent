@@ -17,14 +17,14 @@ type Registrar struct {
 }
 
 func NewRegistrar(pluginID string, authorizer *Authorizer, registry *tool.Registry, bus *HookBus) *Registrar {
-	return newRegistrar(pluginID, authorizer, registry, bus, nil)
+	return newRegistrar(pluginID, authorizer, registry, bus, nil, nil)
 }
 
 func NewRegistrarForManifest(manifest Manifest, registry *tool.Registry, bus *HookBus) *Registrar {
-	return newRegistrar(manifest.ID, NewAuthorizer(manifest), registry, bus, manifest.Hooks)
+	return newRegistrar(manifest.ID, NewAuthorizer(manifest), registry, bus, manifest.Hooks, nil)
 }
 
-func newRegistrar(pluginID string, authorizer *Authorizer, registry *tool.Registry, bus *HookBus, hooks []HookSpec) *Registrar {
+func newRegistrar(pluginID string, authorizer *Authorizer, registry *tool.Registry, bus *HookBus, hooks []HookSpec, agentAffect AgentAffectRuntime) *Registrar {
 	declaredHooks := make(map[HookName]HookSpec, len(hooks))
 	for _, hook := range hooks {
 		declaredHooks[hook.Name] = hook
@@ -34,7 +34,7 @@ func newRegistrar(pluginID string, authorizer *Authorizer, registry *tool.Regist
 		Authorizer: authorizer,
 		Hooks:      &HookRegistrar{pluginID: pluginID, authorizer: authorizer, bus: bus, declaredHooks: declaredHooks},
 		Tools:      &ToolFacade{pluginID: pluginID, authorizer: authorizer, registry: registry},
-		Facades:    NewFacades(pluginID, authorizer),
+		Facades:    NewFacadesWithAgentAffect(pluginID, authorizer, agentAffect),
 	}
 }
 
@@ -104,6 +104,13 @@ func capabilityForHook(hook HookName) Capability {
 	case HookBeforeOutbound,
 		HookAfterOutbound:
 		return CapabilityOutboundDecorate
+	case HookBeforeAgentAffectEvaluate,
+		HookAfterAgentAffectEvaluate,
+		HookBeforeAgentAffectCommit,
+		HookAfterAgentAffectCommit:
+		return CapabilityAgentAffectObserve
+	case HookAgentAffectGetState:
+		return CapabilityAgentAffectRead
 	default:
 		return CapabilityTurnRead
 	}
