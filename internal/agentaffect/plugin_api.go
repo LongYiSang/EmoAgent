@@ -46,7 +46,7 @@ func (api PluginAPI) SubmitMoodImpact(ctx context.Context, pluginID string, req 
 		PluginID:        pluginID,
 		Capability:      "agent_affect.submit",
 		RequestKind:     "submit",
-		RequestJSON:     mustJSON(req),
+		RequestJSON:     mustJSON(pluginAuditSubmitRequest(req)),
 		Accepted:        err == nil,
 		EvaluationID:    resp.EvaluationID,
 		AffectEventID:   resp.EventID,
@@ -87,6 +87,11 @@ func (api PluginAPI) audit(ctx context.Context, write PluginWriteRecord) {
 		write.RequestJSON = "{}"
 	}
 	_ = api.store.InsertPluginWrite(ctx, write)
+}
+
+func pluginAuditSubmitRequest(req SubmitMoodImpactRequest) SubmitMoodImpactRequest {
+	req.Input.Text = ""
+	return req
 }
 
 func errorString(err error) string {

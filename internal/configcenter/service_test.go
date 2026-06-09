@@ -71,6 +71,33 @@ func TestBuildEffectiveIncludesProviderEnvStatusAndIssues(t *testing.T) {
 	}
 }
 
+func TestBuildEffectiveIncludesRootAgentAffect(t *testing.T) {
+	db := openConfigCenterDB(t)
+	if err := db.UpsertRuntimeSetting("agent_affect", "config", `{"enabled":true,"evaluator":{"mode":"disabled"},"context":{"store_raw_inputs":false}}`, "ui"); err != nil {
+		t.Fatalf("UpsertRuntimeSetting: %v", err)
+	}
+
+	svc := NewService(config.DefaultConfig(), db)
+	effective, err := svc.BuildEffective(context.Background())
+	if err != nil {
+		t.Fatalf("BuildEffective: %v", err)
+	}
+
+	if !effective.AgentAffect.Enabled {
+		t.Fatalf("effective agent_affect.enabled = false, want true")
+	}
+	if effective.AgentAffect.Evaluator.Mode != "disabled" {
+		t.Fatalf("effective agent_affect evaluator = %#v", effective.AgentAffect.Evaluator)
+	}
+	payload, err := json.Marshal(effective)
+	if err != nil {
+		t.Fatalf("Marshal effective: %v", err)
+	}
+	if !strings.Contains(string(payload), `"agent_affect"`) {
+		t.Fatalf("effective config missing root agent_affect: %s", payload)
+	}
+}
+
 func TestBuildEffectiveReportsMissingProviderEnv(t *testing.T) {
 	db := openConfigCenterDB(t)
 	if err := db.UpsertLLMProvider(config.LLMProvider{
@@ -307,6 +334,48 @@ func TestUpdateMemoryConfigRejectsAutoFixDependencyIssue(t *testing.T) {
 		t.Fatalf("error = %T %v, want ValidationError", err, err)
 	}
 	requireConfigIssue(t, validation.Issues, "memory.retrieval.enabled")
+}
+
+func TestUpdateAgentAffectConfigPersistsRuntimeSetting(t *testing.T) {
+	db := openConfigCenterDB(t)
+	svc := NewService(config.DefaultConfig(), db)
+	next := config.DefaultConfig().AgentAffect
+	next.Enabled = true
+	next.Evaluator.Mode = "disabled"
+	next.Context.StoreRawInputs = false
+
+	effective, err := svc.UpdateAgentAffectConfig(context.Background(), next)
+	if err != nil {
+		t.Fatalf("UpdateAgentAffectConfig: %v", err)
+	}
+	if !effective.AgentAffect.Enabled || effective.AgentAffect.Evaluator.Mode != "disabled" || effective.AgentAffect.Context.StoreRawInputs {
+		t.Fatalf("effective agent_affect = %#v", effective.AgentAffect)
+	}
+	settings, err := db.ListRuntimeSettings()
+	if err != nil {
+		t.Fatalf("ListRuntimeSettings: %v", err)
+	}
+	if len(settings) != 1 || settings[0].Namespace != "agent_affect" || settings[0].Key != "config" {
+		t.Fatalf("runtime settings = %#v", settings)
+	}
+}
+
+func TestUpdateAgentAffectConfigRejectsInvalidConfig(t *testing.T) {
+	db := openConfigCenterDB(t)
+	svc := NewService(config.DefaultConfig(), db)
+	next := config.DefaultConfig().AgentAffect
+	next.Enabled = true
+	next.StorageEnabled = false
+
+	_, err := svc.UpdateAgentAffectConfig(context.Background(), next)
+	if err == nil {
+		t.Fatal("UpdateAgentAffectConfig succeeded, want validation error")
+	}
+	var validation *ValidationError
+	if !errors.As(err, &validation) {
+		t.Fatalf("error = %T %v, want ValidationError", err, err)
+	}
+	requireConfigIssue(t, validation.Issues, "agent_affect.storage_enabled")
 }
 
 func requireConfigIssue(t *testing.T, issues []ConfigIssue, path string) {

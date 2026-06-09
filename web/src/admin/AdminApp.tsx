@@ -8,6 +8,7 @@ import { usePersonaAdmin } from './hooks/usePersonaAdmin';
 import { useChatSettingsAdmin } from './hooks/useChatSettingsAdmin';
 import { useMemoryAdmin } from './hooks/useMemoryAdmin';
 import { useSidecarAdmin } from './hooks/useSidecarAdmin';
+import { useAgentAffectAdmin } from './hooks/useAgentAffectAdmin';
 import { useAdminBootstrap } from './hooks/useAdminBootstrap';
 import { tabs, type TabID } from './lib/adminData';
 import '../styles.css';
@@ -17,6 +18,7 @@ const AgentsTab = lazy(() => import('./tabs/AgentsTab'));
 const PersonasTab = lazy(() => import('./tabs/PersonasTab'));
 const ChatSettingsTab = lazy(() => import('./tabs/ChatSettingsTab'));
 const MemoryCoreTab = lazy(() => import('./tabs/MemoryCoreTab'));
+const AgentAffectTab = lazy(() => import('./tabs/AgentAffectTab'));
 const PipelinesTab = lazy(() => import('./tabs/PipelinesTab'));
 const RetrievalTab = lazy(() => import('./tabs/RetrievalTab'));
 const SidecarTab = lazy(() => import('./tabs/SidecarTab'));
@@ -33,8 +35,9 @@ export function AdminApp() {
   const chatSettings = useChatSettingsAdmin(status);
   const memory = useMemoryAdmin(status);
   const sidecar = useSidecarAdmin(status);
+  const agentAffect = useAgentAffectAdmin(status);
 
-  useAdminBootstrap(tab, { providers, agents, personas, chatSettings, memory, sidecar, status });
+  useAdminBootstrap(tab, { providers, agents, personas, chatSettings, memory, agentAffect, sidecar, status });
 
   function renderActiveTab() {
     switch (tab) {
@@ -121,6 +124,8 @@ export function AdminApp() {
             updateMemoryPath={memory.updateMemoryPath}
           />
         );
+      case 'agent-affect':
+        return <AgentAffectTab {...agentAffect} />;
       case 'pipelines':
         return <PipelinesTab providers={providers.providers} memoryDraft={memory.memoryDraft} updateMemoryPath={memory.updateMemoryPath} savePipelines={memory.savePipelines} />;
       case 'retrieval-mirror':

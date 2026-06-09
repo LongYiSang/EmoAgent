@@ -110,6 +110,12 @@ func (s *ChatService) UpdateRealtimeStreaming(enabled bool) {
 	}
 }
 
+func (s *ChatService) UpdateAgentAffect() {
+	if s.engine != nil && s.agentAffect != nil {
+		s.engine.UpdateAgentAffect(s.agentAffect.Runtime())
+	}
+}
+
 func (s *ChatService) UpdateAgentRuntime(runtime *ActiveAgentRuntime) {
 	if s.engine == nil || runtime == nil {
 		return
@@ -125,9 +131,7 @@ func (s *ChatService) UpdateAgentRuntime(runtime *ActiveAgentRuntime) {
 		runtime.EmotionSummary.Params,
 		runtime.Context,
 	)
-	if s.agentAffect != nil {
-		s.engine.UpdateAgentAffect(s.agentAffect.Runtime())
-	}
+	s.UpdateAgentAffect()
 }
 
 func (s *ChatService) StartBackground(ctx context.Context) {

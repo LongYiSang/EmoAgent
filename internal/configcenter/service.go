@@ -25,6 +25,7 @@ type Service struct {
 }
 
 type EffectiveConfig struct {
+	AgentAffect            config.AgentAffectConfig `json:"agent_affect"`
 	Memory                 config.MemoryConfig      `json:"memory"`
 	Providers              []ProviderEffective      `json:"providers"`
 	RuntimeSettings        []storage.RuntimeSetting `json:"runtime_settings"`
@@ -48,6 +49,11 @@ type MemoryConfigResponse struct {
 	Memory     config.MemoryConfig  `json:"memory"`
 	MemoryCore *MemoryCoreEffective `json:"memory_core,omitempty"`
 	Issues     []ConfigIssue        `json:"issues"`
+}
+
+type AgentAffectConfigResponse struct {
+	AgentAffect config.AgentAffectConfig `json:"agent_affect"`
+	Issues      []ConfigIssue            `json:"issues"`
 }
 
 type ValidationError struct {
@@ -160,6 +166,7 @@ func (s *Service) BuildEffective(ctx context.Context) (EffectiveConfig, error) {
 	}
 
 	effective := EffectiveConfig{
+		AgentAffect:     runtimeCfg.AgentAffect,
 		Memory:          runtimeCfg.Memory,
 		Providers:       s.providerEffective(providers),
 		RuntimeSettings: runtimeSettings,
@@ -194,6 +201,64 @@ func (s *Service) sidecarGeneratedConfig(runtimeCfg *config.Config, providers []
 		return "", issues
 	}
 	return string(body), issues
+}
+
+func (s *Service) AgentAffectConfig(ctx context.Context) (AgentAffectConfigResponse, error) {
+	effective, err := s.BuildEffective(ctx)
+	if err != nil {
+		return AgentAffectConfigResponse{}, err
+	}
+	return AgentAffectConfigResponse{
+		AgentAffect: effective.AgentAffect,
+		Issues:      effective.Issues,
+	}, nil
+}
+
+func (s *Service) UpdateAgentAffectConfig(ctx context.Context, cfg config.AgentAffectConfig) (EffectiveConfig, error) {
+	if s.DB == nil {
+		return EffectiveConfig{}, fmt.Errorf("runtime settings database is not configured")
+	}
+	payload, err := json.Marshal(cfg)
+	if err != nil {
+		return EffectiveConfig{}, err
+	}
+	if err := s.validateAgentAffectConfigUpdate(ctx, storage.RuntimeSetting{
+		Namespace: "agent_affect",
+		Key:       "config",
+		ValueJSON: string(payload),
+		Source:    "ui",
+	}); err != nil {
+		return EffectiveConfig{}, err
+	}
+	if err := s.DB.UpsertRuntimeSetting("agent_affect", "config", string(payload), "ui"); err != nil {
+		return EffectiveConfig{}, err
+	}
+	return s.BuildEffective(ctx)
+}
+
+func (s *Service) validateAgentAffectConfigUpdate(ctx context.Context, next storage.RuntimeSetting) error {
+	seed := s.Seed
+	if seed == nil {
+		seed = config.DefaultConfig()
+	}
+	current, err := s.runtimeSettings()
+	if err != nil {
+		return err
+	}
+	settings := replaceRuntimeSetting(current, next)
+	runtimeCfg, runtimeIssues := ApplyRuntimeSettings(seed, settings)
+	providers, err := s.providers(ctx, &runtimeCfg)
+	if err != nil {
+		return err
+	}
+	allIssues := append([]ConfigIssue{}, runtimeIssues...)
+	allIssues = append(allIssues, BuildIssues(&runtimeCfg, s.providerEffective(providers), nil)...)
+	issues := filterIssuesByPathPrefix(allIssues, "agent_affect")
+	issues = dedupeIssues(issues)
+	if hasBlockingIssues(issues) {
+		return &ValidationError{Issues: issues}
+	}
+	return nil
 }
 
 func (s *Service) Validate(ctx context.Context, _ ValidateRequest) (ValidateResponse, error) {
@@ -351,6 +416,16 @@ func replaceRuntimeSetting(settings []storage.RuntimeSetting, next storage.Runti
 	}
 	if !replaced {
 		out = append(out, next)
+	}
+	return out
+}
+
+func filterIssuesByPathPrefix(issues []ConfigIssue, prefix string) []ConfigIssue {
+	out := make([]ConfigIssue, 0, len(issues))
+	for _, issue := range issues {
+		if issue.Path == prefix || strings.HasPrefix(issue.Path, prefix+".") {
+			out = append(out, issue)
+		}
 	}
 	return out
 }

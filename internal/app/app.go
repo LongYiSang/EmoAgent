@@ -168,12 +168,65 @@ func (a *App) GetLLMProviderModels(id string) ([]llm.ModelInfo, error) {
 	return services.LLMProviders.Models(id)
 }
 
+func (a *App) GetAgentAffectConfig(ctx context.Context) (configcenter.AgentAffectConfigResponse, error) {
+	services, err := a.services()
+	if err != nil {
+		return configcenter.AgentAffectConfigResponse{}, err
+	}
+	return services.Config.GetAgentAffectConfig(ctx)
+}
+
+func (a *App) UpdateAgentAffectConfig(ctx context.Context, cfg config.AgentAffectConfig) (configcenter.EffectiveConfig, error) {
+	services, err := a.services()
+	if err != nil {
+		return configcenter.EffectiveConfig{}, err
+	}
+	effective, err := services.Config.UpdateAgentAffectConfig(ctx, cfg)
+	if err != nil {
+		return configcenter.EffectiveConfig{}, err
+	}
+	services.Chat.UpdateAgentAffect()
+	return effective, nil
+}
+
 func (a *App) GetAgentAffectCurrent(ctx context.Context, req web.AgentAffectCurrentRequest) (web.AgentAffectCurrentResponse, error) {
 	services, err := a.services()
 	if err != nil {
 		return web.AgentAffectCurrentResponse{}, err
 	}
 	return services.AgentAffect.GetCurrentMood(ctx, req)
+}
+
+func (a *App) GetAgentAffectProfile(ctx context.Context, personaID string) (web.AgentAffectProfileResponse, error) {
+	services, err := a.services()
+	if err != nil {
+		return web.AgentAffectProfileResponse{}, err
+	}
+	return services.AgentAffect.GetProfile(ctx, personaID)
+}
+
+func (a *App) UpdateAgentAffectProfile(ctx context.Context, profile web.AgentAffectProfileResponse) (web.AgentAffectProfileResponse, error) {
+	services, err := a.services()
+	if err != nil {
+		return web.AgentAffectProfileResponse{}, err
+	}
+	return services.AgentAffect.UpdateProfile(ctx, profile)
+}
+
+func (a *App) ListAgentAffectHistory(ctx context.Context, req web.AgentAffectHistoryRequest) (web.AgentAffectHistoryResponse, error) {
+	services, err := a.services()
+	if err != nil {
+		return web.AgentAffectHistoryResponse{}, err
+	}
+	return services.AgentAffect.ListHistory(ctx, req)
+}
+
+func (a *App) ListAgentAffectPluginWrites(ctx context.Context, req web.AgentAffectPluginWritesRequest) (web.AgentAffectPluginWritesResponse, error) {
+	services, err := a.services()
+	if err != nil {
+		return nil, err
+	}
+	return services.AgentAffect.ListPluginWrites(ctx, req)
 }
 
 func (a *App) EvaluateAgentAffect(ctx context.Context, req web.AgentAffectEvaluateRequest) (web.AgentAffectEvaluateResponse, error) {
@@ -198,6 +251,22 @@ func (a *App) ApplyAgentAffectDelta(ctx context.Context, req web.AgentAffectDelt
 		return web.AgentAffectDeltaResponse{}, err
 	}
 	return services.AgentAffect.ApplyMoodDelta(ctx, req)
+}
+
+func (a *App) ResetAgentAffect(ctx context.Context, req web.AgentAffectResetRequest) (web.AgentAffectResetResponse, error) {
+	services, err := a.services()
+	if err != nil {
+		return web.AgentAffectResetResponse{}, err
+	}
+	return services.AgentAffect.ResetMood(ctx, req)
+}
+
+func (a *App) PreviewAgentAffectPrompt(ctx context.Context, req web.AgentAffectPromptPreviewRequest) (web.AgentAffectPromptPreviewResponse, error) {
+	services, err := a.services()
+	if err != nil {
+		return web.AgentAffectPromptPreviewResponse{}, err
+	}
+	return services.AgentAffect.PreviewPrompt(ctx, req)
 }
 
 func (a *App) GetLLMProviderEnvStatus(id string) (configcenter.ProviderEnvStatus, error) {

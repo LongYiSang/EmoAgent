@@ -54,6 +54,8 @@ func applyRuntimeSetting(cfg *config.Config, setting storage.RuntimeSetting) err
 		return overlayJSONSetting(&cfg.Memory.ForgettingPrivacy, setting)
 	case "memory.agent_affect":
 		return overlayJSONSetting(&cfg.Memory.AgentAffect, setting)
+	case "agent_affect":
+		return overlayJSONSetting(&cfg.AgentAffect, setting)
 	default:
 		return nil
 	}

@@ -63,6 +63,8 @@ type AdminApp interface {
 	ListConfigIssues(ctx context.Context) ([]configcenter.ConfigIssue, error)
 	GetMemoryConfig(ctx context.Context) (configcenter.MemoryConfigResponse, error)
 	UpdateMemoryConfig(ctx context.Context, memory config.MemoryConfig) (configcenter.EffectiveConfig, error)
+	GetAgentAffectConfig(ctx context.Context) (configcenter.AgentAffectConfigResponse, error)
+	UpdateAgentAffectConfig(ctx context.Context, cfg config.AgentAffectConfig) (configcenter.EffectiveConfig, error)
 	GetMemoryFeatures(ctx context.Context) (configcenter.MemoryConfigResponse, error)
 	UpdateMemoryFeatures(ctx context.Context, memory config.MemoryConfig) (configcenter.EffectiveConfig, error)
 	GetSidecarStatus(ctx context.Context) (sidecarruntime.Status, error)
@@ -72,19 +74,35 @@ type AdminApp interface {
 	GetSidecarGeneratedConfig(ctx context.Context) (string, error)
 	GetSidecarLogs(ctx context.Context, maxBytes int) (string, error)
 	GetAgentAffectCurrent(ctx context.Context, req AgentAffectCurrentRequest) (AgentAffectCurrentResponse, error)
+	GetAgentAffectProfile(ctx context.Context, personaID string) (AgentAffectProfileResponse, error)
+	UpdateAgentAffectProfile(ctx context.Context, profile AgentAffectProfileResponse) (AgentAffectProfileResponse, error)
+	ListAgentAffectHistory(ctx context.Context, req AgentAffectHistoryRequest) (AgentAffectHistoryResponse, error)
+	ListAgentAffectPluginWrites(ctx context.Context, req AgentAffectPluginWritesRequest) (AgentAffectPluginWritesResponse, error)
 	EvaluateAgentAffect(ctx context.Context, req AgentAffectEvaluateRequest) (AgentAffectEvaluateResponse, error)
 	SubmitAgentAffect(ctx context.Context, req AgentAffectSubmitRequest) (AgentAffectSubmitResponse, error)
 	ApplyAgentAffectDelta(ctx context.Context, req AgentAffectDeltaRequest) (AgentAffectDeltaResponse, error)
+	ResetAgentAffect(ctx context.Context, req AgentAffectResetRequest) (AgentAffectResetResponse, error)
+	PreviewAgentAffectPrompt(ctx context.Context, req AgentAffectPromptPreviewRequest) (AgentAffectPromptPreviewResponse, error)
 }
 
 type AgentAffectCurrentRequest = agentaffect.GetCurrentMoodRequest
 type AgentAffectCurrentResponse = agentaffect.GetCurrentMoodResponse
+type AgentAffectConfigResponse = configcenter.AgentAffectConfigResponse
+type AgentAffectProfileResponse = agentaffect.AffectProfile
+type AgentAffectHistoryRequest = agentaffect.HistoryQuery
+type AgentAffectHistoryResponse = agentaffect.HistoryResponse
+type AgentAffectPluginWritesRequest = agentaffect.PluginWritesQuery
+type AgentAffectPluginWritesResponse = []agentaffect.PluginWriteRecord
 type AgentAffectEvaluateRequest = agentaffect.EvaluateMoodImpactRequest
 type AgentAffectEvaluateResponse = agentaffect.EvaluateMoodImpactResponse
 type AgentAffectSubmitRequest = agentaffect.SubmitMoodImpactRequest
 type AgentAffectSubmitResponse = agentaffect.SubmitMoodImpactResponse
 type AgentAffectDeltaRequest = agentaffect.ApplyMoodDeltaRequest
 type AgentAffectDeltaResponse = agentaffect.ApplyMoodDeltaResponse
+type AgentAffectResetRequest = agentaffect.ResetMoodRequest
+type AgentAffectResetResponse = agentaffect.ResetMoodResponse
+type AgentAffectPromptPreviewRequest = agentaffect.BuildPromptAffectBlockRequest
+type AgentAffectPromptPreviewResponse = agentaffect.PromptPreviewResponse
 
 type APIHandler struct {
 	app    AdminApp

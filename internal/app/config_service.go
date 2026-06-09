@@ -101,6 +101,18 @@ func (s *ConfigService) GetMemoryConfig(ctx context.Context) (configcenter.Memor
 	return s.service().MemoryConfig(ctx)
 }
 
+func (s *ConfigService) GetAgentAffectConfig(ctx context.Context) (configcenter.AgentAffectConfigResponse, error) {
+	return s.service().AgentAffectConfig(ctx)
+}
+
+func (s *ConfigService) UpdateAgentAffectConfig(ctx context.Context, cfg config.AgentAffectConfig) (configcenter.EffectiveConfig, error) {
+	effective, err := s.service().UpdateAgentAffectConfig(ctx, cfg)
+	if err == nil && s.infra.Config != nil {
+		s.infra.Config.AgentAffect = effective.AgentAffect
+	}
+	return effective, err
+}
+
 func (s *ConfigService) UpdateMemoryConfig(ctx context.Context, memory config.MemoryConfig) (configcenter.EffectiveConfig, error) {
 	effective, err := s.service().UpdateMemoryConfig(ctx, memory)
 	if err == nil && s.infra.Config != nil {

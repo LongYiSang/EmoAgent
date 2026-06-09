@@ -32,6 +32,7 @@ SELECT id, persona_id, profile_name,
        baseline_valence, baseline_arousal, baseline_dominance, baseline_energy,
        baseline_warmth, baseline_concern, baseline_curiosity, baseline_playfulness,
        baseline_attachment, baseline_frustration, baseline_uncertainty,
+       dimension_config_json, externalization_config_json, llm_config_json, context_policy_json, clamp_policy_json,
        created_at, updated_at
 FROM agent_affect_profiles
 WHERE persona_id = ? AND profile_name = 'default'
@@ -53,6 +54,11 @@ WHERE persona_id = ? AND profile_name = 'default'
 		&p.Baseline.Attachment,
 		&p.Baseline.Frustration,
 		&p.Baseline.Uncertainty,
+		&p.DimensionConfigJSON,
+		&p.ExternalizationConfigJSON,
+		&p.LLMConfigJSON,
+		&p.ContextPolicyJSON,
+		&p.ClampPolicyJSON,
 		&createdAt,
 		&updatedAt,
 	)
@@ -101,6 +107,57 @@ INSERT INTO agent_affect_profiles (
 		return AffectProfile{}, fmt.Errorf("insert affect profile: %w", err)
 	}
 	return p, nil
+}
+
+func (s *SQLiteStore) UpsertProfile(ctx context.Context, profile AffectProfile) (AffectProfile, error) {
+	if profile.PersonaID == "" {
+		return AffectProfile{}, fmt.Errorf("persona_id is required")
+	}
+	if profile.ProfileName == "" {
+		profile.ProfileName = "default"
+	}
+	if profile.ID == "" {
+		profile.ID = uuid.NewString()
+	}
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO agent_affect_profiles (
+    id, persona_id, profile_name,
+    baseline_valence, baseline_arousal, baseline_dominance, baseline_energy,
+    baseline_warmth, baseline_concern, baseline_curiosity, baseline_playfulness,
+    baseline_attachment, baseline_frustration, baseline_uncertainty,
+    dimension_config_json, externalization_config_json, llm_config_json, context_policy_json, clamp_policy_json,
+    updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(persona_id, profile_name) DO UPDATE SET
+    baseline_valence = excluded.baseline_valence,
+    baseline_arousal = excluded.baseline_arousal,
+    baseline_dominance = excluded.baseline_dominance,
+    baseline_energy = excluded.baseline_energy,
+    baseline_warmth = excluded.baseline_warmth,
+    baseline_concern = excluded.baseline_concern,
+    baseline_curiosity = excluded.baseline_curiosity,
+    baseline_playfulness = excluded.baseline_playfulness,
+    baseline_attachment = excluded.baseline_attachment,
+    baseline_frustration = excluded.baseline_frustration,
+    baseline_uncertainty = excluded.baseline_uncertainty,
+    dimension_config_json = excluded.dimension_config_json,
+    externalization_config_json = excluded.externalization_config_json,
+    llm_config_json = excluded.llm_config_json,
+    context_policy_json = excluded.context_policy_json,
+    clamp_policy_json = excluded.clamp_policy_json,
+    updated_at = excluded.updated_at
+`, profile.ID, profile.PersonaID, profile.ProfileName,
+		profile.Baseline.Valence, profile.Baseline.Arousal, profile.Baseline.Dominance, profile.Baseline.Energy,
+		profile.Baseline.Warmth, profile.Baseline.Concern, profile.Baseline.Curiosity, profile.Baseline.Playfulness,
+		profile.Baseline.Attachment, profile.Baseline.Frustration, profile.Baseline.Uncertainty,
+		defaultString(profile.DimensionConfigJSON, "{}"), defaultString(profile.ExternalizationConfigJSON, "{}"), defaultString(profile.LLMConfigJSON, "{}"),
+		defaultString(profile.ContextPolicyJSON, "{}"), defaultString(profile.ClampPolicyJSON, "{}"), dbTime(now),
+	)
+	if err != nil {
+		return AffectProfile{}, fmt.Errorf("upsert affect profile: %w", err)
+	}
+	return s.EnsureProfile(ctx, profile.PersonaID)
 }
 
 func (s *SQLiteStore) GetLatestState(ctx context.Context, personaID string, sessionID string) (*MoodSnapshot, error) {
@@ -280,7 +337,7 @@ func (s *SQLiteStore) ListRecentEvaluations(ctx context.Context, q RecentEvaluat
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, persona_id, COALESCE(session_id, ''), COALESCE(turn_id, ''),
        trigger_type, COALESCE(custom_type, ''), source_kind,
-       input_mode, COALESCE(input_summary, ''), cause_summary, visible_cause_summary,
+       input_mode, COALESCE(input_text, ''), COALESCE(input_summary, ''), cause_summary, visible_cause_summary,
        proposed_delta_json, clamped_delta_json, predicted_state_json, confidence, status, created_at
 FROM agent_affect_evaluations
 WHERE persona_id = ? AND COALESCE(session_id, '') = ?
@@ -299,7 +356,7 @@ LIMIT ?
 		if err := rows.Scan(
 			&rec.ID, &rec.PersonaID, &rec.SessionID, &rec.TurnID,
 			&rec.Trigger.TriggerType, &rec.Trigger.CustomType, &rec.Trigger.SourceKind,
-			&rec.Input.Mode, &rec.Input.Summary, &rec.CauseSummary, &rec.VisibleCauseSummary,
+			&rec.Input.Mode, &rec.Input.Text, &rec.Input.Summary, &rec.CauseSummary, &rec.VisibleCauseSummary,
 			&proposed, &clamped, &predicted, &rec.Confidence, &rec.Status, &createdAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan affect evaluation: %w", err)
@@ -312,6 +369,96 @@ LIMIT ?
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate affect evaluations: %w", err)
+	}
+	return out, nil
+}
+
+func (s *SQLiteStore) ListRecentEvents(ctx context.Context, q RecentEventsQuery) ([]AffectEventRecord, error) {
+	limit := q.Limit
+	if limit <= 0 {
+		limit = 30
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, persona_id, COALESCE(session_id, ''), COALESCE(turn_id, ''), COALESCE(evaluation_id, ''),
+       trigger_type, COALESCE(custom_type, ''), COALESCE(plugin_id, ''),
+       COALESCE(before_state_id, ''), COALESCE(after_state_id, ''),
+       proposed_delta_json, clamped_delta_json, committed_delta_json,
+       COALESCE(label_before, ''), COALESCE(label_after, ''), cause_summary, significance, confidence, committed_by, created_at
+FROM agent_affect_events
+WHERE persona_id = ? AND COALESCE(session_id, '') = ?
+ORDER BY created_at DESC
+LIMIT ?
+`, q.PersonaID, q.SessionID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list recent affect events: %w", err)
+	}
+	defer rows.Close()
+	var out []AffectEventRecord
+	for rows.Next() {
+		var rec AffectEventRecord
+		var proposed, clamped, committed string
+		var createdAt string
+		if err := rows.Scan(
+			&rec.ID, &rec.PersonaID, &rec.SessionID, &rec.TurnID, &rec.EvaluationID,
+			&rec.Trigger.TriggerType, &rec.Trigger.CustomType, &rec.Trigger.PluginID,
+			&rec.BeforeStateID, &rec.AfterStateID,
+			&proposed, &clamped, &committed,
+			&rec.LabelBefore, &rec.LabelAfter, &rec.CauseSummary, &rec.Significance, &rec.Confidence, &rec.CommittedBy, &createdAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan affect event: %w", err)
+		}
+		_ = json.Unmarshal([]byte(proposed), &rec.ProposedDelta)
+		_ = json.Unmarshal([]byte(clamped), &rec.ClampedDelta)
+		_ = json.Unmarshal([]byte(committed), &rec.CommittedDelta)
+		rec.CreatedAt = parseDBTime(createdAt)
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate affect events: %w", err)
+	}
+	return out, nil
+}
+
+func (s *SQLiteStore) ListPluginWrites(ctx context.Context, q PluginWritesQuery) ([]PluginWriteRecord, error) {
+	limit := q.Limit
+	if limit <= 0 {
+		limit = 30
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, persona_id, COALESCE(session_id, ''), COALESCE(turn_id, ''), plugin_id, capability, request_kind,
+       request_json, accepted, COALESCE(rejection_reason, ''), clamp_notes_json,
+       COALESCE(evaluation_id, ''), COALESCE(affect_event_id, ''), created_at
+FROM agent_affect_plugin_writes
+WHERE (? = '' OR persona_id = ?)
+  AND (? = '' OR COALESCE(session_id, '') = ?)
+  AND (? = '' OR plugin_id = ?)
+ORDER BY created_at DESC
+LIMIT ?
+`, q.PersonaID, q.PersonaID, q.SessionID, q.SessionID, q.PluginID, q.PluginID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list affect plugin writes: %w", err)
+	}
+	defer rows.Close()
+	var out []PluginWriteRecord
+	for rows.Next() {
+		var rec PluginWriteRecord
+		var accepted int
+		var clampNotes string
+		var createdAt string
+		if err := rows.Scan(
+			&rec.ID, &rec.PersonaID, &rec.SessionID, &rec.TurnID, &rec.PluginID, &rec.Capability, &rec.RequestKind,
+			&rec.RequestJSON, &accepted, &rec.RejectionReason, &clampNotes,
+			&rec.EvaluationID, &rec.AffectEventID, &createdAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan affect plugin write: %w", err)
+		}
+		rec.Accepted = accepted != 0
+		_ = json.Unmarshal([]byte(clampNotes), &rec.ClampNotes)
+		rec.CreatedAt = parseDBTime(createdAt)
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate affect plugin writes: %w", err)
 	}
 	return out, nil
 }

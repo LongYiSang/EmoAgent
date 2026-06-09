@@ -33,6 +33,22 @@ func (s *AgentAffectService) GetCurrentMood(ctx context.Context, req agentaffect
 	return s.runtimeForDebug().GetCurrentMood(ctx, req)
 }
 
+func (s *AgentAffectService) GetProfile(ctx context.Context, personaID string) (agentaffect.AffectProfile, error) {
+	return s.runtimeForDebug().GetProfile(ctx, personaID)
+}
+
+func (s *AgentAffectService) UpdateProfile(ctx context.Context, profile agentaffect.AffectProfile) (agentaffect.AffectProfile, error) {
+	return s.runtimeForDebug().UpdateProfile(ctx, profile)
+}
+
+func (s *AgentAffectService) ListHistory(ctx context.Context, q agentaffect.HistoryQuery) (agentaffect.HistoryResponse, error) {
+	return s.runtimeForDebug().ListHistory(ctx, q)
+}
+
+func (s *AgentAffectService) ListPluginWrites(ctx context.Context, q agentaffect.PluginWritesQuery) ([]agentaffect.PluginWriteRecord, error) {
+	return s.runtimeForDebug().ListPluginWrites(ctx, q)
+}
+
 func (s *AgentAffectService) EvaluateMoodImpact(ctx context.Context, req agentaffect.EvaluateMoodImpactRequest) (agentaffect.EvaluateMoodImpactResponse, error) {
 	return s.runtimeForDebug().EvaluateMoodImpact(ctx, req)
 }
@@ -43,6 +59,14 @@ func (s *AgentAffectService) SubmitMoodImpact(ctx context.Context, req agentaffe
 
 func (s *AgentAffectService) ApplyMoodDelta(ctx context.Context, req agentaffect.ApplyMoodDeltaRequest) (agentaffect.ApplyMoodDeltaResponse, error) {
 	return s.runtimeForDebug().ApplyMoodDelta(ctx, req)
+}
+
+func (s *AgentAffectService) ResetMood(ctx context.Context, req agentaffect.ResetMoodRequest) (agentaffect.ResetMoodResponse, error) {
+	return s.runtimeForDebug().ResetMood(ctx, req)
+}
+
+func (s *AgentAffectService) PreviewPrompt(ctx context.Context, req agentaffect.BuildPromptAffectBlockRequest) (agentaffect.PromptPreviewResponse, error) {
+	return s.runtimeForDebug().PreviewPrompt(ctx, req)
 }
 
 func (s *AgentAffectService) PluginAPI() agentaffect.PluginAPI {
@@ -128,6 +152,22 @@ func (r hookedAgentAffectRuntime) GetCurrentMood(ctx context.Context, req agenta
 	return resp, nil
 }
 
+func (r hookedAgentAffectRuntime) GetProfile(ctx context.Context, personaID string) (agentaffect.AffectProfile, error) {
+	return r.inner.GetProfile(ctx, personaID)
+}
+
+func (r hookedAgentAffectRuntime) UpdateProfile(ctx context.Context, profile agentaffect.AffectProfile) (agentaffect.AffectProfile, error) {
+	return r.inner.UpdateProfile(ctx, profile)
+}
+
+func (r hookedAgentAffectRuntime) ListHistory(ctx context.Context, q agentaffect.HistoryQuery) (agentaffect.HistoryResponse, error) {
+	return r.inner.ListHistory(ctx, q)
+}
+
+func (r hookedAgentAffectRuntime) ListPluginWrites(ctx context.Context, q agentaffect.PluginWritesQuery) ([]agentaffect.PluginWriteRecord, error) {
+	return r.inner.ListPluginWrites(ctx, q)
+}
+
 func (r hookedAgentAffectRuntime) EvaluateMoodImpact(ctx context.Context, req agentaffect.EvaluateMoodImpactRequest) (agentaffect.EvaluateMoodImpactResponse, error) {
 	if err := r.dispatch(ctx, plugin.HookBeforeAgentAffectEvaluate, req.PersonaID, req.SessionID, req.TurnID, req); err != nil {
 		return agentaffect.EvaluateMoodImpactResponse{}, err
@@ -180,8 +220,16 @@ func (r hookedAgentAffectRuntime) ApplyMoodDelta(ctx context.Context, req agenta
 	return resp, nil
 }
 
+func (r hookedAgentAffectRuntime) ResetMood(ctx context.Context, req agentaffect.ResetMoodRequest) (agentaffect.ResetMoodResponse, error) {
+	return r.inner.ResetMood(ctx, req)
+}
+
 func (r hookedAgentAffectRuntime) BuildPromptAffectBlock(ctx context.Context, req agentaffect.BuildPromptAffectBlockRequest) (string, error) {
 	return r.inner.BuildPromptAffectBlock(ctx, req)
+}
+
+func (r hookedAgentAffectRuntime) PreviewPrompt(ctx context.Context, req agentaffect.BuildPromptAffectBlockRequest) (agentaffect.PromptPreviewResponse, error) {
+	return r.inner.PreviewPrompt(ctx, req)
 }
 
 func (r hookedAgentAffectRuntime) dispatch(ctx context.Context, hook plugin.HookName, personaID string, sessionID string, turnID string, payload any) error {

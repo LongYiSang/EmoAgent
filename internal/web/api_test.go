@@ -24,57 +24,70 @@ import (
 )
 
 type fakeAdminApp struct {
-	providers             []config.LLMProvider
-	agentConfigs          []config.AgentConfig
-	activeAgent           *config.AgentConfig
-	personas              map[string]*config.Persona
-	progressPhrases       map[string]map[string][]string
-	sessions              []storage.SessionSummary
-	sessionDetail         *storage.SessionRecord
-	sessionMessages       []storage.MessageRecord
-	createErr             error
-	activateErr           error
-	sessionErr            error
-	deleteSessionErr      error
-	approvals             []protocol.ApprovalRequest
-	lastProvider          config.LLMProvider
-	lastAgentConfig       config.AgentConfig
-	lastActivate          string
-	lastPersonaKey        string
-	lastPersona           *config.Persona
-	lastSessionPersona    string
-	lastSessionLimit      int
-	lastDeleteSessionID   string
-	lastPhrasesKey        string
-	lastPhrasesValue      map[string][]string
-	lastApprovalSession   string
-	lastExtractionReq     MemoryExtractionRequest
-	lastExtractionList    MemoryExtractionListRequest
-	extractionJobs        []storage.MemoryExtractionJob
-	lastNaturalReq        NaturalMemoryRunRequest
-	naturalRunResp        memoryhost.NaturalMemoryRunResponse
-	naturalRunErr         error
-	latestNaturalResp     *memoryhost.NaturalMemoryRunResponse
-	lastSegmentSession    string
-	memorySegments        []storage.MemorySegment
-	chatSettings          config.ChatConfig
-	lastChatSettings      config.ChatConfig
-	updateChatErr         error
-	effectiveConfig       configcenter.EffectiveConfig
-	configIssues          []configcenter.ConfigIssue
-	providerEnvStatus     configcenter.ProviderEnvStatus
-	memoryConfig          configcenter.MemoryConfigResponse
-	lastMemoryConfig      config.MemoryConfig
-	sidecarStatus         sidecarruntime.Status
-	sidecarConfig         string
-	sidecarLogs           string
-	agentAffectCurrent    AgentAffectCurrentResponse
-	lastAgentAffectEval   AgentAffectEvaluateRequest
-	agentAffectEvalResp   AgentAffectEvaluateResponse
-	lastAgentAffectSubmit AgentAffectSubmitRequest
-	agentAffectSubmitResp AgentAffectSubmitResponse
-	lastAgentAffectDelta  AgentAffectDeltaRequest
-	agentAffectDeltaResp  AgentAffectDeltaResponse
+	providers              []config.LLMProvider
+	agentConfigs           []config.AgentConfig
+	activeAgent            *config.AgentConfig
+	personas               map[string]*config.Persona
+	progressPhrases        map[string]map[string][]string
+	sessions               []storage.SessionSummary
+	sessionDetail          *storage.SessionRecord
+	sessionMessages        []storage.MessageRecord
+	createErr              error
+	activateErr            error
+	sessionErr             error
+	deleteSessionErr       error
+	approvals              []protocol.ApprovalRequest
+	lastProvider           config.LLMProvider
+	lastAgentConfig        config.AgentConfig
+	lastActivate           string
+	lastPersonaKey         string
+	lastPersona            *config.Persona
+	lastSessionPersona     string
+	lastSessionLimit       int
+	lastDeleteSessionID    string
+	lastPhrasesKey         string
+	lastPhrasesValue       map[string][]string
+	lastApprovalSession    string
+	lastExtractionReq      MemoryExtractionRequest
+	lastExtractionList     MemoryExtractionListRequest
+	extractionJobs         []storage.MemoryExtractionJob
+	lastNaturalReq         NaturalMemoryRunRequest
+	naturalRunResp         memoryhost.NaturalMemoryRunResponse
+	naturalRunErr          error
+	latestNaturalResp      *memoryhost.NaturalMemoryRunResponse
+	lastSegmentSession     string
+	memorySegments         []storage.MemorySegment
+	chatSettings           config.ChatConfig
+	lastChatSettings       config.ChatConfig
+	updateChatErr          error
+	effectiveConfig        configcenter.EffectiveConfig
+	configIssues           []configcenter.ConfigIssue
+	providerEnvStatus      configcenter.ProviderEnvStatus
+	memoryConfig           configcenter.MemoryConfigResponse
+	lastMemoryConfig       config.MemoryConfig
+	sidecarStatus          sidecarruntime.Status
+	sidecarConfig          string
+	sidecarLogs            string
+	agentAffectConfig      AgentAffectConfigResponse
+	updateAgentAffectErr   error
+	lastAgentAffectConfig  config.AgentAffectConfig
+	agentAffectCurrent     AgentAffectCurrentResponse
+	agentAffectProfile     AgentAffectProfileResponse
+	lastAgentAffectProfile AgentAffectProfileResponse
+	agentAffectHistory     AgentAffectHistoryResponse
+	lastAgentAffectHistory AgentAffectHistoryRequest
+	agentAffectWrites      AgentAffectPluginWritesResponse
+	lastAgentAffectWrites  AgentAffectPluginWritesRequest
+	lastAgentAffectEval    AgentAffectEvaluateRequest
+	agentAffectEvalResp    AgentAffectEvaluateResponse
+	lastAgentAffectSubmit  AgentAffectSubmitRequest
+	agentAffectSubmitResp  AgentAffectSubmitResponse
+	lastAgentAffectDelta   AgentAffectDeltaRequest
+	agentAffectDeltaResp   AgentAffectDeltaResponse
+	lastAgentAffectReset   AgentAffectResetRequest
+	agentAffectResetResp   AgentAffectResetResponse
+	lastAgentAffectPrompt  AgentAffectPromptPreviewRequest
+	agentAffectPromptResp  AgentAffectPromptPreviewResponse
 }
 
 func (f *fakeAdminApp) ListLLMProviders() ([]config.LLMProvider, error) {
@@ -282,6 +295,34 @@ func (f *fakeAdminApp) GetSidecarGeneratedConfig(ctx context.Context) (string, e
 func (f *fakeAdminApp) GetSidecarLogs(ctx context.Context, maxBytes int) (string, error) {
 	return f.sidecarLogs, nil
 }
+func (f *fakeAdminApp) GetAgentAffectConfig(ctx context.Context) (AgentAffectConfigResponse, error) {
+	return f.agentAffectConfig, nil
+}
+func (f *fakeAdminApp) UpdateAgentAffectConfig(ctx context.Context, cfg config.AgentAffectConfig) (configcenter.EffectiveConfig, error) {
+	f.lastAgentAffectConfig = cfg
+	if f.updateAgentAffectErr != nil {
+		return configcenter.EffectiveConfig{}, f.updateAgentAffectErr
+	}
+	return f.effectiveConfig, nil
+}
+func (f *fakeAdminApp) GetAgentAffectProfile(ctx context.Context, personaID string) (AgentAffectProfileResponse, error) {
+	if f.agentAffectProfile.PersonaID == "" {
+		f.agentAffectProfile.PersonaID = personaID
+	}
+	return f.agentAffectProfile, nil
+}
+func (f *fakeAdminApp) UpdateAgentAffectProfile(ctx context.Context, profile AgentAffectProfileResponse) (AgentAffectProfileResponse, error) {
+	f.lastAgentAffectProfile = profile
+	return profile, nil
+}
+func (f *fakeAdminApp) ListAgentAffectHistory(ctx context.Context, req AgentAffectHistoryRequest) (AgentAffectHistoryResponse, error) {
+	f.lastAgentAffectHistory = req
+	return f.agentAffectHistory, nil
+}
+func (f *fakeAdminApp) ListAgentAffectPluginWrites(ctx context.Context, req AgentAffectPluginWritesRequest) (AgentAffectPluginWritesResponse, error) {
+	f.lastAgentAffectWrites = req
+	return f.agentAffectWrites, nil
+}
 func (f *fakeAdminApp) GetAgentAffectCurrent(ctx context.Context, req AgentAffectCurrentRequest) (AgentAffectCurrentResponse, error) {
 	if f.agentAffectCurrent.Mood.PersonaID == "" {
 		f.agentAffectCurrent.Mood.PersonaID = req.PersonaID
@@ -299,6 +340,174 @@ func (f *fakeAdminApp) SubmitAgentAffect(ctx context.Context, req AgentAffectSub
 func (f *fakeAdminApp) ApplyAgentAffectDelta(ctx context.Context, req AgentAffectDeltaRequest) (AgentAffectDeltaResponse, error) {
 	f.lastAgentAffectDelta = req
 	return f.agentAffectDeltaResp, nil
+}
+func (f *fakeAdminApp) ResetAgentAffect(ctx context.Context, req AgentAffectResetRequest) (AgentAffectResetResponse, error) {
+	f.lastAgentAffectReset = req
+	return f.agentAffectResetResp, nil
+}
+func (f *fakeAdminApp) PreviewAgentAffectPrompt(ctx context.Context, req AgentAffectPromptPreviewRequest) (AgentAffectPromptPreviewResponse, error) {
+	f.lastAgentAffectPrompt = req
+	return f.agentAffectPromptResp, nil
+}
+
+func TestHandleAgentAffectConfig(t *testing.T) {
+	cfg := config.DefaultConfig().AgentAffect
+	cfg.Enabled = true
+	cfg.Evaluator.Mode = "disabled"
+	app := &fakeAdminApp{
+		agentAffectConfig: AgentAffectConfigResponse{
+			AgentAffect: cfg,
+		},
+		effectiveConfig: configcenter.EffectiveConfig{
+			AgentAffect: cfg,
+		},
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/agent-affect/config", nil)
+	getRec := httptest.NewRecorder()
+	handler.HandleGetAgentAffectConfig(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get status = %d body=%s", getRec.Code, getRec.Body.String())
+	}
+	var getResp AgentAffectConfigResponse
+	if err := json.Unmarshal(getRec.Body.Bytes(), &getResp); err != nil {
+		t.Fatalf("decode get: %v", err)
+	}
+	if !getResp.AgentAffect.Enabled || getResp.AgentAffect.Evaluator.Mode != "disabled" {
+		t.Fatalf("get response = %#v", getResp.AgentAffect)
+	}
+
+	putReq := httptest.NewRequest(http.MethodPut, "/api/agent-affect/config", bytes.NewBufferString(`{
+		"agent_affect": {
+			"enabled": true,
+			"storage_enabled": true,
+			"evaluator": {"mode": "disabled"},
+			"context": {"store_raw_inputs": false}
+		}
+	}`))
+	putRec := httptest.NewRecorder()
+	handler.HandleUpdateAgentAffectConfig(putRec, putReq)
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("put status = %d body=%s", putRec.Code, putRec.Body.String())
+	}
+	if !app.lastAgentAffectConfig.Enabled || app.lastAgentAffectConfig.Context.StoreRawInputs {
+		t.Fatalf("last agent_affect config = %#v", app.lastAgentAffectConfig)
+	}
+	var putResp configcenter.EffectiveConfig
+	if err := json.Unmarshal(putRec.Body.Bytes(), &putResp); err != nil {
+		t.Fatalf("decode put: %v", err)
+	}
+	if !putResp.AgentAffect.Enabled {
+		t.Fatalf("put response = %#v", putResp.AgentAffect)
+	}
+}
+
+func TestHandleAgentAffectConfigValidationError(t *testing.T) {
+	app := &fakeAdminApp{
+		updateAgentAffectErr: &configcenter.ValidationError{Issues: []configcenter.ConfigIssue{{
+			Path:     "agent_affect.storage_enabled",
+			Severity: "error",
+			Message:  "agent_affect.enabled requires agent_affect.storage_enabled",
+		}}},
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodPut, "/api/agent-affect/config", bytes.NewBufferString(`{
+		"agent_affect": {"enabled": true, "storage_enabled": false}
+	}`))
+	rec := httptest.NewRecorder()
+	handler.HandleUpdateAgentAffectConfig(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Issues []configcenter.ConfigIssue `json:"issues"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode validation response: %v", err)
+	}
+	if len(resp.Issues) != 1 || resp.Issues[0].Path != "agent_affect.storage_enabled" {
+		t.Fatalf("issues = %#v", resp.Issues)
+	}
+}
+
+func TestHandleAgentAffectHistoryProfileResetPromptAndPluginWrites(t *testing.T) {
+	app := &fakeAdminApp{
+		agentAffectProfile: AgentAffectProfileResponse{
+			PersonaID:   "default",
+			ProfileName: "default",
+			Baseline:    AgentAffectCurrentResponse{}.Mood.Vector,
+		},
+		agentAffectHistory: AgentAffectHistoryResponse{},
+		agentAffectWrites: AgentAffectPluginWritesResponse{{
+			PluginID:    "demo",
+			Capability:  "agent_affect.submit",
+			RequestKind: "submit",
+			Accepted:    true,
+		}},
+		agentAffectResetResp: AgentAffectResetResponse{
+			EventID: "event-reset",
+		},
+		agentAffectPromptResp: AgentAffectPromptPreviewResponse{
+			PromptBlock: "[Agent Affect Runtime State]\nmood_vector:\n  valence: 0.100\ncause_summary: test\nattachment_expression: style=gentle_explicit",
+		},
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	historyReq := httptest.NewRequest(http.MethodGet, "/api/agent-affect/history?persona_id=default&session_id=s1&kind=both&limit=7", nil)
+	historyRec := httptest.NewRecorder()
+	handler.HandleListAgentAffectHistory(historyRec, historyReq)
+	if historyRec.Code != http.StatusOK {
+		t.Fatalf("history status = %d body=%s", historyRec.Code, historyRec.Body.String())
+	}
+	if app.lastAgentAffectHistory.PersonaID != "default" || app.lastAgentAffectHistory.SessionID != "s1" || app.lastAgentAffectHistory.Limit != 7 {
+		t.Fatalf("history request = %#v", app.lastAgentAffectHistory)
+	}
+
+	writesReq := httptest.NewRequest(http.MethodGet, "/api/agent-affect/plugin-writes?plugin_id=demo&limit=5", nil)
+	writesRec := httptest.NewRecorder()
+	handler.HandleListAgentAffectPluginWrites(writesRec, writesReq)
+	if writesRec.Code != http.StatusOK {
+		t.Fatalf("writes status = %d body=%s", writesRec.Code, writesRec.Body.String())
+	}
+	if app.lastAgentAffectWrites.PluginID != "demo" || app.lastAgentAffectWrites.Limit != 5 {
+		t.Fatalf("writes request = %#v", app.lastAgentAffectWrites)
+	}
+
+	profileReq := httptest.NewRequest(http.MethodPut, "/api/agent-affect/profile", bytes.NewBufferString(`{
+		"persona_id": "default",
+		"profile_name": "default",
+		"baseline": {"warmth": 0.7}
+	}`))
+	profileRec := httptest.NewRecorder()
+	handler.HandleUpdateAgentAffectProfile(profileRec, profileReq)
+	if profileRec.Code != http.StatusOK {
+		t.Fatalf("profile status = %d body=%s", profileRec.Code, profileRec.Body.String())
+	}
+	if app.lastAgentAffectProfile.Baseline.Warmth != 0.7 {
+		t.Fatalf("profile request = %#v", app.lastAgentAffectProfile)
+	}
+
+	resetReq := httptest.NewRequest(http.MethodPost, "/api/agent-affect/reset", bytes.NewBufferString(`{"persona_id":"default","session_id":"s1","reason":"smoke"}`))
+	resetRec := httptest.NewRecorder()
+	handler.HandleResetAgentAffect(resetRec, resetReq)
+	if resetRec.Code != http.StatusOK {
+		t.Fatalf("reset status = %d body=%s", resetRec.Code, resetRec.Body.String())
+	}
+	if app.lastAgentAffectReset.Reason != "smoke" || app.lastAgentAffectReset.SessionID != "s1" {
+		t.Fatalf("reset request = %#v", app.lastAgentAffectReset)
+	}
+
+	promptReq := httptest.NewRequest(http.MethodPost, "/api/agent-affect/prompt-preview", bytes.NewBufferString(`{"persona_id":"default","session_id":"s1"}`))
+	promptRec := httptest.NewRecorder()
+	handler.HandlePreviewAgentAffectPrompt(promptRec, promptReq)
+	if promptRec.Code != http.StatusOK {
+		t.Fatalf("prompt status = %d body=%s", promptRec.Code, promptRec.Body.String())
+	}
+	if !strings.Contains(promptRec.Body.String(), "[Agent Affect Runtime State]") || !strings.Contains(promptRec.Body.String(), "attachment_expression") {
+		t.Fatalf("prompt response = %s", promptRec.Body.String())
+	}
 }
 
 func TestHandleAgentAffectCurrentAndEvaluate(t *testing.T) {
@@ -475,6 +684,11 @@ func TestHandleGetLLMProviderEnvStatusDoesNotLeakValue(t *testing.T) {
 func TestHandleConfigEffective(t *testing.T) {
 	app := &fakeAdminApp{
 		effectiveConfig: configcenter.EffectiveConfig{
+			AgentAffect: config.AgentAffectConfig{
+				Enabled:        true,
+				StorageEnabled: true,
+				Evaluator:      config.AgentAffectEvaluatorConfig{Mode: "disabled"},
+			},
 			Providers: []configcenter.ProviderEffective{{
 				ID:      "moonshot",
 				Enabled: true,
@@ -502,6 +716,9 @@ func TestHandleConfigEffective(t *testing.T) {
 	}
 	if len(resp.Providers) != 1 || resp.Providers[0].Env.APIKeyEnv != "MOONSHOT_API_KEY" || !resp.Providers[0].Env.Present {
 		t.Fatalf("providers = %#v", resp.Providers)
+	}
+	if !resp.AgentAffect.Enabled || resp.AgentAffect.Evaluator.Mode != "disabled" {
+		t.Fatalf("agent_affect = %#v", resp.AgentAffect)
 	}
 	if len(resp.Issues) != 1 || resp.Issues[0].Path != "memory.retrieval.enabled" {
 		t.Fatalf("issues = %#v", resp.Issues)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -121,6 +122,93 @@ func TestEvaluateMoodImpactPreviewDoesNotCommitState(t *testing.T) {
 	}
 }
 
+func TestStoreRawInputsFalsePreventsInputTextPersistence(t *testing.T) {
+	cfg := config.DefaultConfig().AgentAffect
+	cfg.Enabled = true
+	cfg.Context.StoreRawInputs = false
+	rt, db := newTestRuntime(t, cfg, fakeEvaluator{result: LLMEvaluationResult{
+		Delta:        MoodVector{Warmth: 0.1},
+		CauseSummary: "Raw text should not persist.",
+		Confidence:   0.7,
+		Status:       EvaluationStatusPreview,
+	}})
+
+	if _, err := rt.EvaluateMoodImpact(context.Background(), EvaluateMoodImpactRequest{
+		PersonaID: "default",
+		SessionID: "session-1",
+		Trigger:   TriggerDescriptor{TriggerType: "debug"},
+		Input:     MoodImpactInput{Mode: "raw", Text: "private raw input", Summary: "safe summary"},
+	}); err != nil {
+		t.Fatalf("EvaluateMoodImpact: %v", err)
+	}
+	var inputText, inputSummary string
+	if err := db.QueryRow("SELECT COALESCE(input_text, ''), COALESCE(input_summary, '') FROM agent_affect_evaluations").Scan(&inputText, &inputSummary); err != nil {
+		t.Fatalf("read evaluation input: %v", err)
+	}
+	if inputText != "" {
+		t.Fatalf("input_text persisted = %q, want empty", inputText)
+	}
+	if inputSummary != "safe summary" {
+		t.Fatalf("input_summary = %q, want safe summary", inputSummary)
+	}
+}
+
+func TestResetMoodWritesBaselineStateEventAndHistory(t *testing.T) {
+	cfg := config.DefaultConfig().AgentAffect
+	cfg.Enabled = true
+	rt, _ := newTestRuntime(t, cfg, fakeEvaluator{})
+
+	resp, err := rt.ResetMood(context.Background(), ResetMoodRequest{
+		PersonaID: "default",
+		SessionID: "session-1",
+		Reason:    "manual smoke reset",
+	})
+	if err != nil {
+		t.Fatalf("ResetMood: %v", err)
+	}
+	if resp.EventID == "" || resp.Mood.StateID == "" {
+		t.Fatalf("reset response missing ids: %#v", resp)
+	}
+	if resp.Mood.Label != "baseline" || resp.Mood.CauseSummary != "manual smoke reset" {
+		t.Fatalf("reset mood = %#v", resp.Mood)
+	}
+	history, err := rt.ListHistory(context.Background(), HistoryQuery{PersonaID: "default", SessionID: "session-1", Kind: "both", Limit: 10})
+	if err != nil {
+		t.Fatalf("ListHistory: %v", err)
+	}
+	if len(history.Events) != 1 || history.Events[0].ID != resp.EventID {
+		t.Fatalf("history events = %#v", history.Events)
+	}
+}
+
+func TestProfileUpdateRoundTrips(t *testing.T) {
+	cfg := config.DefaultConfig().AgentAffect
+	cfg.Enabled = true
+	rt, _ := newTestRuntime(t, cfg, fakeEvaluator{})
+
+	updated, err := rt.UpdateProfile(context.Background(), AffectProfile{
+		PersonaID:           "default",
+		ProfileName:         "default",
+		Baseline:            MoodVector{Warmth: 0.8, Energy: 0.4},
+		ContextPolicyJSON:   `{"mode":"summary_window"}`,
+		ClampPolicyJSON:     `{"attachment_max":0.5}`,
+		DimensionConfigJSON: `{}`,
+	})
+	if err != nil {
+		t.Fatalf("UpdateProfile: %v", err)
+	}
+	if updated.Baseline.Warmth != 0.8 || updated.ContextPolicyJSON != `{"mode":"summary_window"}` {
+		t.Fatalf("updated profile = %#v", updated)
+	}
+	profile, err := rt.GetProfile(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("GetProfile: %v", err)
+	}
+	if profile.Baseline.Energy != 0.4 || profile.ClampPolicyJSON != `{"attachment_max":0.5}` {
+		t.Fatalf("profile = %#v", profile)
+	}
+}
+
 func TestDisabledAgentAffectReturnsNoChangeWithoutWrites(t *testing.T) {
 	cfg := config.DefaultConfig().AgentAffect
 	cfg.Enabled = false
@@ -194,7 +282,7 @@ func TestPluginAPISubmitAuditsPluginWrite(t *testing.T) {
 		PersonaID:  "default",
 		SessionID:  "session-1",
 		Trigger:    TriggerDescriptor{TriggerType: "plugin_signal"},
-		Input:      MoodImpactInput{Mode: "summary", Summary: "plugin signal"},
+		Input:      MoodImpactInput{Mode: "mixed", Text: "raw private plugin text", Summary: "plugin signal"},
 		CommitMode: CommitModeCommitIfAllowed,
 	})
 	if err != nil {
@@ -209,5 +297,18 @@ func TestPluginAPISubmitAuditsPluginWrite(t *testing.T) {
 	}
 	if pluginID != "com.example.affect" || capability != "agent_affect.submit" {
 		t.Fatalf("plugin write = %q/%q", pluginID, capability)
+	}
+	writes, err := rt.ListPluginWrites(context.Background(), PluginWritesQuery{PluginID: "com.example.affect", Limit: 10})
+	if err != nil {
+		t.Fatalf("ListPluginWrites: %v", err)
+	}
+	if len(writes) != 1 || writes[0].PluginID != "com.example.affect" || !writes[0].Accepted {
+		t.Fatalf("plugin writes = %#v", writes)
+	}
+	if strings.Contains(writes[0].RequestJSON, "raw private plugin text") {
+		t.Fatalf("plugin write request_json leaked raw text: %s", writes[0].RequestJSON)
+	}
+	if !strings.Contains(writes[0].RequestJSON, "plugin signal") {
+		t.Fatalf("plugin write request_json missing summary: %s", writes[0].RequestJSON)
 	}
 }

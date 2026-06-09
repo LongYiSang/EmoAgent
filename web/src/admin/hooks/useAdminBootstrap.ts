@@ -5,6 +5,7 @@ import type { PersonaAdmin } from './usePersonaAdmin';
 import type { ChatSettingsAdmin } from './useChatSettingsAdmin';
 import type { MemoryAdmin } from './useMemoryAdmin';
 import type { SidecarAdmin } from './useSidecarAdmin';
+import type { AgentAffectAdmin } from './useAgentAffectAdmin';
 import type { AdminStatusControls } from './useAdminStatus';
 import type { TabID } from '../lib/adminData';
 
@@ -14,15 +15,16 @@ type BootstrapOptions = {
   personas: Pick<PersonaAdmin, 'reloadPersonas' | 'reloadProgressDefaults'>;
   chatSettings: Pick<ChatSettingsAdmin, 'reloadChatSettings'>;
   memory: Pick<MemoryAdmin, 'reloadEffectiveConfig' | 'reloadMemorySurfaces' | 'reloadConfigIssues' | 'reloadNaturalLatest'>;
+  agentAffect: Pick<AgentAffectAdmin, 'reloadAgentAffect'>;
   sidecar: Pick<SidecarAdmin, 'reloadSidecar'>;
   status: Pick<AdminStatusControls, 'showError'>;
 };
 
-export function useAdminBootstrap(activeTab: TabID, { providers, agents, personas, chatSettings, memory, sidecar, status }: BootstrapOptions) {
+export function useAdminBootstrap(activeTab: TabID, { providers, agents, personas, chatSettings, memory, agentAffect, sidecar, status }: BootstrapOptions) {
   const loadedResourcesRef = useRef(new Set<string>());
   const resourceRequestsRef = useRef(new Map<string, Promise<void>>());
-  const loadersRef = useRef({ providers, agents, personas, chatSettings, memory, sidecar, status });
-  loadersRef.current = { providers, agents, personas, chatSettings, memory, sidecar, status };
+  const loadersRef = useRef({ providers, agents, personas, chatSettings, memory, agentAffect, sidecar, status });
+  loadersRef.current = { providers, agents, personas, chatSettings, memory, agentAffect, sidecar, status };
 
   useEffect(() => {
     let cancelled = false;
@@ -80,6 +82,9 @@ export function useAdminBootstrap(activeTab: TabID, { providers, agents, persona
               loadOnce('memory-surfaces', loaders.memory.reloadMemorySurfaces),
               loadOnce('natural-latest', loaders.memory.reloadNaturalLatest),
             ]);
+            break;
+          case 'agent-affect':
+            await loadOnce('agent-affect', loaders.agentAffect.reloadAgentAffect);
             break;
           case 'pipelines':
             await Promise.all([loadEffectiveConfig(), loadProviderBasics()]);

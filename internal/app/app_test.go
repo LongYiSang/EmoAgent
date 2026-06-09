@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -158,6 +159,12 @@ func (a *routeTestAdminApp) GetMemoryConfig(ctx context.Context) (configcenter.M
 func (a *routeTestAdminApp) UpdateMemoryConfig(ctx context.Context, memory config.MemoryConfig) (configcenter.EffectiveConfig, error) {
 	return configcenter.EffectiveConfig{}, nil
 }
+func (a *routeTestAdminApp) GetAgentAffectConfig(ctx context.Context) (configcenter.AgentAffectConfigResponse, error) {
+	return configcenter.AgentAffectConfigResponse{}, nil
+}
+func (a *routeTestAdminApp) UpdateAgentAffectConfig(ctx context.Context, cfg config.AgentAffectConfig) (configcenter.EffectiveConfig, error) {
+	return configcenter.EffectiveConfig{}, nil
+}
 func (a *routeTestAdminApp) GetMemoryFeatures(ctx context.Context) (configcenter.MemoryConfigResponse, error) {
 	return configcenter.MemoryConfigResponse{}, nil
 }
@@ -185,6 +192,18 @@ func (a *routeTestAdminApp) GetSidecarLogs(ctx context.Context, maxBytes int) (s
 func (a *routeTestAdminApp) GetAgentAffectCurrent(ctx context.Context, req web.AgentAffectCurrentRequest) (web.AgentAffectCurrentResponse, error) {
 	return web.AgentAffectCurrentResponse{}, nil
 }
+func (a *routeTestAdminApp) GetAgentAffectProfile(ctx context.Context, personaID string) (web.AgentAffectProfileResponse, error) {
+	return web.AgentAffectProfileResponse{}, nil
+}
+func (a *routeTestAdminApp) UpdateAgentAffectProfile(ctx context.Context, profile web.AgentAffectProfileResponse) (web.AgentAffectProfileResponse, error) {
+	return web.AgentAffectProfileResponse{}, nil
+}
+func (a *routeTestAdminApp) ListAgentAffectHistory(ctx context.Context, req web.AgentAffectHistoryRequest) (web.AgentAffectHistoryResponse, error) {
+	return web.AgentAffectHistoryResponse{}, nil
+}
+func (a *routeTestAdminApp) ListAgentAffectPluginWrites(ctx context.Context, req web.AgentAffectPluginWritesRequest) (web.AgentAffectPluginWritesResponse, error) {
+	return nil, nil
+}
 func (a *routeTestAdminApp) EvaluateAgentAffect(ctx context.Context, req web.AgentAffectEvaluateRequest) (web.AgentAffectEvaluateResponse, error) {
 	return web.AgentAffectEvaluateResponse{}, nil
 }
@@ -193,6 +212,12 @@ func (a *routeTestAdminApp) SubmitAgentAffect(ctx context.Context, req web.Agent
 }
 func (a *routeTestAdminApp) ApplyAgentAffectDelta(ctx context.Context, req web.AgentAffectDeltaRequest) (web.AgentAffectDeltaResponse, error) {
 	return web.AgentAffectDeltaResponse{}, nil
+}
+func (a *routeTestAdminApp) ResetAgentAffect(ctx context.Context, req web.AgentAffectResetRequest) (web.AgentAffectResetResponse, error) {
+	return web.AgentAffectResetResponse{}, nil
+}
+func (a *routeTestAdminApp) PreviewAgentAffectPrompt(ctx context.Context, req web.AgentAffectPromptPreviewRequest) (web.AgentAffectPromptPreviewResponse, error) {
+	return web.AgentAffectPromptPreviewResponse{}, nil
 }
 
 func TestRunAllowsStartupWithoutLLM(t *testing.T) {
@@ -555,6 +580,18 @@ type fakeAgentAffectService struct{}
 func (fakeAgentAffectService) GetCurrentMood(context.Context, agentaffect.GetCurrentMoodRequest) (agentaffect.GetCurrentMoodResponse, error) {
 	return agentaffect.GetCurrentMoodResponse{}, nil
 }
+func (fakeAgentAffectService) GetProfile(context.Context, string) (agentaffect.AffectProfile, error) {
+	return agentaffect.AffectProfile{}, nil
+}
+func (fakeAgentAffectService) UpdateProfile(context.Context, agentaffect.AffectProfile) (agentaffect.AffectProfile, error) {
+	return agentaffect.AffectProfile{}, nil
+}
+func (fakeAgentAffectService) ListHistory(context.Context, agentaffect.HistoryQuery) (agentaffect.HistoryResponse, error) {
+	return agentaffect.HistoryResponse{}, nil
+}
+func (fakeAgentAffectService) ListPluginWrites(context.Context, agentaffect.PluginWritesQuery) ([]agentaffect.PluginWriteRecord, error) {
+	return nil, nil
+}
 func (fakeAgentAffectService) EvaluateMoodImpact(context.Context, agentaffect.EvaluateMoodImpactRequest) (agentaffect.EvaluateMoodImpactResponse, error) {
 	return agentaffect.EvaluateMoodImpactResponse{}, nil
 }
@@ -564,8 +601,14 @@ func (fakeAgentAffectService) SubmitMoodImpact(context.Context, agentaffect.Subm
 func (fakeAgentAffectService) ApplyMoodDelta(context.Context, agentaffect.ApplyMoodDeltaRequest) (agentaffect.ApplyMoodDeltaResponse, error) {
 	return agentaffect.ApplyMoodDeltaResponse{EventID: "event-1"}, nil
 }
+func (fakeAgentAffectService) ResetMood(context.Context, agentaffect.ResetMoodRequest) (agentaffect.ResetMoodResponse, error) {
+	return agentaffect.ResetMoodResponse{EventID: "event-1"}, nil
+}
 func (fakeAgentAffectService) BuildPromptAffectBlock(context.Context, agentaffect.BuildPromptAffectBlockRequest) (string, error) {
 	return "", nil
+}
+func (fakeAgentAffectService) PreviewPrompt(context.Context, agentaffect.BuildPromptAffectBlockRequest) (agentaffect.PromptPreviewResponse, error) {
+	return agentaffect.PromptPreviewResponse{}, nil
 }
 
 func TestHookedAgentAffectRuntimeDispatchesPluginHooks(t *testing.T) {
@@ -711,6 +754,37 @@ func TestRegisterRoutesAgentConfigDispatch(t *testing.T) {
 		}
 	})
 
+	t.Run("agent affect debug routes dispatch", func(t *testing.T) {
+		cases := []struct {
+			method string
+			path   string
+			body   string
+		}{
+			{http.MethodGet, "/api/agent-affect/config", ""},
+			{http.MethodPut, "/api/agent-affect/config", `{"agent_affect":{"storage_enabled":true}}`},
+			{http.MethodGet, "/api/agent-affect/profile?persona_id=default", ""},
+			{http.MethodPut, "/api/agent-affect/profile", `{"persona_id":"default","profile_name":"default","baseline":{"warmth":0.7}}`},
+			{http.MethodGet, "/api/agent-affect/history?persona_id=default&session_id=s1", ""},
+			{http.MethodGet, "/api/agent-affect/plugin-writes?plugin_id=demo", ""},
+			{http.MethodGet, "/api/agent-affect/current?persona_id=default", ""},
+			{http.MethodPost, "/api/agent-affect/evaluate", `{"persona_id":"default","trigger":{"trigger_type":"debug"},"input":{"mode":"summary","summary":"x"}}`},
+			{http.MethodPost, "/api/agent-affect/submit", `{"persona_id":"default","trigger":{"trigger_type":"debug"},"input":{"mode":"summary","summary":"x"}}`},
+			{http.MethodPost, "/api/agent-affect/delta", `{"persona_id":"default","trigger":{"trigger_type":"debug"},"delta":{"warmth":0.1}}`},
+			{http.MethodPost, "/api/agent-affect/reset", `{"persona_id":"default","reason":"smoke"}`},
+			{http.MethodPost, "/api/agent-affect/prompt-preview", `{"persona_id":"default"}`},
+		}
+		for _, tc := range cases {
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+			rec := httptest.NewRecorder()
+
+			mux.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s %s status = %d body=%s", tc.method, tc.path, rec.Code, rec.Body.String())
+			}
+		}
+	})
+
 	t.Run("list agent configs", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/agent-configs", nil)
 		rec := httptest.NewRecorder()
@@ -826,6 +900,60 @@ func TestUpdateChatSettingsPersistsRuntimeOverrideAndHotUpdatesEngine(t *testing
 	if got := testConfig(a).Chat.TurnPipeline; !got.Shadow || !got.Enabled || !got.MemoryStages || !got.ApprovalStages {
 		t.Fatalf("turn pipeline config = %#v, want preserved", got)
 	}
+}
+
+func TestUpdateAgentAffectConfigPersistsRuntimeSettingAndHotUpdatesEngine(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	cfg := config.DefaultConfig()
+	cfg.AgentAffect.Enabled = false
+	a := newTestApp(cfg, db, logger)
+	engine := chat.NewEngine(chat.EngineConfig{
+		DB:        db,
+		Logger:    logger,
+		Model:     "test-model",
+		MaxTokens: 128,
+	})
+	a.kernel.Services.Chat.engine = engine
+	if engineHasAgentAffectRuntime(engine) {
+		t.Fatal("engine agent affect runtime exists before enabling config")
+	}
+
+	next := cfg.AgentAffect
+	next.Enabled = true
+	next.Evaluator.Mode = "disabled"
+	next.Context.StoreRawInputs = false
+	effective, err := a.UpdateAgentAffectConfig(context.Background(), next)
+	if err != nil {
+		t.Fatalf("UpdateAgentAffectConfig: %v", err)
+	}
+
+	if !effective.AgentAffect.Enabled || effective.AgentAffect.Context.StoreRawInputs {
+		t.Fatalf("effective agent_affect = %#v", effective.AgentAffect)
+	}
+	settings, err := db.ListRuntimeSettings()
+	if err != nil {
+		t.Fatalf("ListRuntimeSettings: %v", err)
+	}
+	if len(settings) != 1 || settings[0].Namespace != "agent_affect" || settings[0].Key != "config" {
+		t.Fatalf("runtime settings = %#v", settings)
+	}
+	if !testConfig(a).AgentAffect.Enabled || testConfig(a).AgentAffect.Context.StoreRawInputs {
+		t.Fatalf("app config agent_affect = %#v", testConfig(a).AgentAffect)
+	}
+	if !engineHasAgentAffectRuntime(engine) {
+		t.Fatal("engine agent affect runtime was not hot-updated")
+	}
+}
+
+func engineHasAgentAffectRuntime(engine *chat.Engine) bool {
+	field := reflect.ValueOf(engine).Elem().FieldByName("agentAffect")
+	return field.IsValid() && !field.IsNil()
 }
 
 func TestConfigurePluginHostHonorsEnabledConfig(t *testing.T) {

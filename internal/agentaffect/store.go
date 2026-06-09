@@ -4,6 +4,7 @@ import "context"
 
 type Store interface {
 	EnsureProfile(ctx context.Context, personaID string) (AffectProfile, error)
+	UpsertProfile(ctx context.Context, profile AffectProfile) (AffectProfile, error)
 	GetLatestState(ctx context.Context, personaID string, sessionID string) (*MoodSnapshot, error)
 	InsertState(ctx context.Context, state MoodSnapshot) error
 	InsertEvaluation(ctx context.Context, eval AffectEvaluationRecord) error
@@ -12,4 +13,6 @@ type Store interface {
 	CommitStateEvent(ctx context.Context, state MoodSnapshot, event AffectEventRecord) error
 	InsertPluginWrite(ctx context.Context, write PluginWriteRecord) error
 	ListRecentEvaluations(ctx context.Context, q RecentEvaluationsQuery) ([]AffectEvaluationRecord, error)
+	ListRecentEvents(ctx context.Context, q RecentEventsQuery) ([]AffectEventRecord, error)
+	ListPluginWrites(ctx context.Context, q PluginWritesQuery) ([]PluginWriteRecord, error)
 }

@@ -13,10 +13,16 @@ import (
 
 type Service interface {
 	GetCurrentMood(ctx context.Context, req GetCurrentMoodRequest) (GetCurrentMoodResponse, error)
+	GetProfile(ctx context.Context, personaID string) (AffectProfile, error)
+	UpdateProfile(ctx context.Context, profile AffectProfile) (AffectProfile, error)
+	ListHistory(ctx context.Context, q HistoryQuery) (HistoryResponse, error)
+	ListPluginWrites(ctx context.Context, q PluginWritesQuery) ([]PluginWriteRecord, error)
 	EvaluateMoodImpact(ctx context.Context, req EvaluateMoodImpactRequest) (EvaluateMoodImpactResponse, error)
 	SubmitMoodImpact(ctx context.Context, req SubmitMoodImpactRequest) (SubmitMoodImpactResponse, error)
 	ApplyMoodDelta(ctx context.Context, req ApplyMoodDeltaRequest) (ApplyMoodDeltaResponse, error)
+	ResetMood(ctx context.Context, req ResetMoodRequest) (ResetMoodResponse, error)
 	BuildPromptAffectBlock(ctx context.Context, req BuildPromptAffectBlockRequest) (string, error)
+	PreviewPrompt(ctx context.Context, req BuildPromptAffectBlockRequest) (PromptPreviewResponse, error)
 }
 
 type Runtime struct {
@@ -63,6 +69,70 @@ func (r *Runtime) GetCurrentMood(ctx context.Context, req GetCurrentMoodRequest)
 		return GetCurrentMoodResponse{}, err
 	}
 	return GetCurrentMoodResponse{Enabled: r.cfg.Enabled, Mood: mood}, nil
+}
+
+func (r *Runtime) GetProfile(ctx context.Context, personaID string) (AffectProfile, error) {
+	if strings.TrimSpace(personaID) == "" {
+		return AffectProfile{}, fmt.Errorf("persona_id is required")
+	}
+	if r.store == nil {
+		return r.profileForPrompt(ctx, personaID), nil
+	}
+	return r.store.EnsureProfile(ctx, personaID)
+}
+
+func (r *Runtime) UpdateProfile(ctx context.Context, profile AffectProfile) (AffectProfile, error) {
+	if r.store == nil {
+		return AffectProfile{}, fmt.Errorf("agent affect storage is not configured")
+	}
+	if strings.TrimSpace(profile.PersonaID) == "" {
+		return AffectProfile{}, fmt.Errorf("persona_id is required")
+	}
+	var notes []string
+	profile.Baseline = clampState(r.cfg, profile.Baseline, &notes)
+	return r.store.UpsertProfile(ctx, profile)
+}
+
+func (r *Runtime) ListHistory(ctx context.Context, q HistoryQuery) (HistoryResponse, error) {
+	if strings.TrimSpace(q.PersonaID) == "" {
+		return HistoryResponse{}, fmt.Errorf("persona_id is required")
+	}
+	if q.Limit <= 0 {
+		q.Limit = 30
+	}
+	if r.store == nil {
+		return HistoryResponse{}, nil
+	}
+	kind := strings.TrimSpace(q.Kind)
+	if kind == "" {
+		kind = "both"
+	}
+	resp := HistoryResponse{}
+	if kind == "both" || kind == "evaluations" {
+		evals, err := r.store.ListRecentEvaluations(ctx, RecentEvaluationsQuery{PersonaID: q.PersonaID, SessionID: q.SessionID, Limit: q.Limit})
+		if err != nil {
+			return HistoryResponse{}, err
+		}
+		resp.Evaluations = evals
+	}
+	if kind == "both" || kind == "events" {
+		events, err := r.store.ListRecentEvents(ctx, RecentEventsQuery{PersonaID: q.PersonaID, SessionID: q.SessionID, Limit: q.Limit})
+		if err != nil {
+			return HistoryResponse{}, err
+		}
+		resp.Events = events
+	}
+	return resp, nil
+}
+
+func (r *Runtime) ListPluginWrites(ctx context.Context, q PluginWritesQuery) ([]PluginWriteRecord, error) {
+	if q.Limit <= 0 {
+		q.Limit = 30
+	}
+	if r.store == nil {
+		return nil, nil
+	}
+	return r.store.ListPluginWrites(ctx, q)
 }
 
 func (r *Runtime) EvaluateMoodImpact(ctx context.Context, req EvaluateMoodImpactRequest) (EvaluateMoodImpactResponse, error) {
@@ -155,6 +225,63 @@ func (r *Runtime) ApplyMoodDelta(ctx context.Context, req ApplyMoodDeltaRequest)
 	return ApplyMoodDeltaResponse{Mood: after, ClampedDelta: clamped.ClampedDelta, ClampNotes: clamped.Notes}, nil
 }
 
+func (r *Runtime) ResetMood(ctx context.Context, req ResetMoodRequest) (ResetMoodResponse, error) {
+	if strings.TrimSpace(req.PersonaID) == "" {
+		return ResetMoodResponse{}, fmt.Errorf("persona_id is required")
+	}
+	if !r.cfg.Enabled {
+		return ResetMoodResponse{Mood: baselineSnapshot(req.PersonaID, req.SessionID, r.now())}, nil
+	}
+	committedBy, err := normalizeCommittedBy(req.CommittedBy)
+	if err != nil {
+		return ResetMoodResponse{}, err
+	}
+	before, err := r.currentMood(ctx, req.PersonaID, req.SessionID)
+	if err != nil {
+		return ResetMoodResponse{}, err
+	}
+	baseline := req.Baseline
+	if baseline.IsZero() {
+		baseline = r.profileForPrompt(ctx, req.PersonaID).Baseline
+	}
+	var notes []string
+	after := MoodSnapshot{
+		StateID:      uuid.NewString(),
+		PersonaID:    req.PersonaID,
+		SessionID:    req.SessionID,
+		Vector:       clampState(r.cfg, baseline, &notes),
+		Label:        "baseline",
+		Confidence:   0.5,
+		CauseSummary: defaultString(req.Reason, "Manual reset to baseline."),
+		UpdatedAt:    r.now(),
+	}
+	event := AffectEventRecord{
+		ID:             uuid.NewString(),
+		PersonaID:      req.PersonaID,
+		SessionID:      req.SessionID,
+		Trigger:        TriggerDescriptor{TriggerType: "debug", CustomType: "reset"},
+		BeforeStateID:  before.StateID,
+		AfterStateID:   after.StateID,
+		ProposedDelta:  deltaBetween(before.Vector, after.Vector),
+		ClampedDelta:   deltaBetween(before.Vector, after.Vector),
+		CommittedDelta: deltaBetween(before.Vector, after.Vector),
+		LabelBefore:    before.Label,
+		LabelAfter:     after.Label,
+		CauseSummary:   after.CauseSummary,
+		Significance:   significance(deltaBetween(before.Vector, after.Vector)),
+		Confidence:     after.Confidence,
+		CommittedBy:    committedBy,
+		CreatedAt:      r.now(),
+	}
+	if r.cfg.StorageEnabled && r.store != nil {
+		if err := r.store.CommitStateEvent(ctx, after, event); err != nil {
+			return ResetMoodResponse{}, err
+		}
+		return ResetMoodResponse{EventID: event.ID, Mood: after}, nil
+	}
+	return ResetMoodResponse{Mood: after}, nil
+}
+
 func (r *Runtime) BuildPromptAffectBlock(ctx context.Context, req BuildPromptAffectBlockRequest) (string, error) {
 	if !r.cfg.Enabled || !r.cfg.Prompt.IncludeMoodBlock {
 		return "", nil
@@ -168,6 +295,14 @@ func (r *Runtime) BuildPromptAffectBlock(ctx context.Context, req BuildPromptAff
 		}
 	}
 	return FormatPromptAffectBlock(r.cfg, mood), nil
+}
+
+func (r *Runtime) PreviewPrompt(ctx context.Context, req BuildPromptAffectBlockRequest) (PromptPreviewResponse, error) {
+	block, err := r.BuildPromptAffectBlock(ctx, req)
+	if err != nil {
+		return PromptPreviewResponse{}, err
+	}
+	return PromptPreviewResponse{PromptBlock: block}, nil
 }
 
 type evaluationState struct {
@@ -228,7 +363,7 @@ func (r *Runtime) evaluate(ctx context.Context, req EvaluateMoodImpactRequest, c
 			SessionID:               req.SessionID,
 			TurnID:                  req.TurnID,
 			Trigger:                 normalizeTrigger(req.Trigger),
-			Input:                   normalizeInput(req.Input),
+			Input:                   r.storageInput(req.Input),
 			ContextWindowPolicyJSON: "{}",
 			BeforeStateID:           before.StateID,
 			BeforeStateJSON:         mustJSON(before),
@@ -390,6 +525,14 @@ func normalizeInput(input MoodImpactInput) MoodImpactInput {
 	return input
 }
 
+func (r *Runtime) storageInput(input MoodImpactInput) MoodImpactInput {
+	input = normalizeInput(input)
+	if !r.cfg.Context.StoreRawInputs {
+		input.Text = ""
+	}
+	return input
+}
+
 func normalizeCommittedBy(value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -429,6 +572,22 @@ func significance(delta MoodVector) float64 {
 		return 0.5
 	}
 	return max
+}
+
+func deltaBetween(before MoodVector, after MoodVector) MoodVector {
+	return MoodVector{
+		Valence:     after.Valence - before.Valence,
+		Arousal:     after.Arousal - before.Arousal,
+		Dominance:   after.Dominance - before.Dominance,
+		Energy:      after.Energy - before.Energy,
+		Warmth:      after.Warmth - before.Warmth,
+		Concern:     after.Concern - before.Concern,
+		Curiosity:   after.Curiosity - before.Curiosity,
+		Playfulness: after.Playfulness - before.Playfulness,
+		Attachment:  after.Attachment - before.Attachment,
+		Frustration: after.Frustration - before.Frustration,
+		Uncertainty: after.Uncertainty - before.Uncertainty,
+	}
 }
 
 func abs(v float64) float64 {

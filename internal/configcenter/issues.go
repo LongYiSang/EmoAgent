@@ -33,6 +33,7 @@ func BuildIssues(seed *config.Config, providers []ProviderEffective, memoryCore 
 			})
 		}
 	}
+	issues = append(issues, buildAgentAffectIssues(seed.AgentAffect)...)
 
 	if !seed.Memory.Enabled {
 		if seed.Memory.Retrieval.Enabled {
@@ -227,6 +228,69 @@ func BuildIssues(seed *config.Config, providers []ProviderEffective, memoryCore 
 				Message:  "agent affect retrieval weight_cap must be <= 0.03",
 			})
 		}
+	}
+	return issues
+}
+
+func buildAgentAffectIssues(cfg config.AgentAffectConfig) []ConfigIssue {
+	issues := make([]ConfigIssue, 0)
+	if cfg.Enabled && !cfg.StorageEnabled {
+		issues = append(issues, ConfigIssue{
+			Path:     "agent_affect.storage_enabled",
+			Severity: "error",
+			Message:  "agent_affect.enabled requires agent_affect.storage_enabled",
+		})
+	}
+	switch strings.TrimSpace(cfg.Evaluator.Mode) {
+	case "", "llm", "disabled":
+	default:
+		issues = append(issues, ConfigIssue{
+			Path:     "agent_affect.evaluator.mode",
+			Severity: "error",
+			Message:  "agent_affect.evaluator.mode must be llm or disabled",
+		})
+	}
+	if cfg.Evaluator.StoreHiddenThinking {
+		issues = append(issues, ConfigIssue{
+			Path:     "agent_affect.evaluator.store_hidden_thinking",
+			Severity: "error",
+			Message:  "agent_affect must not store hidden thinking",
+		})
+	}
+	switch strings.TrimSpace(cfg.Context.Mode) {
+	case "", "none", "raw_window", "summary_window", "mixed":
+	default:
+		issues = append(issues, ConfigIssue{
+			Path:     "agent_affect.context.mode",
+			Severity: "error",
+			Message:  "agent_affect.context.mode must be none, raw_window, summary_window, or mixed",
+		})
+	}
+	if cfg.Limits.PluginDeltaMultiplier < 0 {
+		issues = append(issues, ConfigIssue{Path: "agent_affect.limits.plugin_delta_multiplier", Severity: "error", Message: "plugin_delta_multiplier must be >= 0"})
+	}
+	for path, value := range map[string]float64{
+		"agent_affect.limits.per_request_delta.valence":     cfg.Limits.PerRequestDelta.Valence,
+		"agent_affect.limits.per_request_delta.arousal":     cfg.Limits.PerRequestDelta.Arousal,
+		"agent_affect.limits.per_request_delta.dominance":   cfg.Limits.PerRequestDelta.Dominance,
+		"agent_affect.limits.per_request_delta.energy":      cfg.Limits.PerRequestDelta.Energy,
+		"agent_affect.limits.per_request_delta.warmth":      cfg.Limits.PerRequestDelta.Warmth,
+		"agent_affect.limits.per_request_delta.concern":     cfg.Limits.PerRequestDelta.Concern,
+		"agent_affect.limits.per_request_delta.curiosity":   cfg.Limits.PerRequestDelta.Curiosity,
+		"agent_affect.limits.per_request_delta.playfulness": cfg.Limits.PerRequestDelta.Playfulness,
+		"agent_affect.limits.per_request_delta.attachment":  cfg.Limits.PerRequestDelta.Attachment,
+		"agent_affect.limits.per_request_delta.frustration": cfg.Limits.PerRequestDelta.Frustration,
+		"agent_affect.limits.per_request_delta.uncertainty": cfg.Limits.PerRequestDelta.Uncertainty,
+	} {
+		if value < 0 {
+			issues = append(issues, ConfigIssue{Path: path, Severity: "error", Message: "per_request_delta values must be >= 0"})
+		}
+	}
+	if cfg.Limits.Absolute.AttachmentMax < 0 {
+		issues = append(issues, ConfigIssue{Path: "agent_affect.limits.absolute.attachment_max", Severity: "error", Message: "attachment_max must be >= 0"})
+	}
+	if cfg.Limits.Absolute.FrustrationMax < 0 {
+		issues = append(issues, ConfigIssue{Path: "agent_affect.limits.absolute.frustration_max", Severity: "error", Message: "frustration_max must be >= 0"})
 	}
 	return issues
 }
