@@ -84,7 +84,7 @@ export function useAdminBootstrap(activeTab: TabID, { providers, agents, persona
             ]);
             break;
           case 'agent-affect':
-            await loadOnce('agent-affect', loaders.agentAffect.reloadAgentAffect);
+            await Promise.all([loadOnce('agent-affect', loaders.agentAffect.reloadAgentAffect), loadProviderBasics()]);
             break;
           case 'pipelines':
             await Promise.all([loadEffectiveConfig(), loadProviderBasics()]);

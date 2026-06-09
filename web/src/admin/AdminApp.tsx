@@ -125,7 +125,7 @@ export function AdminApp() {
           />
         );
       case 'agent-affect':
-        return <AgentAffectTab {...agentAffect} />;
+        return <AgentAffectTab {...agentAffect} providers={providers.providers} modelOptions={providers.modelOptions} />;
       case 'pipelines':
         return <PipelinesTab providers={providers.providers} memoryDraft={memory.memoryDraft} updateMemoryPath={memory.updateMemoryPath} savePipelines={memory.savePipelines} />;
       case 'retrieval-mirror':
