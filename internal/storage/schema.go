@@ -666,6 +666,151 @@ CREATE INDEX IF NOT EXISTS idx_agent_affect_plugin_writes_plugin
     ON agent_affect_plugin_writes(plugin_id, created_at DESC);
 `,
 	},
+	{
+		Version: 21,
+		SQL: `
+ALTER TABLE agent_affect_states ADD COLUMN mood_description TEXT NOT NULL DEFAULT '';
+ALTER TABLE agent_affect_states ADD COLUMN mood_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE agent_affect_states ADD COLUMN prompt_mood_text TEXT NOT NULL DEFAULT '';
+ALTER TABLE agent_affect_states ADD COLUMN mood_owner_scope TEXT NOT NULL DEFAULT 'session';
+ALTER TABLE agent_affect_states ADD COLUMN mood_owner_id TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE agent_affect_evaluations ADD COLUMN mood_description TEXT NOT NULL DEFAULT '';
+ALTER TABLE agent_affect_evaluations ADD COLUMN mood_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE agent_affect_evaluations ADD COLUMN prompt_mood_text TEXT NOT NULL DEFAULT '';
+ALTER TABLE agent_affect_evaluations ADD COLUMN mood_owner_scope TEXT NOT NULL DEFAULT 'session';
+ALTER TABLE agent_affect_evaluations ADD COLUMN mood_owner_id TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE agent_affect_events ADD COLUMN mood_description TEXT NOT NULL DEFAULT '';
+ALTER TABLE agent_affect_events ADD COLUMN mood_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE agent_affect_events ADD COLUMN prompt_mood_text TEXT NOT NULL DEFAULT '';
+ALTER TABLE agent_affect_events ADD COLUMN mood_owner_scope TEXT NOT NULL DEFAULT 'session';
+ALTER TABLE agent_affect_events ADD COLUMN mood_owner_id TEXT NOT NULL DEFAULT '';
+
+UPDATE agent_affect_states
+SET mood_owner_scope = 'session',
+    mood_owner_id = 'session:' || COALESCE(session_id, '')
+WHERE mood_owner_id = '';
+
+UPDATE agent_affect_evaluations
+SET mood_owner_scope = 'session',
+    mood_owner_id = 'session:' || COALESCE(session_id, '')
+WHERE mood_owner_id = '';
+
+UPDATE agent_affect_events
+SET mood_owner_scope = 'session',
+    mood_owner_id = 'session:' || COALESCE(session_id, '')
+WHERE mood_owner_id = '';
+
+CREATE INDEX IF NOT EXISTS idx_agent_affect_states_owner_current
+    ON agent_affect_states(persona_id, mood_owner_scope, mood_owner_id, updated_at DESC);
+`,
+	},
+	{
+		Version: 22,
+		SQL: `
+CREATE TABLE IF NOT EXISTS agent_affect_jobs (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT NOT NULL UNIQUE,
+
+    persona_id TEXT NOT NULL,
+    session_id TEXT,
+    turn_id TEXT,
+
+    mood_owner_scope TEXT NOT NULL,
+    mood_owner_id TEXT NOT NULL,
+
+    job_type TEXT NOT NULL DEFAULT 'turn_evaluate'
+        CHECK (job_type IN ('turn_evaluate','plugin_evaluate','manual_evaluate','barrier')),
+    batchable INTEGER NOT NULL DEFAULT 1 CHECK (batchable IN (0,1)),
+    barrier_kind TEXT NOT NULL DEFAULT '',
+
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending','running','done','failed','superseded')),
+    priority INTEGER NOT NULL DEFAULT 100,
+    run_after TEXT NOT NULL,
+
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    claimed_by TEXT,
+    claimed_until TEXT,
+
+    trigger_json TEXT NOT NULL DEFAULT '{}',
+    input_mode TEXT NOT NULL DEFAULT 'mixed'
+        CHECK (input_mode IN ('raw','summary','mixed','none')),
+    user_text TEXT,
+    assistant_text TEXT,
+    input_summary TEXT,
+    memory_prompt_block TEXT,
+
+    base_state_id TEXT,
+    base_state_updated_at TEXT,
+
+    batch_id TEXT,
+    result_evaluation_id TEXT,
+    result_event_id TEXT,
+
+    error_message TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    started_at TEXT,
+    finished_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_affect_jobs_claim
+    ON agent_affect_jobs(status, run_after, priority, seq);
+
+CREATE INDEX IF NOT EXISTS idx_agent_affect_jobs_owner_status
+    ON agent_affect_jobs(mood_owner_scope, mood_owner_id, status, seq);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_affect_jobs_turn_unique
+    ON agent_affect_jobs(turn_id, job_type)
+    WHERE turn_id IS NOT NULL AND job_type = 'turn_evaluate';
+
+CREATE TABLE IF NOT EXISTS agent_affect_job_batches (
+    id TEXT PRIMARY KEY,
+    persona_id TEXT NOT NULL,
+    mood_owner_scope TEXT NOT NULL,
+    mood_owner_id TEXT NOT NULL,
+
+    job_type TEXT NOT NULL DEFAULT 'turn_evaluate',
+    status TEXT NOT NULL DEFAULT 'running'
+        CHECK (status IN ('running','done','failed','superseded')),
+
+    job_count INTEGER NOT NULL DEFAULT 0,
+    first_job_seq INTEGER NOT NULL,
+    last_job_seq INTEGER NOT NULL,
+    job_ids_json TEXT NOT NULL DEFAULT '[]',
+    session_ids_json TEXT NOT NULL DEFAULT '[]',
+    turn_ids_json TEXT NOT NULL DEFAULT '[]',
+
+    batch_input_summary TEXT NOT NULL DEFAULT '',
+    context_window_snapshot_json TEXT,
+
+    evaluation_id TEXT,
+    affect_event_id TEXT,
+    error_message TEXT,
+
+    claimed_by TEXT,
+    started_at TEXT NOT NULL,
+    finished_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_affect_batches_owner_time
+    ON agent_affect_job_batches(mood_owner_scope, mood_owner_id, started_at DESC);
+`,
+	},
+	{
+		Version: 23,
+		SQL: `
+ALTER TABLE agent_affect_evaluations ADD COLUMN batch_id TEXT;
+ALTER TABLE agent_affect_events ADD COLUMN batch_id TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_agent_affect_evaluations_batch
+    ON agent_affect_evaluations(batch_id);
+CREATE INDEX IF NOT EXISTS idx_agent_affect_events_batch
+    ON agent_affect_events(batch_id);
+`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.

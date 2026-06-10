@@ -219,6 +219,18 @@ func (a *routeTestAdminApp) ResetAgentAffect(ctx context.Context, req web.AgentA
 func (a *routeTestAdminApp) PreviewAgentAffectPrompt(ctx context.Context, req web.AgentAffectPromptPreviewRequest) (web.AgentAffectPromptPreviewResponse, error) {
 	return web.AgentAffectPromptPreviewResponse{}, nil
 }
+func (a *routeTestAdminApp) GetAgentAffectQueue(ctx context.Context, req web.AgentAffectQueueRequest) (web.AgentAffectQueueResponse, error) {
+	return web.AgentAffectQueueResponse{}, nil
+}
+func (a *routeTestAdminApp) ProcessAgentAffectBatchOnce(ctx context.Context) (web.AgentAffectProcessOnceResponse, error) {
+	return web.AgentAffectProcessOnceResponse{}, nil
+}
+func (a *routeTestAdminApp) ClearAgentAffectFailedJobs(ctx context.Context, req web.AgentAffectQueueRequest) (web.AgentAffectClearFailedResponse, error) {
+	return web.AgentAffectClearFailedResponse{}, nil
+}
+func (a *routeTestAdminApp) SupersedeAgentAffectPendingJobs(ctx context.Context, req web.AgentAffectQueueRequest) (web.AgentAffectSupersedePendingResponse, error) {
+	return web.AgentAffectSupersedePendingResponse{}, nil
+}
 
 func TestRunAllowsStartupWithoutLLM(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -577,6 +589,9 @@ func TestActiveAgentRuntimeCloneKeepsRequestParamsIsolated(t *testing.T) {
 
 type fakeAgentAffectService struct{}
 
+func (fakeAgentAffectService) UpdateMode() string {
+	return "async_after_reply"
+}
 func (fakeAgentAffectService) GetCurrentMood(context.Context, agentaffect.GetCurrentMoodRequest) (agentaffect.GetCurrentMoodResponse, error) {
 	return agentaffect.GetCurrentMoodResponse{}, nil
 }
@@ -597,6 +612,9 @@ func (fakeAgentAffectService) EvaluateMoodImpact(context.Context, agentaffect.Ev
 }
 func (fakeAgentAffectService) SubmitMoodImpact(context.Context, agentaffect.SubmitMoodImpactRequest) (agentaffect.SubmitMoodImpactResponse, error) {
 	return agentaffect.SubmitMoodImpactResponse{EventID: "event-1"}, nil
+}
+func (fakeAgentAffectService) EnqueueTurnEvaluationJob(context.Context, agentaffect.EnqueueTurnEvaluationJobRequest) (agentaffect.AffectJobRecord, error) {
+	return agentaffect.AffectJobRecord{ID: "job-1"}, nil
 }
 func (fakeAgentAffectService) ApplyMoodDelta(context.Context, agentaffect.ApplyMoodDeltaRequest) (agentaffect.ApplyMoodDeltaResponse, error) {
 	return agentaffect.ApplyMoodDeltaResponse{EventID: "event-1"}, nil

@@ -5,17 +5,21 @@ import { cloneRecord, setNestedValue } from '../lib/adminData';
 import type { AdminStatusControls } from './useAdminStatus';
 import {
   applyAgentAffectDelta,
+  clearAgentAffectFailedJobs,
   evaluateAgentAffect,
   loadAgentAffectConfig,
   loadAgentAffectCurrent,
   loadAgentAffectHistory,
   loadAgentAffectPluginWrites,
   loadAgentAffectProfile,
+  loadAgentAffectQueue,
   previewAgentAffectPrompt,
+  processAgentAffectOnce,
   resetAgentAffect,
   saveAgentAffectConfig,
   saveAgentAffectProfile,
   submitAgentAffect,
+  supersedeAgentAffectPendingJobs,
 } from '../protocol/agentAffectApi';
 
 type AgentAffectOptions = Pick<AdminStatusControls, 'setStatus' | 'showError'>;
@@ -28,6 +32,7 @@ export function useAgentAffectAdmin({ setStatus, showError }: AgentAffectOptions
   const [currentMood, setCurrentMood] = useState<AnyRecord>({});
   const [history, setHistory] = useState<AnyRecord>({ evaluations: [], events: [] });
   const [pluginWrites, setPluginWrites] = useState<AnyRecord[]>([]);
+  const [queueStatus, setQueueStatus] = useState<AnyRecord>({ jobs: [], batches: [] });
   const [promptPreview, setPromptPreview] = useState('');
   const [debugInput, setDebugInput] = useState('用户表达了感谢，希望继续深入讨论。');
   const [deltaJSON, setDeltaJSON] = useState('{\n  "warmth": 0.1,\n  "curiosity": 0.05\n}');
@@ -39,12 +44,13 @@ export function useAgentAffectAdmin({ setStatus, showError }: AgentAffectOptions
 
   const reloadAgentAffect = useCallback(async () => {
     setStatus('正在加载 Agent Affect...');
-    const [cfg, current, hist, profile, writes, prompt] = await Promise.all([
+    const [cfg, current, hist, profile, writes, queue, prompt] = await Promise.all([
       loadAgentAffectConfig(),
       loadAgentAffectCurrent({ personaID, sessionID }),
       loadAgentAffectHistory({ personaID, sessionID, kind: 'both', limit: 30 }),
       loadAgentAffectProfile(personaID),
       loadAgentAffectPluginWrites({ personaID, sessionID, limit: 30 }),
+      loadAgentAffectQueue({ personaID, sessionID, limit: 30 }),
       previewAgentAffectPrompt({ persona_id: personaID, session_id: sessionID }),
     ]);
     syncConfig(cfg);
@@ -52,20 +58,23 @@ export function useAgentAffectAdmin({ setStatus, showError }: AgentAffectOptions
     setHistory(hist);
     setProfileDraft(profile);
     setPluginWrites(writes);
+    setQueueStatus(queue);
     setPromptPreview(String(field(prompt, 'prompt_block', '')));
     setStatus('就绪');
   }, [personaID, sessionID, setStatus, syncConfig]);
 
   const reloadAgentAffectState = useCallback(async () => {
-    const [current, hist, writes, prompt] = await Promise.all([
+    const [current, hist, writes, queue, prompt] = await Promise.all([
       loadAgentAffectCurrent({ personaID, sessionID }),
       loadAgentAffectHistory({ personaID, sessionID, kind: 'both', limit: 30 }),
       loadAgentAffectPluginWrites({ personaID, sessionID, limit: 30 }),
+      loadAgentAffectQueue({ personaID, sessionID, limit: 30 }),
       previewAgentAffectPrompt({ persona_id: personaID, session_id: sessionID }),
     ]);
     setCurrentMood(current);
     setHistory(hist);
     setPluginWrites(writes);
+    setQueueStatus(queue);
     setPromptPreview(String(field(prompt, 'prompt_block', '')));
   }, [personaID, sessionID]);
 
@@ -173,6 +182,42 @@ export function useAgentAffectAdmin({ setStatus, showError }: AgentAffectOptions
     }
   }, [personaID, sessionID, showError]);
 
+  const processQueueOnce = useCallback(async () => {
+    setStatus('正在处理一个 Agent Affect batch...');
+    try {
+      const result = await processAgentAffectOnce();
+      setLastResult(result);
+      await reloadAgentAffectState();
+      setStatus('Agent Affect batch 处理完成');
+    } catch (error) {
+      showError(error);
+    }
+  }, [reloadAgentAffectState, setStatus, showError]);
+
+  const clearFailedJobs = useCallback(async () => {
+    setStatus('正在清理 Agent Affect failed jobs...');
+    try {
+      const result = await clearAgentAffectFailedJobs({ persona_id: personaID, session_id: sessionID });
+      setLastResult(result);
+      await reloadAgentAffectState();
+      setStatus('Agent Affect failed jobs 已清理');
+    } catch (error) {
+      showError(error);
+    }
+  }, [personaID, reloadAgentAffectState, sessionID, setStatus, showError]);
+
+  const supersedePendingJobs = useCallback(async () => {
+    setStatus('正在 supersede Agent Affect pending jobs...');
+    try {
+      const result = await supersedeAgentAffectPendingJobs({ persona_id: personaID, session_id: sessionID });
+      setLastResult(result);
+      await reloadAgentAffectState();
+      setStatus('Agent Affect pending jobs 已 supersede');
+    } catch (error) {
+      showError(error);
+    }
+  }, [personaID, reloadAgentAffectState, sessionID, setStatus, showError]);
+
   return useMemo(() => ({
     personaID,
     sessionID,
@@ -181,6 +226,7 @@ export function useAgentAffectAdmin({ setStatus, showError }: AgentAffectOptions
     currentMood,
     history,
     pluginWrites,
+    queueStatus,
     promptPreview,
     debugInput,
     deltaJSON,
@@ -201,9 +247,12 @@ export function useAgentAffectAdmin({ setStatus, showError }: AgentAffectOptions
     applyDelta,
     resetMood,
     refreshPromptPreview,
+    processQueueOnce,
+    clearFailedJobs,
+    supersedePendingJobs,
     configJSON: pretty(configDraft),
     resultJSON: pretty(lastResult),
-  }), [personaID, sessionID, configDraft, profileDraft, currentMood, history, pluginWrites, promptPreview, debugInput, deltaJSON, lastResult, reloadAgentAffect, reloadAgentAffectState, updateConfigPath, updateProfileBaseline, saveConfigDraft, saveProfileDraft, evaluatePreview, submitCommit, applyDelta, resetMood, refreshPromptPreview]);
+  }), [personaID, sessionID, configDraft, profileDraft, currentMood, history, pluginWrites, queueStatus, promptPreview, debugInput, deltaJSON, lastResult, reloadAgentAffect, reloadAgentAffectState, updateConfigPath, updateProfileBaseline, saveConfigDraft, saveProfileDraft, evaluatePreview, submitCommit, applyDelta, resetMood, refreshPromptPreview, processQueueOnce, clearFailedJobs, supersedePendingJobs]);
 }
 
 export type AgentAffectAdmin = ReturnType<typeof useAgentAffectAdmin>;

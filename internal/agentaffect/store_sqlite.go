@@ -162,10 +162,10 @@ ON CONFLICT(persona_id, profile_name) DO UPDATE SET
 
 func (s *SQLiteStore) GetLatestState(ctx context.Context, personaID string, sessionID string) (*MoodSnapshot, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, persona_id, COALESCE(session_id, ''),
+SELECT id, persona_id, COALESCE(session_id, ''), COALESCE(mood_owner_scope, ''), COALESCE(mood_owner_id, ''),
        valence, arousal, dominance, energy, warmth, concern, curiosity, playfulness,
        attachment, frustration, uncertainty,
-       COALESCE(label, ''), confidence, cause_summary, visible_cause_summary,
+       COALESCE(label, ''), confidence, mood_description, mood_reason, prompt_mood_text, cause_summary, visible_cause_summary,
        cause_stack_json, updated_at
 FROM agent_affect_states
 WHERE persona_id = ? AND COALESCE(session_id, '') = ?
@@ -179,6 +179,8 @@ LIMIT 1
 		&snapshot.StateID,
 		&snapshot.PersonaID,
 		&snapshot.SessionID,
+		&snapshot.MoodOwnerScope,
+		&snapshot.MoodOwnerID,
 		&snapshot.Vector.Valence,
 		&snapshot.Vector.Arousal,
 		&snapshot.Vector.Dominance,
@@ -192,6 +194,9 @@ LIMIT 1
 		&snapshot.Vector.Uncertainty,
 		&snapshot.Label,
 		&snapshot.Confidence,
+		&snapshot.MoodDescription,
+		&snapshot.MoodReason,
+		&snapshot.PromptMoodText,
 		&snapshot.CauseSummary,
 		&snapshot.VisibleCauseSummary,
 		&causeStackJSON,
@@ -208,26 +213,80 @@ LIMIT 1
 	return &snapshot, nil
 }
 
+func (s *SQLiteStore) GetLatestStateByOwner(ctx context.Context, personaID string, owner MoodOwner) (*MoodSnapshot, error) {
+	row := s.db.QueryRowContext(ctx, `
+SELECT id, persona_id, COALESCE(session_id, ''), COALESCE(mood_owner_scope, ''), COALESCE(mood_owner_id, ''),
+       valence, arousal, dominance, energy, warmth, concern, curiosity, playfulness,
+       attachment, frustration, uncertainty,
+       COALESCE(label, ''), confidence, mood_description, mood_reason, prompt_mood_text, cause_summary, visible_cause_summary,
+       cause_stack_json, updated_at
+FROM agent_affect_states
+WHERE persona_id = ? AND mood_owner_scope = ? AND mood_owner_id = ?
+ORDER BY updated_at DESC
+LIMIT 1
+`, personaID, owner.Scope, owner.ID)
+	var snapshot MoodSnapshot
+	var causeStackJSON string
+	var updatedAt string
+	err := row.Scan(
+		&snapshot.StateID,
+		&snapshot.PersonaID,
+		&snapshot.SessionID,
+		&snapshot.MoodOwnerScope,
+		&snapshot.MoodOwnerID,
+		&snapshot.Vector.Valence,
+		&snapshot.Vector.Arousal,
+		&snapshot.Vector.Dominance,
+		&snapshot.Vector.Energy,
+		&snapshot.Vector.Warmth,
+		&snapshot.Vector.Concern,
+		&snapshot.Vector.Curiosity,
+		&snapshot.Vector.Playfulness,
+		&snapshot.Vector.Attachment,
+		&snapshot.Vector.Frustration,
+		&snapshot.Vector.Uncertainty,
+		&snapshot.Label,
+		&snapshot.Confidence,
+		&snapshot.MoodDescription,
+		&snapshot.MoodReason,
+		&snapshot.PromptMoodText,
+		&snapshot.CauseSummary,
+		&snapshot.VisibleCauseSummary,
+		&causeStackJSON,
+		&updatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get latest affect state by owner: %w", err)
+	}
+	_ = json.Unmarshal([]byte(causeStackJSON), &snapshot.CauseStack)
+	snapshot.UpdatedAt = parseDBTime(updatedAt)
+	return &snapshot, nil
+}
+
 func (s *SQLiteStore) InsertState(ctx context.Context, state MoodSnapshot) error {
 	return insertState(ctx, s.db, state)
 }
 
 func insertState(ctx context.Context, exec sqlExecer, state MoodSnapshot) error {
+	state = normalizeStateOwner(state)
 	stateVectorJSON := mustJSON(state.Vector)
 	causeStackJSON := mustJSON(state.CauseStack)
 	_, err := exec.ExecContext(ctx, `
 INSERT INTO agent_affect_states (
-    id, persona_id, session_id,
+    id, persona_id, session_id, mood_owner_scope, mood_owner_id,
     valence, arousal, dominance, energy, warmth, concern, curiosity, playfulness,
     attachment, frustration, uncertainty,
-    label, confidence, state_vector_json, cause_summary, visible_cause_summary,
+    label, confidence, state_vector_json, mood_description, mood_reason, prompt_mood_text, cause_summary, visible_cause_summary,
     cause_stack_json, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, state.StateID, state.PersonaID, nilIfEmpty(state.SessionID),
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, state.StateID, state.PersonaID, nilIfEmpty(state.SessionID), state.MoodOwnerScope, state.MoodOwnerID,
 		state.Vector.Valence, state.Vector.Arousal, state.Vector.Dominance, state.Vector.Energy,
 		state.Vector.Warmth, state.Vector.Concern, state.Vector.Curiosity, state.Vector.Playfulness,
 		state.Vector.Attachment, state.Vector.Frustration, state.Vector.Uncertainty,
-		nilIfEmpty(state.Label), state.Confidence, stateVectorJSON, state.CauseSummary, state.VisibleCauseSummary,
+		nilIfEmpty(state.Label), state.Confidence, stateVectorJSON, state.MoodDescription, state.MoodReason, state.PromptMoodText, state.CauseSummary, state.VisibleCauseSummary,
 		causeStackJSON, dbTime(state.UpdatedAt),
 	)
 	if err != nil {
@@ -237,25 +296,30 @@ INSERT INTO agent_affect_states (
 }
 
 func (s *SQLiteStore) InsertEvaluation(ctx context.Context, eval AffectEvaluationRecord) error {
-	_, err := s.db.ExecContext(ctx, `
+	return insertEvaluation(ctx, s.db, eval)
+}
+
+func insertEvaluation(ctx context.Context, exec sqlExecer, eval AffectEvaluationRecord) error {
+	eval = normalizeEvaluationOwner(eval)
+	_, err := exec.ExecContext(ctx, `
 INSERT INTO agent_affect_evaluations (
-    id, persona_id, session_id, turn_id,
+    id, persona_id, session_id, turn_id, batch_id, mood_owner_scope, mood_owner_id,
     trigger_type, custom_type, custom_type_desc, source_kind, source_ref_type,
     source_ref_id, source_ref_hash, plugin_id,
     input_mode, input_text, input_summary, context_window_policy_json, context_window_snapshot_json,
     before_state_id, before_state_json,
     llm_provider, llm_model, llm_thinking_enabled, prompt_version, prompt_hash, prompt_snapshot, response_json,
     proposed_delta_json, clamped_delta_json, predicted_state_json,
-    cause_summary, visible_cause_summary, confidence, clamp_notes_json, status, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, eval.ID, eval.PersonaID, nilIfEmpty(eval.SessionID), nilIfEmpty(eval.TurnID),
+    mood_description, mood_reason, prompt_mood_text, cause_summary, visible_cause_summary, confidence, clamp_notes_json, status, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, eval.ID, eval.PersonaID, nilIfEmpty(eval.SessionID), nilIfEmpty(eval.TurnID), nilIfEmpty(eval.BatchID), eval.MoodOwnerScope, eval.MoodOwnerID,
 		eval.Trigger.TriggerType, nilIfEmpty(eval.Trigger.CustomType), nilIfEmpty(eval.Trigger.CustomTypeDesc), eval.Trigger.SourceKind, nilIfEmpty(eval.Trigger.SourceRefType),
 		nilIfEmpty(eval.Trigger.SourceRefID), nilIfEmpty(eval.Trigger.SourceRefHash), nilIfEmpty(eval.Trigger.PluginID),
 		defaultString(eval.Input.Mode, "raw"), nilIfEmpty(eval.Input.Text), nilIfEmpty(eval.Input.Summary), defaultString(eval.ContextWindowPolicyJSON, "{}"), nilIfEmpty(eval.ContextWindowSnapshotJSON),
 		nilIfEmpty(eval.BeforeStateID), defaultString(eval.BeforeStateJSON, "{}"),
 		nilIfEmpty(eval.LLMProvider), nilIfEmpty(eval.LLMModel), boolInt(eval.LLMThinkingEnabled), defaultString(eval.PromptVersion, "agent_affect_v2.prompt.v1"), eval.PromptHash, nilIfEmpty(eval.PromptSnapshot), nilIfEmpty(eval.ResponseJSON),
 		mustJSON(eval.ProposedDelta), mustJSON(eval.ClampedDelta), mustJSON(eval.PredictedState),
-		eval.CauseSummary, eval.VisibleCauseSummary, eval.Confidence, mustJSON(eval.ClampNotes), defaultString(eval.Status, EvaluationStatusPreview), dbTime(eval.CreatedAt),
+		eval.MoodDescription, eval.MoodReason, eval.PromptMoodText, eval.CauseSummary, eval.VisibleCauseSummary, eval.Confidence, mustJSON(eval.ClampNotes), defaultString(eval.Status, EvaluationStatusPreview), dbTime(eval.CreatedAt),
 	)
 	if err != nil {
 		return fmt.Errorf("insert affect evaluation: %w", err)
@@ -276,18 +340,19 @@ func (s *SQLiteStore) InsertEvent(ctx context.Context, event AffectEventRecord) 
 }
 
 func insertEvent(ctx context.Context, exec sqlExecer, event AffectEventRecord) error {
+	event = normalizeEventOwner(event)
 	_, err := exec.ExecContext(ctx, `
 INSERT INTO agent_affect_events (
-    id, persona_id, session_id, turn_id, evaluation_id, trigger_type, custom_type, plugin_id,
+    id, persona_id, session_id, turn_id, batch_id, mood_owner_scope, mood_owner_id, evaluation_id, trigger_type, custom_type, plugin_id,
     before_state_id, after_state_id,
     proposed_delta_json, clamped_delta_json, committed_delta_json,
-    label_before, label_after, cause_summary, significance, confidence, committed_by, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, event.ID, event.PersonaID, nilIfEmpty(event.SessionID), nilIfEmpty(event.TurnID), nilIfEmpty(event.EvaluationID),
+    label_before, label_after, mood_description, mood_reason, prompt_mood_text, cause_summary, significance, confidence, committed_by, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, event.ID, event.PersonaID, nilIfEmpty(event.SessionID), nilIfEmpty(event.TurnID), nilIfEmpty(event.BatchID), event.MoodOwnerScope, event.MoodOwnerID, nilIfEmpty(event.EvaluationID),
 		event.Trigger.TriggerType, nilIfEmpty(event.Trigger.CustomType), nilIfEmpty(event.Trigger.PluginID),
 		nilIfEmpty(event.BeforeStateID), nilIfEmpty(event.AfterStateID),
 		mustJSON(event.ProposedDelta), mustJSON(event.ClampedDelta), mustJSON(event.CommittedDelta),
-		nilIfEmpty(event.LabelBefore), nilIfEmpty(event.LabelAfter), event.CauseSummary, event.Significance, event.Confidence, defaultString(event.CommittedBy, "core"), dbTime(event.CreatedAt),
+		nilIfEmpty(event.LabelBefore), nilIfEmpty(event.LabelAfter), event.MoodDescription, event.MoodReason, event.PromptMoodText, event.CauseSummary, event.Significance, event.Confidence, defaultString(event.CommittedBy, "core"), dbTime(event.CreatedAt),
 	)
 	if err != nil {
 		return fmt.Errorf("insert affect event: %w", err)
@@ -335,15 +400,17 @@ func (s *SQLiteStore) ListRecentEvaluations(ctx context.Context, q RecentEvaluat
 		limit = 30
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, persona_id, COALESCE(session_id, ''), COALESCE(turn_id, ''),
+SELECT id, persona_id, COALESCE(session_id, ''), COALESCE(turn_id, ''), COALESCE(batch_id, ''),
+       COALESCE(mood_owner_scope, ''), COALESCE(mood_owner_id, ''),
        trigger_type, COALESCE(custom_type, ''), source_kind,
-       input_mode, COALESCE(input_text, ''), COALESCE(input_summary, ''), cause_summary, visible_cause_summary,
+       input_mode, COALESCE(input_text, ''), COALESCE(input_summary, ''),
+       mood_description, mood_reason, prompt_mood_text, cause_summary, visible_cause_summary,
        proposed_delta_json, clamped_delta_json, predicted_state_json, confidence, status, created_at
 FROM agent_affect_evaluations
-WHERE persona_id = ? AND COALESCE(session_id, '') = ?
+WHERE persona_id = ? AND (? = '' OR COALESCE(session_id, '') = ?)
 ORDER BY created_at DESC
 LIMIT ?
-`, q.PersonaID, q.SessionID, limit)
+`, q.PersonaID, q.SessionID, q.SessionID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list recent affect evaluations: %w", err)
 	}
@@ -355,8 +422,10 @@ LIMIT ?
 		var createdAt string
 		if err := rows.Scan(
 			&rec.ID, &rec.PersonaID, &rec.SessionID, &rec.TurnID,
+			&rec.BatchID, &rec.MoodOwnerScope, &rec.MoodOwnerID,
 			&rec.Trigger.TriggerType, &rec.Trigger.CustomType, &rec.Trigger.SourceKind,
-			&rec.Input.Mode, &rec.Input.Text, &rec.Input.Summary, &rec.CauseSummary, &rec.VisibleCauseSummary,
+			&rec.Input.Mode, &rec.Input.Text, &rec.Input.Summary,
+			&rec.MoodDescription, &rec.MoodReason, &rec.PromptMoodText, &rec.CauseSummary, &rec.VisibleCauseSummary,
 			&proposed, &clamped, &predicted, &rec.Confidence, &rec.Status, &createdAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan affect evaluation: %w", err)
@@ -379,16 +448,17 @@ func (s *SQLiteStore) ListRecentEvents(ctx context.Context, q RecentEventsQuery)
 		limit = 30
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, persona_id, COALESCE(session_id, ''), COALESCE(turn_id, ''), COALESCE(evaluation_id, ''),
+SELECT id, persona_id, COALESCE(session_id, ''), COALESCE(turn_id, ''), COALESCE(batch_id, ''), COALESCE(mood_owner_scope, ''), COALESCE(mood_owner_id, ''), COALESCE(evaluation_id, ''),
        trigger_type, COALESCE(custom_type, ''), COALESCE(plugin_id, ''),
        COALESCE(before_state_id, ''), COALESCE(after_state_id, ''),
        proposed_delta_json, clamped_delta_json, committed_delta_json,
-       COALESCE(label_before, ''), COALESCE(label_after, ''), cause_summary, significance, confidence, committed_by, created_at
+       COALESCE(label_before, ''), COALESCE(label_after, ''),
+       mood_description, mood_reason, prompt_mood_text, cause_summary, significance, confidence, committed_by, created_at
 FROM agent_affect_events
-WHERE persona_id = ? AND COALESCE(session_id, '') = ?
+WHERE persona_id = ? AND (? = '' OR COALESCE(session_id, '') = ?)
 ORDER BY created_at DESC
 LIMIT ?
-`, q.PersonaID, q.SessionID, limit)
+`, q.PersonaID, q.SessionID, q.SessionID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list recent affect events: %w", err)
 	}
@@ -399,11 +469,12 @@ LIMIT ?
 		var proposed, clamped, committed string
 		var createdAt string
 		if err := rows.Scan(
-			&rec.ID, &rec.PersonaID, &rec.SessionID, &rec.TurnID, &rec.EvaluationID,
+			&rec.ID, &rec.PersonaID, &rec.SessionID, &rec.TurnID, &rec.BatchID, &rec.MoodOwnerScope, &rec.MoodOwnerID, &rec.EvaluationID,
 			&rec.Trigger.TriggerType, &rec.Trigger.CustomType, &rec.Trigger.PluginID,
 			&rec.BeforeStateID, &rec.AfterStateID,
 			&proposed, &clamped, &committed,
-			&rec.LabelBefore, &rec.LabelAfter, &rec.CauseSummary, &rec.Significance, &rec.Confidence, &rec.CommittedBy, &createdAt,
+			&rec.LabelBefore, &rec.LabelAfter,
+			&rec.MoodDescription, &rec.MoodReason, &rec.PromptMoodText, &rec.CauseSummary, &rec.Significance, &rec.Confidence, &rec.CommittedBy, &createdAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan affect event: %w", err)
 		}
@@ -461,6 +532,48 @@ LIMIT ?
 		return nil, fmt.Errorf("iterate affect plugin writes: %w", err)
 	}
 	return out, nil
+}
+
+func normalizeStateOwner(state MoodSnapshot) MoodSnapshot {
+	if state.MoodOwnerScope == "" || state.MoodOwnerID == "" {
+		if state.SessionID != "" {
+			state.MoodOwnerScope = "session"
+			state.MoodOwnerID = "session:" + state.SessionID
+		} else {
+			state.MoodOwnerScope = "persona"
+			state.MoodOwnerID = "persona:" + state.PersonaID
+		}
+	}
+	if state.MoodOwnerScope == "persona" {
+		state.SessionID = ""
+	}
+	return state
+}
+
+func normalizeEvaluationOwner(eval AffectEvaluationRecord) AffectEvaluationRecord {
+	if eval.MoodOwnerScope == "" || eval.MoodOwnerID == "" {
+		if eval.SessionID != "" {
+			eval.MoodOwnerScope = "session"
+			eval.MoodOwnerID = "session:" + eval.SessionID
+		} else {
+			eval.MoodOwnerScope = "persona"
+			eval.MoodOwnerID = "persona:" + eval.PersonaID
+		}
+	}
+	return eval
+}
+
+func normalizeEventOwner(event AffectEventRecord) AffectEventRecord {
+	if event.MoodOwnerScope == "" || event.MoodOwnerID == "" {
+		if event.SessionID != "" {
+			event.MoodOwnerScope = "session"
+			event.MoodOwnerID = "session:" + event.SessionID
+		} else {
+			event.MoodOwnerScope = "persona"
+			event.MoodOwnerID = "persona:" + event.PersonaID
+		}
+	}
+	return event
 }
 
 func mustJSON(v any) string {

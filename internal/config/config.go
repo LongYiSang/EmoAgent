@@ -53,7 +53,10 @@ type AgentRuntimeConfig struct {
 
 type AgentAffectConfig struct {
 	Enabled         bool                             `yaml:"enabled" json:"enabled"`
+	UpdateMode      string                           `yaml:"update_mode" json:"update_mode"`
 	StorageEnabled  bool                             `yaml:"storage_enabled" json:"storage_enabled"`
+	State           AgentAffectStateConfig           `yaml:"state" json:"state"`
+	Async           AgentAffectAsyncConfig           `yaml:"async" json:"async"`
 	Evaluator       AgentAffectEvaluatorConfig       `yaml:"evaluator" json:"evaluator"`
 	Context         AgentAffectContextConfig         `yaml:"context" json:"context"`
 	Dimensions      AgentAffectDimensionsConfig      `yaml:"dimensions" json:"dimensions"`
@@ -62,6 +65,36 @@ type AgentAffectConfig struct {
 	Limits          AgentAffectLimitsConfig          `yaml:"limits" json:"limits"`
 	Features        AgentAffectFeaturesConfig        `yaml:"features" json:"features"`
 	Prompt          AgentAffectPromptConfig          `yaml:"prompt" json:"prompt"`
+}
+
+type AgentAffectStateConfig struct {
+	Scope              string `yaml:"scope" json:"scope"`
+	RecentContextScope string `yaml:"recent_context_scope" json:"recent_context_scope"`
+}
+
+type AgentAffectAsyncConfig struct {
+	Enabled               bool                        `yaml:"enabled" json:"enabled"`
+	QueueEnabled          bool                        `yaml:"queue_enabled" json:"queue_enabled"`
+	WorkerEnabled         bool                        `yaml:"worker_enabled" json:"worker_enabled"`
+	WorkerConcurrency     int                         `yaml:"worker_concurrency" json:"worker_concurrency"`
+	PollIntervalMS        int                         `yaml:"poll_interval_ms" json:"poll_interval_ms"`
+	QueueClaimTTLSeconds  int                         `yaml:"queue_claim_ttl_seconds" json:"queue_claim_ttl_seconds"`
+	MaxAttempts           int                         `yaml:"max_attempts" json:"max_attempts"`
+	RetryBaseDelaySeconds int                         `yaml:"retry_base_delay_seconds" json:"retry_base_delay_seconds"`
+	RetryMaxDelaySeconds  int                         `yaml:"retry_max_delay_seconds" json:"retry_max_delay_seconds"`
+	ClearRawAfterDone     bool                        `yaml:"clear_raw_after_done" json:"clear_raw_after_done"`
+	Batch                 AgentAffectAsyncBatchConfig `yaml:"batch" json:"batch"`
+}
+
+type AgentAffectAsyncBatchConfig struct {
+	Enabled                 bool `yaml:"enabled" json:"enabled"`
+	MaxJobs                 int  `yaml:"max_jobs" json:"max_jobs"`
+	MaxInputTokens          int  `yaml:"max_input_tokens" json:"max_input_tokens"`
+	MaxAgeSeconds           int  `yaml:"max_age_seconds" json:"max_age_seconds"`
+	MinWaitMS               int  `yaml:"min_wait_ms" json:"min_wait_ms"`
+	MergeAcrossSessions     bool `yaml:"merge_across_sessions" json:"merge_across_sessions"`
+	BreakOnManualBarrier    bool `yaml:"break_on_manual_barrier" json:"break_on_manual_barrier"`
+	SummarizeTurnsBeforeLLM bool `yaml:"summarize_turns_before_llm" json:"summarize_turns_before_llm"`
 }
 
 type AgentAffectEvaluatorConfig struct {
@@ -139,10 +172,12 @@ type AgentAffectFeaturesConfig struct {
 }
 
 type AgentAffectPromptConfig struct {
-	IncludeMoodBlock          bool `yaml:"include_mood_block" json:"include_mood_block"`
-	IncludeReason             bool `yaml:"include_reason" json:"include_reason"`
-	IncludeExpressionGuidance bool `yaml:"include_expression_guidance" json:"include_expression_guidance"`
-	IncludeNumericValues      bool `yaml:"include_numeric_values" json:"include_numeric_values"`
+	Mode                      string `yaml:"mode" json:"mode"`
+	IncludeMoodBlock          bool   `yaml:"include_mood_block" json:"include_mood_block"`
+	IncludeReason             bool   `yaml:"include_reason" json:"include_reason"`
+	IncludeExpressionGuidance bool   `yaml:"include_expression_guidance" json:"include_expression_guidance"`
+	IncludeNumericValues      bool   `yaml:"include_numeric_values" json:"include_numeric_values"`
+	MaxPromptChars            int    `yaml:"max_prompt_chars" json:"max_prompt_chars"`
 }
 
 type MemoryConfig struct {
@@ -735,7 +770,32 @@ func DefaultConfig() *Config {
 		},
 		AgentAffect: AgentAffectConfig{
 			Enabled:        false,
+			UpdateMode:     "async_after_reply",
 			StorageEnabled: true,
+			State: AgentAffectStateConfig{
+				Scope:              "persona",
+				RecentContextScope: "persona",
+			},
+			Async: AgentAffectAsyncConfig{
+				Enabled:               true,
+				QueueEnabled:          true,
+				WorkerEnabled:         true,
+				WorkerConcurrency:     1,
+				PollIntervalMS:        800,
+				QueueClaimTTLSeconds:  300,
+				MaxAttempts:           3,
+				RetryBaseDelaySeconds: 30,
+				RetryMaxDelaySeconds:  900,
+				ClearRawAfterDone:     true,
+				Batch: AgentAffectAsyncBatchConfig{
+					Enabled:              true,
+					MaxJobs:              6,
+					MaxInputTokens:       12000,
+					MaxAgeSeconds:        300,
+					MergeAcrossSessions:  true,
+					BreakOnManualBarrier: true,
+				},
+			},
 			Evaluator: AgentAffectEvaluatorConfig{
 				Mode:            "llm",
 				TimeoutMS:       30000,
@@ -789,10 +849,12 @@ func DefaultConfig() *Config {
 				},
 			},
 			Prompt: AgentAffectPromptConfig{
+				Mode:                      "natural_summary",
 				IncludeMoodBlock:          true,
 				IncludeReason:             true,
 				IncludeExpressionGuidance: false,
-				IncludeNumericValues:      true,
+				IncludeNumericValues:      false,
+				MaxPromptChars:            240,
 			},
 		},
 		Memory: MemoryConfig{

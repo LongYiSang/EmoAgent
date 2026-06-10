@@ -378,34 +378,56 @@ func (r *chatTurnRuntime) emotionPrepareStage() turn.Stage {
 				if snapshot != nil {
 					memoryBlock = snapshot.PromptBlock
 				}
-				affectResp, err := agentAffect.SubmitMoodImpact(ctx, agentaffect.SubmitMoodImpactRequest{
-					PersonaID:         tc.Inbound.PersonaKey,
-					SessionID:         tc.Inbound.SessionID,
-					TurnID:            tc.TurnID,
-					MemoryPromptBlock: memoryBlock,
-					CommitMode:        agentaffect.CommitModeCommitIfAllowed,
-					Trigger: agentaffect.TriggerDescriptor{
-						TriggerType:   "user_message",
-						SourceKind:    "turn",
-						SourceRefType: "episode",
-						SourceRefID:   anchor.userEpisodeID,
-					},
-					Input: agentaffect.MoodImpactInput{Mode: "raw", Text: tc.Inbound.UserMessage.Content},
-				})
-				if err != nil {
-					tc.Diagnostics["agent_affect_error"] = err.Error()
-				} else {
-					tc.Diagnostics["agent_affect_snapshot"] = affectResp.Mood
-					tc.Diagnostics["agent_affect_evaluation"] = affectResp
-					block, err := agentAffect.BuildPromptAffectBlock(ctx, agentaffect.BuildPromptAffectBlockRequest{
-						PersonaID: tc.Inbound.PersonaKey,
-						SessionID: tc.Inbound.SessionID,
-						Mood:      affectResp.Mood,
+				if agentAffect.UpdateMode() == "sync_before_reply" {
+					affectResp, err := agentAffect.SubmitMoodImpact(ctx, agentaffect.SubmitMoodImpactRequest{
+						PersonaID:         tc.Inbound.PersonaKey,
+						SessionID:         tc.Inbound.SessionID,
+						TurnID:            tc.TurnID,
+						MemoryPromptBlock: memoryBlock,
+						CommitMode:        agentaffect.CommitModeCommitIfAllowed,
+						Trigger: agentaffect.TriggerDescriptor{
+							TriggerType:   "user_message",
+							SourceKind:    "turn",
+							SourceRefType: "episode",
+							SourceRefID:   anchor.userEpisodeID,
+						},
+						Input: agentaffect.MoodImpactInput{Mode: "raw", Text: tc.Inbound.UserMessage.Content},
 					})
 					if err != nil {
 						tc.Diagnostics["agent_affect_error"] = err.Error()
-					} else if strings.TrimSpace(block) != "" {
-						tc.Diagnostics["agent_affect_prompt_block"] = block
+					} else {
+						tc.Diagnostics["agent_affect_snapshot"] = affectResp.Mood
+						tc.Diagnostics["agent_affect_evaluation"] = affectResp
+						block, err := agentAffect.BuildPromptAffectBlock(ctx, agentaffect.BuildPromptAffectBlockRequest{
+							PersonaID: tc.Inbound.PersonaKey,
+							SessionID: tc.Inbound.SessionID,
+							Mood:      affectResp.Mood,
+						})
+						if err != nil {
+							tc.Diagnostics["agent_affect_error"] = err.Error()
+						} else if strings.TrimSpace(block) != "" {
+							tc.Diagnostics["agent_affect_prompt_block"] = block
+						}
+					}
+				} else {
+					current, err := agentAffect.GetCurrentMood(ctx, agentaffect.GetCurrentMoodRequest{
+						PersonaID: tc.Inbound.PersonaKey,
+						SessionID: tc.Inbound.SessionID,
+					})
+					if err != nil {
+						tc.Diagnostics["agent_affect_error"] = err.Error()
+					} else {
+						tc.Diagnostics["agent_affect_snapshot"] = current.Mood
+						block, err := agentAffect.BuildPromptAffectBlock(ctx, agentaffect.BuildPromptAffectBlockRequest{
+							PersonaID: tc.Inbound.PersonaKey,
+							SessionID: tc.Inbound.SessionID,
+							Mood:      current.Mood,
+						})
+						if err != nil {
+							tc.Diagnostics["agent_affect_error"] = err.Error()
+						} else if strings.TrimSpace(block) != "" {
+							tc.Diagnostics["agent_affect_prompt_block"] = block
+						}
 					}
 				}
 			}
@@ -433,6 +455,34 @@ func (r *chatTurnRuntime) memoryCommitStage() turn.Stage {
 				return turn.StageResult{NextState: turn.StateCommitFailedAfterOutput, Terminal: true, Status: "commit_failed_after_output", ErrorKind: "memory_commit_failed"}, err
 			}
 			tc.Diagnostics["memory_committed"] = true
+			engine.mu.RLock()
+			agentAffect := engine.agentAffect
+			engine.mu.RUnlock()
+			if agentAffect != nil && agentAffect.UpdateMode() != "sync_before_reply" && tc.Inbound.Kind == turn.InboundUserMessage && tc.Inbound.UserMessage != nil {
+				anchor, _ := tc.Diagnostics["memory_anchor"].(turnMemoryAnchor)
+				mood, _ := tc.Diagnostics["agent_affect_snapshot"].(agentaffect.MoodSnapshot)
+				job, err := agentAffect.EnqueueTurnEvaluationJob(ctx, agentaffect.EnqueueTurnEvaluationJobRequest{
+					PersonaID:         tc.Inbound.PersonaKey,
+					SessionID:         tc.Inbound.SessionID,
+					TurnID:            tc.TurnID,
+					UserText:          tc.Inbound.UserMessage.Content,
+					AssistantText:     output.assistantContent,
+					MemoryPromptBlock: stringDiagnostic(tc, "memory_prompt_block"),
+					Trigger: agentaffect.TriggerDescriptor{
+						TriggerType:   "user_message",
+						SourceKind:    "turn",
+						SourceRefType: "episode",
+						SourceRefID:   anchor.userEpisodeID,
+					},
+					BaseStateID:        mood.StateID,
+					BaseStateUpdatedAt: mood.UpdatedAt,
+				})
+				if err != nil {
+					tc.Diagnostics["agent_affect_enqueue_error"] = err.Error()
+				} else if job.ID != "" {
+					tc.Diagnostics["agent_affect_job_id"] = job.ID
+				}
+			}
 			return turn.StageResult{NextState: tc.State}, nil
 		},
 	}

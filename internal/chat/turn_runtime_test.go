@@ -141,7 +141,7 @@ func TestTurnRuntimeStagesHonorMemoryStageConfig(t *testing.T) {
 	}
 }
 
-func TestTurnRuntimeInjectsAgentAffectPromptBlockAfterMemoryRetrieval(t *testing.T) {
+func TestTurnRuntimeAsyncAgentAffectReadsMoodAndEnqueuesAfterOutput(t *testing.T) {
 	fakeLLM := &fakeLLMClient{
 		response: &llm.ChatResponse{
 			ID:         "resp-1",
@@ -156,7 +156,11 @@ func TestTurnRuntimeInjectsAgentAffectPromptBlockAfterMemoryRetrieval(t *testing
 	}
 	engine.memory = bridge
 	engine.memoryRetrieval = config.MemoryRetrievalConfig{Enabled: true, InjectPrompt: true, FailOpen: true}
-	affect := &fakeAgentAffectRuntime{promptBlock: "[Agent Affect Runtime State]\nmood_vector:\n  valence: 0.100"}
+	affect := &fakeAgentAffectRuntime{
+		mode:        "async_after_reply",
+		currentMood: agentaffect.MoodSnapshot{StateID: "state-1", PersonaID: "default", PromptMoodText: "平稳、温和。"},
+		promptBlock: "[Agent Mood]\n当前模拟心情：平稳、温和。",
+	}
 	engine.agentAffect = affect
 
 	sessionID, err := engine.StartSession(context.Background(), "default")
@@ -179,14 +183,109 @@ func TestTurnRuntimeInjectsAgentAffectPromptBlockAfterMemoryRetrieval(t *testing
 	if !strings.Contains(fakeLLM.lastRequest.System, "[Memory]\nRelevant memory.") {
 		t.Fatalf("system missing memory block:\n%s", fakeLLM.lastRequest.System)
 	}
-	if !strings.Contains(fakeLLM.lastRequest.System, "[Agent Affect Runtime State]") {
+	if !strings.Contains(fakeLLM.lastRequest.System, "[Agent Mood]") {
 		t.Fatalf("system missing agent affect block:\n%s", fakeLLM.lastRequest.System)
+	}
+	if affect.submitCalls != 0 {
+		t.Fatalf("SubmitMoodImpact calls = %d, want 0 in async mode", affect.submitCalls)
+	}
+	if affect.currentReq.PersonaID != "default" || affect.currentReq.SessionID != sessionID {
+		t.Fatalf("current mood req = %#v", affect.currentReq)
+	}
+	if affect.enqueueCalls != 1 {
+		t.Fatalf("enqueue calls = %d, want 1", affect.enqueueCalls)
+	}
+	if affect.enqueueReq.UserText != "hello" || affect.enqueueReq.AssistantText != "answer" {
+		t.Fatalf("enqueue req user/assistant = %#v", affect.enqueueReq)
+	}
+	if affect.enqueueReq.MemoryPromptBlock != "[Memory]\nRelevant memory." {
+		t.Fatalf("enqueue memory prompt block = %q", affect.enqueueReq.MemoryPromptBlock)
+	}
+	if affect.enqueueReq.Trigger.SourceRefID != "episode-user" || affect.enqueueReq.BaseStateID != "state-1" {
+		t.Fatalf("enqueue trigger/base state = %#v", affect.enqueueReq)
+	}
+}
+
+func TestTurnRuntimeAsyncAgentAffectDoesNotEnqueueWithoutAssistantOutput(t *testing.T) {
+	fakeLLM := &fakeLLMClient{
+		response: &llm.ChatResponse{
+			ID:         "resp-1",
+			Content:    "",
+			StopReason: "end_turn",
+		},
+	}
+	engine, _, _ := newTestEngine(t, fakeLLM)
+	engine.memory = &fakeMemoryBridge{ensureResult: MemorySegmentRef{SegmentID: "segment-current", MemorySessionID: "memory-current"}}
+	engine.agentAffect = &fakeAgentAffectRuntime{
+		mode:        "async_after_reply",
+		currentMood: agentaffect.MoodSnapshot{StateID: "state-1", PersonaID: "default", PromptMoodText: "平稳。"},
+		promptBlock: "[Agent Mood]\n当前模拟心情：平稳。",
+	}
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	env := wsMessageToInbound(WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, sessionID, "default")
+	runtime := newChatTurnRuntime(engine, config.TurnPipelineConfig{Enabled: true, MemoryStages: true, RolloutPercent: 100}, turn.NewMemoryJournal(), discardLogger())
+
+	result, err := runtime.Execute(context.Background(), env, &config.Persona{Name: "default", SystemPrompt: "system"}, turn.SinkFunc(func(context.Context, turn.OutboundEvent) error {
+		return nil
+	}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Status != "done" {
+		t.Fatalf("status = %q, want done", result.Status)
+	}
+	affect := engine.agentAffect.(*fakeAgentAffectRuntime)
+	if affect.enqueueCalls != 0 {
+		t.Fatalf("enqueue calls = %d, want 0 without assistant output", affect.enqueueCalls)
+	}
+}
+
+func TestTurnRuntimeSyncBeforeReplyStillSubmitsMoodImpact(t *testing.T) {
+	fakeLLM := &fakeLLMClient{
+		response: &llm.ChatResponse{
+			ID:         "resp-1",
+			Content:    "answer",
+			StopReason: "end_turn",
+		},
+	}
+	engine, _, _ := newTestEngine(t, fakeLLM)
+	bridge := &fakeMemoryBridge{
+		ensureResult:  MemorySegmentRef{SegmentID: "segment-current", MemorySessionID: "memory-current"},
+		retrieveBlock: "[Memory]\nRelevant memory.",
+	}
+	engine.memory = bridge
+	engine.memoryRetrieval = config.MemoryRetrievalConfig{Enabled: true, InjectPrompt: true, FailOpen: true}
+	affect := &fakeAgentAffectRuntime{mode: "sync_before_reply", promptBlock: "[Agent Affect Runtime State]\nmood_vector:\n  valence: 0.100"}
+	engine.agentAffect = affect
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	env := wsMessageToInbound(WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, sessionID, "default")
+	runtime := newChatTurnRuntime(engine, config.TurnPipelineConfig{Enabled: true, MemoryStages: true, RolloutPercent: 100}, turn.NewMemoryJournal(), discardLogger())
+
+	result, err := runtime.Execute(context.Background(), env, &config.Persona{Name: "default", SystemPrompt: "system"}, turn.SinkFunc(func(context.Context, turn.OutboundEvent) error {
+		return nil
+	}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Status != "done" {
+		t.Fatalf("status = %q, want done", result.Status)
+	}
+	if affect.submitCalls != 1 {
+		t.Fatalf("SubmitMoodImpact calls = %d, want 1 in sync mode", affect.submitCalls)
+	}
+	if affect.enqueueCalls != 0 {
+		t.Fatalf("enqueue calls = %d, want 0 in sync mode", affect.enqueueCalls)
 	}
 	if affect.submitReq.MemoryPromptBlock != "[Memory]\nRelevant memory." {
 		t.Fatalf("affect memory prompt block = %q", affect.submitReq.MemoryPromptBlock)
-	}
-	if affect.submitReq.Trigger.SourceRefID != "episode-user" {
-		t.Fatalf("affect source ref id = %q, want episode-user", affect.submitReq.Trigger.SourceRefID)
 	}
 }
 
@@ -205,7 +304,7 @@ func TestTurnRuntimeAgentAffectFailureDoesNotBlockChat(t *testing.T) {
 	}
 	engine.memory = bridge
 	engine.memoryRetrieval = config.MemoryRetrievalConfig{Enabled: true, InjectPrompt: true, FailOpen: true}
-	engine.agentAffect = &fakeAgentAffectRuntime{submitErr: errors.New("affect unavailable")}
+	engine.agentAffect = &fakeAgentAffectRuntime{mode: "async_after_reply", currentErr: errors.New("affect unavailable")}
 
 	sessionID, err := engine.StartSession(context.Background(), "default")
 	if err != nil {
@@ -479,13 +578,40 @@ func (s closeFailingSink) Close(context.Context) error {
 }
 
 type fakeAgentAffectRuntime struct {
-	submitReq   agentaffect.SubmitMoodImpactRequest
-	submitErr   error
-	promptBlock string
+	mode         string
+	currentReq   agentaffect.GetCurrentMoodRequest
+	currentMood  agentaffect.MoodSnapshot
+	currentErr   error
+	submitReq    agentaffect.SubmitMoodImpactRequest
+	submitCalls  int
+	submitErr    error
+	promptBlock  string
+	enqueueReq   agentaffect.EnqueueTurnEvaluationJobRequest
+	enqueueCalls int
+}
+
+func (f *fakeAgentAffectRuntime) UpdateMode() string {
+	return f.mode
+}
+
+func (f *fakeAgentAffectRuntime) GetCurrentMood(_ context.Context, req agentaffect.GetCurrentMoodRequest) (agentaffect.GetCurrentMoodResponse, error) {
+	f.currentReq = req
+	if f.currentErr != nil {
+		return agentaffect.GetCurrentMoodResponse{}, f.currentErr
+	}
+	mood := f.currentMood
+	if mood.PersonaID == "" {
+		mood.PersonaID = req.PersonaID
+	}
+	if mood.SessionID == "" {
+		mood.SessionID = req.SessionID
+	}
+	return agentaffect.GetCurrentMoodResponse{Enabled: true, Mood: mood}, nil
 }
 
 func (f *fakeAgentAffectRuntime) SubmitMoodImpact(_ context.Context, req agentaffect.SubmitMoodImpactRequest) (agentaffect.SubmitMoodImpactResponse, error) {
 	f.submitReq = req
+	f.submitCalls++
 	if f.submitErr != nil {
 		return agentaffect.SubmitMoodImpactResponse{}, f.submitErr
 	}
@@ -496,6 +622,12 @@ func (f *fakeAgentAffectRuntime) SubmitMoodImpact(_ context.Context, req agentaf
 
 func (f *fakeAgentAffectRuntime) BuildPromptAffectBlock(context.Context, agentaffect.BuildPromptAffectBlockRequest) (string, error) {
 	return f.promptBlock, nil
+}
+
+func (f *fakeAgentAffectRuntime) EnqueueTurnEvaluationJob(_ context.Context, req agentaffect.EnqueueTurnEvaluationJobRequest) (agentaffect.AffectJobRecord, error) {
+	f.enqueueReq = req
+	f.enqueueCalls++
+	return agentaffect.AffectJobRecord{ID: "job-1"}, nil
 }
 
 func stageNames(stages []turn.Stage) []turn.StageName {

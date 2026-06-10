@@ -121,6 +121,9 @@ Important:
     "uncertainty": 0
   },
   "label": "steady",
+  "mood_description": "心情平稳、温和",
+  "mood_reason": "没有明显改变心情的事件",
+  "prompt_mood_text": "平稳、温和，没有明显额外波动。",
   "cause_summary": "short internal cause summary",
   "visible_cause_summary": "short safe visible summary",
   "confidence": 0.5

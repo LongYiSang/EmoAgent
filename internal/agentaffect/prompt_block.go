@@ -11,6 +11,73 @@ func FormatPromptAffectBlock(cfg config.AgentAffectConfig, mood MoodSnapshot) st
 	if !cfg.Prompt.IncludeMoodBlock {
 		return ""
 	}
+	mode := strings.TrimSpace(cfg.Prompt.Mode)
+	if mode == "" {
+		mode = "natural_summary"
+	}
+	switch mode {
+	case "numeric_debug":
+		return formatNumericPromptAffectBlock(cfg, mood)
+	case "both":
+		return joinPromptBlocks(formatNaturalPromptAffectBlock(cfg, mood), formatNumericPromptAffectBlock(cfg, mood))
+	default:
+		return formatNaturalPromptAffectBlock(cfg, mood)
+	}
+}
+
+func formatNaturalPromptAffectBlock(cfg config.AgentAffectConfig, mood MoodSnapshot) string {
+	text := promptMoodText(mood)
+	text = truncateRunes(text, cfg.Prompt.MaxPromptChars)
+	if text == "" {
+		text = "平稳、接近基线。"
+	}
+	if !strings.Contains(text, "当前模拟心情") {
+		text = "当前模拟心情：" + text
+	}
+	return "[Agent Mood]\n" + text + "\n\n这是内部表达背景：不要逐字复述，不要提到 mood 系统、内部状态表或数值；只让它自然影响措辞、节奏和亲近感。"
+}
+
+func promptMoodText(mood MoodSnapshot) string {
+	if text := strings.TrimSpace(mood.PromptMoodText); text != "" {
+		return text
+	}
+	if text := buildPromptMoodTextFallback(mood.MoodDescription, mood.MoodReason); text != "" {
+		return text
+	}
+	reason := mood.VisibleCauseSummary
+	if reason == "" {
+		reason = mood.CauseSummary
+	}
+	return buildPromptMoodTextFallback(mood.Label, reason)
+}
+
+func truncateRunes(value string, max int) string {
+	value = strings.TrimSpace(value)
+	if max <= 0 {
+		return value
+	}
+	runes := []rune(value)
+	if len(runes) <= max {
+		return value
+	}
+	if max <= 3 {
+		return string(runes[:max])
+	}
+	return string(runes[:max-3]) + "..."
+}
+
+func joinPromptBlocks(blocks ...string) string {
+	out := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		block = strings.TrimSpace(block)
+		if block != "" {
+			out = append(out, block)
+		}
+	}
+	return strings.Join(out, "\n\n")
+}
+
+func formatNumericPromptAffectBlock(cfg config.AgentAffectConfig, mood MoodSnapshot) string {
 	var b strings.Builder
 	b.WriteString("[Agent Affect Runtime State]\n")
 	if mood.Label != "" {

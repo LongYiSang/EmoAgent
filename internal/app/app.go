@@ -185,6 +185,9 @@ func (a *App) UpdateAgentAffectConfig(ctx context.Context, cfg config.AgentAffec
 	if err != nil {
 		return configcenter.EffectiveConfig{}, err
 	}
+	if _, err := services.AgentAffect.SupersedeAllPending(ctx, "config_change"); err != nil {
+		return configcenter.EffectiveConfig{}, err
+	}
 	services.Chat.UpdateAgentAffect()
 	return effective, nil
 }
@@ -267,6 +270,38 @@ func (a *App) PreviewAgentAffectPrompt(ctx context.Context, req web.AgentAffectP
 		return web.AgentAffectPromptPreviewResponse{}, err
 	}
 	return services.AgentAffect.PreviewPrompt(ctx, req)
+}
+
+func (a *App) GetAgentAffectQueue(ctx context.Context, req web.AgentAffectQueueRequest) (web.AgentAffectQueueResponse, error) {
+	services, err := a.services()
+	if err != nil {
+		return web.AgentAffectQueueResponse{}, err
+	}
+	return services.AgentAffect.QueueStatus(ctx, req)
+}
+
+func (a *App) ProcessAgentAffectBatchOnce(ctx context.Context) (web.AgentAffectProcessOnceResponse, error) {
+	services, err := a.services()
+	if err != nil {
+		return web.AgentAffectProcessOnceResponse{}, err
+	}
+	return services.AgentAffect.ProcessBatchOnce(ctx)
+}
+
+func (a *App) ClearAgentAffectFailedJobs(ctx context.Context, req web.AgentAffectQueueRequest) (web.AgentAffectClearFailedResponse, error) {
+	services, err := a.services()
+	if err != nil {
+		return web.AgentAffectClearFailedResponse{}, err
+	}
+	return services.AgentAffect.ClearFailedJobs(ctx, req)
+}
+
+func (a *App) SupersedeAgentAffectPendingJobs(ctx context.Context, req web.AgentAffectQueueRequest) (web.AgentAffectSupersedePendingResponse, error) {
+	services, err := a.services()
+	if err != nil {
+		return web.AgentAffectSupersedePendingResponse{}, err
+	}
+	return services.AgentAffect.SupersedePendingJobs(ctx, req)
 }
 
 func (a *App) GetLLMProviderEnvStatus(id string) (configcenter.ProviderEnvStatus, error) {

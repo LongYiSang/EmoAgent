@@ -32,6 +32,9 @@ func ParseLLMResponse(content string) (LLMEvaluationResult, error) {
 		Delta               *MoodVector `json:"delta"`
 		ProposedDelta       *MoodVector `json:"proposed_delta"`
 		Label               string      `json:"label"`
+		MoodDescription     string      `json:"mood_description"`
+		MoodReason          string      `json:"mood_reason"`
+		PromptMoodText      string      `json:"prompt_mood_text"`
 		CauseSummary        string      `json:"cause_summary"`
 		VisibleCauseSummary string      `json:"visible_cause_summary"`
 		Confidence          *float64    `json:"confidence"`
@@ -62,9 +65,27 @@ func ParseLLMResponse(content string) (LLMEvaluationResult, error) {
 	if label == "" {
 		label = deriveLabel(delta)
 	}
+	moodDescription := strings.TrimSpace(parsed.MoodDescription)
+	if moodDescription == "" {
+		moodDescription = label
+	}
+	moodReason := strings.TrimSpace(parsed.MoodReason)
+	if moodReason == "" {
+		moodReason = strings.TrimSpace(parsed.VisibleCauseSummary)
+	}
+	if moodReason == "" {
+		moodReason = strings.TrimSpace(parsed.CauseSummary)
+	}
+	promptMoodText := strings.TrimSpace(parsed.PromptMoodText)
+	if promptMoodText == "" {
+		promptMoodText = buildPromptMoodTextFallback(moodDescription, moodReason)
+	}
 	return LLMEvaluationResult{
 		Delta:               delta,
 		Label:               label,
+		MoodDescription:     moodDescription,
+		MoodReason:          moodReason,
+		PromptMoodText:      promptMoodText,
 		CauseSummary:        strings.TrimSpace(parsed.CauseSummary),
 		VisibleCauseSummary: strings.TrimSpace(parsed.VisibleCauseSummary),
 		Confidence:          confidence,
@@ -85,6 +106,19 @@ func NoChangeResult(reason string, status string) LLMEvaluationResult {
 		Confidence:          0.5,
 		Fallback:            true,
 		Status:              status,
+	}
+}
+
+func buildPromptMoodTextFallback(description string, reason string) string {
+	description = strings.TrimSpace(description)
+	reason = strings.TrimSpace(reason)
+	switch {
+	case description != "" && reason != "":
+		return description + "；" + reason
+	case description != "":
+		return description
+	default:
+		return reason
 	}
 }
 

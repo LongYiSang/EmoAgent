@@ -88,6 +88,30 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.AgentAffect.Evaluator.StoreHiddenThinking {
 		t.Error("default agent_affect.evaluator.store_hidden_thinking = true, want false")
 	}
+	if cfg.AgentAffect.UpdateMode != "async_after_reply" {
+		t.Errorf("default agent_affect.update_mode = %q, want async_after_reply", cfg.AgentAffect.UpdateMode)
+	}
+	if cfg.AgentAffect.State.Scope != "persona" || cfg.AgentAffect.State.RecentContextScope != "persona" {
+		t.Fatalf("default agent_affect.state = %#v, want persona scope", cfg.AgentAffect.State)
+	}
+	if !cfg.AgentAffect.Async.Enabled || !cfg.AgentAffect.Async.QueueEnabled || !cfg.AgentAffect.Async.WorkerEnabled {
+		t.Fatalf("default agent_affect.async enabled flags = %#v, want enabled queue and worker", cfg.AgentAffect.Async)
+	}
+	if cfg.AgentAffect.Async.WorkerConcurrency != 1 || cfg.AgentAffect.Async.PollIntervalMS != 800 || cfg.AgentAffect.Async.QueueClaimTTLSeconds != 300 {
+		t.Fatalf("default agent_affect.async worker settings = %#v", cfg.AgentAffect.Async)
+	}
+	if cfg.AgentAffect.Async.MaxAttempts != 3 || cfg.AgentAffect.Async.RetryBaseDelaySeconds != 30 || cfg.AgentAffect.Async.RetryMaxDelaySeconds != 900 {
+		t.Fatalf("default agent_affect.async retry settings = %#v", cfg.AgentAffect.Async)
+	}
+	if !cfg.AgentAffect.Async.ClearRawAfterDone {
+		t.Fatal("default agent_affect.async.clear_raw_after_done = false, want true")
+	}
+	if !cfg.AgentAffect.Async.Batch.Enabled || cfg.AgentAffect.Async.Batch.MaxJobs != 6 || cfg.AgentAffect.Async.Batch.MaxInputTokens != 12000 {
+		t.Fatalf("default agent_affect.async.batch = %#v", cfg.AgentAffect.Async.Batch)
+	}
+	if cfg.AgentAffect.Async.Batch.MaxAgeSeconds != 300 || !cfg.AgentAffect.Async.Batch.MergeAcrossSessions || !cfg.AgentAffect.Async.Batch.BreakOnManualBarrier {
+		t.Fatalf("default agent_affect.async.batch limits = %#v", cfg.AgentAffect.Async.Batch)
+	}
 	if cfg.AgentAffect.Context.Mode != "raw_window" {
 		t.Errorf("default agent_affect.context.mode = %q, want raw_window", cfg.AgentAffect.Context.Mode)
 	}
@@ -121,8 +145,17 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.AgentAffect.Externalization.Frustration.Enabled {
 		t.Error("default agent_affect.externalization.frustration.enabled = true, want false")
 	}
-	if !cfg.AgentAffect.Prompt.IncludeMoodBlock || !cfg.AgentAffect.Prompt.IncludeReason || !cfg.AgentAffect.Prompt.IncludeNumericValues {
-		t.Fatalf("default agent_affect.prompt = %#v, want mood/reason/numeric enabled", cfg.AgentAffect.Prompt)
+	if cfg.AgentAffect.Prompt.Mode != "natural_summary" {
+		t.Fatalf("default agent_affect.prompt.mode = %q, want natural_summary", cfg.AgentAffect.Prompt.Mode)
+	}
+	if !cfg.AgentAffect.Prompt.IncludeMoodBlock || !cfg.AgentAffect.Prompt.IncludeReason {
+		t.Fatalf("default agent_affect.prompt = %#v, want mood/reason enabled", cfg.AgentAffect.Prompt)
+	}
+	if cfg.AgentAffect.Prompt.IncludeNumericValues {
+		t.Fatalf("default agent_affect.prompt.include_numeric_values = true, want false")
+	}
+	if cfg.AgentAffect.Prompt.MaxPromptChars != 240 {
+		t.Fatalf("default agent_affect.prompt.max_prompt_chars = %d, want 240", cfg.AgentAffect.Prompt.MaxPromptChars)
 	}
 	if cfg.AgentAffect.Prompt.IncludeExpressionGuidance {
 		t.Error("default agent_affect.prompt.include_expression_guidance = true, want false")
@@ -333,7 +366,31 @@ func TestLoadAgentAffectTopLevelConfig(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`
 agent_affect:
   enabled: true
+  update_mode: sync_before_reply
   storage_enabled: true
+  state:
+    scope: session
+    recent_context_scope: session
+  async:
+    enabled: true
+    queue_enabled: true
+    worker_enabled: false
+    worker_concurrency: 2
+    poll_interval_ms: 900
+    queue_claim_ttl_seconds: 111
+    max_attempts: 4
+    retry_base_delay_seconds: 12
+    retry_max_delay_seconds: 120
+    clear_raw_after_done: false
+    batch:
+      enabled: true
+      max_jobs: 5
+      max_input_tokens: 2345
+      max_age_seconds: 67
+      min_wait_ms: 10
+      merge_across_sessions: false
+      break_on_manual_barrier: false
+      summarize_turns_before_llm: true
   evaluator:
     mode: disabled
     provider_id: moonshot
@@ -384,10 +441,12 @@ agent_affect:
       attachment_max: 0.6
       frustration_max: 0.25
   prompt:
+    mode: both
     include_mood_block: true
     include_reason: true
     include_expression_guidance: true
     include_numeric_values: true
+    max_prompt_chars: 123
 `), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -398,6 +457,27 @@ agent_affect:
 	}
 	if !cfg.AgentAffect.Enabled {
 		t.Fatal("agent_affect.enabled = false, want true")
+	}
+	if cfg.AgentAffect.UpdateMode != "sync_before_reply" {
+		t.Fatalf("agent_affect.update_mode = %q, want sync_before_reply", cfg.AgentAffect.UpdateMode)
+	}
+	if cfg.AgentAffect.State.Scope != "session" || cfg.AgentAffect.State.RecentContextScope != "session" {
+		t.Fatalf("agent_affect.state = %#v", cfg.AgentAffect.State)
+	}
+	if cfg.AgentAffect.Async.WorkerEnabled || cfg.AgentAffect.Async.WorkerConcurrency != 2 || cfg.AgentAffect.Async.PollIntervalMS != 900 {
+		t.Fatalf("agent_affect.async worker = %#v", cfg.AgentAffect.Async)
+	}
+	if cfg.AgentAffect.Async.QueueClaimTTLSeconds != 111 || cfg.AgentAffect.Async.MaxAttempts != 4 || cfg.AgentAffect.Async.RetryBaseDelaySeconds != 12 || cfg.AgentAffect.Async.RetryMaxDelaySeconds != 120 {
+		t.Fatalf("agent_affect.async retry = %#v", cfg.AgentAffect.Async)
+	}
+	if cfg.AgentAffect.Async.ClearRawAfterDone {
+		t.Fatalf("agent_affect.async.clear_raw_after_done = true, want false")
+	}
+	if cfg.AgentAffect.Async.Batch.MaxJobs != 5 || cfg.AgentAffect.Async.Batch.MaxInputTokens != 2345 || cfg.AgentAffect.Async.Batch.MaxAgeSeconds != 67 {
+		t.Fatalf("agent_affect.async.batch limits = %#v", cfg.AgentAffect.Async.Batch)
+	}
+	if cfg.AgentAffect.Async.Batch.MergeAcrossSessions || cfg.AgentAffect.Async.Batch.BreakOnManualBarrier || !cfg.AgentAffect.Async.Batch.SummarizeTurnsBeforeLLM {
+		t.Fatalf("agent_affect.async.batch flags = %#v", cfg.AgentAffect.Async.Batch)
 	}
 	if cfg.AgentAffect.Evaluator.Mode != "disabled" || cfg.AgentAffect.Evaluator.ProviderID != "moonshot" || cfg.AgentAffect.Evaluator.Model != "affect-evaluator" {
 		t.Fatalf("agent_affect.evaluator = %#v", cfg.AgentAffect.Evaluator)
@@ -426,7 +506,7 @@ agent_affect:
 	if cfg.AgentAffect.Limits.Absolute.AttachmentMax != 0.6 || cfg.AgentAffect.Limits.Absolute.FrustrationMax != 0.25 {
 		t.Fatalf("agent_affect.limits.absolute = %#v", cfg.AgentAffect.Limits.Absolute)
 	}
-	if !cfg.AgentAffect.Prompt.IncludeExpressionGuidance {
+	if cfg.AgentAffect.Prompt.Mode != "both" || cfg.AgentAffect.Prompt.MaxPromptChars != 123 || !cfg.AgentAffect.Prompt.IncludeExpressionGuidance || !cfg.AgentAffect.Prompt.IncludeNumericValues {
 		t.Fatalf("agent_affect.prompt = %#v", cfg.AgentAffect.Prompt)
 	}
 }

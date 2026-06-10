@@ -88,6 +88,13 @@ type fakeAdminApp struct {
 	agentAffectResetResp   AgentAffectResetResponse
 	lastAgentAffectPrompt  AgentAffectPromptPreviewRequest
 	agentAffectPromptResp  AgentAffectPromptPreviewResponse
+	lastAgentAffectQueue   AgentAffectQueueRequest
+	agentAffectQueueResp   AgentAffectQueueResponse
+	agentAffectProcessResp AgentAffectProcessOnceResponse
+	lastAgentAffectClear   AgentAffectQueueRequest
+	agentAffectClearResp   AgentAffectClearFailedResponse
+	lastAgentAffectSupers  AgentAffectQueueRequest
+	agentAffectSupersResp  AgentAffectSupersedePendingResponse
 }
 
 func (f *fakeAdminApp) ListLLMProviders() ([]config.LLMProvider, error) {
@@ -349,6 +356,21 @@ func (f *fakeAdminApp) PreviewAgentAffectPrompt(ctx context.Context, req AgentAf
 	f.lastAgentAffectPrompt = req
 	return f.agentAffectPromptResp, nil
 }
+func (f *fakeAdminApp) GetAgentAffectQueue(ctx context.Context, req AgentAffectQueueRequest) (AgentAffectQueueResponse, error) {
+	f.lastAgentAffectQueue = req
+	return f.agentAffectQueueResp, nil
+}
+func (f *fakeAdminApp) ProcessAgentAffectBatchOnce(ctx context.Context) (AgentAffectProcessOnceResponse, error) {
+	return f.agentAffectProcessResp, nil
+}
+func (f *fakeAdminApp) ClearAgentAffectFailedJobs(ctx context.Context, req AgentAffectQueueRequest) (AgentAffectClearFailedResponse, error) {
+	f.lastAgentAffectClear = req
+	return f.agentAffectClearResp, nil
+}
+func (f *fakeAdminApp) SupersedeAgentAffectPendingJobs(ctx context.Context, req AgentAffectQueueRequest) (AgentAffectSupersedePendingResponse, error) {
+	f.lastAgentAffectSupers = req
+	return f.agentAffectSupersResp, nil
+}
 
 func TestHandleAgentAffectConfig(t *testing.T) {
 	cfg := config.DefaultConfig().AgentAffect
@@ -551,6 +573,47 @@ func TestHandleAgentAffectCurrentAndEvaluate(t *testing.T) {
 	}
 	if app.lastAgentAffectEval.Input.Summary != "preview only" {
 		t.Fatalf("last eval req = %#v", app.lastAgentAffectEval)
+	}
+}
+
+func TestHandleAgentAffectQueueActions(t *testing.T) {
+	app := &fakeAdminApp{
+		agentAffectQueueResp:   AgentAffectQueueResponse{PendingJobs: 2, RunningJobs: 1, FailedJobs: 3},
+		agentAffectProcessResp: AgentAffectProcessOnceResponse{Processed: true},
+		agentAffectClearResp:   AgentAffectClearFailedResponse{Cleared: 3},
+		agentAffectSupersResp:  AgentAffectSupersedePendingResponse{Superseded: 2},
+	}
+	handler := NewAPIHandler(app, slog.Default())
+
+	queueReq := httptest.NewRequest(http.MethodGet, "/api/agent-affect/queue?persona_id=default&session_id=s1&limit=5", nil)
+	queueRec := httptest.NewRecorder()
+	handler.HandleGetAgentAffectQueue(queueRec, queueReq)
+	if queueRec.Code != http.StatusOK {
+		t.Fatalf("queue status = %d body=%s", queueRec.Code, queueRec.Body.String())
+	}
+	if app.lastAgentAffectQueue.PersonaID != "default" || app.lastAgentAffectQueue.SessionID != "s1" || app.lastAgentAffectQueue.Limit != 5 {
+		t.Fatalf("queue request = %#v", app.lastAgentAffectQueue)
+	}
+
+	processReq := httptest.NewRequest(http.MethodPost, "/api/agent-affect/process-once", nil)
+	processRec := httptest.NewRecorder()
+	handler.HandleProcessAgentAffectBatchOnce(processRec, processReq)
+	if processRec.Code != http.StatusOK || !strings.Contains(processRec.Body.String(), `"processed":true`) {
+		t.Fatalf("process response status=%d body=%s", processRec.Code, processRec.Body.String())
+	}
+
+	clearReq := httptest.NewRequest(http.MethodPost, "/api/agent-affect/clear-failed", bytes.NewBufferString(`{"persona_id":"default","session_id":"s1"}`))
+	clearRec := httptest.NewRecorder()
+	handler.HandleClearAgentAffectFailedJobs(clearRec, clearReq)
+	if clearRec.Code != http.StatusOK || app.lastAgentAffectClear.SessionID != "s1" {
+		t.Fatalf("clear status=%d req=%#v body=%s", clearRec.Code, app.lastAgentAffectClear, clearRec.Body.String())
+	}
+
+	supersReq := httptest.NewRequest(http.MethodPost, "/api/agent-affect/supersede-pending", bytes.NewBufferString(`{"persona_id":"default","session_id":"s1"}`))
+	supersRec := httptest.NewRecorder()
+	handler.HandleSupersedeAgentAffectPendingJobs(supersRec, supersReq)
+	if supersRec.Code != http.StatusOK || app.lastAgentAffectSupers.PersonaID != "default" {
+		t.Fatalf("supersede status=%d req=%#v body=%s", supersRec.Code, app.lastAgentAffectSupers, supersRec.Body.String())
 	}
 }
 

@@ -60,6 +60,8 @@ func TestOpenAndMigrate(t *testing.T) {
 		"agent_affect_evaluations",
 		"agent_affect_events",
 		"agent_affect_plugin_writes",
+		"agent_affect_jobs",
+		"agent_affect_job_batches",
 	}
 	for _, table := range tables {
 		var name string
@@ -123,9 +125,50 @@ func TestOpenAndMigrate(t *testing.T) {
 	if err := db.SqlDB().QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_version").Scan(&latestVersion); err != nil {
 		t.Fatalf("read latest schema_version: %v", err)
 	}
-	if latestVersion != 20 {
-		t.Fatalf("latest schema_version = %d, want 20", latestVersion)
+	if latestVersion != 23 {
+		t.Fatalf("latest schema_version = %d, want 23", latestVersion)
 	}
+}
+
+func TestOpenAndMigrate_CreatesAgentAffectMoodOwnerColumns(t *testing.T) {
+	db := testDB(t)
+
+	for _, table := range []string{"agent_affect_states", "agent_affect_evaluations", "agent_affect_events"} {
+		required := []string{
+			"mood_description",
+			"mood_reason",
+			"prompt_mood_text",
+			"mood_owner_scope",
+			"mood_owner_id",
+		}
+		if table != "agent_affect_states" {
+			required = append(required, "batch_id")
+		}
+		assertTableColumns(t, db, table, required)
+	}
+}
+
+func TestOpenAndMigrate_CreatesAgentAffectJobQueueSchema(t *testing.T) {
+	db := testDB(t)
+
+	assertTableColumns(t, db, "agent_affect_jobs", []string{
+		"seq", "id", "persona_id", "session_id", "turn_id",
+		"mood_owner_scope", "mood_owner_id", "job_type", "batchable", "barrier_kind",
+		"status", "priority", "run_after", "attempts", "max_attempts",
+		"claimed_by", "claimed_until", "trigger_json", "input_mode",
+		"user_text", "assistant_text", "input_summary", "memory_prompt_block",
+		"base_state_id", "base_state_updated_at", "batch_id",
+		"result_evaluation_id", "result_event_id", "error_message",
+		"created_at", "started_at", "finished_at",
+	})
+	assertTableColumns(t, db, "agent_affect_job_batches", []string{
+		"id", "persona_id", "mood_owner_scope", "mood_owner_id",
+		"job_type", "status", "job_count", "first_job_seq", "last_job_seq",
+		"job_ids_json", "session_ids_json", "turn_ids_json",
+		"batch_input_summary", "context_window_snapshot_json",
+		"evaluation_id", "affect_event_id", "error_message",
+		"claimed_by", "started_at", "finished_at",
+	})
 }
 
 func TestRuntimeSettingsCRUD(t *testing.T) {

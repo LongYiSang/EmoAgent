@@ -136,4 +136,7 @@ func (s *ChatService) UpdateAgentRuntime(runtime *ActiveAgentRuntime) {
 
 func (s *ChatService) StartBackground(ctx context.Context) {
 	s.memory.StartBackground(ctx)
+	if s.agentAffect != nil {
+		s.agentAffect.StartBackground(ctx)
+	}
 }

@@ -33,6 +33,10 @@ export async function loadAgentAffectPluginWrites(query: { personaID?: string; s
   return data.writes || [];
 }
 
+export async function loadAgentAffectQueue(query: { personaID?: string; sessionID?: string; limit?: number }): Promise<AnyRecord> {
+  return requestJSON<AnyRecord>(`/api/agent-affect/queue${params({ persona_id: query.personaID, session_id: query.sessionID, limit: query.limit })}`);
+}
+
 export async function loadAgentAffectProfile(personaID: string): Promise<AnyRecord> {
   return requestJSON<AnyRecord>(`/api/agent-affect/profile${params({ persona_id: personaID })}`);
 }
@@ -59,4 +63,16 @@ export async function applyAgentAffectDelta(req: AnyRecord): Promise<AnyRecord> 
 
 export async function resetAgentAffect(req: AnyRecord): Promise<AnyRecord> {
   return requestJSON<AnyRecord>('/api/agent-affect/reset', { method: 'POST', body: req });
+}
+
+export async function processAgentAffectOnce(): Promise<AnyRecord> {
+  return requestJSON<AnyRecord>('/api/agent-affect/process-once', { method: 'POST' });
+}
+
+export async function clearAgentAffectFailedJobs(req: AnyRecord): Promise<AnyRecord> {
+  return requestJSON<AnyRecord>('/api/agent-affect/clear-failed', { method: 'POST', body: req });
+}
+
+export async function supersedeAgentAffectPendingJobs(req: AnyRecord): Promise<AnyRecord> {
+  return requestJSON<AnyRecord>('/api/agent-affect/supersede-pending', { method: 'POST', body: req });
 }

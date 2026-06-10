@@ -148,6 +148,59 @@ func (h *APIHandler) HandlePreviewAgentAffectPrompt(w http.ResponseWriter, r *ht
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *APIHandler) HandleGetAgentAffectQueue(w http.ResponseWriter, r *http.Request) {
+	req := agentAffectQueueRequestFromQuery(r)
+	resp, err := h.app.GetAgentAffectQueue(r.Context(), req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *APIHandler) HandleProcessAgentAffectBatchOnce(w http.ResponseWriter, r *http.Request) {
+	resp, err := h.app.ProcessAgentAffectBatchOnce(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *APIHandler) HandleClearAgentAffectFailedJobs(w http.ResponseWriter, r *http.Request) {
+	var req AgentAffectQueueRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.PersonaID == "" {
+		req.PersonaID = "default"
+	}
+	resp, err := h.app.ClearAgentAffectFailedJobs(r.Context(), req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *APIHandler) HandleSupersedeAgentAffectPendingJobs(w http.ResponseWriter, r *http.Request) {
+	var req AgentAffectQueueRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.PersonaID == "" {
+		req.PersonaID = "default"
+	}
+	resp, err := h.app.SupersedeAgentAffectPendingJobs(r.Context(), req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (h *APIHandler) HandleResetAgentAffect(w http.ResponseWriter, r *http.Request) {
 	var req AgentAffectResetRequest
 	if err := readJSON(r, &req); err != nil {
@@ -163,6 +216,21 @@ func (h *APIHandler) HandleResetAgentAffect(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func agentAffectQueueRequestFromQuery(r *http.Request) AgentAffectQueueRequest {
+	req := AgentAffectQueueRequest{
+		PersonaID:      r.URL.Query().Get("persona_id"),
+		SessionID:      r.URL.Query().Get("session_id"),
+		MoodOwnerScope: r.URL.Query().Get("mood_owner_scope"),
+		MoodOwnerID:    r.URL.Query().Get("mood_owner_id"),
+		Status:         r.URL.Query().Get("status"),
+		Limit:          queryInt(r, "limit", 50),
+	}
+	if req.PersonaID == "" {
+		req.PersonaID = "default"
+	}
+	return req
 }
 
 func (h *APIHandler) HandleSubmitAgentAffect(w http.ResponseWriter, r *http.Request) {

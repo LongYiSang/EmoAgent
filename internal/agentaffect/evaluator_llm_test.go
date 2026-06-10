@@ -136,3 +136,26 @@ func TestLLMEvaluatorParsesStrictJSONAndConfiguresChatRequest(t *testing.T) {
 		}
 	}
 }
+
+func TestParseLLMResponseAcceptsNaturalMoodFields(t *testing.T) {
+	result, err := ParseLLMResponse(`{
+		"schema_version": "agent_affect.v2.evaluation.v2",
+		"delta": {"valence": 0.02, "warmth": 0.03},
+		"label": "steady",
+		"mood_description": "心情平稳、温和",
+		"mood_reason": "最近的对话没有明显冲击",
+		"prompt_mood_text": "心情平稳、温和，没有明显额外波动。",
+		"cause_summary": "Internal audit summary.",
+		"visible_cause_summary": "Safe visible cause summary.",
+		"confidence": 0.6
+	}`)
+	if err != nil {
+		t.Fatalf("ParseLLMResponse: %v", err)
+	}
+	if result.MoodDescription != "心情平稳、温和" || result.MoodReason != "最近的对话没有明显冲击" {
+		t.Fatalf("natural mood fields = %#v", result)
+	}
+	if result.PromptMoodText != "心情平稳、温和，没有明显额外波动。" {
+		t.Fatalf("prompt_mood_text = %q", result.PromptMoodText)
+	}
+}

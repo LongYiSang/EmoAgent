@@ -40,7 +40,10 @@ type MemoryBridge interface {
 }
 
 type AgentAffectRuntime interface {
+	UpdateMode() string
+	GetCurrentMood(ctx context.Context, req agentaffect.GetCurrentMoodRequest) (agentaffect.GetCurrentMoodResponse, error)
 	SubmitMoodImpact(ctx context.Context, req agentaffect.SubmitMoodImpactRequest) (agentaffect.SubmitMoodImpactResponse, error)
+	EnqueueTurnEvaluationJob(ctx context.Context, req agentaffect.EnqueueTurnEvaluationJobRequest) (agentaffect.AffectJobRecord, error)
 	BuildPromptAffectBlock(ctx context.Context, req agentaffect.BuildPromptAffectBlockRequest) (string, error)
 }
 

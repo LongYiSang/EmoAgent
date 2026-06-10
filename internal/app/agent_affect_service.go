@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/longyisang/emoagent/internal/agentaffect"
 	"github.com/longyisang/emoagent/internal/config"
@@ -69,6 +71,79 @@ func (s *AgentAffectService) PreviewPrompt(ctx context.Context, req agentaffect.
 	return s.runtimeForDebug().PreviewPrompt(ctx, req)
 }
 
+func (s *AgentAffectService) QueueStatus(ctx context.Context, q agentaffect.JobQueueQuery) (agentaffect.QueueStatusResponse, error) {
+	return s.buildCoreRuntime(s.config()).QueueStatus(ctx, q)
+}
+
+func (s *AgentAffectService) ProcessBatchOnce(ctx context.Context) (agentaffect.ProcessBatchOnceResponse, error) {
+	processed, err := s.buildCoreRuntime(s.config()).ProcessNextBatch(ctx, "agent_affect_admin_once")
+	if err != nil {
+		return agentaffect.ProcessBatchOnceResponse{}, err
+	}
+	return agentaffect.ProcessBatchOnceResponse{Processed: processed}, nil
+}
+
+func (s *AgentAffectService) ClearFailedJobs(ctx context.Context, q agentaffect.JobQueueQuery) (agentaffect.ClearFailedJobsResponse, error) {
+	return s.buildCoreRuntime(s.config()).ClearFailedJobs(ctx, q)
+}
+
+func (s *AgentAffectService) SupersedePendingJobs(ctx context.Context, q agentaffect.JobQueueQuery) (agentaffect.SupersedePendingJobsResponse, error) {
+	return s.buildCoreRuntime(s.config()).SupersedePendingQueue(ctx, q, "admin_supersede_pending")
+}
+
+func (s *AgentAffectService) SupersedeAllPending(ctx context.Context, reason string) (int, error) {
+	store := s.persistentStore()
+	if store == nil {
+		return 0, nil
+	}
+	rt := agentaffect.NewRuntime(agentaffect.RuntimeOptions{
+		Config:    s.config(),
+		Store:     store,
+		Evaluator: agentaffect.DisabledEvaluator{},
+		Logger:    s.logger(),
+	})
+	return rt.SupersedeAllPending(ctx, reason)
+}
+
+func (s *AgentAffectService) StartBackground(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	cfg := s.config()
+	workers := cfg.Async.WorkerConcurrency
+	if workers <= 0 {
+		workers = 1
+	}
+	for i := 0; i < workers; i++ {
+		go s.runBackgroundWorker(ctx, i+1)
+	}
+}
+
+func (s *AgentAffectService) runBackgroundWorker(ctx context.Context, index int) {
+	workerID := fmt.Sprintf("agent_affect_worker_%d", index)
+	for {
+		cfg := s.config()
+		interval := time.Duration(cfg.Async.PollIntervalMS) * time.Millisecond
+		if interval <= 0 {
+			interval = 800 * time.Millisecond
+		}
+		if cfg.Enabled && cfg.StorageEnabled && cfg.Async.Enabled && cfg.Async.QueueEnabled && cfg.Async.WorkerEnabled {
+			processed, err := s.buildCoreRuntime(cfg).ProcessNextBatch(ctx, workerID)
+			if err != nil && s.logger() != nil {
+				s.logger().Warn("agent affect background worker failed", "worker_id", workerID, "error", err)
+			}
+			if processed {
+				continue
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
+		}
+	}
+}
+
 func (s *AgentAffectService) PluginAPI() agentaffect.PluginAPI {
 	return agentaffect.NewPluginAPI(s.runtimeForDebug(), s.store())
 }
@@ -81,18 +156,28 @@ func (s *AgentAffectService) config() config.AgentAffectConfig {
 }
 
 func (s *AgentAffectService) buildRuntime(cfg config.AgentAffectConfig) agentaffect.Service {
-	runtime := agentaffect.NewRuntime(agentaffect.RuntimeOptions{
+	return hookedAgentAffectRuntime{inner: s.buildCoreRuntime(cfg), plugins: s.plugins}
+}
+
+func (s *AgentAffectService) buildCoreRuntime(cfg config.AgentAffectConfig) *agentaffect.Runtime {
+	return agentaffect.NewRuntime(agentaffect.RuntimeOptions{
 		Config:    cfg,
 		Store:     s.store(),
 		Evaluator: s.evaluator(cfg),
 		Logger:    s.logger(),
 	})
-	return hookedAgentAffectRuntime{inner: runtime, plugins: s.plugins}
 }
 
 func (s *AgentAffectService) store() agentaffect.Store {
 	cfg := s.config()
 	if cfg.StorageEnabled && s != nil && s.infra != nil && s.infra.DB != nil {
+		return agentaffect.NewSQLiteStore(s.infra.DB.SqlDB())
+	}
+	return nil
+}
+
+func (s *AgentAffectService) persistentStore() agentaffect.Store {
+	if s != nil && s.infra != nil && s.infra.DB != nil {
 		return agentaffect.NewSQLiteStore(s.infra.DB.SqlDB())
 	}
 	return nil
@@ -139,6 +224,10 @@ func (s *AgentAffectService) logger() *slog.Logger {
 type hookedAgentAffectRuntime struct {
 	inner   agentaffect.Service
 	plugins *PluginService
+}
+
+func (r hookedAgentAffectRuntime) UpdateMode() string {
+	return r.inner.UpdateMode()
 }
 
 func (r hookedAgentAffectRuntime) GetCurrentMood(ctx context.Context, req agentaffect.GetCurrentMoodRequest) (agentaffect.GetCurrentMoodResponse, error) {
@@ -204,6 +293,10 @@ func (r hookedAgentAffectRuntime) SubmitMoodImpact(ctx context.Context, req agen
 		}
 	}
 	return resp, nil
+}
+
+func (r hookedAgentAffectRuntime) EnqueueTurnEvaluationJob(ctx context.Context, req agentaffect.EnqueueTurnEvaluationJobRequest) (agentaffect.AffectJobRecord, error) {
+	return r.inner.EnqueueTurnEvaluationJob(ctx, req)
 }
 
 func (r hookedAgentAffectRuntime) ApplyMoodDelta(ctx context.Context, req agentaffect.ApplyMoodDeltaRequest) (agentaffect.ApplyMoodDeltaResponse, error) {

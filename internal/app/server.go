@@ -151,6 +151,10 @@ func registerRoutes(mux *http.ServeMux, api *web.APIHandler, chatHandler http.Ha
 	mux.HandleFunc("POST /api/agent-affect/delta", api.HandleApplyAgentAffectDelta)
 	mux.HandleFunc("POST /api/agent-affect/reset", api.HandleResetAgentAffect)
 	mux.HandleFunc("POST /api/agent-affect/prompt-preview", api.HandlePreviewAgentAffectPrompt)
+	mux.HandleFunc("GET /api/agent-affect/queue", api.HandleGetAgentAffectQueue)
+	mux.HandleFunc("POST /api/agent-affect/process-once", api.HandleProcessAgentAffectBatchOnce)
+	mux.HandleFunc("POST /api/agent-affect/clear-failed", api.HandleClearAgentAffectFailedJobs)
+	mux.HandleFunc("POST /api/agent-affect/supersede-pending", api.HandleSupersedeAgentAffectPendingJobs)
 	mux.Handle("/ws", chatHandler)
 	mux.Handle("/", staticHandler)
 }

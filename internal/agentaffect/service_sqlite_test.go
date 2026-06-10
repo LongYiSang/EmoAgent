@@ -91,6 +91,80 @@ func TestSubmitMoodImpactWithFakeEvaluatorWritesEvaluationStateAndEvent(t *testi
 	}
 }
 
+func TestPersonaScopedMoodIsSharedAcrossSessionsByDefault(t *testing.T) {
+	cfg := config.DefaultConfig().AgentAffect
+	cfg.Enabled = true
+	rt, _ := newTestRuntime(t, cfg, fakeEvaluator{result: LLMEvaluationResult{
+		Delta:          MoodVector{Warmth: 0.1},
+		Label:          "warmer",
+		PromptMoodText: "更温和一些。",
+		Confidence:     0.8,
+		Status:         EvaluationStatusPreview,
+	}})
+
+	resp, err := rt.SubmitMoodImpact(context.Background(), SubmitMoodImpactRequest{
+		PersonaID:  "default",
+		SessionID:  "session-1",
+		TurnID:     "turn-1",
+		Trigger:    TriggerDescriptor{TriggerType: "user_message"},
+		Input:      MoodImpactInput{Mode: "raw", Text: "thanks"},
+		CommitMode: CommitModeCommitIfAllowed,
+	})
+	if err != nil {
+		t.Fatalf("SubmitMoodImpact: %v", err)
+	}
+
+	current, err := rt.GetCurrentMood(context.Background(), GetCurrentMoodRequest{PersonaID: "default", SessionID: "session-2"})
+	if err != nil {
+		t.Fatalf("GetCurrentMood: %v", err)
+	}
+	if current.Mood.StateID != resp.Mood.StateID {
+		t.Fatalf("session-2 mood state = %q, want persona-scoped state %q", current.Mood.StateID, resp.Mood.StateID)
+	}
+	if current.Mood.SessionID != "" {
+		t.Fatalf("persona-scoped mood session_id = %q, want empty", current.Mood.SessionID)
+	}
+}
+
+func TestSessionScopedMoodPreservesSessionBoundary(t *testing.T) {
+	cfg := config.DefaultConfig().AgentAffect
+	cfg.Enabled = true
+	cfg.State.Scope = "session"
+	rt, _ := newTestRuntime(t, cfg, fakeEvaluator{result: LLMEvaluationResult{
+		Delta:      MoodVector{Warmth: 0.1},
+		Label:      "warmer",
+		Confidence: 0.8,
+		Status:     EvaluationStatusPreview,
+	}})
+
+	resp, err := rt.SubmitMoodImpact(context.Background(), SubmitMoodImpactRequest{
+		PersonaID:  "default",
+		SessionID:  "session-1",
+		TurnID:     "turn-1",
+		Trigger:    TriggerDescriptor{TriggerType: "user_message"},
+		Input:      MoodImpactInput{Mode: "raw", Text: "thanks"},
+		CommitMode: CommitModeCommitIfAllowed,
+	})
+	if err != nil {
+		t.Fatalf("SubmitMoodImpact: %v", err)
+	}
+
+	sameSession, err := rt.GetCurrentMood(context.Background(), GetCurrentMoodRequest{PersonaID: "default", SessionID: "session-1"})
+	if err != nil {
+		t.Fatalf("GetCurrentMood session-1: %v", err)
+	}
+	if sameSession.Mood.StateID != resp.Mood.StateID {
+		t.Fatalf("session-1 mood state = %q, want %q", sameSession.Mood.StateID, resp.Mood.StateID)
+	}
+	otherSession, err := rt.GetCurrentMood(context.Background(), GetCurrentMoodRequest{PersonaID: "default", SessionID: "session-2"})
+	if err != nil {
+		t.Fatalf("GetCurrentMood session-2: %v", err)
+	}
+	if otherSession.Mood.StateID == resp.Mood.StateID || otherSession.Mood.Vector.Warmth == resp.Mood.Vector.Warmth {
+		t.Fatalf("session-2 mood = %#v, want independent baseline", otherSession.Mood)
+	}
+}
+
 func TestEvaluateMoodImpactPreviewDoesNotCommitState(t *testing.T) {
 	cfg := config.DefaultConfig().AgentAffect
 	cfg.Enabled = true
@@ -178,6 +252,97 @@ func TestResetMoodWritesBaselineStateEventAndHistory(t *testing.T) {
 	}
 	if len(history.Events) != 1 || history.Events[0].ID != resp.EventID {
 		t.Fatalf("history events = %#v", history.Events)
+	}
+}
+
+func TestResetMoodSupersedesPendingJobsForOwner(t *testing.T) {
+	cfg := config.DefaultConfig().AgentAffect
+	cfg.Enabled = true
+	rt, db := newTestRuntime(t, cfg, fakeEvaluator{})
+	now := time.Date(2026, 6, 10, 9, 0, 0, 0, time.UTC)
+
+	if _, err := rt.store.EnqueueTurnEvaluationJob(context.Background(), EnqueueTurnEvaluationJobRequest{PersonaID: "default", SessionID: "session-1", TurnID: "turn-1", RunAfter: now}); err != nil {
+		t.Fatalf("enqueue default job: %v", err)
+	}
+	if _, err := rt.store.EnqueueTurnEvaluationJob(context.Background(), EnqueueTurnEvaluationJobRequest{PersonaID: "other", SessionID: "session-2", TurnID: "turn-2", RunAfter: now}); err != nil {
+		t.Fatalf("enqueue other job: %v", err)
+	}
+
+	if _, err := rt.ResetMood(context.Background(), ResetMoodRequest{PersonaID: "default", SessionID: "session-1", Reason: "manual reset"}); err != nil {
+		t.Fatalf("ResetMood: %v", err)
+	}
+
+	var superseded, otherPending int
+	if err := db.QueryRow("SELECT COUNT(*) FROM agent_affect_jobs WHERE mood_owner_id = 'persona:default' AND status = 'superseded'").Scan(&superseded); err != nil {
+		t.Fatalf("count superseded: %v", err)
+	}
+	if err := db.QueryRow("SELECT COUNT(*) FROM agent_affect_jobs WHERE mood_owner_id = 'persona:other' AND status = 'pending'").Scan(&otherPending); err != nil {
+		t.Fatalf("count other pending: %v", err)
+	}
+	if superseded != 1 || otherPending != 1 {
+		t.Fatalf("superseded/default=%d otherPending=%d, want 1/1", superseded, otherPending)
+	}
+}
+
+func TestApplyMoodDeltaSupersedesPendingJobsForOwner(t *testing.T) {
+	cfg := config.DefaultConfig().AgentAffect
+	cfg.Enabled = true
+	rt, db := newTestRuntime(t, cfg, fakeEvaluator{})
+	now := time.Date(2026, 6, 10, 9, 0, 0, 0, time.UTC)
+
+	if _, err := rt.store.EnqueueTurnEvaluationJob(context.Background(), EnqueueTurnEvaluationJobRequest{PersonaID: "default", SessionID: "session-1", TurnID: "turn-1", RunAfter: now}); err != nil {
+		t.Fatalf("enqueue default job: %v", err)
+	}
+
+	if _, err := rt.ApplyMoodDelta(context.Background(), ApplyMoodDeltaRequest{
+		PersonaID:   "default",
+		SessionID:   "session-1",
+		Trigger:     TriggerDescriptor{TriggerType: "debug"},
+		Delta:       MoodVector{Warmth: 0.1},
+		CommittedBy: "user_debug",
+	}); err != nil {
+		t.Fatalf("ApplyMoodDelta: %v", err)
+	}
+
+	var superseded int
+	if err := db.QueryRow("SELECT COUNT(*) FROM agent_affect_jobs WHERE mood_owner_id = 'persona:default' AND status = 'superseded'").Scan(&superseded); err != nil {
+		t.Fatalf("count superseded: %v", err)
+	}
+	if superseded != 1 {
+		t.Fatalf("superseded = %d, want 1", superseded)
+	}
+}
+
+func TestUpdateProfileSupersedesPendingJobsForPersona(t *testing.T) {
+	cfg := config.DefaultConfig().AgentAffect
+	cfg.Enabled = true
+	rt, db := newTestRuntime(t, cfg, fakeEvaluator{})
+	now := time.Date(2026, 6, 10, 9, 0, 0, 0, time.UTC)
+
+	if _, err := rt.store.EnqueueTurnEvaluationJob(context.Background(), EnqueueTurnEvaluationJobRequest{PersonaID: "default", SessionID: "session-1", TurnID: "turn-1", RunAfter: now}); err != nil {
+		t.Fatalf("enqueue default job: %v", err)
+	}
+	if _, err := rt.store.EnqueueTurnEvaluationJob(context.Background(), EnqueueTurnEvaluationJobRequest{PersonaID: "other", SessionID: "session-2", TurnID: "turn-2", RunAfter: now}); err != nil {
+		t.Fatalf("enqueue other job: %v", err)
+	}
+
+	if _, err := rt.UpdateProfile(context.Background(), AffectProfile{
+		PersonaID:   "default",
+		ProfileName: "default",
+		Baseline:    MoodVector{Warmth: 0.7, Energy: 0.4},
+	}); err != nil {
+		t.Fatalf("UpdateProfile: %v", err)
+	}
+
+	var superseded, otherPending int
+	if err := db.QueryRow("SELECT COUNT(*) FROM agent_affect_jobs WHERE persona_id = 'default' AND status = 'superseded'").Scan(&superseded); err != nil {
+		t.Fatalf("count superseded: %v", err)
+	}
+	if err := db.QueryRow("SELECT COUNT(*) FROM agent_affect_jobs WHERE persona_id = 'other' AND status = 'pending'").Scan(&otherPending); err != nil {
+		t.Fatalf("count other pending: %v", err)
+	}
+	if superseded != 1 || otherPending != 1 {
+		t.Fatalf("superseded/default=%d otherPending=%d, want 1/1", superseded, otherPending)
 	}
 }
 

@@ -20,6 +20,7 @@ export default memo(function AgentAffectTab({
   currentMood,
   history,
   pluginWrites,
+  queueStatus,
   promptPreview,
   debugInput,
   deltaJSON,
@@ -38,6 +39,9 @@ export default memo(function AgentAffectTab({
   applyDelta,
   resetMood,
   refreshPromptPreview,
+  processQueueOnce,
+  clearFailedJobs,
+  supersedePendingJobs,
   configJSON,
   resultJSON,
   providers,
@@ -46,8 +50,16 @@ export default memo(function AgentAffectTab({
   const mood = field<AnyRecord>(currentMood, 'mood', {});
   const moodVector = field<AnyRecord>(mood, 'vector', {});
   const evaluator = field<AnyRecord>(configDraft, 'evaluator', {});
+  const stateConfig = field<AnyRecord>(configDraft, 'state', {});
+  const promptConfig = field<AnyRecord>(configDraft, 'prompt', {});
+  const asyncConfig = field<AnyRecord>(configDraft, 'async', {});
+  const batchConfig = field<AnyRecord>(asyncConfig, 'batch', {});
   const evaluations = arrayField<AnyRecord>(history, 'evaluations');
   const events = arrayField<AnyRecord>(history, 'events');
+  const queueJobs = arrayField<AnyRecord>(queueStatus, 'jobs');
+  const queueBatches = arrayField<AnyRecord>(queueStatus, 'batches');
+  const latestBatch = field<AnyRecord>(queueStatus, 'latest_batch', {});
+  const stateScope = stringField(stateConfig, 'scope') || 'persona';
 
   return (
     <div className="section">
@@ -66,7 +78,7 @@ export default memo(function AgentAffectTab({
       <div className="section nested">
         <div className="row-head">
           <strong>调试上下文</strong>
-          <span className="param-note">Persona / Session 决定下方所有实时数据</span>
+          <span className="param-note">Persona 决定默认 mood owner；Session 作为过滤条件</span>
         </div>
         <div className="grid compact">
           <div className="field">
@@ -74,7 +86,7 @@ export default memo(function AgentAffectTab({
             <input value={personaID} onChange={event => setPersonaID(event.target.value)} />
           </div>
           <div className="field">
-            <label>Session ID</label>
+            <label>{stateScope === 'persona' ? 'Session Filter' : 'Session ID'}</label>
             <input value={sessionID} onChange={event => setSessionID(event.target.value)} />
           </div>
         </div>
@@ -84,6 +96,20 @@ export default memo(function AgentAffectTab({
       <div className="grid">
         <label className="check"><input type="checkbox" checked={boolField(configDraft, 'enabled')} onChange={event => updateConfigPath(['enabled'], event.target.checked)} /> 启用 Agent Affect</label>
         <label className="check"><input type="checkbox" checked={boolField(configDraft, 'storage_enabled')} onChange={event => updateConfigPath(['storage_enabled'], event.target.checked)} /> SQLite 持久化</label>
+        <div className="field">
+          <label>Update Mode</label>
+          <select value={stringField(configDraft, 'update_mode') || 'async_after_reply'} onChange={event => updateConfigPath(['update_mode'], event.target.value)}>
+            <option value="async_after_reply">async_after_reply</option>
+            <option value="sync_before_reply">sync_before_reply</option>
+          </select>
+        </div>
+        <div className="field">
+          <label>State Scope</label>
+          <select value={stateScope} onChange={event => updateConfigPath(['state', 'scope'], event.target.value)}>
+            <option value="persona">persona</option>
+            <option value="session">session</option>
+          </select>
+        </div>
         <div className="field">
           <label>Evaluator Mode</label>
           <select value={stringField(field(configDraft, 'evaluator', {}), 'mode') || 'llm'} onChange={event => updateConfigPath(['evaluator', 'mode'], event.target.value)}>
@@ -101,7 +127,19 @@ export default memo(function AgentAffectTab({
           </select>
         </div>
         <label className="check"><input type="checkbox" checked={boolField(field(configDraft, 'context', {}), 'store_raw_inputs')} onChange={event => updateConfigPath(['context', 'store_raw_inputs'], event.target.checked)} /> 保存 raw input_text</label>
-        <label className="check"><input type="checkbox" checked={boolField(field(configDraft, 'prompt', {}), 'include_mood_block')} onChange={event => updateConfigPath(['prompt', 'include_mood_block'], event.target.checked)} /> 注入 prompt mood block</label>
+        <label className="check"><input type="checkbox" checked={boolField(promptConfig, 'include_mood_block')} onChange={event => updateConfigPath(['prompt', 'include_mood_block'], event.target.checked)} /> 注入 prompt mood block</label>
+        <div className="field">
+          <label>Prompt Mode</label>
+          <select value={stringField(promptConfig, 'mode') || 'natural_summary'} onChange={event => updateConfigPath(['prompt', 'mode'], event.target.value)}>
+            <option value="natural_summary">natural_summary</option>
+            <option value="numeric_debug">numeric_debug</option>
+            <option value="both">both</option>
+          </select>
+        </div>
+        <label className="check"><input type="checkbox" checked={boolField(promptConfig, 'include_numeric_values')} onChange={event => updateConfigPath(['prompt', 'include_numeric_values'], event.target.checked)} /> Prompt numeric debug</label>
+        <label className="check"><input type="checkbox" checked={boolField(asyncConfig, 'worker_enabled')} onChange={event => updateConfigPath(['async', 'worker_enabled'], event.target.checked)} /> 后台 worker</label>
+        <label className="check"><input type="checkbox" checked={boolField(batchConfig, 'enabled')} onChange={event => updateConfigPath(['async', 'batch', 'enabled'], event.target.checked)} /> 批量合并</label>
+        <div className="field"><label>Batch Max Jobs</label><input type="number" min="1" value={String(field(batchConfig, 'max_jobs', 6))} onChange={event => updateConfigPath(['async', 'batch', 'max_jobs'], toInt(event.target.value))} /></div>
       </div>
 
       <details className="slot" open>
@@ -144,17 +182,22 @@ export default memo(function AgentAffectTab({
         <div className="section nested">
           <div className="row-head">
             <h3>当前 Mood（只读）</h3>
-            <span className="badge active">{stringField(mood, 'label') || '—'}</span>
+            <span className="badge active">{stringField(mood, 'mood_owner_scope') || stateScope}: {stringField(mood, 'mood_owner_id') || '—'}</span>
           </div>
           <div className="kv">
             <span>Enabled</span><b>{String(boolField(currentMood, 'enabled'))}</b>
+            <span>当前心情</span><b>{stringField(mood, 'mood_description') || stringField(mood, 'label') || 'baseline'}</b>
+            <span>原因</span><b>{stringField(mood, 'mood_reason') || stringField(mood, 'visible_cause_summary') || stringField(mood, 'cause_summary') || '—'}</b>
             <span>Confidence</span><b>{numberField(mood, 'confidence').toFixed(3)}</b>
             <span>Updated</span><b>{formatTime(field(mood, 'updated_at', ''))}</b>
           </div>
-          <div className="pill-row">
-            {vectorKeys.map(key => <span className="pill" key={key}>{key}: {numberField(moodVector, key).toFixed(3)}</span>)}
-          </div>
-          <pre className="code">{stringField(mood, 'cause_summary') || 'No cause summary.'}</pre>
+          <pre className="code">{stringField(mood, 'prompt_mood_text') || stringField(mood, 'cause_summary') || 'No prompt mood text.'}</pre>
+          <details className="slot">
+            <summary className="slot-head"><strong>Debug mood vector</strong><span className="badge">{stringField(mood, 'label') || '—'}</span></summary>
+            <div className="pill-row">
+              {vectorKeys.map(key => <span className="pill" key={key}>{key}: {numberField(moodVector, key).toFixed(3)}</span>)}
+            </div>
+          </details>
         </div>
 
         <div className="section nested">
@@ -167,6 +210,46 @@ export default memo(function AgentAffectTab({
               <div className="field" key={key}>
                 <label>{key}</label>
                 <input type="number" step="0.01" value={numberField(field(profileDraft, 'baseline', {}), key)} onChange={event => updateProfileBaseline(key, Number(event.target.value))} />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="section nested">
+        <div className="row-head">
+          <h3>Queue / Batch</h3>
+          <div className="actions">
+            <button className="btn ghost mini" type="button" onClick={reloadAgentAffect}>刷新队列</button>
+            <button className="btn ghost mini" type="button" onClick={processQueueOnce}>处理一次</button>
+            <button className="btn ghost mini" type="button" onClick={clearFailedJobs}>清理 failed</button>
+            <button className="btn danger mini" type="button" onClick={supersedePendingJobs}>Supersede pending</button>
+          </div>
+        </div>
+        <div className="kv">
+          <span>Pending</span><b>{numberField(queueStatus, 'pending_jobs')}</b>
+          <span>Running</span><b>{numberField(queueStatus, 'running_jobs')}</b>
+          <span>Failed</span><b>{numberField(queueStatus, 'failed_jobs')}</b>
+          <span>Latest batch</span><b>{stringField(latestBatch, 'id') || '—'}</b>
+          <span>Batch job count</span><b>{numberField(latestBatch, 'job_count')}</b>
+          <span>Last worker error</span><b>{stringField(latestBatch, 'error_message') || '—'}</b>
+        </div>
+        <div className="grid two-col">
+          <div className="timeline-list">
+            {queueJobs.slice(0, 8).map(job => (
+              <div className="timeline-item" key={stringField(job, 'id')}>
+                <b>{stringField(job, 'status')} / {stringField(job, 'job_type')}</b>
+                <span>{stringField(job, 'mood_owner_id')} / {stringField(job, 'turn_id') || '-'}</span>
+                <span>{formatTime(field(job, 'created_at', ''))}</span>
+              </div>
+            ))}
+          </div>
+          <div className="timeline-list">
+            {queueBatches.slice(0, 8).map(batch => (
+              <div className="timeline-item" key={stringField(batch, 'id')}>
+                <b>{stringField(batch, 'status')} / jobs={numberField(batch, 'job_count')}</b>
+                <span>{stringField(batch, 'mood_owner_id')}</span>
+                <span>{formatTime(field(batch, 'started_at', ''))}</span>
               </div>
             ))}
           </div>

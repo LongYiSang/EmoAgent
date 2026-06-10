@@ -1,6 +1,9 @@
 package agentaffect
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 const (
 	EvaluationStatusPreview   = "preview"
@@ -10,6 +13,22 @@ const (
 
 	CommitModePreview         = "preview"
 	CommitModeCommitIfAllowed = "commit_if_allowed"
+
+	AffectJobTypeTurnEvaluate   = "turn_evaluate"
+	AffectJobTypePluginEvaluate = "plugin_evaluate"
+	AffectJobTypeManualEvaluate = "manual_evaluate"
+	AffectJobTypeBarrier        = "barrier"
+
+	AffectJobStatusPending    = "pending"
+	AffectJobStatusRunning    = "running"
+	AffectJobStatusDone       = "done"
+	AffectJobStatusFailed     = "failed"
+	AffectJobStatusSuperseded = "superseded"
+
+	AffectBatchStatusRunning    = "running"
+	AffectBatchStatusDone       = "done"
+	AffectBatchStatusFailed     = "failed"
+	AffectBatchStatusSuperseded = "superseded"
 )
 
 type MoodVector struct {
@@ -40,9 +59,14 @@ type MoodSnapshot struct {
 	StateID             string             `json:"state_id"`
 	PersonaID           string             `json:"persona_id"`
 	SessionID           string             `json:"session_id,omitempty"`
+	MoodOwnerScope      string             `json:"mood_owner_scope,omitempty"`
+	MoodOwnerID         string             `json:"mood_owner_id,omitempty"`
 	Vector              MoodVector         `json:"vector"`
 	Label               string             `json:"label"`
 	Confidence          float64            `json:"confidence"`
+	MoodDescription     string             `json:"mood_description,omitempty"`
+	MoodReason          string             `json:"mood_reason,omitempty"`
+	PromptMoodText      string             `json:"prompt_mood_text,omitempty"`
 	CauseSummary        string             `json:"cause_summary,omitempty"`
 	VisibleCauseSummary string             `json:"visible_cause_summary,omitempty"`
 	CauseStack          []CauseContributor `json:"cause_stack,omitempty"`
@@ -81,6 +105,7 @@ type EvaluateMoodImpactRequest struct {
 	PersonaID         string            `json:"persona_id"`
 	SessionID         string            `json:"session_id,omitempty"`
 	TurnID            string            `json:"turn_id,omitempty"`
+	BatchID           string            `json:"batch_id,omitempty"`
 	Trigger           TriggerDescriptor `json:"trigger"`
 	Input             MoodImpactInput   `json:"input"`
 	MemoryPromptBlock string            `json:"memory_prompt_block,omitempty"`
@@ -169,6 +194,9 @@ type LLMEvaluationRequest struct {
 type LLMEvaluationResult struct {
 	Delta               MoodVector
 	Label               string
+	MoodDescription     string
+	MoodReason          string
+	PromptMoodText      string
 	CauseSummary        string
 	VisibleCauseSummary string
 	Confidence          float64
@@ -182,6 +210,9 @@ type AffectEvaluationRecord struct {
 	PersonaID                 string            `json:"persona_id"`
 	SessionID                 string            `json:"session_id,omitempty"`
 	TurnID                    string            `json:"turn_id,omitempty"`
+	BatchID                   string            `json:"batch_id,omitempty"`
+	MoodOwnerScope            string            `json:"mood_owner_scope,omitempty"`
+	MoodOwnerID               string            `json:"mood_owner_id,omitempty"`
 	Trigger                   TriggerDescriptor `json:"trigger"`
 	Input                     MoodImpactInput   `json:"input"`
 	ContextWindowPolicyJSON   string            `json:"context_window_policy_json,omitempty"`
@@ -198,6 +229,9 @@ type AffectEvaluationRecord struct {
 	ProposedDelta             MoodVector        `json:"proposed_delta"`
 	ClampedDelta              MoodVector        `json:"clamped_delta"`
 	PredictedState            MoodVector        `json:"predicted_state"`
+	MoodDescription           string            `json:"mood_description,omitempty"`
+	MoodReason                string            `json:"mood_reason,omitempty"`
+	PromptMoodText            string            `json:"prompt_mood_text,omitempty"`
 	CauseSummary              string            `json:"cause_summary,omitempty"`
 	VisibleCauseSummary       string            `json:"visible_cause_summary,omitempty"`
 	Confidence                float64           `json:"confidence"`
@@ -207,24 +241,30 @@ type AffectEvaluationRecord struct {
 }
 
 type AffectEventRecord struct {
-	ID             string            `json:"id"`
-	PersonaID      string            `json:"persona_id"`
-	SessionID      string            `json:"session_id,omitempty"`
-	TurnID         string            `json:"turn_id,omitempty"`
-	EvaluationID   string            `json:"evaluation_id,omitempty"`
-	Trigger        TriggerDescriptor `json:"trigger"`
-	BeforeStateID  string            `json:"before_state_id,omitempty"`
-	AfterStateID   string            `json:"after_state_id,omitempty"`
-	ProposedDelta  MoodVector        `json:"proposed_delta"`
-	ClampedDelta   MoodVector        `json:"clamped_delta"`
-	CommittedDelta MoodVector        `json:"committed_delta"`
-	LabelBefore    string            `json:"label_before,omitempty"`
-	LabelAfter     string            `json:"label_after,omitempty"`
-	CauseSummary   string            `json:"cause_summary,omitempty"`
-	Significance   float64           `json:"significance"`
-	Confidence     float64           `json:"confidence"`
-	CommittedBy    string            `json:"committed_by"`
-	CreatedAt      time.Time         `json:"created_at"`
+	ID              string            `json:"id"`
+	PersonaID       string            `json:"persona_id"`
+	SessionID       string            `json:"session_id,omitempty"`
+	TurnID          string            `json:"turn_id,omitempty"`
+	BatchID         string            `json:"batch_id,omitempty"`
+	MoodOwnerScope  string            `json:"mood_owner_scope,omitempty"`
+	MoodOwnerID     string            `json:"mood_owner_id,omitempty"`
+	EvaluationID    string            `json:"evaluation_id,omitempty"`
+	Trigger         TriggerDescriptor `json:"trigger"`
+	BeforeStateID   string            `json:"before_state_id,omitempty"`
+	AfterStateID    string            `json:"after_state_id,omitempty"`
+	ProposedDelta   MoodVector        `json:"proposed_delta"`
+	ClampedDelta    MoodVector        `json:"clamped_delta"`
+	CommittedDelta  MoodVector        `json:"committed_delta"`
+	LabelBefore     string            `json:"label_before,omitempty"`
+	LabelAfter      string            `json:"label_after,omitempty"`
+	MoodDescription string            `json:"mood_description,omitempty"`
+	MoodReason      string            `json:"mood_reason,omitempty"`
+	PromptMoodText  string            `json:"prompt_mood_text,omitempty"`
+	CauseSummary    string            `json:"cause_summary,omitempty"`
+	Significance    float64           `json:"significance"`
+	Confidence      float64           `json:"confidence"`
+	CommittedBy     string            `json:"committed_by"`
+	CreatedAt       time.Time         `json:"created_at"`
 }
 
 type PluginWriteRecord struct {
@@ -275,6 +315,44 @@ type HistoryResponse struct {
 	Events      []AffectEventRecord      `json:"events"`
 }
 
+type JobQueueQuery struct {
+	PersonaID      string `json:"persona_id,omitempty"`
+	SessionID      string `json:"session_id,omitempty"`
+	MoodOwnerScope string `json:"mood_owner_scope,omitempty"`
+	MoodOwnerID    string `json:"mood_owner_id,omitempty"`
+	Status         string `json:"status,omitempty"`
+	Limit          int    `json:"limit,omitempty"`
+}
+
+type BatchQuery struct {
+	PersonaID      string `json:"persona_id,omitempty"`
+	MoodOwnerScope string `json:"mood_owner_scope,omitempty"`
+	MoodOwnerID    string `json:"mood_owner_id,omitempty"`
+	Status         string `json:"status,omitempty"`
+	Limit          int    `json:"limit,omitempty"`
+}
+
+type QueueStatusResponse struct {
+	PendingJobs int                    `json:"pending_jobs"`
+	RunningJobs int                    `json:"running_jobs"`
+	FailedJobs  int                    `json:"failed_jobs"`
+	LatestBatch *AffectJobBatchRecord  `json:"latest_batch,omitempty"`
+	Jobs        []AffectJobRecord      `json:"jobs"`
+	Batches     []AffectJobBatchRecord `json:"batches"`
+}
+
+type ProcessBatchOnceResponse struct {
+	Processed bool `json:"processed"`
+}
+
+type ClearFailedJobsResponse struct {
+	Cleared int `json:"cleared"`
+}
+
+type SupersedePendingJobsResponse struct {
+	Superseded int `json:"superseded"`
+}
+
 type ResetMoodRequest struct {
 	PersonaID   string     `json:"persona_id"`
 	SessionID   string     `json:"session_id,omitempty"`
@@ -286,4 +364,144 @@ type ResetMoodRequest struct {
 type ResetMoodResponse struct {
 	EventID string       `json:"event_id,omitempty"`
 	Mood    MoodSnapshot `json:"mood"`
+}
+
+type EnqueueTurnEvaluationJobRequest struct {
+	PersonaID          string            `json:"persona_id"`
+	SessionID          string            `json:"session_id,omitempty"`
+	TurnID             string            `json:"turn_id,omitempty"`
+	MoodOwner          MoodOwner         `json:"mood_owner,omitempty"`
+	UserText           string            `json:"user_text,omitempty"`
+	AssistantText      string            `json:"assistant_text,omitempty"`
+	InputSummary       string            `json:"input_summary,omitempty"`
+	MemoryPromptBlock  string            `json:"memory_prompt_block,omitempty"`
+	Trigger            TriggerDescriptor `json:"trigger"`
+	BaseStateID        string            `json:"base_state_id,omitempty"`
+	BaseStateUpdatedAt time.Time         `json:"base_state_updated_at,omitempty"`
+	RunAfter           time.Time         `json:"run_after,omitempty"`
+	MaxAttempts        int               `json:"max_attempts,omitempty"`
+}
+
+type EnqueueAffectJobRequest struct {
+	ID                 string            `json:"id,omitempty"`
+	PersonaID          string            `json:"persona_id"`
+	SessionID          string            `json:"session_id,omitempty"`
+	TurnID             string            `json:"turn_id,omitempty"`
+	MoodOwner          MoodOwner         `json:"mood_owner"`
+	JobType            string            `json:"job_type"`
+	Batchable          bool              `json:"batchable"`
+	BarrierKind        string            `json:"barrier_kind,omitempty"`
+	Status             string            `json:"status,omitempty"`
+	Priority           int               `json:"priority,omitempty"`
+	RunAfter           time.Time         `json:"run_after,omitempty"`
+	MaxAttempts        int               `json:"max_attempts,omitempty"`
+	Trigger            TriggerDescriptor `json:"trigger"`
+	TriggerJSONRaw     json.RawMessage   `json:"trigger_json,omitempty"`
+	InputMode          string            `json:"input_mode,omitempty"`
+	UserText           string            `json:"user_text,omitempty"`
+	AssistantText      string            `json:"assistant_text,omitempty"`
+	InputSummary       string            `json:"input_summary,omitempty"`
+	MemoryPromptBlock  string            `json:"memory_prompt_block,omitempty"`
+	BaseStateID        string            `json:"base_state_id,omitempty"`
+	BaseStateUpdatedAt time.Time         `json:"base_state_updated_at,omitempty"`
+}
+
+type AffectJobRecord struct {
+	Seq                int64             `json:"seq"`
+	ID                 string            `json:"id"`
+	PersonaID          string            `json:"persona_id"`
+	SessionID          string            `json:"session_id,omitempty"`
+	TurnID             string            `json:"turn_id,omitempty"`
+	MoodOwnerScope     string            `json:"mood_owner_scope"`
+	MoodOwnerID        string            `json:"mood_owner_id"`
+	JobType            string            `json:"job_type"`
+	Batchable          bool              `json:"batchable"`
+	BarrierKind        string            `json:"barrier_kind,omitempty"`
+	Status             string            `json:"status"`
+	Priority           int               `json:"priority"`
+	RunAfter           time.Time         `json:"run_after"`
+	Attempts           int               `json:"attempts"`
+	MaxAttempts        int               `json:"max_attempts"`
+	ClaimedBy          string            `json:"claimed_by,omitempty"`
+	ClaimedUntil       time.Time         `json:"claimed_until,omitempty"`
+	Trigger            TriggerDescriptor `json:"trigger"`
+	InputMode          string            `json:"input_mode"`
+	UserText           string            `json:"user_text,omitempty"`
+	AssistantText      string            `json:"assistant_text,omitempty"`
+	InputSummary       string            `json:"input_summary,omitempty"`
+	MemoryPromptBlock  string            `json:"memory_prompt_block,omitempty"`
+	BaseStateID        string            `json:"base_state_id,omitempty"`
+	BaseStateUpdatedAt time.Time         `json:"base_state_updated_at,omitempty"`
+	BatchID            string            `json:"batch_id,omitempty"`
+	ResultEvaluationID string            `json:"result_evaluation_id,omitempty"`
+	ResultEventID      string            `json:"result_event_id,omitempty"`
+	ErrorMessage       string            `json:"error_message,omitempty"`
+	CreatedAt          time.Time         `json:"created_at"`
+	StartedAt          time.Time         `json:"started_at,omitempty"`
+	FinishedAt         time.Time         `json:"finished_at,omitempty"`
+}
+
+type AffectJobBatchRecord struct {
+	ID                        string    `json:"id"`
+	PersonaID                 string    `json:"persona_id"`
+	MoodOwnerScope            string    `json:"mood_owner_scope"`
+	MoodOwnerID               string    `json:"mood_owner_id"`
+	JobType                   string    `json:"job_type"`
+	Status                    string    `json:"status"`
+	JobCount                  int       `json:"job_count"`
+	FirstJobSeq               int64     `json:"first_job_seq"`
+	LastJobSeq                int64     `json:"last_job_seq"`
+	JobIDs                    []string  `json:"job_ids"`
+	SessionIDs                []string  `json:"session_ids,omitempty"`
+	TurnIDs                   []string  `json:"turn_ids,omitempty"`
+	BatchInputSummary         string    `json:"batch_input_summary,omitempty"`
+	ContextWindowSnapshotJSON string    `json:"context_window_snapshot_json,omitempty"`
+	EvaluationID              string    `json:"evaluation_id,omitempty"`
+	AffectEventID             string    `json:"affect_event_id,omitempty"`
+	ErrorMessage              string    `json:"error_message,omitempty"`
+	ClaimedBy                 string    `json:"claimed_by,omitempty"`
+	StartedAt                 time.Time `json:"started_at"`
+	FinishedAt                time.Time `json:"finished_at,omitempty"`
+}
+
+type ClaimBatchOptions struct {
+	MaxJobs        int
+	ClaimTTL       time.Duration
+	MaxAge         time.Duration
+	MinWait        time.Duration
+	MaxInputTokens int
+	SplitSessions  bool
+}
+
+type MarkBatchDoneRequest struct {
+	BatchID      string
+	EvaluationID string
+	EventID      string
+	FinishedAt   time.Time
+	ClearRaw     bool
+}
+
+type CommitBatchEvaluationRequest struct {
+	BatchID    string
+	Evaluation AffectEvaluationRecord
+	State      MoodSnapshot
+	Event      AffectEventRecord
+	FinishedAt time.Time
+	ClearRaw   bool
+}
+
+type MarkBatchFailedRequest struct {
+	BatchID      string
+	ErrorMessage string
+	FinishedAt   time.Time
+	Retry        bool
+	RetryAt      time.Time
+}
+
+type SupersedePendingJobsRequest struct {
+	MoodOwner    MoodOwner
+	PersonaID    string
+	All          bool
+	Reason       string
+	SupersededAt time.Time
 }

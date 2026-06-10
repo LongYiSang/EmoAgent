@@ -83,6 +83,10 @@ type AdminApp interface {
 	ApplyAgentAffectDelta(ctx context.Context, req AgentAffectDeltaRequest) (AgentAffectDeltaResponse, error)
 	ResetAgentAffect(ctx context.Context, req AgentAffectResetRequest) (AgentAffectResetResponse, error)
 	PreviewAgentAffectPrompt(ctx context.Context, req AgentAffectPromptPreviewRequest) (AgentAffectPromptPreviewResponse, error)
+	GetAgentAffectQueue(ctx context.Context, req AgentAffectQueueRequest) (AgentAffectQueueResponse, error)
+	ProcessAgentAffectBatchOnce(ctx context.Context) (AgentAffectProcessOnceResponse, error)
+	ClearAgentAffectFailedJobs(ctx context.Context, req AgentAffectQueueRequest) (AgentAffectClearFailedResponse, error)
+	SupersedeAgentAffectPendingJobs(ctx context.Context, req AgentAffectQueueRequest) (AgentAffectSupersedePendingResponse, error)
 }
 
 type AgentAffectCurrentRequest = agentaffect.GetCurrentMoodRequest
@@ -103,6 +107,11 @@ type AgentAffectResetRequest = agentaffect.ResetMoodRequest
 type AgentAffectResetResponse = agentaffect.ResetMoodResponse
 type AgentAffectPromptPreviewRequest = agentaffect.BuildPromptAffectBlockRequest
 type AgentAffectPromptPreviewResponse = agentaffect.PromptPreviewResponse
+type AgentAffectQueueRequest = agentaffect.JobQueueQuery
+type AgentAffectQueueResponse = agentaffect.QueueStatusResponse
+type AgentAffectProcessOnceResponse = agentaffect.ProcessBatchOnceResponse
+type AgentAffectClearFailedResponse = agentaffect.ClearFailedJobsResponse
+type AgentAffectSupersedePendingResponse = agentaffect.SupersedePendingJobsResponse
 
 type APIHandler struct {
 	app    AdminApp

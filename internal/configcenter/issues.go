@@ -241,6 +241,55 @@ func buildAgentAffectIssues(cfg config.AgentAffectConfig) []ConfigIssue {
 			Message:  "agent_affect.enabled requires agent_affect.storage_enabled",
 		})
 	}
+	switch strings.TrimSpace(cfg.UpdateMode) {
+	case "", "async_after_reply", "sync_before_reply":
+	default:
+		issues = append(issues, ConfigIssue{Path: "agent_affect.update_mode", Severity: "error", Message: "agent_affect.update_mode must be async_after_reply or sync_before_reply"})
+	}
+	switch strings.TrimSpace(cfg.State.Scope) {
+	case "", "persona", "session":
+	default:
+		issues = append(issues, ConfigIssue{Path: "agent_affect.state.scope", Severity: "error", Message: "agent_affect.state.scope must be persona or session"})
+	}
+	switch strings.TrimSpace(cfg.State.RecentContextScope) {
+	case "", "persona", "session":
+	default:
+		issues = append(issues, ConfigIssue{Path: "agent_affect.state.recent_context_scope", Severity: "error", Message: "agent_affect.state.recent_context_scope must be persona or session"})
+	}
+	if cfg.Async.Enabled {
+		if cfg.Async.WorkerConcurrency <= 0 {
+			issues = append(issues, ConfigIssue{Path: "agent_affect.async.worker_concurrency", Severity: "error", Message: "worker_concurrency must be > 0"})
+		}
+		if cfg.Async.PollIntervalMS <= 0 {
+			issues = append(issues, ConfigIssue{Path: "agent_affect.async.poll_interval_ms", Severity: "error", Message: "poll_interval_ms must be > 0"})
+		}
+		if cfg.Async.QueueClaimTTLSeconds <= 0 {
+			issues = append(issues, ConfigIssue{Path: "agent_affect.async.queue_claim_ttl_seconds", Severity: "error", Message: "queue_claim_ttl_seconds must be > 0"})
+		}
+		if cfg.Async.MaxAttempts <= 0 {
+			issues = append(issues, ConfigIssue{Path: "agent_affect.async.max_attempts", Severity: "error", Message: "max_attempts must be > 0"})
+		}
+		if cfg.Async.RetryBaseDelaySeconds <= 0 {
+			issues = append(issues, ConfigIssue{Path: "agent_affect.async.retry_base_delay_seconds", Severity: "error", Message: "retry_base_delay_seconds must be > 0"})
+		}
+		if cfg.Async.RetryMaxDelaySeconds < cfg.Async.RetryBaseDelaySeconds {
+			issues = append(issues, ConfigIssue{Path: "agent_affect.async.retry_max_delay_seconds", Severity: "error", Message: "retry_max_delay_seconds must be >= retry_base_delay_seconds"})
+		}
+		if cfg.Async.Batch.Enabled {
+			if cfg.Async.Batch.MaxJobs <= 0 {
+				issues = append(issues, ConfigIssue{Path: "agent_affect.async.batch.max_jobs", Severity: "error", Message: "batch.max_jobs must be > 0"})
+			}
+			if cfg.Async.Batch.MaxInputTokens <= 0 {
+				issues = append(issues, ConfigIssue{Path: "agent_affect.async.batch.max_input_tokens", Severity: "error", Message: "batch.max_input_tokens must be > 0"})
+			}
+			if cfg.Async.Batch.MaxAgeSeconds < 0 {
+				issues = append(issues, ConfigIssue{Path: "agent_affect.async.batch.max_age_seconds", Severity: "error", Message: "batch.max_age_seconds must be >= 0"})
+			}
+			if cfg.Async.Batch.MinWaitMS < 0 {
+				issues = append(issues, ConfigIssue{Path: "agent_affect.async.batch.min_wait_ms", Severity: "error", Message: "batch.min_wait_ms must be >= 0"})
+			}
+		}
+	}
 	switch strings.TrimSpace(cfg.Evaluator.Mode) {
 	case "", "llm", "disabled":
 	default:
@@ -291,6 +340,14 @@ func buildAgentAffectIssues(cfg config.AgentAffectConfig) []ConfigIssue {
 	}
 	if cfg.Limits.Absolute.FrustrationMax < 0 {
 		issues = append(issues, ConfigIssue{Path: "agent_affect.limits.absolute.frustration_max", Severity: "error", Message: "frustration_max must be >= 0"})
+	}
+	switch strings.TrimSpace(cfg.Prompt.Mode) {
+	case "", "natural_summary", "numeric_debug", "both":
+	default:
+		issues = append(issues, ConfigIssue{Path: "agent_affect.prompt.mode", Severity: "error", Message: "agent_affect.prompt.mode must be natural_summary, numeric_debug, or both"})
+	}
+	if cfg.Prompt.MaxPromptChars < 0 {
+		issues = append(issues, ConfigIssue{Path: "agent_affect.prompt.max_prompt_chars", Severity: "error", Message: "max_prompt_chars must be >= 0"})
 	}
 	return issues
 }

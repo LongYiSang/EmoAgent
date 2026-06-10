@@ -12,6 +12,7 @@ import (
 )
 
 type Service interface {
+	UpdateMode() string
 	GetCurrentMood(ctx context.Context, req GetCurrentMoodRequest) (GetCurrentMoodResponse, error)
 	GetProfile(ctx context.Context, personaID string) (AffectProfile, error)
 	UpdateProfile(ctx context.Context, profile AffectProfile) (AffectProfile, error)
@@ -19,10 +20,18 @@ type Service interface {
 	ListPluginWrites(ctx context.Context, q PluginWritesQuery) ([]PluginWriteRecord, error)
 	EvaluateMoodImpact(ctx context.Context, req EvaluateMoodImpactRequest) (EvaluateMoodImpactResponse, error)
 	SubmitMoodImpact(ctx context.Context, req SubmitMoodImpactRequest) (SubmitMoodImpactResponse, error)
+	EnqueueTurnEvaluationJob(ctx context.Context, req EnqueueTurnEvaluationJobRequest) (AffectJobRecord, error)
 	ApplyMoodDelta(ctx context.Context, req ApplyMoodDeltaRequest) (ApplyMoodDeltaResponse, error)
 	ResetMood(ctx context.Context, req ResetMoodRequest) (ResetMoodResponse, error)
 	BuildPromptAffectBlock(ctx context.Context, req BuildPromptAffectBlockRequest) (string, error)
 	PreviewPrompt(ctx context.Context, req BuildPromptAffectBlockRequest) (PromptPreviewResponse, error)
+}
+
+func (r *Runtime) UpdateMode() string {
+	if strings.TrimSpace(r.cfg.UpdateMode) == "" {
+		return "async_after_reply"
+	}
+	return strings.TrimSpace(r.cfg.UpdateMode)
 }
 
 type Runtime struct {
@@ -90,7 +99,18 @@ func (r *Runtime) UpdateProfile(ctx context.Context, profile AffectProfile) (Aff
 	}
 	var notes []string
 	profile.Baseline = clampState(r.cfg, profile.Baseline, &notes)
-	return r.store.UpsertProfile(ctx, profile)
+	updated, err := r.store.UpsertProfile(ctx, profile)
+	if err != nil {
+		return AffectProfile{}, err
+	}
+	if _, err := r.store.SupersedePendingJobs(ctx, SupersedePendingJobsRequest{
+		PersonaID:    profile.PersonaID,
+		Reason:       "profile_update",
+		SupersededAt: r.now(),
+	}); err != nil {
+		return AffectProfile{}, err
+	}
+	return updated, nil
 }
 
 func (r *Runtime) ListHistory(ctx context.Context, q HistoryQuery) (HistoryResponse, error) {
@@ -180,6 +200,20 @@ func (r *Runtime) SubmitMoodImpact(ctx context.Context, req SubmitMoodImpactRequ
 	return resp, nil
 }
 
+func (r *Runtime) EnqueueTurnEvaluationJob(ctx context.Context, req EnqueueTurnEvaluationJobRequest) (AffectJobRecord, error) {
+	if !r.cfg.Enabled || !r.cfg.StorageEnabled || !r.cfg.Async.Enabled || !r.cfg.Async.QueueEnabled || r.store == nil {
+		return AffectJobRecord{}, nil
+	}
+	req.MoodOwner = ResolveMoodOwner(r.cfg, req.PersonaID, req.SessionID)
+	if req.RunAfter.IsZero() {
+		req.RunAfter = r.now()
+	}
+	if req.MaxAttempts <= 0 {
+		req.MaxAttempts = r.cfg.Async.MaxAttempts
+	}
+	return r.store.EnqueueTurnEvaluationJob(ctx, req)
+}
+
 func (r *Runtime) ApplyMoodDelta(ctx context.Context, req ApplyMoodDeltaRequest) (ApplyMoodDeltaResponse, error) {
 	if !r.cfg.Enabled {
 		return ApplyMoodDeltaResponse{Mood: baselineSnapshot(req.PersonaID, req.SessionID, r.now())}, nil
@@ -198,24 +232,36 @@ func (r *Runtime) ApplyMoodDelta(ctx context.Context, req ApplyMoodDeltaRequest)
 	after.Vector = clamped.PredictedState
 	after.UpdatedAt = r.now()
 	if r.cfg.StorageEnabled && r.store != nil {
+		if _, err := r.store.SupersedePendingJobs(ctx, SupersedePendingJobsRequest{
+			MoodOwner:    moodOwnerFromSnapshot(before),
+			Reason:       "manual_delta",
+			SupersededAt: r.now(),
+		}); err != nil {
+			return ApplyMoodDeltaResponse{}, err
+		}
 		event := AffectEventRecord{
-			ID:             uuid.NewString(),
-			PersonaID:      req.PersonaID,
-			SessionID:      req.SessionID,
-			TurnID:         req.TurnID,
-			Trigger:        req.Trigger,
-			BeforeStateID:  before.StateID,
-			AfterStateID:   after.StateID,
-			ProposedDelta:  req.Delta,
-			ClampedDelta:   clamped.ClampedDelta,
-			CommittedDelta: clamped.ClampedDelta,
-			LabelBefore:    before.Label,
-			LabelAfter:     after.Label,
-			CauseSummary:   after.CauseSummary,
-			Significance:   significance(clamped.ClampedDelta),
-			Confidence:     after.Confidence,
-			CommittedBy:    committedBy,
-			CreatedAt:      r.now(),
+			ID:              uuid.NewString(),
+			PersonaID:       req.PersonaID,
+			SessionID:       req.SessionID,
+			TurnID:          req.TurnID,
+			MoodOwnerScope:  before.MoodOwnerScope,
+			MoodOwnerID:     before.MoodOwnerID,
+			Trigger:         req.Trigger,
+			BeforeStateID:   before.StateID,
+			AfterStateID:    after.StateID,
+			ProposedDelta:   req.Delta,
+			ClampedDelta:    clamped.ClampedDelta,
+			CommittedDelta:  clamped.ClampedDelta,
+			LabelBefore:     before.Label,
+			LabelAfter:      after.Label,
+			MoodDescription: after.MoodDescription,
+			MoodReason:      after.MoodReason,
+			PromptMoodText:  after.PromptMoodText,
+			CauseSummary:    after.CauseSummary,
+			Significance:    significance(clamped.ClampedDelta),
+			Confidence:      after.Confidence,
+			CommittedBy:     committedBy,
+			CreatedAt:       r.now(),
 		}
 		if err := r.store.CommitStateEvent(ctx, after, event); err != nil {
 			return ApplyMoodDeltaResponse{}, err
@@ -245,35 +291,48 @@ func (r *Runtime) ResetMood(ctx context.Context, req ResetMoodRequest) (ResetMoo
 		baseline = r.profileForPrompt(ctx, req.PersonaID).Baseline
 	}
 	var notes []string
-	after := MoodSnapshot{
-		StateID:      uuid.NewString(),
-		PersonaID:    req.PersonaID,
-		SessionID:    req.SessionID,
-		Vector:       clampState(r.cfg, baseline, &notes),
-		Label:        "baseline",
-		Confidence:   0.5,
-		CauseSummary: defaultString(req.Reason, "Manual reset to baseline."),
-		UpdatedAt:    r.now(),
-	}
+	after := before
+	after.StateID = uuid.NewString()
+	after.Vector = clampState(r.cfg, baseline, &notes)
+	after.Label = "baseline"
+	after.Confidence = 0.5
+	after.MoodDescription = "baseline"
+	after.MoodReason = defaultString(req.Reason, "Manual reset to baseline.")
+	after.PromptMoodText = buildPromptMoodTextFallback(after.MoodDescription, after.MoodReason)
+	after.CauseSummary = defaultString(req.Reason, "Manual reset to baseline.")
+	after.VisibleCauseSummary = ""
+	after.UpdatedAt = r.now()
 	event := AffectEventRecord{
-		ID:             uuid.NewString(),
-		PersonaID:      req.PersonaID,
-		SessionID:      req.SessionID,
-		Trigger:        TriggerDescriptor{TriggerType: "debug", CustomType: "reset"},
-		BeforeStateID:  before.StateID,
-		AfterStateID:   after.StateID,
-		ProposedDelta:  deltaBetween(before.Vector, after.Vector),
-		ClampedDelta:   deltaBetween(before.Vector, after.Vector),
-		CommittedDelta: deltaBetween(before.Vector, after.Vector),
-		LabelBefore:    before.Label,
-		LabelAfter:     after.Label,
-		CauseSummary:   after.CauseSummary,
-		Significance:   significance(deltaBetween(before.Vector, after.Vector)),
-		Confidence:     after.Confidence,
-		CommittedBy:    committedBy,
-		CreatedAt:      r.now(),
+		ID:              uuid.NewString(),
+		PersonaID:       req.PersonaID,
+		SessionID:       req.SessionID,
+		MoodOwnerScope:  before.MoodOwnerScope,
+		MoodOwnerID:     before.MoodOwnerID,
+		Trigger:         TriggerDescriptor{TriggerType: "debug", CustomType: "reset"},
+		BeforeStateID:   before.StateID,
+		AfterStateID:    after.StateID,
+		ProposedDelta:   deltaBetween(before.Vector, after.Vector),
+		ClampedDelta:    deltaBetween(before.Vector, after.Vector),
+		CommittedDelta:  deltaBetween(before.Vector, after.Vector),
+		LabelBefore:     before.Label,
+		LabelAfter:      after.Label,
+		MoodDescription: after.MoodDescription,
+		MoodReason:      after.MoodReason,
+		PromptMoodText:  after.PromptMoodText,
+		CauseSummary:    after.CauseSummary,
+		Significance:    significance(deltaBetween(before.Vector, after.Vector)),
+		Confidence:      after.Confidence,
+		CommittedBy:     committedBy,
+		CreatedAt:       r.now(),
 	}
 	if r.cfg.StorageEnabled && r.store != nil {
+		if _, err := r.store.SupersedePendingJobs(ctx, SupersedePendingJobsRequest{
+			MoodOwner:    moodOwnerFromSnapshot(before),
+			Reason:       "manual_reset",
+			SupersededAt: r.now(),
+		}); err != nil {
+			return ResetMoodResponse{}, err
+		}
 		if err := r.store.CommitStateEvent(ctx, after, event); err != nil {
 			return ResetMoodResponse{}, err
 		}
@@ -342,6 +401,14 @@ func (r *Runtime) evaluate(ctx context.Context, req EvaluateMoodImpactRequest, c
 	if err != nil {
 		return evaluationState{}, err
 	}
+	return r.applyEvaluationResult(ctx, req, before, result, commit)
+}
+
+func (r *Runtime) commitEvaluationResult(ctx context.Context, req EvaluateMoodImpactRequest, before MoodSnapshot, result LLMEvaluationResult) (evaluationState, error) {
+	return r.applyEvaluationResult(ctx, req, before, result, true)
+}
+
+func (r *Runtime) applyEvaluationResult(ctx context.Context, req EvaluateMoodImpactRequest, before MoodSnapshot, result LLMEvaluationResult, commit bool) (evaluationState, error) {
 	status := result.Status
 	if status == "" {
 		status = EvaluationStatusPreview
@@ -352,6 +419,9 @@ func (r *Runtime) evaluate(ctx context.Context, req EvaluateMoodImpactRequest, c
 	predicted.Vector = clamped.PredictedState
 	predicted.Label = defaultMoodLabel(result.Label)
 	predicted.Confidence = result.Confidence
+	predicted.MoodDescription = result.MoodDescription
+	predicted.MoodReason = result.MoodReason
+	predicted.PromptMoodText = result.PromptMoodText
 	predicted.CauseSummary = result.CauseSummary
 	predicted.VisibleCauseSummary = result.VisibleCauseSummary
 	predicted.UpdatedAt = r.now()
@@ -362,6 +432,9 @@ func (r *Runtime) evaluate(ctx context.Context, req EvaluateMoodImpactRequest, c
 			PersonaID:               req.PersonaID,
 			SessionID:               req.SessionID,
 			TurnID:                  req.TurnID,
+			BatchID:                 req.BatchID,
+			MoodOwnerScope:          before.MoodOwnerScope,
+			MoodOwnerID:             before.MoodOwnerID,
 			Trigger:                 normalizeTrigger(req.Trigger),
 			Input:                   r.storageInput(req.Input),
 			ContextWindowPolicyJSON: "{}",
@@ -372,6 +445,9 @@ func (r *Runtime) evaluate(ctx context.Context, req EvaluateMoodImpactRequest, c
 			ProposedDelta:           result.Delta,
 			ClampedDelta:            clamped.ClampedDelta,
 			PredictedState:          predicted.Vector,
+			MoodDescription:         result.MoodDescription,
+			MoodReason:              result.MoodReason,
+			PromptMoodText:          result.PromptMoodText,
 			CauseSummary:            result.CauseSummary,
 			VisibleCauseSummary:     result.VisibleCauseSummary,
 			Confidence:              result.Confidence,
@@ -406,24 +482,30 @@ func (r *Runtime) evaluate(ctx context.Context, req EvaluateMoodImpactRequest, c
 			return evaluationState{}, err
 		}
 		event := AffectEventRecord{
-			ID:             uuid.NewString(),
-			PersonaID:      req.PersonaID,
-			SessionID:      req.SessionID,
-			TurnID:         req.TurnID,
-			EvaluationID:   evalID,
-			Trigger:        normalizeTrigger(req.Trigger),
-			BeforeStateID:  before.StateID,
-			AfterStateID:   after.StateID,
-			ProposedDelta:  result.Delta,
-			ClampedDelta:   clamped.ClampedDelta,
-			CommittedDelta: clamped.ClampedDelta,
-			LabelBefore:    before.Label,
-			LabelAfter:     after.Label,
-			CauseSummary:   after.CauseSummary,
-			Significance:   significance(clamped.ClampedDelta),
-			Confidence:     after.Confidence,
-			CommittedBy:    "core",
-			CreatedAt:      r.now(),
+			ID:              uuid.NewString(),
+			PersonaID:       req.PersonaID,
+			SessionID:       req.SessionID,
+			TurnID:          req.TurnID,
+			BatchID:         req.BatchID,
+			MoodOwnerScope:  before.MoodOwnerScope,
+			MoodOwnerID:     before.MoodOwnerID,
+			EvaluationID:    evalID,
+			Trigger:         normalizeTrigger(req.Trigger),
+			BeforeStateID:   before.StateID,
+			AfterStateID:    after.StateID,
+			ProposedDelta:   result.Delta,
+			ClampedDelta:    clamped.ClampedDelta,
+			CommittedDelta:  clamped.ClampedDelta,
+			LabelBefore:     before.Label,
+			LabelAfter:      after.Label,
+			MoodDescription: after.MoodDescription,
+			MoodReason:      after.MoodReason,
+			PromptMoodText:  after.PromptMoodText,
+			CauseSummary:    after.CauseSummary,
+			Significance:    significance(clamped.ClampedDelta),
+			Confidence:      after.Confidence,
+			CommittedBy:     "core",
+			CreatedAt:       r.now(),
 		}
 		if err := r.store.InsertEvent(ctx, event); err != nil {
 			return evaluationState{}, err
@@ -442,29 +524,33 @@ func (r *Runtime) currentMood(ctx context.Context, personaID string, sessionID s
 	if strings.TrimSpace(personaID) == "" {
 		return MoodSnapshot{}, fmt.Errorf("persona_id is required")
 	}
+	owner := ResolveMoodOwner(r.cfg, personaID, sessionID)
 	if !r.cfg.Enabled || !r.cfg.StorageEnabled || r.store == nil {
-		return baselineSnapshot(personaID, sessionID, r.now()), nil
+		return baselineSnapshotForOwner(personaID, sessionID, owner, r.now()), nil
 	}
 	profile, err := r.store.EnsureProfile(ctx, personaID)
 	if err != nil {
 		return MoodSnapshot{}, err
 	}
-	state, err := r.store.GetLatestState(ctx, personaID, sessionID)
+	state, err := r.store.GetLatestStateByOwner(ctx, personaID, owner)
 	if err != nil {
 		return MoodSnapshot{}, err
 	}
 	if state != nil {
 		return *state, nil
 	}
-	return MoodSnapshot{
-		PersonaID:    personaID,
-		SessionID:    sessionID,
-		Vector:       profile.Baseline,
-		Label:        "baseline",
-		Confidence:   0.5,
-		CauseSummary: "Baseline mood.",
-		UpdatedAt:    r.now(),
-	}, nil
+	if owner.Scope == "session" {
+		state, err := r.store.GetLatestState(ctx, personaID, sessionID)
+		if err != nil {
+			return MoodSnapshot{}, err
+		}
+		if state != nil {
+			return *state, nil
+		}
+	}
+	mood := baselineSnapshotForOwner(personaID, sessionID, owner, r.now())
+	mood.Vector = profile.Baseline
+	return mood, nil
 }
 
 func (r *Runtime) recentEvaluations(ctx context.Context, personaID string, sessionID string) ([]AffectEvaluationRecord, error) {
@@ -492,11 +578,34 @@ func (r *Runtime) profileForPrompt(ctx context.Context, personaID string) Affect
 }
 
 func baselineSnapshot(personaID string, sessionID string, now time.Time) MoodSnapshot {
-	return MoodSnapshot{
-		PersonaID:  personaID,
-		SessionID:  sessionID,
-		Label:      "baseline",
-		Confidence: 0.5,
+	return baselineSnapshotForOwner(personaID, sessionID, MoodOwner{}, now)
+}
+
+func moodOwnerFromSnapshot(mood MoodSnapshot) MoodOwner {
+	if mood.MoodOwnerScope != "" && mood.MoodOwnerID != "" {
+		return MoodOwner{Scope: mood.MoodOwnerScope, ID: mood.MoodOwnerID}
+	}
+	if mood.SessionID != "" {
+		return MoodOwner{Scope: "session", ID: "session:" + mood.SessionID}
+	}
+	return MoodOwner{Scope: "persona", ID: "persona:" + mood.PersonaID}
+}
+
+func baselineSnapshotForOwner(personaID string, sessionID string, owner MoodOwner, now time.Time) MoodSnapshot {
+	if owner.Scope == "" || owner.ID == "" {
+		if sessionID != "" {
+			owner = MoodOwner{Scope: "session", ID: "session:" + sessionID}
+		} else {
+			owner = MoodOwner{Scope: "persona", ID: "persona:" + personaID}
+		}
+	}
+	mood := MoodSnapshot{
+		PersonaID:      personaID,
+		SessionID:      moodOwnerSessionID(owner, sessionID),
+		MoodOwnerScope: owner.Scope,
+		MoodOwnerID:    owner.ID,
+		Label:          "baseline",
+		Confidence:     0.5,
 		Vector: MoodVector{
 			Arousal:     0.2,
 			Energy:      0.5,
@@ -509,6 +618,10 @@ func baselineSnapshot(personaID string, sessionID string, now time.Time) MoodSna
 		CauseSummary: "Baseline mood.",
 		UpdatedAt:    now,
 	}
+	mood.MoodDescription = "baseline"
+	mood.MoodReason = "Baseline mood."
+	mood.PromptMoodText = buildPromptMoodTextFallback(mood.MoodDescription, mood.MoodReason)
+	return mood
 }
 
 func normalizeTrigger(trigger TriggerDescriptor) TriggerDescriptor {
