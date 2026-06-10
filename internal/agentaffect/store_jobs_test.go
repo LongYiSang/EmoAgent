@@ -93,6 +93,30 @@ func TestClaimBatchDoesNotMergeDifferentOwners(t *testing.T) {
 	}
 }
 
+func TestClaimBatchUsesSeqOrderBeforePriority(t *testing.T) {
+	store, _ := newTestStore(t)
+	now := time.Date(2026, 6, 10, 10, 0, 0, 0, time.UTC)
+	first := enqueueTurnJob(t, store, "default", "session-1", "turn-1", now)
+	second := enqueueTurnJob(t, store, "other", "session-2", "turn-2", now)
+	if _, err := store.db.Exec("UPDATE agent_affect_jobs SET priority = 999 WHERE id = ?", first.ID); err != nil {
+		t.Fatalf("raise first priority: %v", err)
+	}
+	if _, err := store.db.Exec("UPDATE agent_affect_jobs SET priority = 1 WHERE id = ?", second.ID); err != nil {
+		t.Fatalf("lower second priority: %v", err)
+	}
+
+	batch, err := store.ClaimNextBatch(context.Background(), "worker-1", now.Add(time.Second), ClaimBatchOptions{
+		MaxJobs:  6,
+		ClaimTTL: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("ClaimNextBatch: %v", err)
+	}
+	if batch == nil || batch.MoodOwnerID != "persona:default" || batch.FirstJobSeq != first.Seq {
+		t.Fatalf("batch = %#v, want earliest seq owner despite priority", batch)
+	}
+}
+
 func TestClaimBatchStopsBeforeBarrier(t *testing.T) {
 	store, _ := newTestStore(t)
 	now := time.Date(2026, 6, 10, 10, 0, 0, 0, time.UTC)

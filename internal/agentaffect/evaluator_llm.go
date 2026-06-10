@@ -107,6 +107,7 @@ Important:
 		wrapJSON("dimension_limits", cfg.Limits),
 		`Return JSON matching this schema:
 {
+  "schema_version": "agent_affect.v2.evaluation.v2",
   "delta": {
     "valence": 0,
     "arousal": 0,

@@ -577,7 +577,7 @@ func getFirstClaimableJob(ctx context.Context, tx *sql.Tx, now time.Time, minWai
 SELECT `+affectJobSelectColumns+`
 FROM agent_affect_jobs
 WHERE status = ? AND run_after <= ?
-ORDER BY priority ASC, seq ASC
+ORDER BY seq ASC
 LIMIT 100
 `, AffectJobStatusPending, dbTime(now))
 	if err != nil {

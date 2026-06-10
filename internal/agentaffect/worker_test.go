@@ -3,6 +3,7 @@ package agentaffect
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -71,6 +72,31 @@ func TestProcessNextBatchMergesThreeSamePersonaJobsIntoOneEvaluation(t *testing.
 	}
 	if len(evaluator.requests) != 1 || !strings.Contains(evaluator.requests[0].Input.Summary, "turn-1") || !strings.Contains(evaluator.requests[0].Input.Summary, "turn-3") {
 		t.Fatalf("batch evaluator request = %#v", evaluator.requests)
+	}
+	var payload struct {
+		Batch struct {
+			JobCount int `json:"job_count"`
+			Turns    []struct {
+				TurnID                 string `json:"turn_id"`
+				SessionID              string `json:"session_id"`
+				UserTextOrSummary      string `json:"user_text_or_summary"`
+				AssistantTextOrSummary string `json:"assistant_text_or_summary"`
+				MemoryContextSummary   string `json:"memory_context_summary"`
+			} `json:"turns"`
+			MoodOwnerID string `json:"mood_owner_id"`
+		} `json:"batch"`
+		CurrentMoodBeforeBatch map[string]any `json:"current_mood_before_batch"`
+		RecentEvaluations      []any          `json:"recent_evaluations"`
+		DimensionLimits        map[string]any `json:"dimension_limits"`
+	}
+	if err := json.Unmarshal([]byte(evaluator.requests[0].Input.Summary), &payload); err != nil {
+		t.Fatalf("batch evaluator summary is not structured JSON: %v\n%s", err, evaluator.requests[0].Input.Summary)
+	}
+	if payload.Batch.JobCount != 3 || payload.Batch.MoodOwnerID != "persona:default" || len(payload.Batch.Turns) != 3 {
+		t.Fatalf("batch payload = %#v", payload.Batch)
+	}
+	if payload.CurrentMoodBeforeBatch == nil || payload.DimensionLimits == nil || payload.RecentEvaluations == nil {
+		t.Fatalf("batch payload missing mood/recent/limits: %#v", payload)
 	}
 	for table, want := range map[string]int{
 		"agent_affect_evaluations": 1,

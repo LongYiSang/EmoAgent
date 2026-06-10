@@ -2,6 +2,7 @@ package agentaffect
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -108,7 +109,12 @@ func (r *Runtime) ProcessNextBatch(ctx context.Context, workerID string) (bool, 
 	if err != nil {
 		return true, r.failBatch(ctx, batch.ID, jobs, err, true)
 	}
-	summary := buildBatchEvaluationSummary(*batch, jobs)
+	recentSession := sessionID
+	if strings.TrimSpace(r.cfg.State.RecentContextScope) != "session" {
+		recentSession = ""
+	}
+	recent, _ := r.recentEvaluations(ctx, batch.PersonaID, recentSession)
+	summary := buildBatchEvaluationInput(*batch, jobs, before, recent, r.cfg.Limits)
 	req := EvaluateMoodImpactRequest{
 		PersonaID: batch.PersonaID,
 		SessionID: sessionID,
@@ -127,12 +133,7 @@ func (r *Runtime) ProcessNextBatch(ctx context.Context, workerID string) (bool, 
 			Summary: summary,
 		},
 	}
-	recentSession := sessionID
-	if strings.TrimSpace(r.cfg.State.RecentContextScope) != "session" {
-		recentSession = ""
-	}
 	profile := r.profileForPrompt(ctx, batch.PersonaID)
-	recent, _ := r.recentEvaluations(ctx, batch.PersonaID, recentSession)
 	result, err := r.evaluator.Evaluate(ctx, LLMEvaluationRequest{
 		PersonaID:            req.PersonaID,
 		SessionID:            req.SessionID,
@@ -334,19 +335,97 @@ func commonNonEmpty(jobs []AffectJobRecord, value func(AffectJobRecord) string) 
 	return first
 }
 
-func buildBatchEvaluationSummary(batch AffectJobBatchRecord, jobs []AffectJobRecord) string {
-	var b strings.Builder
-	b.WriteString("You are evaluating the combined mood impact of a chronological batch of completed turns.\n")
-	b.WriteString("Do not output per-turn deltas. Output one consolidated mood transition for the Agent after absorbing the whole batch.\n")
-	b.WriteString("Batch ID: ")
-	b.WriteString(batch.ID)
-	b.WriteString("\nMood owner: ")
-	b.WriteString(batch.MoodOwnerScope)
-	b.WriteString("/")
-	b.WriteString(batch.MoodOwnerID)
-	b.WriteString("\nJob count: ")
-	b.WriteString(fmt.Sprintf("%d", len(jobs)))
-	b.WriteString("\n\n")
-	b.WriteString(summarizeJobsForBatch(jobs, 12000))
-	return b.String()
+type batchEvaluationPayload struct {
+	Instructions           []string                    `json:"instructions"`
+	Batch                  batchEvaluationPayloadBatch `json:"batch"`
+	CurrentMoodBeforeBatch MoodSnapshot                `json:"current_mood_before_batch"`
+	RecentEvaluations      []batchEvaluationRecent     `json:"recent_evaluations"`
+	DimensionLimits        any                         `json:"dimension_limits"`
+}
+
+type batchEvaluationPayloadBatch struct {
+	BatchID        string                `json:"batch_id"`
+	JobCount       int                   `json:"job_count"`
+	MoodOwnerScope string                `json:"mood_owner_scope"`
+	MoodOwnerID    string                `json:"mood_owner_id"`
+	Turns          []batchEvaluationTurn `json:"turns"`
+}
+
+type batchEvaluationTurn struct {
+	TurnID                 string `json:"turn_id,omitempty"`
+	SessionID              string `json:"session_id,omitempty"`
+	UserTextOrSummary      string `json:"user_text_or_summary,omitempty"`
+	AssistantTextOrSummary string `json:"assistant_text_or_summary,omitempty"`
+	MemoryContextSummary   string `json:"memory_context_summary,omitempty"`
+}
+
+type batchEvaluationRecent struct {
+	ID                  string     `json:"id,omitempty"`
+	SessionID           string     `json:"session_id,omitempty"`
+	TurnID              string     `json:"turn_id,omitempty"`
+	BatchID             string     `json:"batch_id,omitempty"`
+	MoodOwnerScope      string     `json:"mood_owner_scope,omitempty"`
+	MoodOwnerID         string     `json:"mood_owner_id,omitempty"`
+	ProposedDelta       MoodVector `json:"proposed_delta"`
+	ClampedDelta        MoodVector `json:"clamped_delta"`
+	MoodDescription     string     `json:"mood_description,omitempty"`
+	MoodReason          string     `json:"mood_reason,omitempty"`
+	PromptMoodText      string     `json:"prompt_mood_text,omitempty"`
+	CauseSummary        string     `json:"cause_summary,omitempty"`
+	VisibleCauseSummary string     `json:"visible_cause_summary,omitempty"`
+	Confidence          float64    `json:"confidence"`
+	CreatedAt           time.Time  `json:"created_at"`
+}
+
+func buildBatchEvaluationInput(batch AffectJobBatchRecord, jobs []AffectJobRecord, before MoodSnapshot, recent []AffectEvaluationRecord, limits any) string {
+	payload := batchEvaluationPayload{
+		Instructions: []string{
+			"You are evaluating the combined mood impact of a chronological batch of completed turns.",
+			"Do not output per-turn deltas.",
+			"Output one consolidated mood transition for the Agent after absorbing the whole batch.",
+		},
+		Batch: batchEvaluationPayloadBatch{
+			BatchID:        batch.ID,
+			JobCount:       len(jobs),
+			MoodOwnerScope: batch.MoodOwnerScope,
+			MoodOwnerID:    batch.MoodOwnerID,
+			Turns:          make([]batchEvaluationTurn, 0, len(jobs)),
+		},
+		CurrentMoodBeforeBatch: before,
+		RecentEvaluations:      make([]batchEvaluationRecent, 0, len(recent)),
+		DimensionLimits:        limits,
+	}
+	for _, job := range jobs {
+		payload.Batch.Turns = append(payload.Batch.Turns, batchEvaluationTurn{
+			TurnID:                 job.TurnID,
+			SessionID:              job.SessionID,
+			UserTextOrSummary:      compactForSummary(defaultString(job.UserText, job.InputSummary), 1200),
+			AssistantTextOrSummary: compactForSummary(defaultString(job.AssistantText, job.InputSummary), 1600),
+			MemoryContextSummary:   compactForSummary(job.MemoryPromptBlock, 800),
+		})
+	}
+	for _, item := range recent {
+		payload.RecentEvaluations = append(payload.RecentEvaluations, batchEvaluationRecent{
+			ID:                  item.ID,
+			SessionID:           item.SessionID,
+			TurnID:              item.TurnID,
+			BatchID:             item.BatchID,
+			MoodOwnerScope:      item.MoodOwnerScope,
+			MoodOwnerID:         item.MoodOwnerID,
+			ProposedDelta:       item.ProposedDelta,
+			ClampedDelta:        item.ClampedDelta,
+			MoodDescription:     item.MoodDescription,
+			MoodReason:          item.MoodReason,
+			PromptMoodText:      item.PromptMoodText,
+			CauseSummary:        item.CauseSummary,
+			VisibleCauseSummary: item.VisibleCauseSummary,
+			Confidence:          item.Confidence,
+			CreatedAt:           item.CreatedAt,
+		})
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return "{}"
+	}
+	return string(data)
 }

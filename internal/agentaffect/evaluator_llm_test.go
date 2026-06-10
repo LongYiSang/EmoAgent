@@ -130,6 +130,7 @@ func TestLLMEvaluatorParsesStrictJSONAndConfiguresChatRequest(t *testing.T) {
 		"<recent_affect_context mode=\"raw_window\">",
 		"[Memory]\nRecent relevant memory.",
 		"<previous_evaluations>",
+		`"schema_version": "agent_affect.v2.evaluation.v2"`,
 	} {
 		if !strings.Contains(client.req.Messages[0].Content, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, client.req.Messages[0].Content)
