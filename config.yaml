@@ -41,6 +41,30 @@ plugins:
   audit:
     enabled: true
     include_payload: false
+  store:
+    root_dir: data/plugins
+    allow_dev_dirs: true
+  runtime:
+    process_enabled: true
+    python_executable: python3
+    startup_timeout_ms: 5000
+    shutdown_timeout_ms: 3000
+    idle_timeout_seconds: 600
+    crash_backoff_initial_seconds: 5
+    crash_backoff_max_seconds: 300
+    max_stderr_bytes: 262144
+    container_enabled: false
+  installer:
+    github_enabled: true
+    require_signature: true
+    trusted_publishers_path: config/plugin_publishers.yaml
+    allow_unsigned_dev: true
+  provider_gateway:
+    enabled: true
+    default_provider_id: ""
+    default_model: ""
+  admin:
+    enabled: true
 
 context:
   input_budget_tokens: 216000

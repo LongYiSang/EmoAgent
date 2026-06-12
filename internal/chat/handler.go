@@ -80,16 +80,16 @@ type conversationEngine interface {
 
 // Handler serves the WebSocket chat protocol.
 type Handler struct {
-	engine      conversationEngine
-	app         AppInterface
-	logger      *slog.Logger
-	turnConfig  config.TurnPipelineConfig
+	engine       conversationEngine
+	app          AppInterface
+	logger       *slog.Logger
+	turnConfig   config.TurnPipelineConfig
 	turnTimezone string
-	turnDB      *sql.DB
-	turnJournal turn.TurnJournal
-	turnIDs     turn.IdempotencyStore
-	turnRuntime *chatTurnRuntime
-	pluginHost  turnPluginHost
+	turnDB       *sql.DB
+	turnJournal  turn.TurnJournal
+	turnIDs      turn.IdempotencyStore
+	turnRuntime  *chatTurnRuntime
+	pluginHost   turnPluginHost
 }
 
 type HandlerOption func(*Handler)
@@ -232,14 +232,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				_, _ = h.turnRuntime.Shadow(ctx, wsMessageToInbound(msg, sessionID, personaName))
 			}
 			if usePipeline {
-				sink := h.newWSOutboundSink(ctx, conn, &writeMu, cancel)
+				turnCtx := context.WithoutCancel(ctx)
+				sink := h.newWSOutboundSink(ctx, conn, &writeMu)
 				env := wsMessageToInbound(msg, sessionID, personaName)
-				if _, err := h.turnRuntime.Execute(ctx, env, persona, sink); err != nil {
+				if _, err := h.turnRuntime.Execute(turnCtx, env, persona, sink); err != nil {
 					if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: err.Error()}, &writeMu); writeErr != nil {
 						return
 					}
 				}
-				closeOutboundSink(ctx, sink)
+				closeOutboundSink(turnCtx, sink)
 				continue
 			}
 			if err := writeWSMessage(ctx, conn, WSMessage{Type: "stream_start"}, &writeMu); err != nil {
@@ -303,14 +304,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				_, _ = h.turnRuntime.Shadow(ctx, wsMessageToInbound(msg, sessionID, personaName))
 			}
 			if useApprovalPipeline {
-				sink := h.newWSOutboundSink(ctx, conn, &writeMu, cancel)
+				turnCtx := context.WithoutCancel(ctx)
+				sink := h.newWSOutboundSink(ctx, conn, &writeMu)
 				env := wsMessageToInbound(msg, sessionID, personaName)
-				if _, err := h.turnRuntime.Execute(ctx, env, persona, sink); err != nil {
+				if _, err := h.turnRuntime.Execute(turnCtx, env, persona, sink); err != nil {
 					if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: err.Error()}, &writeMu); writeErr != nil {
 						return
 					}
 				}
-				closeOutboundSink(ctx, sink)
+				closeOutboundSink(turnCtx, sink)
 				continue
 			}
 			if strings.TrimSpace(msg.RequestID) == "" {
@@ -383,18 +385,52 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *Handler) newWSOutboundSink(ctx context.Context, conn *websocket.Conn, mu *sync.Mutex, cancel context.CancelFunc) turn.OutboundSink {
-	raw := turn.SinkFunc(func(_ context.Context, event turn.OutboundEvent) error {
-		if err := writeWSMessage(ctx, conn, outboundEventToWSMessage(event), mu); err != nil {
-			if !errors.Is(ctx.Err(), context.Canceled) && h.logger != nil {
-				h.logger.Warn("ws outbound write failed", "error", err)
-			}
-			cancel()
-			return err
-		}
-		return nil
-	})
+func (h *Handler) newWSOutboundSink(ctx context.Context, conn *websocket.Conn, mu *sync.Mutex) turn.OutboundSink {
+	raw := &wsBestEffortOutboundSink{
+		ctx:    ctx,
+		conn:   conn,
+		mu:     mu,
+		logger: h.logger,
+	}
 	return turn.NewBoundedOutboundSink(raw, turn.BoundedOutboundOptions{})
+}
+
+type wsBestEffortOutboundSink struct {
+	ctx    context.Context
+	conn   *websocket.Conn
+	mu     *sync.Mutex
+	logger *slog.Logger
+
+	stateMu  sync.Mutex
+	detached bool
+}
+
+func (s *wsBestEffortOutboundSink) Emit(_ context.Context, event turn.OutboundEvent) error {
+	if s.isDetached() {
+		return nil
+	}
+	if err := writeWSMessage(s.ctx, s.conn, outboundEventToWSMessage(event), s.mu); err != nil {
+		if s.detach() && s.logger != nil {
+			s.logger.Debug("ws outbound detached after write failed", "error", err)
+		}
+	}
+	return nil
+}
+
+func (s *wsBestEffortOutboundSink) isDetached() bool {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.detached
+}
+
+func (s *wsBestEffortOutboundSink) detach() bool {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.detached {
+		return false
+	}
+	s.detached = true
+	return true
 }
 
 func closeOutboundSink(ctx context.Context, sink turn.OutboundSink) {

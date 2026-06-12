@@ -65,7 +65,7 @@ func newServices(infra *Infra) *Services {
 	services.Sidecar = &SidecarService{infra: infra, config: services.Config}
 	services.Memory = &MemoryService{infra: infra, config: services.Config, sidecar: services.Sidecar}
 	services.Tools = &ToolService{infra: infra}
-	services.Plugins = &PluginService{infra: infra, tools: services.Tools, agentAffect: services.AgentAffect}
+	services.Plugins = &PluginService{infra: infra, tools: services.Tools, agentAffect: services.AgentAffect, agentRuntime: services.AgentRuntime}
 	services.AgentAffect.plugins = services.Plugins
 	services.Work = &WorkService{
 		infra:        infra,

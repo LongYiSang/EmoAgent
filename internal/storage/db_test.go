@@ -62,6 +62,12 @@ func TestOpenAndMigrate(t *testing.T) {
 		"agent_affect_plugin_writes",
 		"agent_affect_jobs",
 		"agent_affect_job_batches",
+		"plugin_installations",
+		"plugin_enabled_state",
+		"plugin_runtime_records",
+		"plugin_access_events",
+		"plugin_provider_usage",
+		"plugin_kv",
 	}
 	for _, table := range tables {
 		var name string
@@ -125,8 +131,151 @@ func TestOpenAndMigrate(t *testing.T) {
 	if err := db.SqlDB().QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_version").Scan(&latestVersion); err != nil {
 		t.Fatalf("read latest schema_version: %v", err)
 	}
-	if latestVersion != 23 {
-		t.Fatalf("latest schema_version = %d, want 23", latestVersion)
+	if latestVersion != 24 {
+		t.Fatalf("latest schema_version = %d, want 24", latestVersion)
+	}
+}
+
+func TestPluginRuntimeStorageCRUD(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+
+	installation := PluginInstallation{
+		PluginID:        "com.example.echo",
+		Version:         "0.1.0",
+		Name:            "Echo",
+		ManifestJSON:    `{"id":"com.example.echo"}`,
+		SourceType:      "local_dir",
+		SourceRef:       "fixture",
+		PackageDigest:   "sha256:package",
+		ManifestDigest:  "sha256:manifest",
+		SignatureStatus: "unsigned_dev",
+		StorePath:       "data/plugins/store/com.example.echo/0.1.0",
+	}
+	if err := db.UpsertPluginInstallation(ctx, installation); err != nil {
+		t.Fatalf("UpsertPluginInstallation: %v", err)
+	}
+	gotInstallation, err := db.GetPluginInstallation(ctx, "com.example.echo")
+	if err != nil {
+		t.Fatalf("GetPluginInstallation: %v", err)
+	}
+	if gotInstallation == nil || gotInstallation.PluginID != installation.PluginID || gotInstallation.SignatureStatus != "unsigned_dev" {
+		t.Fatalf("installation = %#v", gotInstallation)
+	}
+
+	if err := db.SetPluginEnabled(ctx, "com.example.echo", "0.1.0", true, `{"tier":"runtime_safe"}`); err != nil {
+		t.Fatalf("SetPluginEnabled: %v", err)
+	}
+	state, err := db.GetPluginEnabledState(ctx, "com.example.echo")
+	if err != nil {
+		t.Fatalf("GetPluginEnabledState: %v", err)
+	}
+	if state == nil || !state.Enabled || state.UserGrantJSON != `{"tier":"runtime_safe"}` {
+		t.Fatalf("enabled state = %#v", state)
+	}
+
+	pid := 1234
+	if err := db.UpsertPluginRuntimeRecord(ctx, PluginRuntimeRecord{
+		PluginID:     "com.example.echo",
+		Version:      "0.1.0",
+		RuntimeKind:  "python_process",
+		Status:       "running",
+		PID:          &pid,
+		RestartCount: 1,
+	}); err != nil {
+		t.Fatalf("UpsertPluginRuntimeRecord: %v", err)
+	}
+	runtimeRecord, err := db.GetPluginRuntimeRecord(ctx, "com.example.echo")
+	if err != nil {
+		t.Fatalf("GetPluginRuntimeRecord: %v", err)
+	}
+	if runtimeRecord == nil || runtimeRecord.PID == nil || *runtimeRecord.PID != 1234 || runtimeRecord.Status != "running" {
+		t.Fatalf("runtime record = %#v", runtimeRecord)
+	}
+
+	if err := db.RecordPluginAccessEvent(ctx, PluginAccessEvent{
+		PluginID:       "com.example.echo",
+		AccessKind:     "facade.call",
+		Capability:     "plugin.kv",
+		Status:         "allowed",
+		RequestSummary: "plugin.kv.set",
+	}); err != nil {
+		t.Fatalf("RecordPluginAccessEvent: %v", err)
+	}
+	events, err := db.ListPluginAccessEvents(ctx, "com.example.echo", 10)
+	if err != nil {
+		t.Fatalf("ListPluginAccessEvents: %v", err)
+	}
+	if len(events) != 1 || events[0].Capability != "plugin.kv" {
+		t.Fatalf("events = %#v", events)
+	}
+
+	if err := db.RecordPluginProviderUsage(ctx, PluginProviderUsage{
+		PluginID:        "com.example.echo",
+		ProviderID:      "fake",
+		Model:           "fake-model",
+		Purpose:         "test",
+		EstimatedTokens: 4,
+		Status:          "success",
+	}); err != nil {
+		t.Fatalf("RecordPluginProviderUsage: %v", err)
+	}
+	usages, err := db.ListPluginProviderUsage(ctx, "com.example.echo", 10)
+	if err != nil {
+		t.Fatalf("ListPluginProviderUsage: %v", err)
+	}
+	if len(usages) != 1 || usages[0].ProviderID != "fake" {
+		t.Fatalf("usages = %#v", usages)
+	}
+
+	if err := db.PluginKVSet(ctx, "com.example.echo", "seen", `{"count":1}`); err != nil {
+		t.Fatalf("PluginKVSet: %v", err)
+	}
+	value, ok, err := db.PluginKVGet(ctx, "com.example.echo", "seen")
+	if err != nil {
+		t.Fatalf("PluginKVGet: %v", err)
+	}
+	if !ok || value != `{"count":1}` {
+		t.Fatalf("PluginKVGet = %q/%v", value, ok)
+	}
+}
+
+func TestApplyMigrationsRepairsDriftedPluginRuntimeSchema(t *testing.T) {
+	dir := t.TempDir()
+	sqlDB, err := sql.Open("sqlite", filepath.Join(dir, "migration.db"))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer sqlDB.Close()
+
+	_, err = sqlDB.Exec(`
+CREATE TABLE schema_version (
+    version    INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT INTO schema_version (version) VALUES (24);
+CREATE TABLE plugin_access_events (
+    id TEXT PRIMARY KEY,
+    plugin_id TEXT NOT NULL,
+    access_kind TEXT NOT NULL,
+    status TEXT NOT NULL
+);
+`)
+	if err != nil {
+		t.Fatalf("seed drifted plugin schema: %v", err)
+	}
+
+	if err := ApplyMigrations(sqlDB); err != nil {
+		t.Fatalf("ApplyMigrations: %v", err)
+	}
+	columns, err := tableColumns(sqlDB, "plugin_access_events")
+	if err != nil {
+		t.Fatalf("tableColumns: %v", err)
+	}
+	for _, required := range []string{"capability", "request_summary", "input_hash", "output_hash", "duration_ms", "created_at"} {
+		if !columns[required] {
+			t.Fatalf("plugin_access_events missing repaired column %q", required)
+		}
 	}
 }
 

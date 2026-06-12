@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -40,6 +43,7 @@ type fakeConversationEngine struct {
 	continueCount  int
 	approvalReply  string
 	approvalDeltas []string
+	sendDone       chan struct{}
 }
 
 func (f *fakeConversationEngine) StartSession(_ context.Context, personaName string) (string, error) {
@@ -72,6 +76,12 @@ func (f *fakeConversationEngine) SendMessage(ctx context.Context, sessionID stri
 	f.sendContent = userContent
 	for _, delta := range f.deltas {
 		cb(delta)
+	}
+	if f.sendDone != nil {
+		select {
+		case f.sendDone <- struct{}{}:
+		default:
+		}
 	}
 	return f.sendReply, f.sendErr
 }
@@ -651,6 +661,101 @@ func TestHandlerPluginsEnabledRejectsLegacyMessagePath(t *testing.T) {
 	}
 	if engine.sendCount != 0 {
 		t.Fatalf("sendCount = %d, want legacy path blocked before engine", engine.sendCount)
+	}
+}
+
+func TestHandlerTurnPipelineContinuesAfterWSDisconnect(t *testing.T) {
+	handler, engine := newTestHandlerWithOptions(WithTurnPipelineConfig(config.TurnPipelineConfig{Enabled: true, RolloutPercent: 100}))
+	engine.sendReply = "answer"
+	engine.sendDone = make(chan struct{}, 1)
+	hookResult := make(chan error, 1)
+	var conn *websocket.Conn
+	engine.sendHook = func(ctx context.Context) {
+		_ = conn.CloseNow()
+		time.Sleep(10 * time.Millisecond)
+		sink := turn.OutboundSinkFromContext(ctx)
+		if sink == nil {
+			hookResult <- fmt.Errorf("outbound sink missing from context")
+			return
+		}
+		if err := sink.Emit(ctx, turn.OutboundEvent{Type: turn.EventReasoningStart}); err != nil {
+			hookResult <- fmt.Errorf("Emit after WS disconnect: %w", err)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			hookResult <- fmt.Errorf("send context canceled after WS disconnect: %w", ctx.Err())
+		default:
+			hookResult <- nil
+		}
+	}
+
+	conn = dialTestWS(t, handler, "/ws?skip_greeting=1")
+
+	var msg WSMessage
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(session_ready): %v", err)
+	}
+	if err := wsjson.Write(context.Background(), conn, WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}); err != nil {
+		t.Fatalf("Write(message): %v", err)
+	}
+	select {
+	case err := <-hookResult:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for send hook")
+	}
+	select {
+	case <-engine.sendDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("SendMessage did not finish after WS disconnect")
+	}
+}
+
+func TestWSOutboundSinkDetachesAfterFirstWriteFailure(t *testing.T) {
+	handler, _ := newTestHandler()
+	serverConn := make(chan *websocket.Conn, 1)
+	done := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			t.Errorf("Accept: %v", err)
+			return
+		}
+		serverConn <- conn
+		<-done
+	}))
+	defer srv.Close()
+	defer close(done)
+
+	target := "ws" + strings.TrimPrefix(srv.URL, "http")
+	client, _, err := websocket.Dial(context.Background(), target, nil)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer client.Close(websocket.StatusNormalClosure, "done")
+
+	var conn *websocket.Conn
+	select {
+	case conn = <-serverConn:
+	case <-time.After(time.Second):
+		t.Fatal("server websocket was not accepted")
+	}
+	_ = conn.Close(websocket.StatusInternalError, "force write failure")
+
+	sink := handler.newWSOutboundSink(context.Background(), conn, &sync.Mutex{})
+	if err := sink.Emit(context.Background(), turn.OutboundEvent{Type: turn.EventStreamStart}); err != nil {
+		t.Fatalf("first Emit after write failure: %v", err)
+	}
+	if err := sink.Emit(context.Background(), turn.OutboundEvent{Type: turn.EventStreamEnd}); err != nil {
+		t.Fatalf("second Emit after detach: %v", err)
+	}
+	if closer, ok := sink.(interface{ Close(context.Context) error }); ok {
+		if err := closer.Close(context.Background()); err != nil {
+			t.Fatalf("Close detached sink: %v", err)
+		}
 	}
 }
 

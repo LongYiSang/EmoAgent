@@ -11,6 +11,91 @@ type Migration struct {
 	SQL     string
 }
 
+const pluginRuntimeSchemaSQL = `
+CREATE TABLE IF NOT EXISTS plugin_installations (
+    id TEXT PRIMARY KEY,
+    plugin_id TEXT NOT NULL,
+    version TEXT NOT NULL,
+    name TEXT NOT NULL,
+    manifest_json TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    source_ref TEXT NOT NULL DEFAULT '',
+    package_digest TEXT NOT NULL DEFAULT '',
+    manifest_digest TEXT NOT NULL DEFAULT '',
+    signature_status TEXT NOT NULL DEFAULT '',
+    publisher_id TEXT NOT NULL DEFAULT '',
+    installed_at TEXT NOT NULL DEFAULT (datetime('now')),
+    installed_by TEXT NOT NULL DEFAULT 'local',
+    store_path TEXT NOT NULL,
+    UNIQUE(plugin_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS plugin_enabled_state (
+    plugin_id TEXT PRIMARY KEY,
+    version TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0,1)),
+    user_grant_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS plugin_runtime_records (
+    plugin_id TEXT PRIMARY KEY,
+    version TEXT NOT NULL DEFAULT '',
+    runtime_kind TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'stopped',
+    pid INTEGER,
+    last_started_at TEXT,
+    last_stopped_at TEXT,
+    last_error TEXT NOT NULL DEFAULT '',
+    restart_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS plugin_access_events (
+    id TEXT PRIMARY KEY,
+    plugin_id TEXT NOT NULL,
+    access_kind TEXT NOT NULL,
+    capability TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    request_summary TEXT NOT NULL DEFAULT '',
+    input_hash TEXT NOT NULL DEFAULT '',
+    output_hash TEXT NOT NULL DEFAULT '',
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS plugin_provider_usage (
+    id TEXT PRIMARY KEY,
+    plugin_id TEXT NOT NULL,
+    provider_id TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    purpose TEXT NOT NULL DEFAULT '',
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    estimated_tokens INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL,
+    error_message TEXT NOT NULL DEFAULT '',
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS plugin_kv (
+    plugin_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY(plugin_id, key)
+);
+`
+
+const pluginRuntimeIndexSQL = `
+CREATE INDEX IF NOT EXISTS idx_plugin_access_events_plugin_time
+    ON plugin_access_events(plugin_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_plugin_provider_usage_plugin_time
+    ON plugin_provider_usage(plugin_id, created_at DESC);
+`
+
 var migrations = []Migration{
 	{
 		Version: 1,
@@ -811,6 +896,10 @@ CREATE INDEX IF NOT EXISTS idx_agent_affect_events_batch
     ON agent_affect_events(batch_id);
 `,
 	},
+	{
+		Version: 24,
+		SQL:     pluginRuntimeSchemaSQL + pluginRuntimeIndexSQL,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.
@@ -872,6 +961,105 @@ func ApplySchemaRepairs(db *sql.DB) error {
 	}
 	if err := ensureLLMProvidersSchema(db); err != nil {
 		return err
+	}
+	if err := ensurePluginRuntimeSchema(db); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensurePluginRuntimeSchema(db *sql.DB) error {
+	if _, err := db.Exec(pluginRuntimeSchemaSQL); err != nil {
+		return fmt.Errorf("ensure plugin runtime schema: %w", err)
+	}
+	repairs := map[string][]struct {
+		name string
+		sql  string
+	}{
+		"plugin_installations": {
+			{"id", "ALTER TABLE plugin_installations ADD COLUMN id TEXT NOT NULL DEFAULT ''"},
+			{"plugin_id", "ALTER TABLE plugin_installations ADD COLUMN plugin_id TEXT NOT NULL DEFAULT ''"},
+			{"version", "ALTER TABLE plugin_installations ADD COLUMN version TEXT NOT NULL DEFAULT ''"},
+			{"name", "ALTER TABLE plugin_installations ADD COLUMN name TEXT NOT NULL DEFAULT ''"},
+			{"manifest_json", "ALTER TABLE plugin_installations ADD COLUMN manifest_json TEXT NOT NULL DEFAULT '{}'"},
+			{"source_type", "ALTER TABLE plugin_installations ADD COLUMN source_type TEXT NOT NULL DEFAULT ''"},
+			{"source_ref", "ALTER TABLE plugin_installations ADD COLUMN source_ref TEXT NOT NULL DEFAULT ''"},
+			{"package_digest", "ALTER TABLE plugin_installations ADD COLUMN package_digest TEXT NOT NULL DEFAULT ''"},
+			{"manifest_digest", "ALTER TABLE plugin_installations ADD COLUMN manifest_digest TEXT NOT NULL DEFAULT ''"},
+			{"signature_status", "ALTER TABLE plugin_installations ADD COLUMN signature_status TEXT NOT NULL DEFAULT ''"},
+			{"publisher_id", "ALTER TABLE plugin_installations ADD COLUMN publisher_id TEXT NOT NULL DEFAULT ''"},
+			{"installed_at", "ALTER TABLE plugin_installations ADD COLUMN installed_at TEXT NOT NULL DEFAULT ''"},
+			{"installed_by", "ALTER TABLE plugin_installations ADD COLUMN installed_by TEXT NOT NULL DEFAULT 'local'"},
+			{"store_path", "ALTER TABLE plugin_installations ADD COLUMN store_path TEXT NOT NULL DEFAULT ''"},
+		},
+		"plugin_enabled_state": {
+			{"plugin_id", "ALTER TABLE plugin_enabled_state ADD COLUMN plugin_id TEXT NOT NULL DEFAULT ''"},
+			{"version", "ALTER TABLE plugin_enabled_state ADD COLUMN version TEXT NOT NULL DEFAULT ''"},
+			{"enabled", "ALTER TABLE plugin_enabled_state ADD COLUMN enabled INTEGER NOT NULL DEFAULT 0"},
+			{"user_grant_json", "ALTER TABLE plugin_enabled_state ADD COLUMN user_grant_json TEXT NOT NULL DEFAULT '{}'"},
+			{"updated_at", "ALTER TABLE plugin_enabled_state ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''"},
+		},
+		"plugin_runtime_records": {
+			{"plugin_id", "ALTER TABLE plugin_runtime_records ADD COLUMN plugin_id TEXT NOT NULL DEFAULT ''"},
+			{"version", "ALTER TABLE plugin_runtime_records ADD COLUMN version TEXT NOT NULL DEFAULT ''"},
+			{"runtime_kind", "ALTER TABLE plugin_runtime_records ADD COLUMN runtime_kind TEXT NOT NULL DEFAULT ''"},
+			{"status", "ALTER TABLE plugin_runtime_records ADD COLUMN status TEXT NOT NULL DEFAULT 'stopped'"},
+			{"pid", "ALTER TABLE plugin_runtime_records ADD COLUMN pid INTEGER"},
+			{"last_started_at", "ALTER TABLE plugin_runtime_records ADD COLUMN last_started_at TEXT"},
+			{"last_stopped_at", "ALTER TABLE plugin_runtime_records ADD COLUMN last_stopped_at TEXT"},
+			{"last_error", "ALTER TABLE plugin_runtime_records ADD COLUMN last_error TEXT NOT NULL DEFAULT ''"},
+			{"restart_count", "ALTER TABLE plugin_runtime_records ADD COLUMN restart_count INTEGER NOT NULL DEFAULT 0"},
+			{"updated_at", "ALTER TABLE plugin_runtime_records ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''"},
+		},
+		"plugin_access_events": {
+			{"id", "ALTER TABLE plugin_access_events ADD COLUMN id TEXT NOT NULL DEFAULT ''"},
+			{"plugin_id", "ALTER TABLE plugin_access_events ADD COLUMN plugin_id TEXT NOT NULL DEFAULT ''"},
+			{"access_kind", "ALTER TABLE plugin_access_events ADD COLUMN access_kind TEXT NOT NULL DEFAULT ''"},
+			{"capability", "ALTER TABLE plugin_access_events ADD COLUMN capability TEXT NOT NULL DEFAULT ''"},
+			{"status", "ALTER TABLE plugin_access_events ADD COLUMN status TEXT NOT NULL DEFAULT ''"},
+			{"request_summary", "ALTER TABLE plugin_access_events ADD COLUMN request_summary TEXT NOT NULL DEFAULT ''"},
+			{"input_hash", "ALTER TABLE plugin_access_events ADD COLUMN input_hash TEXT NOT NULL DEFAULT ''"},
+			{"output_hash", "ALTER TABLE plugin_access_events ADD COLUMN output_hash TEXT NOT NULL DEFAULT ''"},
+			{"duration_ms", "ALTER TABLE plugin_access_events ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0"},
+			{"created_at", "ALTER TABLE plugin_access_events ADD COLUMN created_at TEXT NOT NULL DEFAULT ''"},
+		},
+		"plugin_provider_usage": {
+			{"id", "ALTER TABLE plugin_provider_usage ADD COLUMN id TEXT NOT NULL DEFAULT ''"},
+			{"plugin_id", "ALTER TABLE plugin_provider_usage ADD COLUMN plugin_id TEXT NOT NULL DEFAULT ''"},
+			{"provider_id", "ALTER TABLE plugin_provider_usage ADD COLUMN provider_id TEXT NOT NULL DEFAULT ''"},
+			{"model", "ALTER TABLE plugin_provider_usage ADD COLUMN model TEXT NOT NULL DEFAULT ''"},
+			{"purpose", "ALTER TABLE plugin_provider_usage ADD COLUMN purpose TEXT NOT NULL DEFAULT ''"},
+			{"input_tokens", "ALTER TABLE plugin_provider_usage ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0"},
+			{"output_tokens", "ALTER TABLE plugin_provider_usage ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0"},
+			{"estimated_tokens", "ALTER TABLE plugin_provider_usage ADD COLUMN estimated_tokens INTEGER NOT NULL DEFAULT 0"},
+			{"status", "ALTER TABLE plugin_provider_usage ADD COLUMN status TEXT NOT NULL DEFAULT ''"},
+			{"error_message", "ALTER TABLE plugin_provider_usage ADD COLUMN error_message TEXT NOT NULL DEFAULT ''"},
+			{"duration_ms", "ALTER TABLE plugin_provider_usage ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0"},
+			{"created_at", "ALTER TABLE plugin_provider_usage ADD COLUMN created_at TEXT NOT NULL DEFAULT ''"},
+		},
+		"plugin_kv": {
+			{"plugin_id", "ALTER TABLE plugin_kv ADD COLUMN plugin_id TEXT NOT NULL DEFAULT ''"},
+			{"key", "ALTER TABLE plugin_kv ADD COLUMN key TEXT NOT NULL DEFAULT ''"},
+			{"value_json", "ALTER TABLE plugin_kv ADD COLUMN value_json TEXT NOT NULL DEFAULT '{}'"},
+			{"updated_at", "ALTER TABLE plugin_kv ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''"},
+		},
+	}
+	for table, columns := range repairs {
+		existing, err := tableColumns(db, table)
+		if err != nil {
+			return fmt.Errorf("read %s columns: %w", table, err)
+		}
+		for _, column := range columns {
+			if existing[column.name] {
+				continue
+			}
+			if _, err := db.Exec(column.sql); err != nil {
+				return fmt.Errorf("add %s.%s: %w", table, column.name, err)
+			}
+		}
+	}
+	if _, err := db.Exec(pluginRuntimeIndexSQL); err != nil {
+		return fmt.Errorf("ensure plugin runtime indexes: %w", err)
 	}
 	return nil
 }

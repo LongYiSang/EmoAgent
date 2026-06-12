@@ -1,0 +1,24 @@
+schema_version: emoagent.plugin.v0.2
+id: com.example.echo
+name: Echo Plugin
+version: 0.1.0
+emoagent_version: ">=0.2.0"
+runtime:
+  kind: python_process
+  entry: main.py
+access:
+  tier: runtime_safe
+  capabilities:
+    - turn.read
+    - tool.register
+    - plugin.kv
+    - provider.generate
+hooks:
+  - name: after_turn_end
+    mode: observe
+    failure_policy: fail_open
+    priority: 100
+    timeout_ms: 500
+provider:
+  default_provider_id: fake
+  default_model: fake-model

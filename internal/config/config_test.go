@@ -73,6 +73,18 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Plugins.Audit.IncludePayload {
 		t.Error("default plugins.audit.include_payload = true, want false")
 	}
+	if cfg.Plugins.Store.RootDir != "data/plugins" || !cfg.Plugins.Store.AllowDevDirs {
+		t.Fatalf("default plugins.store = %#v, want data/plugins with dev dirs", cfg.Plugins.Store)
+	}
+	if !cfg.Plugins.Runtime.ProcessEnabled || cfg.Plugins.Runtime.PythonExecutable != "python3" || cfg.Plugins.Runtime.StartupTimeoutMS != 5000 {
+		t.Fatalf("default plugins.runtime = %#v", cfg.Plugins.Runtime)
+	}
+	if !cfg.Plugins.Installer.GithubEnabled || !cfg.Plugins.Installer.RequireSignature || !cfg.Plugins.Installer.AllowUnsignedDev {
+		t.Fatalf("default plugins.installer = %#v", cfg.Plugins.Installer)
+	}
+	if !cfg.Plugins.ProviderGateway.Enabled || !cfg.Plugins.Admin.Enabled {
+		t.Fatalf("default plugins provider/admin = %#v / %#v", cfg.Plugins.ProviderGateway, cfg.Plugins.Admin)
+	}
 	if cfg.AgentAffect.Enabled {
 		t.Error("default agent_affect.enabled = true, want false")
 	}
@@ -892,6 +904,94 @@ plugins:
 	_, err := Load(path)
 	if err == nil || !strings.Contains(err.Error(), `plugins.raw_prompt_debug is not supported`) {
 		t.Fatalf("Load error = %v, want unsupported plugins key", err)
+	}
+}
+
+func TestLoadPluginRuntimeV02Config(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+plugins:
+  enabled: false
+  store:
+    root_dir: ./tmp/plugins
+    allow_dev_dirs: false
+  runtime:
+    process_enabled: false
+    python_executable: python
+    startup_timeout_ms: 7000
+    shutdown_timeout_ms: 4000
+    idle_timeout_seconds: 30
+    crash_backoff_initial_seconds: 2
+    crash_backoff_max_seconds: 10
+    max_stderr_bytes: 1024
+    container_enabled: false
+  installer:
+    github_enabled: false
+    require_signature: false
+    trusted_publishers_path: ./config/plugin_publishers.yaml
+    allow_unsigned_dev: false
+  provider_gateway:
+    enabled: false
+    default_provider_id: local
+    default_model: fake
+  admin:
+    enabled: false
+`), 0o644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Plugins.Store.AllowDevDirs {
+		t.Fatal("plugins.store.allow_dev_dirs = true, want explicit false")
+	}
+	if cfg.Plugins.Runtime.ProcessEnabled {
+		t.Fatal("plugins.runtime.process_enabled = true, want explicit false")
+	}
+	if cfg.Plugins.Installer.GithubEnabled || cfg.Plugins.Installer.RequireSignature || cfg.Plugins.Installer.AllowUnsignedDev {
+		t.Fatalf("plugins.installer booleans = %#v, want explicit false", cfg.Plugins.Installer)
+	}
+	if cfg.Plugins.ProviderGateway.Enabled || cfg.Plugins.Admin.Enabled {
+		t.Fatalf("plugins provider/admin enabled = %v/%v, want explicit false", cfg.Plugins.ProviderGateway.Enabled, cfg.Plugins.Admin.Enabled)
+	}
+	if cfg.Plugins.Runtime.PythonExecutable != "python" || cfg.Plugins.Runtime.MaxStderrBytes != 1024 {
+		t.Fatalf("plugins.runtime = %#v", cfg.Plugins.Runtime)
+	}
+}
+
+func TestLoadPluginAuditCanBeExplicitlyDisabled(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+plugins:
+  audit:
+    enabled: false
+    include_payload: false
+`), 0o644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Plugins.Audit.Enabled {
+		t.Fatal("plugins.audit.enabled = true, want explicit false")
+	}
+}
+
+func TestLoadRejectsUnknownPluginRuntimeNestedKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+plugins:
+  runtime:
+    process_enabled: true
+    tcp_port: 9999
+`), 0o644)
+
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), `plugins.runtime.tcp_port is not supported`) {
+		t.Fatalf("Load error = %v, want unsupported nested plugin key", err)
 	}
 }
 

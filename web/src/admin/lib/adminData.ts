@@ -2,7 +2,7 @@ import type { AnyRecord } from '../../shared/lib/api';
 import { field } from '../../shared/lib/data';
 import type { AgentConfig, Persona, Provider, ProviderPreset } from '../protocol/adminApi';
 
-export type TabID = 'providers' | 'agents' | 'personas' | 'chat-settings' | 'memory-core' | 'agent-affect' | 'pipelines' | 'retrieval-mirror' | 'sidecar' | 'privacy-forget' | 'retention' | 'diagnostics';
+export type TabID = 'providers' | 'agents' | 'personas' | 'chat-settings' | 'memory-core' | 'agent-affect' | 'plugins' | 'pipelines' | 'retrieval-mirror' | 'sidecar' | 'privacy-forget' | 'retention' | 'diagnostics';
 
 export const tabs: Array<{ id: TabID; label: string }> = [
   { id: 'providers', label: '模型服务' },
@@ -11,6 +11,7 @@ export const tabs: Array<{ id: TabID; label: string }> = [
   { id: 'chat-settings', label: '聊天设置' },
   { id: 'memory-core', label: 'Memory Core' },
   { id: 'agent-affect', label: 'Agent Affect' },
+  { id: 'plugins', label: '插件' },
   { id: 'pipelines', label: 'Pipeline' },
   { id: 'retrieval-mirror', label: '检索' },
   { id: 'sidecar', label: 'Sidecar' },

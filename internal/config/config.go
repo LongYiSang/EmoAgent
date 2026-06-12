@@ -424,19 +424,67 @@ type BashConfig struct {
 }
 
 type PluginsConfig struct {
-	Enabled          bool              `yaml:"enabled" json:"enabled"`
-	Directories      []string          `yaml:"directories" json:"directories"`
-	BuiltinEnabled   []string          `yaml:"builtin_enabled" json:"builtin_enabled"`
-	RolloutPercent   int               `yaml:"rollout_percent" json:"rollout_percent"`
-	DefaultTimeoutMS int               `yaml:"default_timeout_ms" json:"default_timeout_ms"`
-	MaxTimeoutMS     int               `yaml:"max_timeout_ms" json:"max_timeout_ms"`
-	FailClosedHooks  []string          `yaml:"fail_closed_hooks" json:"fail_closed_hooks"`
-	Audit            PluginAuditConfig `yaml:"audit" json:"audit"`
+	Enabled          bool                        `yaml:"enabled" json:"enabled"`
+	Directories      []string                    `yaml:"directories" json:"directories"`
+	BuiltinEnabled   []string                    `yaml:"builtin_enabled" json:"builtin_enabled"`
+	RolloutPercent   int                         `yaml:"rollout_percent" json:"rollout_percent"`
+	DefaultTimeoutMS int                         `yaml:"default_timeout_ms" json:"default_timeout_ms"`
+	MaxTimeoutMS     int                         `yaml:"max_timeout_ms" json:"max_timeout_ms"`
+	FailClosedHooks  []string                    `yaml:"fail_closed_hooks" json:"fail_closed_hooks"`
+	Audit            PluginAuditConfig           `yaml:"audit" json:"audit"`
+	Store            PluginStoreConfig           `yaml:"store" json:"store"`
+	Runtime          PluginRuntimeConfig         `yaml:"runtime" json:"runtime"`
+	Installer        PluginInstallerConfig       `yaml:"installer" json:"installer"`
+	ProviderGateway  PluginProviderGatewayConfig `yaml:"provider_gateway" json:"provider_gateway"`
+	Admin            PluginAdminConfig           `yaml:"admin" json:"admin"`
 }
 
 type PluginAuditConfig struct {
-	Enabled        bool `yaml:"enabled" json:"enabled"`
-	IncludePayload bool `yaml:"include_payload" json:"include_payload"`
+	Enabled           bool `yaml:"enabled" json:"enabled"`
+	IncludePayload    bool `yaml:"include_payload" json:"include_payload"`
+	enabledSet        bool
+	includePayloadSet bool
+}
+
+type PluginStoreConfig struct {
+	RootDir         string `yaml:"root_dir" json:"root_dir"`
+	AllowDevDirs    bool   `yaml:"allow_dev_dirs" json:"allow_dev_dirs"`
+	allowDevDirsSet bool
+}
+
+type PluginRuntimeConfig struct {
+	ProcessEnabled             bool   `yaml:"process_enabled" json:"process_enabled"`
+	PythonExecutable           string `yaml:"python_executable" json:"python_executable"`
+	StartupTimeoutMS           int    `yaml:"startup_timeout_ms" json:"startup_timeout_ms"`
+	ShutdownTimeoutMS          int    `yaml:"shutdown_timeout_ms" json:"shutdown_timeout_ms"`
+	IdleTimeoutSeconds         int    `yaml:"idle_timeout_seconds" json:"idle_timeout_seconds"`
+	CrashBackoffInitialSeconds int    `yaml:"crash_backoff_initial_seconds" json:"crash_backoff_initial_seconds"`
+	CrashBackoffMaxSeconds     int    `yaml:"crash_backoff_max_seconds" json:"crash_backoff_max_seconds"`
+	MaxStderrBytes             int    `yaml:"max_stderr_bytes" json:"max_stderr_bytes"`
+	ContainerEnabled           bool   `yaml:"container_enabled" json:"container_enabled"`
+	processEnabledSet          bool
+}
+
+type PluginInstallerConfig struct {
+	GithubEnabled         bool   `yaml:"github_enabled" json:"github_enabled"`
+	RequireSignature      bool   `yaml:"require_signature" json:"require_signature"`
+	TrustedPublishersPath string `yaml:"trusted_publishers_path" json:"trusted_publishers_path"`
+	AllowUnsignedDev      bool   `yaml:"allow_unsigned_dev" json:"allow_unsigned_dev"`
+	githubEnabledSet      bool
+	requireSignatureSet   bool
+	allowUnsignedDevSet   bool
+}
+
+type PluginProviderGatewayConfig struct {
+	Enabled           bool   `yaml:"enabled" json:"enabled"`
+	DefaultProviderID string `yaml:"default_provider_id" json:"default_provider_id"`
+	DefaultModel      string `yaml:"default_model" json:"default_model"`
+	enabledSet        bool
+}
+
+type PluginAdminConfig struct {
+	Enabled    bool `yaml:"enabled" json:"enabled"`
+	enabledSet bool
 }
 
 func (c *PluginsConfig) UnmarshalYAML(value *yaml.Node) error {
@@ -455,6 +503,11 @@ func (c *PluginsConfig) UnmarshalYAML(value *yaml.Node) error {
 		"max_timeout_ms":     {},
 		"fail_closed_hooks":  {},
 		"audit":              {},
+		"store":              {},
+		"runtime":            {},
+		"installer":          {},
+		"provider_gateway":   {},
+		"admin":              {},
 	}
 	for i := 0; i < len(value.Content); i += 2 {
 		key := strings.TrimSpace(value.Content[i].Value)
@@ -469,6 +522,106 @@ func (c *PluginsConfig) UnmarshalYAML(value *yaml.Node) error {
 	}
 	*c = PluginsConfig(decoded)
 	return nil
+}
+
+func (c *PluginStoreConfig) UnmarshalYAML(value *yaml.Node) error {
+	if err := decodeKnownPluginMapping(value, "plugins.store", map[string]struct{}{
+		"root_dir":       {},
+		"allow_dev_dirs": {},
+	}, (*rawPluginStoreConfig)(c)); err != nil {
+		return err
+	}
+	c.allowDevDirsSet = yamlMappingHasKey(value, "allow_dev_dirs")
+	return nil
+}
+
+func (c *PluginRuntimeConfig) UnmarshalYAML(value *yaml.Node) error {
+	if err := decodeKnownPluginMapping(value, "plugins.runtime", map[string]struct{}{
+		"process_enabled":               {},
+		"python_executable":             {},
+		"startup_timeout_ms":            {},
+		"shutdown_timeout_ms":           {},
+		"idle_timeout_seconds":          {},
+		"crash_backoff_initial_seconds": {},
+		"crash_backoff_max_seconds":     {},
+		"max_stderr_bytes":              {},
+		"container_enabled":             {},
+	}, (*rawPluginRuntimeConfig)(c)); err != nil {
+		return err
+	}
+	c.processEnabledSet = yamlMappingHasKey(value, "process_enabled")
+	return nil
+}
+
+func (c *PluginInstallerConfig) UnmarshalYAML(value *yaml.Node) error {
+	if err := decodeKnownPluginMapping(value, "plugins.installer", map[string]struct{}{
+		"github_enabled":          {},
+		"require_signature":       {},
+		"trusted_publishers_path": {},
+		"allow_unsigned_dev":      {},
+	}, (*rawPluginInstallerConfig)(c)); err != nil {
+		return err
+	}
+	c.githubEnabledSet = yamlMappingHasKey(value, "github_enabled")
+	c.requireSignatureSet = yamlMappingHasKey(value, "require_signature")
+	c.allowUnsignedDevSet = yamlMappingHasKey(value, "allow_unsigned_dev")
+	return nil
+}
+
+func (c *PluginProviderGatewayConfig) UnmarshalYAML(value *yaml.Node) error {
+	if err := decodeKnownPluginMapping(value, "plugins.provider_gateway", map[string]struct{}{
+		"enabled":             {},
+		"default_provider_id": {},
+		"default_model":       {},
+	}, (*rawPluginProviderGatewayConfig)(c)); err != nil {
+		return err
+	}
+	c.enabledSet = yamlMappingHasKey(value, "enabled")
+	return nil
+}
+
+func (c *PluginAdminConfig) UnmarshalYAML(value *yaml.Node) error {
+	if err := decodeKnownPluginMapping(value, "plugins.admin", map[string]struct{}{
+		"enabled": {},
+	}, (*rawPluginAdminConfig)(c)); err != nil {
+		return err
+	}
+	c.enabledSet = yamlMappingHasKey(value, "enabled")
+	return nil
+}
+
+type rawPluginStoreConfig PluginStoreConfig
+type rawPluginRuntimeConfig PluginRuntimeConfig
+type rawPluginInstallerConfig PluginInstallerConfig
+type rawPluginProviderGatewayConfig PluginProviderGatewayConfig
+type rawPluginAdminConfig PluginAdminConfig
+
+func decodeKnownPluginMapping(value *yaml.Node, prefix string, allowed map[string]struct{}, target any) error {
+	if value == nil || value.Kind == 0 {
+		return nil
+	}
+	if value.Kind != yaml.MappingNode {
+		return fmt.Errorf("%s must be a mapping", prefix)
+	}
+	for i := 0; i < len(value.Content); i += 2 {
+		key := strings.TrimSpace(value.Content[i].Value)
+		if _, ok := allowed[key]; !ok {
+			return fmt.Errorf("%s.%s is not supported", prefix, key)
+		}
+	}
+	return value.Decode(target)
+}
+
+func yamlMappingHasKey(value *yaml.Node, key string) bool {
+	if value == nil || value.Kind != yaml.MappingNode {
+		return false
+	}
+	for i := 0; i < len(value.Content); i += 2 {
+		if strings.TrimSpace(value.Content[i].Value) == key {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *PluginAuditConfig) UnmarshalYAML(value *yaml.Node) error {
@@ -494,6 +647,8 @@ func (c *PluginAuditConfig) UnmarshalYAML(value *yaml.Node) error {
 		return err
 	}
 	*c = PluginAuditConfig(decoded)
+	c.enabledSet = yamlMappingHasKey(value, "enabled")
+	c.includePayloadSet = yamlMappingHasKey(value, "include_payload")
 	return nil
 }
 
@@ -514,10 +669,75 @@ func (c *PluginsConfig) applyDefaults() {
 		c.FailClosedHooks = []string{"before_tool_call", "before_memory_commit"}
 	}
 	c.Audit.applyDefaults()
+	c.Store.applyDefaults()
+	c.Runtime.applyDefaults()
+	c.Installer.applyDefaults(c.Store)
+	c.ProviderGateway.applyDefaults()
+	c.Admin.applyDefaults()
 }
 
 func (c *PluginAuditConfig) applyDefaults() {
-	if !c.Enabled && !c.IncludePayload {
+	if !c.enabledSet && !c.IncludePayload {
+		c.Enabled = true
+	}
+}
+
+func (c *PluginStoreConfig) applyDefaults() {
+	if c.RootDir == "" {
+		c.RootDir = "data/plugins"
+	}
+	if !c.allowDevDirsSet {
+		c.AllowDevDirs = true
+	}
+}
+
+func (c *PluginRuntimeConfig) applyDefaults() {
+	if !c.processEnabledSet {
+		c.ProcessEnabled = true
+	}
+	if c.PythonExecutable == "" {
+		c.PythonExecutable = "python3"
+	}
+	if c.StartupTimeoutMS == 0 {
+		c.StartupTimeoutMS = 5000
+	}
+	if c.ShutdownTimeoutMS == 0 {
+		c.ShutdownTimeoutMS = 3000
+	}
+	if c.IdleTimeoutSeconds == 0 {
+		c.IdleTimeoutSeconds = 600
+	}
+	if c.CrashBackoffInitialSeconds == 0 {
+		c.CrashBackoffInitialSeconds = 5
+	}
+	if c.CrashBackoffMaxSeconds == 0 {
+		c.CrashBackoffMaxSeconds = 300
+	}
+	if c.MaxStderrBytes == 0 {
+		c.MaxStderrBytes = 262144
+	}
+}
+
+func (c *PluginInstallerConfig) applyDefaults(store PluginStoreConfig) {
+	if !c.githubEnabledSet {
+		c.GithubEnabled = true
+	}
+	if !c.requireSignatureSet {
+		c.RequireSignature = true
+	}
+	if !c.allowUnsignedDevSet && store.AllowDevDirs {
+		c.AllowUnsignedDev = true
+	}
+}
+
+func (c *PluginProviderGatewayConfig) applyDefaults() {
+	if !c.enabledSet {
+		c.Enabled = true
+	}
+}
+
+func (c *PluginAdminConfig) applyDefaults() {
+	if !c.enabledSet {
 		c.Enabled = true
 	}
 }
@@ -534,6 +754,27 @@ func (c PluginsConfig) Validate(turnPipeline TurnPipelineConfig) error {
 	}
 	if c.DefaultTimeoutMS > c.MaxTimeoutMS {
 		return fmt.Errorf("default_timeout_ms must be <= max_timeout_ms")
+	}
+	if strings.TrimSpace(c.Store.RootDir) == "" {
+		return fmt.Errorf("store.root_dir is required")
+	}
+	if c.Runtime.StartupTimeoutMS <= 0 {
+		return fmt.Errorf("runtime.startup_timeout_ms must be > 0")
+	}
+	if c.Runtime.ShutdownTimeoutMS <= 0 {
+		return fmt.Errorf("runtime.shutdown_timeout_ms must be > 0")
+	}
+	if c.Runtime.IdleTimeoutSeconds <= 0 {
+		return fmt.Errorf("runtime.idle_timeout_seconds must be > 0")
+	}
+	if c.Runtime.CrashBackoffInitialSeconds <= 0 {
+		return fmt.Errorf("runtime.crash_backoff_initial_seconds must be > 0")
+	}
+	if c.Runtime.CrashBackoffMaxSeconds < c.Runtime.CrashBackoffInitialSeconds {
+		return fmt.Errorf("runtime.crash_backoff_max_seconds must be >= crash_backoff_initial_seconds")
+	}
+	if c.Runtime.MaxStderrBytes <= 0 {
+		return fmt.Errorf("runtime.max_stderr_bytes must be > 0")
 	}
 	for _, hook := range c.FailClosedHooks {
 		if !knownPluginHookName(hook) {
@@ -999,6 +1240,7 @@ func DefaultConfig() *Config {
 		},
 	}
 	cfg.Work.ApplyDefaults()
+	cfg.Plugins.applyDefaults()
 	return cfg
 }
 

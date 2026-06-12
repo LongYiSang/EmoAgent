@@ -22,8 +22,10 @@ type PatchType string
 type PatchOperation string
 
 const (
-	RuntimeBuiltin RuntimeKind = "builtin"
-	RuntimeProcess RuntimeKind = "process"
+	RuntimeBuiltin       RuntimeKind = "builtin"
+	RuntimeProcess       RuntimeKind = "process"
+	RuntimePythonProcess RuntimeKind = "python_process"
+	RuntimeContainer     RuntimeKind = "container"
 )
 
 const (
@@ -49,6 +51,12 @@ const (
 	CapabilityAgentAffectWriteTarget  Capability = "agent_affect.write_target"
 	CapabilityAgentAffectConfigure    Capability = "agent_affect.configure"
 	CapabilityAgentAffectObserve      Capability = "agent_affect.observe"
+	CapabilityProviderGenerate        Capability = "provider.generate"
+	CapabilityProviderEmbed           Capability = "provider.embed"
+	CapabilityPluginKV                Capability = "plugin.kv"
+	CapabilityPluginFiles             Capability = "plugin.files"
+	CapabilityNetworkWeb              Capability = "network.web"
+	CapabilityPluginAdminRead         Capability = "plugin.admin.read"
 )
 
 const (
@@ -165,7 +173,7 @@ func (m Manifest) Validate(options ManifestValidationOptions) error {
 		return fmt.Errorf("emoagent_version must be a semver range, got %q", m.EmoAgentVersion)
 	}
 	switch m.Runtime {
-	case RuntimeBuiltin, RuntimeProcess:
+	case RuntimeBuiltin, RuntimeProcess, RuntimePythonProcess, RuntimeContainer:
 	default:
 		return fmt.Errorf("runtime %q is unsupported", m.Runtime)
 	}
@@ -218,7 +226,13 @@ func KnownCapability(capability Capability) bool {
 		CapabilityAgentAffectWriteDelta,
 		CapabilityAgentAffectWriteTarget,
 		CapabilityAgentAffectConfigure,
-		CapabilityAgentAffectObserve:
+		CapabilityAgentAffectObserve,
+		CapabilityProviderGenerate,
+		CapabilityProviderEmbed,
+		CapabilityPluginKV,
+		CapabilityPluginFiles,
+		CapabilityNetworkWeb,
+		CapabilityPluginAdminRead:
 		return true
 	default:
 		return false
