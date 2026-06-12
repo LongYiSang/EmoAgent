@@ -149,6 +149,33 @@ go build -o ./bin/emoagent ./cmd/emoagent
 
 当 `memory.enabled=true` 时，EmoAgent 会通过 `memoryhost.OpenFromConfigWithOptions` 打开 MemoryCore，并把 Provider Center 中的 provider 转成 MemoryCore `ProviderRegistry`。MemoryCore pipeline 的运行时选择应写入 `memory.provider_bindings.*` 或 DB `runtime_settings`，只保存 `provider_id + model`；旧的 `memory.extraction.provider` 仅作为过渡兼容字段，不再作为主配置入口。`memory.sidecar.enabled=true` 时会先按 `managed/external` 模式检查 sidecar；健康时注入 `sidecar.url`，失败且 `fail_open=true` 时降级关闭 mirror/sidecar，保留 SQLite/FTS 路径。
 
+### Sidecar 简易安装
+
+MemoryCore Go module 通过 `go.mod` 引入，但 Python sidecar 不会随 Go 依赖自动安装。启用 `memory.sidecar.enabled=true` 前，需要先在 sidecar 目录安装 Python 依赖；默认配置假设 `EmoAgent` 与 `EmoAgent-MemoryCore` 是相邻目录：
+
+```powershell
+cd ..\EmoAgent-MemoryCore\sidecar
+uv python pin 3.12
+uv sync
+```
+
+默认 `memory.sidecar.managed=true` 时，EmoAgent 会在启动时从 `memory.sidecar.working_dir` 执行 `uv run python -m memorycore_sidecar.server`，生成 TOML、做健康检查并在关闭时终止 sidecar；但它不会替你安装 Python、uv 或依赖包。如果 MemoryCore 仓库不在默认相邻路径，请先把 `config.yaml` 中的 `memory.sidecar.working_dir` 改成实际的 `sidecar` 目录。
+
+真实 `trivium` adapter 需要 embedding provider。默认示例使用 DashScope OpenAI-compatible embeddings，不要把密钥写进配置文件，在启动 EmoAgent 前设置环境变量：
+
+```powershell
+$env:DASHSCOPE_API_KEY = "<dashscope-api-key>"
+```
+
+需要先单独验证 sidecar 时，可以在 `EmoAgent-MemoryCore\sidecar` 中手动启动 fake adapter，再检查健康状态：
+
+```powershell
+uv run python -m memorycore_sidecar.server --adapter fake --host 127.0.0.1 --port 8765
+Invoke-RestMethod http://127.0.0.1:8765/health
+```
+
+验证完成后停止手动进程，再让 EmoAgent 以 managed 模式启动实际 sidecar。运行中可通过 Admin 的 Sidecar 页面或 `GET /api/sidecar/status` 查看状态。
+
 配置中心 API：
 
 - `GET /api/config/effective`、`POST /api/config/validate`、`GET /api/config/issues`
