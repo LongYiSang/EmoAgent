@@ -21,6 +21,7 @@ import (
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/configcenter"
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/media"
 	"github.com/longyisang/emoagent/internal/memoryhost"
 	"github.com/longyisang/emoagent/internal/memoryruntime"
 	"github.com/longyisang/emoagent/internal/plugin"
@@ -64,6 +65,9 @@ func (a *routeTestAdminApp) GetLLMProviderModels(id string) ([]llm.ModelInfo, er
 }
 func (a *routeTestAdminApp) GetLLMProviderEnvStatus(id string) (configcenter.ProviderEnvStatus, error) {
 	return configcenter.ProviderEnvStatus{}, nil
+}
+func (a *routeTestAdminApp) UploadMedia(ctx context.Context, r io.Reader, meta media.UploadMeta) (*media.MediaAsset, error) {
+	return &media.MediaAsset{ID: "med_test", Kind: "image", MimeType: "image/png", ByteSize: 1}, nil
 }
 func (a *routeTestAdminApp) ListAgentConfigs() ([]config.AgentConfig, error) {
 	return append([]config.AgentConfig(nil), a.agentConfigs...), nil

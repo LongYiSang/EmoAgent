@@ -1,14 +1,25 @@
 package chat
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/turn"
 )
 
+func mustWSMessageToInbound(t *testing.T, msg WSMessage, sessionID, personaName string) turn.InboundEnvelope {
+	t.Helper()
+	env, err := wsMessageToInbound(msg, sessionID, personaName)
+	if err != nil {
+		t.Fatalf("wsMessageToInbound: %v", err)
+	}
+	return env
+}
+
 func TestWSMessageToInboundMessageUsesRequestID(t *testing.T) {
-	env := wsMessageToInbound(WSMessage{
+	env := mustWSMessageToInbound(t, WSMessage{
 		Type:      "message",
 		Content:   " hello ",
 		RequestID: "request-1",
@@ -26,7 +37,7 @@ func TestWSMessageToInboundMessageUsesRequestID(t *testing.T) {
 }
 
 func TestWSMessageToInboundApprovalNormalizesAction(t *testing.T) {
-	env := wsMessageToInbound(WSMessage{
+	env := mustWSMessageToInbound(t, WSMessage{
 		Type:      "approval_action",
 		RequestID: "approval-1",
 		Action:    " APPROVE ",
@@ -41,6 +52,20 @@ func TestWSMessageToInboundApprovalNormalizesAction(t *testing.T) {
 	}
 	if env.IdempotencyKey != "webui:session-1:approval_action:approval-1:approve:delete" {
 		t.Fatalf("idempotency key = %q", env.IdempotencyKey)
+	}
+}
+
+func TestWSMessageToInboundRejectsUnsupportedUserParts(t *testing.T) {
+	_, err := wsMessageToInbound(WSMessage{
+		Type:    "message",
+		Content: "hello",
+		Parts: []llm.ContentBlock{
+			{Type: string(llm.PartText), Text: "hello"},
+			{Type: string(llm.PartToolUse), ID: "tool-call-1", Name: "spoofed_tool"},
+		},
+	}, "session-1", "default")
+	if err == nil || !strings.Contains(err.Error(), "unsupported user content part type") {
+		t.Fatalf("err = %v, want unsupported user content part type", err)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/configcenter"
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/media"
 	"github.com/longyisang/emoagent/internal/memoryhost"
 	"github.com/longyisang/emoagent/internal/protocol"
 	sidecarruntime "github.com/longyisang/emoagent/internal/sidecar"
@@ -95,6 +97,7 @@ type fakeAdminApp struct {
 	agentAffectClearResp   AgentAffectClearFailedResponse
 	lastAgentAffectSupers  AgentAffectQueueRequest
 	agentAffectSupersResp  AgentAffectSupersedePendingResponse
+	uploadAsset            *media.MediaAsset
 }
 
 func (f *fakeAdminApp) ListLLMProviders() ([]config.LLMProvider, error) {
@@ -127,6 +130,45 @@ func (f *fakeAdminApp) GetLLMProviderModels(id string) ([]llm.ModelInfo, error) 
 }
 func (f *fakeAdminApp) GetLLMProviderEnvStatus(id string) (configcenter.ProviderEnvStatus, error) {
 	return f.providerEnvStatus, nil
+}
+func (f *fakeAdminApp) UploadMedia(ctx context.Context, r io.Reader, meta media.UploadMeta) (*media.MediaAsset, error) {
+	if f.uploadAsset != nil {
+		return f.uploadAsset, nil
+	}
+	return &media.MediaAsset{ID: "med_test", Kind: "image", MimeType: "image/png", ByteSize: 68, Width: 1, Height: 1}, nil
+}
+
+func TestHandleUploadMedia(t *testing.T) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "tiny.png")
+	if err != nil {
+		t.Fatalf("CreateFormFile: %v", err)
+	}
+	if _, err := part.Write([]byte("png-bytes")); err != nil {
+		t.Fatalf("write multipart: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close multipart: %v", err)
+	}
+
+	app := &fakeAdminApp{uploadAsset: &media.MediaAsset{ID: "med_123", Kind: "image", MimeType: "image/png", ByteSize: 9, Width: 1, Height: 1}}
+	handler := NewAPIHandler(app, slog.Default())
+	req := httptest.NewRequest(http.MethodPost, "/api/media", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rr := httptest.NewRecorder()
+
+	handler.HandleUploadMedia(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d body=%s, want 201", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "storage_uri") || strings.Contains(rr.Body.String(), "path") {
+		t.Fatalf("upload response leaked storage path: %s", rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"media_asset_id":"med_123"`) {
+		t.Fatalf("body = %s, want media_asset_id", rr.Body.String())
+	}
 }
 func (f *fakeAdminApp) ListAgentConfigs() ([]config.AgentConfig, error) {
 	return append([]config.AgentConfig(nil), f.agentConfigs...), nil

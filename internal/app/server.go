@@ -99,6 +99,7 @@ func registerRoutes(mux *http.ServeMux, api *web.APIHandler, chatHandler http.Ha
 	mux.HandleFunc("GET /api/llm-providers/{id}/env-status", api.HandleGetLLMProviderEnvStatus)
 	mux.HandleFunc("GET /api/providers/{id}/env-status", api.HandleGetLLMProviderEnvStatus)
 	mux.HandleFunc("POST /api/providers/{id}/test", api.HandleTestProvider)
+	mux.HandleFunc("POST /api/media", api.HandleUploadMedia)
 	mux.HandleFunc("GET /api/config/effective", api.HandleGetConfigEffective)
 	mux.HandleFunc("POST /api/config/validate", api.HandleValidateConfig)
 	mux.HandleFunc("GET /api/config/issues", api.HandleListConfigIssues)

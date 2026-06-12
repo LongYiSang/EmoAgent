@@ -3,6 +3,7 @@ package llm
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -46,14 +47,21 @@ type anthropicMessage struct {
 
 // anthropicContentBlock is the wire format for Anthropic content blocks.
 type anthropicContentBlock struct {
-	Type      string          `json:"type"`
-	Text      string          `json:"text,omitempty"`
-	ID        string          `json:"id,omitempty"`          // tool_use
-	Name      string          `json:"name,omitempty"`        // tool_use
-	Input     json.RawMessage `json:"input,omitempty"`       // tool_use
-	ToolUseID string          `json:"tool_use_id,omitempty"` // tool_result (wire field name)
-	Content   string          `json:"content,omitempty"`     // tool_result
-	IsError   bool            `json:"is_error,omitempty"`    // tool_result
+	Type      string                `json:"type"`
+	Text      string                `json:"text,omitempty"`
+	Source    *anthropicImageSource `json:"source,omitempty"`
+	ID        string                `json:"id,omitempty"`          // tool_use
+	Name      string                `json:"name,omitempty"`        // tool_use
+	Input     json.RawMessage       `json:"input,omitempty"`       // tool_use
+	ToolUseID string                `json:"tool_use_id,omitempty"` // tool_result (wire field name)
+	Content   string                `json:"content,omitempty"`     // tool_result
+	IsError   bool                  `json:"is_error,omitempty"`    // tool_result
+}
+
+type anthropicImageSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
 }
 
 type anthropicResponse struct {
@@ -97,6 +105,14 @@ func (c *anthropicClient) toMessages(req ChatRequest) []anthropicMessage {
 				switch cb.Type {
 				case "text":
 					ab.Text = cb.Text
+				case "image":
+					if cb.Media != nil {
+						ab.Source = &anthropicImageSource{
+							Type:      "base64",
+							MediaType: cb.Media.MimeType,
+							Data:      base64.StdEncoding.EncodeToString(cb.Media.Data),
+						}
+					}
 				case "tool_use":
 					ab.ID = cb.ID
 					ab.Name = cb.Name
@@ -184,7 +200,7 @@ func (c *anthropicClient) doRequest(ctx context.Context, body []byte, stream boo
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		c.logger.Error("llm http error", "status", resp.StatusCode, "body", string(respBody))
+		c.logger.Error("llm http error", "status", resp.StatusCode, "body", SanitizeImageDataForDiagnostics(string(respBody)))
 		return nil, wrapStatusError("anthropic", "messages", resp.StatusCode, string(respBody))
 	}
 
@@ -261,7 +277,7 @@ func (c *anthropicClient) ChatStream(ctx context.Context, req ChatRequest, cb St
 
 		var se anthropicStreamEvent
 		if err := json.Unmarshal([]byte(event.Data), &se); err != nil {
-			c.logger.Debug("skip malformed event", "data", event.Data, "error", err)
+			c.logger.Debug("skip malformed event", "data", SanitizeImageDataForDiagnostics(event.Data), "error", err)
 			continue
 		}
 

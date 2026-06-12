@@ -14,6 +14,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/storage"
 	"github.com/longyisang/emoagent/internal/turn"
@@ -23,6 +24,7 @@ import (
 type WSMessage struct {
 	Type      string                    `json:"type"`
 	Content   string                    `json:"content,omitempty"`
+	Parts     []llm.ContentBlock        `json:"parts,omitempty"`
 	SessionID string                    `json:"session_id,omitempty"`
 	TurnID    string                    `json:"turn_id,omitempty"`
 	Status    string                    `json:"status,omitempty"`
@@ -76,6 +78,7 @@ type conversationEngine interface {
 	ListSessionApprovals(ctx context.Context, sessionID string) ([]protocol.ApprovalRequest, error)
 	ApplyApprovalAction(ctx context.Context, sessionID, requestID, action, optionID string) (*protocol.ApprovalRequest, error)
 	ContinueAfterApproval(ctx context.Context, sessionID string, persona *config.Persona, approval *protocol.ApprovalRequest, cb func(delta string)) (string, error)
+	SendMessageParts(ctx context.Context, sessionID string, persona *config.Persona, parts []llm.ContentBlock, cb func(delta string)) (string, error)
 }
 
 // Handler serves the WebSocket chat protocol.
@@ -220,8 +223,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		switch msg.Type {
 		case "message":
-			if strings.TrimSpace(msg.Content) == "" {
+			if !hasMessageInput(msg) {
 				continue
+			}
+			if len(msg.Parts) > 0 {
+				parts, err := normalizeUserParts(msg.Content, msg.Parts)
+				if err != nil {
+					if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: err.Error()}, &writeMu); writeErr != nil {
+						return
+					}
+					continue
+				}
+				msg.Parts = parts
+				msg.Content = renderUserParts(parts, llm.RenderForHistory)
 			}
 			usePipeline := shouldUseTurnPipeline(h.turnConfig, personaName, sessionID)
 			if pluginHostEnabled(h.pluginHost) && !usePipeline {
@@ -229,12 +243,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if h.turnConfig.Shadow && !usePipeline {
-				_, _ = h.turnRuntime.Shadow(ctx, wsMessageToInbound(msg, sessionID, personaName))
+				env, err := wsMessageToInbound(msg, sessionID, personaName)
+				if err == nil {
+					_, _ = h.turnRuntime.Shadow(ctx, env)
+				}
 			}
 			if usePipeline {
 				turnCtx := context.WithoutCancel(ctx)
 				sink := h.newWSOutboundSink(ctx, conn, &writeMu)
-				env := wsMessageToInbound(msg, sessionID, personaName)
+				env, err := wsMessageToInbound(msg, sessionID, personaName)
+				if err != nil {
+					if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: err.Error()}, &writeMu); writeErr != nil {
+						return
+					}
+					closeOutboundSink(turnCtx, sink)
+					continue
+				}
 				if _, err := h.turnRuntime.Execute(turnCtx, env, persona, sink); err != nil {
 					if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: err.Error()}, &writeMu); writeErr != nil {
 						return
@@ -258,7 +282,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			})
 
 			streamedDelta := false
-			reply, err := h.engine.SendMessage(msgCtx, sessionID, persona, msg.Content, func(delta string) {
+			send := h.engine.SendMessage
+			if len(msg.Parts) > 0 {
+				send = func(ctx context.Context, sessionID string, persona *config.Persona, _ string, cb func(delta string)) (string, error) {
+					return h.engine.SendMessageParts(ctx, sessionID, persona, msg.Parts, cb)
+				}
+			}
+			reply, err := send(msgCtx, sessionID, persona, msg.Content, func(delta string) {
 				if delta == "" {
 					return
 				}
@@ -301,12 +331,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if h.turnConfig.Shadow && !useApprovalPipeline {
-				_, _ = h.turnRuntime.Shadow(ctx, wsMessageToInbound(msg, sessionID, personaName))
+				env, err := wsMessageToInbound(msg, sessionID, personaName)
+				if err == nil {
+					_, _ = h.turnRuntime.Shadow(ctx, env)
+				}
 			}
 			if useApprovalPipeline {
 				turnCtx := context.WithoutCancel(ctx)
 				sink := h.newWSOutboundSink(ctx, conn, &writeMu)
-				env := wsMessageToInbound(msg, sessionID, personaName)
+				env, err := wsMessageToInbound(msg, sessionID, personaName)
+				if err != nil {
+					if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: err.Error()}, &writeMu); writeErr != nil {
+						return
+					}
+					closeOutboundSink(turnCtx, sink)
+					continue
+				}
 				if _, err := h.turnRuntime.Execute(turnCtx, env, persona, sink); err != nil {
 					if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: err.Error()}, &writeMu); writeErr != nil {
 						return
@@ -464,6 +504,18 @@ func shouldUseTurnPipeline(cfg config.TurnPipelineConfig, personaName, sessionID
 
 func pluginHostEnabled(host turnPluginHost) bool {
 	return host != nil && host.Enabled()
+}
+
+func hasMessageInput(msg WSMessage) bool {
+	if strings.TrimSpace(msg.Content) != "" {
+		return true
+	}
+	for _, part := range msg.Parts {
+		if strings.TrimSpace(part.Text) != "" || part.Media != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func stringInList(value string, list []string) bool {

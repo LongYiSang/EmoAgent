@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,7 +11,66 @@ import (
 )
 
 type ModelInfo struct {
-	ID string `json:"id"`
+	ID               string             `json:"id"`
+	InputModalities  []string           `json:"input_modalities,omitempty"`
+	OutputModalities []string           `json:"output_modalities,omitempty"`
+	ImageTransports  []string           `json:"image_transports,omitempty"`
+	ImageFormats     []string           `json:"image_formats,omitempty"`
+	Capabilities     *ModelCapabilities `json:"capabilities,omitempty"`
+	RawJSON          string             `json:"-"`
+}
+
+func (m *ModelInfo) UnmarshalJSON(data []byte) error {
+	type alias ModelInfo
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	if len(a.InputModalities) == 0 {
+		a.InputModalities = readStringSlice(raw, "modalities", "input_modalities", "input")
+	}
+	if len(a.OutputModalities) == 0 {
+		a.OutputModalities = readStringSlice(raw, "output_modalities", "output")
+	}
+	if len(a.ImageTransports) == 0 {
+		a.ImageTransports = readStringSlice(raw, "image_transports", "image_transport")
+	}
+	if len(a.ImageFormats) == 0 {
+		a.ImageFormats = readStringSlice(raw, "image_formats", "image_format")
+	}
+	a.RawJSON = compactJSON(data)
+	*m = ModelInfo(a)
+	return nil
+}
+
+func readStringSlice(raw map[string]json.RawMessage, keys ...string) []string {
+	for _, key := range keys {
+		value, ok := raw[key]
+		if !ok || len(value) == 0 {
+			continue
+		}
+		var values []string
+		if err := json.Unmarshal(value, &values); err == nil {
+			return values
+		}
+		var one string
+		if err := json.Unmarshal(value, &one); err == nil && one != "" {
+			return []string{one}
+		}
+	}
+	return nil
+}
+
+func compactJSON(data []byte) string {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, data); err != nil {
+		return string(data)
+	}
+	return buf.String()
 }
 
 func DiscoverModels(ctx context.Context, cfg ProviderConfig) ([]ModelInfo, error) {

@@ -53,6 +53,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         content: action.content,
         createdAt: action.createdAt || new Date().toISOString(),
         status: action.status,
+        parts: action.parts,
       };
       return { ...state, timeline: orderTimeline([...state.timeline, item]) };
     }

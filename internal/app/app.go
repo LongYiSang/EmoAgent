@@ -3,12 +3,14 @@ package app
 import (
 	"context"
 	"fmt"
+	"io"
 	"sync"
 
 	"github.com/longyisang/emoagent/internal/apperrors"
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/configcenter"
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/media"
 	"github.com/longyisang/emoagent/internal/memoryhost"
 	"github.com/longyisang/emoagent/internal/protocol"
 	sidecarruntime "github.com/longyisang/emoagent/internal/sidecar"
@@ -166,6 +168,14 @@ func (a *App) GetLLMProviderModels(id string) ([]llm.ModelInfo, error) {
 		return nil, err
 	}
 	return services.LLMProviders.Models(id)
+}
+
+func (a *App) UploadMedia(ctx context.Context, r io.Reader, meta media.UploadMeta) (*media.MediaAsset, error) {
+	services, err := a.services()
+	if err != nil {
+		return nil, err
+	}
+	return services.Media.Upload(ctx, r, meta)
 }
 
 func (a *App) GetAgentAffectConfig(ctx context.Context) (configcenter.AgentAffectConfigResponse, error) {

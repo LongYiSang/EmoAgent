@@ -6,6 +6,7 @@ import (
 	"github.com/longyisang/emoagent/internal/chat"
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/media"
 	"github.com/longyisang/emoagent/internal/tool"
 )
 
@@ -16,6 +17,8 @@ type ChatService struct {
 	plugins      *PluginService
 	work         *WorkService
 	memory       *MemoryService
+	media        *MediaService
+	llmProviders *LLMProviderService
 	agentAffect  *AgentAffectService
 	engine       *chat.Engine
 }
@@ -38,6 +41,7 @@ func (s *ChatService) BuildEngine(dispatcher *tool.Dispatcher) *chat.Engine {
 	maxTokens := 0
 	temperature := 0.0
 	provider := ""
+	providerID := ""
 	providerName := ""
 	currentClient := s.infra.LLM
 	summaryClient := s.infra.LLM
@@ -52,6 +56,7 @@ func (s *ChatService) BuildEngine(dispatcher *tool.Dispatcher) *chat.Engine {
 		maxTokens = params.MaxTokens
 		temperature = derefFloat64(params.Temperature, 0)
 		provider = toolProviderName(activeRuntime.EmotionMain.Provider.Protocol)
+		providerID = activeRuntime.EmotionMain.Provider.ID
 		providerName = providerDisplayName(activeRuntime.EmotionMain.Provider)
 		contextCfg = activeRuntime.Context
 	}
@@ -60,6 +65,14 @@ func (s *ChatService) BuildEngine(dispatcher *tool.Dispatcher) *chat.Engine {
 		affectRuntime = s.agentAffect.Runtime()
 	}
 
+	var mediaStore media.Store
+	if s.media != nil {
+		mediaStore = s.media.Store()
+	}
+	var mediaResolver media.CapabilityResolver
+	if s.llmProviders != nil {
+		mediaResolver = s.llmProviders
+	}
 	s.engine = chat.NewEngine(chat.EngineConfig{
 		LLM:                currentClient,
 		SummaryLLM:         summaryClient,
@@ -75,6 +88,7 @@ func (s *ChatService) BuildEngine(dispatcher *tool.Dispatcher) *chat.Engine {
 		Temperature:        temperature,
 		ContextConfig:      contextCfg,
 		Provider:           provider,
+		ProviderID:         providerID,
 		ProviderName:       providerName,
 		Registry:           s.tools.Registry(),
 		Dispatcher:         dispatcher,
@@ -85,6 +99,8 @@ func (s *ChatService) BuildEngine(dispatcher *tool.Dispatcher) *chat.Engine {
 		Memory:             s.memory.Bridge(),
 		MemoryRetrieval:    cfg.Memory.Retrieval,
 		AgentAffect:        affectRuntime,
+		MediaStore:         mediaStore,
+		MediaResolver:      mediaResolver,
 	})
 	return s.engine
 }
@@ -124,6 +140,7 @@ func (s *ChatService) UpdateAgentRuntime(runtime *ActiveAgentRuntime) {
 		runtime.EmotionMain.Client,
 		runtime.EmotionSummary.Client,
 		toolProviderName(runtime.EmotionMain.Provider.Protocol),
+		runtime.EmotionMain.Provider.ID,
 		providerDisplayName(runtime.EmotionMain.Provider),
 		runtime.EmotionMain.Model,
 		runtime.EmotionMain.Params,

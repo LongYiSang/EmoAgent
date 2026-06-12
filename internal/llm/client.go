@@ -3,6 +3,7 @@ package llm
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -106,11 +107,46 @@ type openaiRequest struct {
 }
 
 type openaiMessage struct {
-	Role             string           `json:"role"`
-	Content          *string          `json:"content"`                     // nil for tool_call-only assistant messages
-	ReasoningContent *string          `json:"reasoning_content,omitempty"` // thinking/reasoning model output
-	ToolCalls        []openaiToolCall `json:"tool_calls,omitempty"`        // assistant tool calls
-	ToolCallID       string           `json:"tool_call_id,omitempty"`      // tool result message
+	Role             string              `json:"role"`
+	Content          *string             `json:"-"`                           // nil for tool_call-only assistant messages
+	ContentParts     []openaiContentPart `json:"-"`                           // content array for multimodal user messages
+	ReasoningContent *string             `json:"reasoning_content,omitempty"` // thinking/reasoning model output
+	ToolCalls        []openaiToolCall    `json:"tool_calls,omitempty"`        // assistant tool calls
+	ToolCallID       string              `json:"tool_call_id,omitempty"`      // tool result message
+}
+
+func (m openaiMessage) MarshalJSON() ([]byte, error) {
+	type wire struct {
+		Role             string           `json:"role"`
+		Content          any              `json:"content"`
+		ReasoningContent *string          `json:"reasoning_content,omitempty"`
+		ToolCalls        []openaiToolCall `json:"tool_calls,omitempty"`
+		ToolCallID       string           `json:"tool_call_id,omitempty"`
+	}
+	var content any
+	if len(m.ContentParts) > 0 {
+		content = m.ContentParts
+	} else if m.Content != nil {
+		content = *m.Content
+	}
+	return json.Marshal(wire{
+		Role:             m.Role,
+		Content:          content,
+		ReasoningContent: m.ReasoningContent,
+		ToolCalls:        m.ToolCalls,
+		ToolCallID:       m.ToolCallID,
+	})
+}
+
+type openaiContentPart struct {
+	Type     string          `json:"type"`
+	Text     string          `json:"text,omitempty"`
+	ImageURL *openaiImageURL `json:"image_url,omitempty"`
+}
+
+type openaiImageURL struct {
+	URL    string `json:"url"`
+	Detail string `json:"detail,omitempty"`
 }
 
 type openaiTool struct {
@@ -207,13 +243,25 @@ func (c *openaiClient) toMessages(req ChatRequest) []openaiMessage {
 
 		case len(m.ContentBlocks) > 0:
 			// Structured message — extract tool_use blocks into tool_calls,
-			// and collect text blocks into content.
+			// and collect text/image blocks into provider content.
 			var textParts []string
+			var contentParts []openaiContentPart
 			var toolCalls []openaiToolCall
 			for _, cb := range m.ContentBlocks {
 				switch cb.Type {
 				case "text":
 					textParts = append(textParts, cb.Text)
+					contentParts = append(contentParts, openaiContentPart{Type: "text", Text: cb.Text})
+				case "image":
+					if cb.Media != nil {
+						contentParts = append(contentParts, openaiContentPart{
+							Type: "image_url",
+							ImageURL: &openaiImageURL{
+								URL:    mediaDataURL(cb.Media),
+								Detail: cb.Media.Detail,
+							},
+						})
+					}
 				case "tool_use":
 					toolCalls = append(toolCalls, openaiToolCall{
 						ID:   cb.ID,
@@ -230,7 +278,9 @@ func (c *openaiClient) toMessages(req ChatRequest) []openaiMessage {
 			}
 
 			msg := openaiMessage{Role: string(m.Role)}
-			if len(textParts) > 0 {
+			if hasMediaContentParts(contentParts) {
+				msg.ContentParts = contentParts
+			} else if len(textParts) > 0 {
 				joined := ""
 				for _, p := range textParts {
 					joined += p
@@ -255,6 +305,22 @@ func (c *openaiClient) toMessages(req ChatRequest) []openaiMessage {
 		}
 	}
 	return msgs
+}
+
+func hasMediaContentParts(parts []openaiContentPart) bool {
+	for _, part := range parts {
+		if part.ImageURL != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func mediaDataURL(media *MediaPart) string {
+	if media == nil {
+		return ""
+	}
+	return "data:" + media.MimeType + ";base64," + base64.StdEncoding.EncodeToString(media.Data)
 }
 
 func (c *openaiClient) preserveReasoningContent(m Message) bool {
@@ -372,7 +438,7 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		c.logger.Error("llm http error", "status", resp.StatusCode, "body", string(respBody))
+		c.logger.Error("llm http error", "status", resp.StatusCode, "body", SanitizeImageDataForDiagnostics(string(respBody)))
 		return nil, wrapStatusError("openai", "chat_stream", resp.StatusCode, string(respBody))
 	}
 
@@ -401,7 +467,7 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 
 		var chunk openaiStreamChunk
 		if err := json.Unmarshal([]byte(event.Data), &chunk); err != nil {
-			c.logger.Debug("skip malformed chunk", "data", event.Data, "error", err)
+			c.logger.Debug("skip malformed chunk", "data", SanitizeImageDataForDiagnostics(event.Data), "error", err)
 			continue
 		}
 

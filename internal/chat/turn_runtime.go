@@ -334,6 +334,8 @@ func (r *chatTurnRuntime) memoryPrepareStage() turn.Stage {
 			anchor, err := engine.prepareInputAndMemoryAnchor(ctx, tc.Inbound.SessionID, turnOptions{
 				persistUser: true,
 				userContent: tc.Inbound.UserMessage.Content,
+				userParts:   tc.Inbound.UserMessage.Parts,
+				turnID:      tc.TurnID,
 			})
 			if err != nil {
 				return turn.StageResult{NextState: turn.StateFailed, Terminal: true, Status: "failed", ErrorKind: "memory_prepare_failed"}, err
@@ -584,6 +586,8 @@ func (r *chatTurnRuntime) messageStage(persona *config.Persona) turn.Stage {
 					}, turnOptions{
 						persistUser: false,
 						userContent: tc.Inbound.UserMessage.Content,
+						userParts:   tc.Inbound.UserMessage.Parts,
+						turnID:      tc.TurnID,
 						extraSystem: extraSystem,
 						deferCommit: true,
 						output:      &output,

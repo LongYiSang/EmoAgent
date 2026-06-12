@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/protocol"
 )
 
@@ -45,6 +46,7 @@ type InboundEnvelope struct {
 
 type UserMessageInput struct {
 	Content string
+	Parts   []llm.ContentBlock
 }
 
 type InboundApproval struct {

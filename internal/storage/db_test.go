@@ -131,8 +131,8 @@ func TestOpenAndMigrate(t *testing.T) {
 	if err := db.SqlDB().QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_version").Scan(&latestVersion); err != nil {
 		t.Fatalf("read latest schema_version: %v", err)
 	}
-	if latestVersion != 24 {
-		t.Fatalf("latest schema_version = %d, want 24", latestVersion)
+	if latestVersion != 26 {
+		t.Fatalf("latest schema_version = %d, want 26", latestVersion)
 	}
 }
 

@@ -22,6 +22,7 @@ type Config struct {
 	Agent        AgentRuntimeConfig `yaml:"agent"`
 	AgentAffect  AgentAffectConfig  `yaml:"agent_affect" json:"agent_affect"`
 	Memory       MemoryConfig       `yaml:"memory"`
+	Media        MediaConfig        `yaml:"media" json:"media"`
 	DB           DBConfig           `yaml:"db"`
 	Log          LogConfig          `yaml:"log"`
 	Personas     PersonasConfig     `yaml:"personas"`
@@ -29,6 +30,12 @@ type Config struct {
 	WebFetch     WebFetchConfig     `yaml:"webfetch"`
 	Bash         BashConfig         `yaml:"bash"`
 	Plugins      PluginsConfig      `yaml:"plugins"`
+}
+
+type MediaConfig struct {
+	StorageDir string `yaml:"storage_dir" json:"storage_dir"`
+	MaxBytes   int64  `yaml:"max_bytes" json:"max_bytes"`
+	MaxPixels  int    `yaml:"max_pixels" json:"max_pixels"`
 }
 
 type TimeConfig struct {
@@ -1008,6 +1015,11 @@ func DefaultConfig() *Config {
 		},
 		DB: DBConfig{
 			Path: "./data/emo.db",
+		},
+		Media: MediaConfig{
+			StorageDir: "./data/media",
+			MaxBytes:   10 * 1024 * 1024,
+			MaxPixels:  20_000_000,
 		},
 		AgentAffect: AgentAffectConfig{
 			Enabled:        false,

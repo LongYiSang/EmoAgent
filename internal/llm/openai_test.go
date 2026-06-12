@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -58,6 +59,29 @@ func TestOpenAIChat_TextOnly(t *testing.T) {
 	}
 	if resp.RawStopReason != "stop" {
 		t.Errorf("RawStopReason: got %q, want %q", resp.RawStopReason, "stop")
+	}
+}
+
+func TestOpenAIChatStreamStatusLogRedactsImageData(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `provider echoed data:image/png;base64,iVBORw0KGgo=`, http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	var logs bytes.Buffer
+	client := newTestOpenAIClient(server.URL)
+	client.logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	_, err := client.ChatStream(context.Background(), ChatRequest{
+		Model:    "gpt-test",
+		Messages: []Message{{Role: RoleUser, Content: "hi"}},
+	}, nil)
+	if err == nil {
+		t.Fatal("ChatStream succeeded, want status error")
+	}
+	got := logs.String()
+	if strings.Contains(got, "data:image") || strings.Contains(got, "base64") || strings.Contains(got, "iVBOR") {
+		t.Fatalf("log leaked image data: %s", got)
 	}
 }
 

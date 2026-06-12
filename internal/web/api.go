@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -15,6 +16,7 @@ import (
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/configcenter"
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/media"
 	"github.com/longyisang/emoagent/internal/memoryhost"
 	"github.com/longyisang/emoagent/internal/progress"
 	"github.com/longyisang/emoagent/internal/protocol"
@@ -32,6 +34,7 @@ type AdminApp interface {
 	RefreshLLMProviderModels(id string) ([]llm.ModelInfo, error)
 	GetLLMProviderModels(id string) ([]llm.ModelInfo, error)
 	GetLLMProviderEnvStatus(id string) (configcenter.ProviderEnvStatus, error)
+	UploadMedia(ctx context.Context, r io.Reader, meta media.UploadMeta) (*media.MediaAsset, error)
 	ListAgentConfigs() ([]config.AgentConfig, error)
 	GetAgentConfig(id string) (*config.AgentConfig, error)
 	GetActiveAgentConfig() (*config.AgentConfig, bool, error)
@@ -318,6 +321,32 @@ func (h *APIHandler) HandleGetLLMProviderEnvStatus(w http.ResponseWriter, r *htt
 		return
 	}
 	writeJSON(w, http.StatusOK, status)
+}
+
+func (h *APIHandler) HandleUploadMedia(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid multipart form")
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "file is required")
+		return
+	}
+	defer file.Close()
+	filename := ""
+	if header != nil {
+		filename = header.Filename
+	}
+	asset, err := h.app.UploadMedia(r.Context(), file, media.UploadMeta{
+		OriginalFilename: filename,
+		CreatedByRole:    "user",
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, asset)
 }
 
 func (h *APIHandler) HandleTestProvider(w http.ResponseWriter, r *http.Request) {

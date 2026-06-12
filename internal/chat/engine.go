@@ -15,6 +15,7 @@ import (
 	"github.com/longyisang/emoagent/internal/config"
 	contextutil "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/media"
 	"github.com/longyisang/emoagent/internal/progress"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/runtimeenv"
@@ -73,6 +74,7 @@ type EngineConfig struct {
 	Temperature        float64
 	ContextConfig      config.ContextConfig
 	Provider           string           // "openai" or "anthropic", needed by ResultsToMessages
+	ProviderID         string           // configured provider id for model capability lookup
 	ProviderName       string           // display name for UI metadata
 	Registry           *tool.Registry   // nil disables tool support
 	Dispatcher         *tool.Dispatcher // nil disables tool support
@@ -83,6 +85,8 @@ type EngineConfig struct {
 	Memory             MemoryBridge
 	MemoryRetrieval    config.MemoryRetrievalConfig
 	AgentAffect        AgentAffectRuntime
+	MediaStore         media.Store
+	MediaResolver      media.CapabilityResolver
 }
 
 // RuntimeConfig is the hot-swappable subset of EngineConfig used for new requests.
@@ -118,6 +122,7 @@ type Engine struct {
 	temperature        float64
 	contextCfg         config.ContextConfig
 	provider           string
+	providerID         string
 	providerName       string
 	registry           *tool.Registry
 	dispatcher         *tool.Dispatcher
@@ -128,6 +133,8 @@ type Engine struct {
 	memory             MemoryBridge
 	memoryRetrieval    config.MemoryRetrievalConfig
 	agentAffect        AgentAffectRuntime
+	mediaStore         media.Store
+	mediaPlanner       *media.Planner
 }
 
 // UpdateConfig hot-swaps the active LLM client and request parameters for new sends.
@@ -154,7 +161,7 @@ func (e *Engine) UpdateConfig(client llm.Client, provider, model, summaryModel s
 	}
 }
 
-func (e *Engine) UpdateAgentRuntime(mainClient, summaryClient llm.Client, provider, providerName, model string, params llm.RequestParams, summaryModel string, summaryParams llm.RequestParams, contextCfg config.ContextConfig) {
+func (e *Engine) UpdateAgentRuntime(mainClient, summaryClient llm.Client, provider, providerID, providerName, model string, params llm.RequestParams, summaryModel string, summaryParams llm.RequestParams, contextCfg config.ContextConfig) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -165,6 +172,7 @@ func (e *Engine) UpdateAgentRuntime(mainClient, summaryClient llm.Client, provid
 		e.summaryLLM = summaryClient
 	}
 	e.provider = provider
+	e.providerID = firstNonEmptyString(providerID, provider)
 	e.providerName = providerDisplayName(providerName, provider)
 	e.model = model
 	e.params = cloneRequestParams(params)
@@ -210,6 +218,7 @@ func NewEngine(cfg EngineConfig) *Engine {
 		temperature:        cfg.Temperature,
 		contextCfg:         contextCfg,
 		provider:           cfg.Provider,
+		providerID:         firstNonEmptyString(cfg.ProviderID, cfg.Provider),
 		providerName:       providerDisplayName(cfg.ProviderName, cfg.Provider),
 		registry:           cfg.Registry,
 		dispatcher:         cfg.Dispatcher,
@@ -220,6 +229,8 @@ func NewEngine(cfg EngineConfig) *Engine {
 		memory:             cfg.Memory,
 		memoryRetrieval:    cfg.MemoryRetrieval,
 		agentAffect:        cfg.AgentAffect,
+		mediaStore:         cfg.MediaStore,
+		mediaPlanner:       media.NewPlanner(cfg.MediaStore, cfg.MediaResolver),
 	}
 }
 
@@ -302,9 +313,25 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 	})
 }
 
+func (e *Engine) SendMessageParts(ctx context.Context, sessionID string, persona *config.Persona, parts []llm.ContentBlock, cb func(delta string)) (string, error) {
+	normalizedParts, err := normalizeUserParts("", parts)
+	if err != nil {
+		return "", err
+	}
+	content := renderUserParts(normalizedParts, llm.RenderForHistory)
+	return e.sendTurn(ctx, sessionID, persona, cb, turnOptions{
+		persistUser: true,
+		userContent: content,
+		userParts:   normalizedParts,
+		turnID:      uuid.NewString(),
+	})
+}
+
 type turnOptions struct {
 	persistUser  bool
 	userContent  string
+	userParts    []llm.ContentBlock
+	turnID       string
 	extraSystem  string
 	disableTools bool
 	deferCommit  bool
@@ -315,6 +342,11 @@ type turnMemoryAnchor struct {
 	memorySegment       MemorySegmentRef
 	hasMemorySegment    bool
 	userEpisodeID       string
+	userMessageID       string
+	userHistoryContent  string
+	userMemoryContent   string
+	userParts           []llm.ContentBlock
+	turnID              string
 	manualNotice        string
 	manualNoticeHandled bool
 }
@@ -467,7 +499,7 @@ func (r *reasoningRoundTracker) record(content string) {
 	})
 }
 
-func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config.Persona, cb func(delta string), opts turnOptions) (string, error) {
+func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config.Persona, cb func(delta string), opts turnOptions) (reply string, err error) {
 	e.mu.RLock()
 	client := e.llm
 	summaryClient := e.summaryLLM
@@ -481,6 +513,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	temperature := e.temperature
 	contextCfg := e.contextCfg
 	provider := e.provider
+	providerID := e.providerID
 	providerName := providerDisplayName(e.providerName, provider)
 	registry := e.registry
 	dispatcher := e.dispatcher
@@ -489,7 +522,28 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	env := e.environment
 	realtimeStreaming := e.realtimeStreaming
 	memoryRetrieval := e.memoryRetrieval
+	mediaPlanner := e.mediaPlanner
 	e.mu.RUnlock()
+
+	var mediaDeliveries []media.DeliveryRecord
+	mediaDeliveryStatus := ""
+	mediaDeliveryError := ""
+	defer func() {
+		if len(mediaDeliveries) == 0 {
+			return
+		}
+		status := mediaDeliveryStatus
+		errText := mediaDeliveryError
+		if status == "" {
+			if err != nil {
+				status = media.DeliveryStatusFailed
+				errText = err.Error()
+			} else {
+				status = media.DeliveryStatusSent
+			}
+		}
+		e.recordMediaDeliveries(context.WithoutCancel(ctx), mediaDeliveries, status, errText)
+	}()
 
 	if client == nil {
 		return "", errors.New("chat engine LLM client is not configured")
@@ -507,6 +561,20 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	memoryAnchor, err := e.prepareInputAndMemoryAnchor(ctx, sessionID, opts)
 	if err != nil {
 		return "", err
+	}
+	if !opts.persistUser && len(opts.userParts) > 0 {
+		parts, err := normalizeUserParts(opts.userContent, opts.userParts)
+		if err != nil {
+			return "", err
+		}
+		turnID := opts.turnID
+		if turnID == "" {
+			turnID = uuid.NewString()
+		}
+		memoryAnchor.userHistoryContent = renderUserParts(parts, llm.RenderForHistory)
+		memoryAnchor.userMemoryContent = renderUserParts(parts, llm.RenderForMemory)
+		memoryAnchor.userParts = parts
+		memoryAnchor.turnID = turnID
 	}
 	if memoryAnchor.manualNoticeHandled {
 		return memoryAnchor.manualNotice, nil
@@ -572,7 +640,8 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	}
 	var memorySnapshot *memoryPromptSnapshot
 	if opts.persistUser {
-		memorySnapshot, err = e.retrieveMemoryPrompt(ctx, sessionID, opts.userContent, userEpisodeID, memoryRetrieval)
+		query := firstNonEmptyString(memoryAnchor.userMemoryContent, opts.userContent)
+		memorySnapshot, err = e.retrieveMemoryPrompt(ctx, sessionID, query, userEpisodeID, memoryRetrieval)
 		if err != nil {
 			return "", err
 		}
@@ -593,6 +662,25 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 		}
 	}
 	messages := append([]llm.Message(nil), assembled.Messages...)
+	messages = e.hydrateStoredMessageParts(ctx, sessionID, messages)
+	if len(memoryAnchor.userParts) > 0 {
+		messages = replaceLastUserMessageWithCurrentParts(messages, memoryAnchor)
+	}
+	if mediaPlanner != nil && messagesContainMedia(messages) {
+		prepared, err := mediaPlanner.Prepare(ctx, media.PrepareRequest{
+			ProviderID:    providerID,
+			ModelID:       model,
+			Messages:      messages,
+			CurrentTurnID: memoryAnchor.turnID,
+			Policy:        media.DefaultPolicy(),
+		})
+		if err != nil {
+			return "", err
+		}
+		messages = prepared.Messages
+		mediaDeliveries = prepared.Deliveries
+	}
+	mediaDeliveries = appendMissingMediaDeliveries(mediaDeliveries, e.historicalPlaceholderDeliveries(ctx, sessionID, messages, memoryAnchor.userMessageID, memoryAnchor.turnID, providerID, model))
 
 	// maxToolRounds prevents infinite tool call loops.
 	const maxToolRounds = 10
@@ -629,7 +717,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	)
 	e.logger.Debug("llm context",
 		"system", req.System,
-		"messages", messages,
+		"messages", llm.RenderMessages(messages, llm.RenderForHistory, llm.RenderPolicy{}),
 	)
 
 	start := time.Now()
@@ -854,6 +942,9 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 
 		// Rebuild request for next round.
 		req.Messages = messages
+	}
+	if len(mediaDeliveries) > 0 {
+		mediaDeliveryStatus = media.DeliveryStatusSent
 	}
 
 	e.logger.Info("llm response",
@@ -1082,20 +1173,375 @@ func providerDisplayName(name, fallback string) string {
 	return fallback
 }
 
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func normalizeUserParts(content string, parts []llm.ContentBlock) ([]llm.ContentBlock, error) {
+	if len(parts) > 0 {
+		normalized := make([]llm.ContentBlock, 0, len(parts))
+		for i, part := range parts {
+			partType := strings.TrimSpace(part.Type)
+			if partType == "" {
+				if part.Media != nil {
+					partType = string(llm.PartImage)
+				} else {
+					partType = string(llm.PartText)
+				}
+			}
+			id := strings.TrimSpace(part.ID)
+			if id == "" {
+				id = uuid.NewString()
+			}
+			switch llm.ContentPartType(partType) {
+			case llm.PartText:
+				if part.Media != nil || part.Name != "" || len(part.Input) > 0 || part.Content != "" || part.IsError {
+					return nil, fmt.Errorf("unsupported payload fields on user text part %d", i)
+				}
+				normalized = append(normalized, llm.ContentBlock{
+					ID:   id,
+					Type: string(llm.PartText),
+					Text: part.Text,
+				})
+			case llm.PartImage:
+				if part.Media == nil {
+					return nil, fmt.Errorf("image part %d is missing media", i)
+				}
+				if part.Text != "" || part.Name != "" || len(part.Input) > 0 || part.Content != "" || part.IsError {
+					return nil, fmt.Errorf("unsupported payload fields on user image part %d", i)
+				}
+				if part.Media.AltText != "" || part.Media.Transport != "" || len(part.Media.Data) > 0 || part.Media.StorageURI != "" || part.Media.ProviderRef != "" {
+					return nil, fmt.Errorf("unsupported media fields on user image part %d", i)
+				}
+				mediaPart := llm.MediaPart{
+					MediaAssetID: strings.TrimSpace(part.Media.MediaAssetID),
+					Kind:         "image",
+					MimeType:     strings.TrimSpace(part.Media.MimeType),
+					Detail:       strings.TrimSpace(part.Media.Detail),
+				}
+				if mediaPart.MediaAssetID == "" {
+					return nil, fmt.Errorf("image part %d is missing media_asset_id", i)
+				}
+				if part.Media.Kind != "" && part.Media.Kind != "image" {
+					return nil, fmt.Errorf("image part %d has unsupported media kind %q", i, part.Media.Kind)
+				}
+				normalized = append(normalized, llm.ContentBlock{
+					ID:    id,
+					Type:  string(llm.PartImage),
+					Media: &mediaPart,
+				})
+			default:
+				return nil, fmt.Errorf("unsupported user content part type %q", partType)
+			}
+		}
+		return normalized, nil
+	}
+	if strings.TrimSpace(content) == "" {
+		return nil, nil
+	}
+	return []llm.ContentBlock{{ID: uuid.NewString(), Type: string(llm.PartText), Text: content}}, nil
+}
+
+func renderUserParts(parts []llm.ContentBlock, mode llm.RenderMode) string {
+	return llm.RenderMessage(llm.Message{Role: llm.RoleUser, ContentBlocks: parts}, mode, llm.RenderPolicy{}).Content
+}
+
+func storagePartsFromLLM(sessionID, messageID, role string, parts []llm.ContentBlock) []storage.MessagePartRecord {
+	records := make([]storage.MessagePartRecord, 0, len(parts))
+	for i, part := range parts {
+		partID := part.ID
+		if partID == "" {
+			partID = uuid.NewString()
+		}
+		record := storage.MessagePartRecord{
+			ID:                  partID,
+			SessionID:           sessionID,
+			MessageID:           messageID,
+			Role:                role,
+			Ordinal:             i,
+			PartType:            part.Type,
+			MemoryRenderPolicy:  "placeholder_only",
+			HistoryRenderPolicy: "placeholder_only",
+		}
+		if part.Type == string(llm.PartText) {
+			record.TextContent = part.Text
+		}
+		if part.Media != nil {
+			record.MediaAssetID = part.Media.MediaAssetID
+		}
+		records = append(records, record)
+	}
+	return records
+}
+
+func (e *Engine) hydrateStoredMessageParts(ctx context.Context, sessionID string, messages []llm.Message) []llm.Message {
+	if e.db == nil || len(messages) == 0 {
+		return messages
+	}
+	partsByMessage, err := e.db.GetMessagePartsForSession(ctx, sessionID)
+	if err != nil {
+		e.logger.Warn("failed to hydrate message parts", "session", sessionID, "error", err)
+		return messages
+	}
+	if len(partsByMessage) == 0 {
+		return messages
+	}
+	type hydratedParts struct {
+		messageID string
+		blocks    []llm.ContentBlock
+	}
+	partsByContent := map[string]hydratedParts{}
+	contentCounts := map[string]int{}
+	for messageID, parts := range partsByMessage {
+		blocks := contentBlocksFromStorageParts(parts)
+		if len(blocks) == 0 {
+			continue
+		}
+		rendered := llm.RenderMessage(llm.Message{ContentBlocks: blocks}, llm.RenderForHistory, llm.RenderPolicy{}).Content
+		if strings.TrimSpace(rendered) == "" {
+			continue
+		}
+		contentCounts[rendered]++
+		partsByContent[rendered] = hydratedParts{messageID: messageID, blocks: blocks}
+	}
+	next := append([]llm.Message(nil), messages...)
+	for i, msg := range next {
+		var blocks []llm.ContentBlock
+		if msg.ID == "" {
+			if contentCounts[msg.Content] == 1 {
+				match := partsByContent[msg.Content]
+				next[i].ID = match.messageID
+				blocks = match.blocks
+			}
+		} else {
+			blocks = contentBlocksFromStorageParts(partsByMessage[msg.ID])
+			if len(blocks) == 0 && contentCounts[msg.Content] == 1 {
+				match := partsByContent[msg.Content]
+				next[i].ID = match.messageID
+				blocks = match.blocks
+			}
+		}
+		if len(blocks) == 0 {
+			continue
+		}
+		next[i].ContentBlocks = blocks
+		next[i].Content = llm.RenderMessage(next[i], llm.RenderForHistory, llm.RenderPolicy{}).Content
+	}
+	return next
+}
+
+func contentBlocksFromStorageParts(parts []storage.MessagePartRecord) []llm.ContentBlock {
+	blocks := make([]llm.ContentBlock, 0, len(parts))
+	for _, part := range parts {
+		block := llm.ContentBlock{
+			ID:   part.ID,
+			Type: part.PartType,
+		}
+		switch llm.ContentPartType(part.PartType) {
+		case llm.PartText:
+			block.Text = part.TextContent
+		case llm.PartImage, llm.PartAudio, llm.PartVideo, llm.PartFile:
+			block.Media = &llm.MediaPart{
+				MediaAssetID: part.MediaAssetID,
+				Kind:         part.PartType,
+			}
+		default:
+			continue
+		}
+		blocks = append(blocks, block)
+	}
+	return blocks
+}
+
+func replaceLastUserMessageWithCurrentParts(messages []llm.Message, anchor turnMemoryAnchor) []llm.Message {
+	if len(anchor.userParts) == 0 {
+		return messages
+	}
+	next := append([]llm.Message(nil), messages...)
+	for i := len(next) - 1; i >= 0; i-- {
+		if next[i].Role != llm.RoleUser {
+			continue
+		}
+		next[i] = llm.Message{
+			ID:            anchor.userMessageID,
+			TurnID:        anchor.turnID,
+			Role:          llm.RoleUser,
+			Content:       anchor.userHistoryContent,
+			ContentBlocks: cloneContentBlocks(anchor.userParts),
+		}
+		return next
+	}
+	return next
+}
+
+func cloneContentBlocks(parts []llm.ContentBlock) []llm.ContentBlock {
+	cloned := make([]llm.ContentBlock, len(parts))
+	for i, part := range parts {
+		cloned[i] = part
+		if part.Media != nil {
+			media := *part.Media
+			cloned[i].Media = &media
+		}
+	}
+	return cloned
+}
+
+func messagesContainMedia(messages []llm.Message) bool {
+	for _, msg := range messages {
+		for _, block := range msg.ContentBlocks {
+			if block.Media != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (e *Engine) historicalPlaceholderDeliveries(ctx context.Context, sessionID string, messages []llm.Message, currentMessageID string, currentTurnID string, providerID string, modelID string) []media.DeliveryRecord {
+	if e.db == nil || len(messages) == 0 {
+		return nil
+	}
+	partsByMessage, err := e.db.GetMessagePartsForSession(ctx, sessionID)
+	if err != nil {
+		e.logger.Warn("failed to load message parts for media delivery audit", "session", sessionID, "error", err)
+		return nil
+	}
+	deliveries := make([]media.DeliveryRecord, 0)
+	for _, msg := range messages {
+		if msg.ID == "" || msg.ID == currentMessageID {
+			continue
+		}
+		for _, part := range partsByMessage[msg.ID] {
+			switch llm.ContentPartType(part.PartType) {
+			case llm.PartImage, llm.PartAudio, llm.PartVideo, llm.PartFile:
+			default:
+				continue
+			}
+			if strings.TrimSpace(part.MediaAssetID) == "" {
+				continue
+			}
+			deliveries = append(deliveries, media.DeliveryRecord{
+				MessageID:     msg.ID,
+				PartID:        part.ID,
+				MediaAssetID:  part.MediaAssetID,
+				ProviderID:    providerID,
+				ModelID:       modelID,
+				TurnID:        currentTurnID,
+				DeliveryScope: media.DeliveryScopeHistoryPlaceholder,
+				Transport:     media.TransportPlaceholder,
+				Status:        media.DeliveryStatusOmitted,
+			})
+		}
+	}
+	return deliveries
+}
+
+func appendMissingMediaDeliveries(base []media.DeliveryRecord, extra []media.DeliveryRecord) []media.DeliveryRecord {
+	if len(extra) == 0 {
+		return base
+	}
+	seen := make(map[string]bool, len(base)+len(extra))
+	for _, delivery := range base {
+		seen[mediaDeliveryKey(delivery)] = true
+	}
+	for _, delivery := range extra {
+		key := mediaDeliveryKey(delivery)
+		if seen[key] {
+			continue
+		}
+		base = append(base, delivery)
+		seen[key] = true
+	}
+	return base
+}
+
+func mediaDeliveryKey(delivery media.DeliveryRecord) string {
+	return strings.Join([]string{
+		delivery.MessageID,
+		delivery.PartID,
+		delivery.MediaAssetID,
+		delivery.ProviderID,
+		delivery.ModelID,
+		delivery.TurnID,
+		delivery.DeliveryScope,
+		delivery.Transport,
+		delivery.Status,
+	}, "\x00")
+}
+
+func (e *Engine) recordMediaDeliveries(ctx context.Context, deliveries []media.DeliveryRecord, terminalStatus string, errorText string) {
+	if e.db == nil || len(deliveries) == 0 {
+		return
+	}
+	records := make([]storage.MediaDeliveryRecord, 0, len(deliveries))
+	for _, delivery := range deliveries {
+		status := delivery.Status
+		errMsg := llm.SanitizeImageDataForDiagnostics(delivery.ErrorMessage)
+		if status == "" || status == media.DeliveryStatusPrepared {
+			status = terminalStatus
+			if status == media.DeliveryStatusFailed && errMsg == "" {
+				errMsg = llm.SanitizeImageDataForDiagnostics(errorText)
+			}
+		}
+		record := storage.MediaDeliveryRecord{
+			ID:            uuid.NewString(),
+			MessageID:     delivery.MessageID,
+			PartID:        delivery.PartID,
+			MediaAssetID:  delivery.MediaAssetID,
+			ProviderID:    delivery.ProviderID,
+			ModelID:       delivery.ModelID,
+			TurnID:        delivery.TurnID,
+			DeliveryScope: delivery.DeliveryScope,
+			Transport:     delivery.Transport,
+			Status:        status,
+			ByteSizeSent:  delivery.ByteSizeSent,
+			ErrorMessage:  errMsg,
+		}
+		records = append(records, record)
+	}
+	if err := e.db.AddMediaDeliveries(ctx, records); err != nil {
+		e.logger.Warn("failed to record media deliveries", "error", err)
+	}
+}
+
 func (e *Engine) prepareInputAndMemoryAnchor(ctx context.Context, sessionID string, opts turnOptions) (turnMemoryAnchor, error) {
 	var anchor turnMemoryAnchor
 	if !opts.persistUser {
 		return anchor, nil
 	}
 
+	parts, err := normalizeUserParts(opts.userContent, opts.userParts)
+	if err != nil {
+		return anchor, err
+	}
+	historyContent := renderUserParts(parts, llm.RenderForHistory)
+	memoryContent := renderUserParts(parts, llm.RenderForMemory)
+	turnID := opts.turnID
+	if turnID == "" {
+		turnID = uuid.NewString()
+	}
 	userMessageID := uuid.NewString()
-	if err := e.db.AddMessageWithMetadata(ctx, userMessageID, sessionID, "user", opts.userContent, visibleMessageMetadata("user", opts.userContent)); err != nil {
+	if err := e.db.AddMessageWithMetadata(ctx, userMessageID, sessionID, "user", historyContent, visibleMessageMetadata("user", historyContent)); err != nil {
 		e.logger.Error("failed to store user message", "session", sessionID, "error", err)
 		return anchor, err
 	}
+	if err := e.db.AddMessageParts(ctx, storagePartsFromLLM(sessionID, userMessageID, "user", parts)); err != nil {
+		e.logger.Error("failed to store message parts", "session", sessionID, "error", err)
+		return anchor, err
+	}
+	anchor.userMessageID = userMessageID
+	anchor.userHistoryContent = historyContent
+	anchor.userMemoryContent = memoryContent
+	anchor.userParts = parts
+	anchor.turnID = turnID
 	anchor.memorySegment, anchor.hasMemorySegment = e.ensureMemorySegment(ctx, sessionID)
 	if anchor.hasMemorySegment {
-		if episodeID, err := e.memory.AppendUserEpisode(ctx, anchor.memorySegment.SegmentID, userMessageID, opts.userContent); err != nil {
+		if episodeID, err := e.memory.AppendUserEpisode(ctx, anchor.memorySegment.SegmentID, userMessageID, memoryContent); err != nil {
 			e.logMemoryWarning("append user memory episode", sessionID, err)
 		} else {
 			anchor.userEpisodeID = episodeID
@@ -1108,7 +1554,7 @@ func (e *Engine) prepareInputAndMemoryAnchor(ctx context.Context, sessionID stri
 
 	session, err := e.db.GetSession(ctx, sessionID)
 	if err == nil && session != nil && session.Title == "" {
-		title := opts.userContent
+		title := historyContent
 		if runeCount := len([]rune(title)); runeCount > 30 {
 			title = string([]rune(title)[:30]) + "…"
 		}

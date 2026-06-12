@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { AppRail } from '../shared/components/AppRail';
 import { queueMemoryExtraction } from './protocol/memoryApi';
-import type { WSOutgoing } from './protocol/wsTypes';
+import { uploadMedia, type UploadedMedia } from './protocol/mediaApi';
+import type { ContentPart, WSOutgoing } from './protocol/wsTypes';
 import type { TimelineItem } from './state/chatTypes';
 import { chatReducer, initialChatState } from './state/chatReducer';
 import { Composer } from './components/Composer';
@@ -18,6 +19,8 @@ import '../styles.css';
 export function ChatApp() {
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
   const [composer, setComposer] = useState('');
+  const [attachments, setAttachments] = useState<UploadedMedia[]>([]);
+  const [uploading, setUploading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [pipelineSnapshot, setPipelineSnapshot] = useState<unknown>(null);
   const contextRef = useRef({ personaKey: '', sessionID: '' });
@@ -42,12 +45,12 @@ export function ChatApp() {
     closeSocketRef.current = closeSocket;
   }, [closeSocket]);
 
-  const sendMessage = useCallback(async (content: string, localID: string) => {
+  const sendMessage = useCallback(async (content: string, localID: string, parts?: ContentPart[]) => {
     dispatch({ type: 'SET_MESSAGE_STATUS', id: localID, status: 'pending' });
     dispatch({ type: 'SET_SENDING', sending: true });
     try {
       await ensureConnected();
-      sendWS({ type: 'message', content } satisfies WSOutgoing);
+      sendWS({ type: 'message', content, parts } satisfies WSOutgoing);
       dispatch({ type: 'SET_MESSAGE_STATUS', id: localID, status: 'sent' });
     } catch (error) {
       dispatch({ type: 'SET_MESSAGE_STATUS', id: localID, status: 'failed' });
@@ -58,12 +61,48 @@ export function ChatApp() {
 
   const submitMessage = useCallback(async () => {
     const content = composer.trim();
-    if (!content || state.sending) return;
+    if ((!content && attachments.length === 0) || state.sending || uploading) return;
     const id = crypto.randomUUID();
-    dispatch({ type: 'ADD_MESSAGE', id, role: 'user', content, createdAt: new Date().toISOString(), status: 'pending' });
+    const parts: ContentPart[] = [
+      ...(content ? [{ type: 'text', text: content } satisfies ContentPart] : []),
+      ...attachments.map(asset => ({
+        type: 'image',
+        media: {
+          media_asset_id: asset.media_asset_id,
+          kind: asset.kind,
+          mime_type: asset.mime_type,
+          detail: 'auto',
+        },
+      } satisfies ContentPart)),
+    ];
+    const visibleContent = [content, ...attachments.map(() => '[used image]')].filter(Boolean).join('\n');
+    dispatch({ type: 'ADD_MESSAGE', id, role: 'user', content: visibleContent, createdAt: new Date().toISOString(), status: 'pending', parts });
     setComposer('');
-    await sendMessage(content, id);
-  }, [composer, sendMessage, state.sending]);
+    setAttachments([]);
+    await sendMessage(content || visibleContent, id, parts);
+  }, [attachments, composer, sendMessage, state.sending, uploading]);
+
+  const handleFiles = useCallback(async (files: FileList) => {
+    if (!files.length) return;
+    setUploading(true);
+    dispatch({ type: 'SET_STATUS', status: '上传图片...' });
+    try {
+      const uploaded: UploadedMedia[] = [];
+      for (const file of Array.from(files)) {
+        uploaded.push(await uploadMedia(file));
+      }
+      setAttachments(current => [...current, ...uploaded]);
+      dispatch({ type: 'SET_STATUS', status: '' });
+    } catch (error) {
+      dispatch({ type: 'SET_STATUS', status: error instanceof Error ? error.message : '图片上传失败' });
+    } finally {
+      setUploading(false);
+    }
+  }, []);
+
+  const removeAttachment = useCallback((id: string) => {
+    setAttachments(current => current.filter(item => item.media_asset_id !== id));
+  }, []);
 
   const sendApprovalAction = useCallback(async (requestID: string, action: string, optionID = '') => {
     if (!requestID || state.pendingApprovalIDs.includes(requestID)) return;
@@ -82,7 +121,8 @@ export function ChatApp() {
   }, []);
 
   const retryMessage = useCallback((message: Extract<TimelineItem, { kind: 'message' }>) => {
-    sendMessage(message.content, message.id);
+    const retryContent = message.parts ? textContentFromParts(message.parts) || message.content : message.content;
+    sendMessage(retryContent, message.id, message.parts);
   }, [sendMessage]);
 
   const scanMemory = useCallback(async () => {
@@ -135,7 +175,16 @@ export function ChatApp() {
             onOpenPipeline={setPipelineSnapshot}
             onRetry={retryMessage}
           />
-          <Composer value={composer} sending={state.sending} onChange={setComposer} onSubmit={submitMessage} />
+          <Composer
+            value={composer}
+            sending={state.sending}
+            uploading={uploading}
+            attachments={attachments.map(item => ({ id: item.media_asset_id, label: item.original_filename || item.mime_type }))}
+            onChange={setComposer}
+            onFiles={handleFiles}
+            onRemoveAttachment={removeAttachment}
+            onSubmit={submitMessage}
+          />
           <div className="session-hint" id="session-hint">
             {state.currentSessionId ? '会话 · ' + state.currentSessionId.substring(0, 13) : '暂无活动会话'}
           </div>
@@ -144,4 +193,8 @@ export function ChatApp() {
       </main>
     </div>
   );
+}
+
+function textContentFromParts(parts: ContentPart[]): string {
+  return parts.filter(part => part.type === 'text').map(part => part.text).join('\n').trim();
 }

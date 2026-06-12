@@ -104,6 +104,7 @@ func buildEmotionContext(persona *config.Persona, history []storage.MessageRecor
 	recentMessages := make([]llm.Message, 0, len(recent))
 	for _, msg := range recent {
 		recentMessages = append(recentMessages, llm.Message{
+			ID:      msg.ID,
 			Role:    llm.Role(msg.Role),
 			Content: msg.Content,
 		})

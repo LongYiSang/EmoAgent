@@ -21,7 +21,7 @@ func TestTurnRuntimeShadowRecordsMockJournalWithoutEngine(t *testing.T) {
 	_, engine := newTestHandler()
 	journal := turn.NewMemoryJournal()
 	runtime := newChatTurnRuntime(engine, config.TurnPipelineConfig{Shadow: true}, journal, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	env := wsMessageToInbound(WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, "session-test", "default")
+	env := mustWSMessageToInbound(t, WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, "session-test", "default")
 
 	result, err := runtime.Shadow(context.Background(), env)
 	if err != nil {
@@ -121,7 +121,7 @@ func TestShouldUseTurnPipelineHonorsAllowDenyAndStablePercent(t *testing.T) {
 
 func TestTurnRuntimeStagesHonorMemoryStageConfig(t *testing.T) {
 	_, engine := newTestHandler()
-	env := wsMessageToInbound(WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, "session-test", "default")
+	env := mustWSMessageToInbound(t, WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, "session-test", "default")
 
 	wrapped := newChatTurnRuntime(engine, config.TurnPipelineConfig{Enabled: true, MemoryStages: false}, turn.NewMemoryJournal(), discardLogger())
 	if got := stageNames(wrapped.stages(env, &config.Persona{Name: "default"})); !sameStageNames(got, []turn.StageName{turn.StageNormalize, turn.StageEmotionLoop, turn.StageApprovalWait}) {
@@ -168,7 +168,7 @@ func TestTurnRuntimeAsyncAgentAffectReadsMoodAndEnqueuesAfterOutput(t *testing.T
 		t.Fatalf("StartSession: %v", err)
 	}
 	bridge.ensureCalls = nil
-	env := wsMessageToInbound(WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, sessionID, "default")
+	env := mustWSMessageToInbound(t, WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, sessionID, "default")
 	runtime := newChatTurnRuntime(engine, config.TurnPipelineConfig{Enabled: true, MemoryStages: true, RolloutPercent: 100}, turn.NewMemoryJournal(), discardLogger())
 
 	result, err := runtime.Execute(context.Background(), env, &config.Persona{Name: "default", SystemPrompt: "system"}, turn.SinkFunc(func(context.Context, turn.OutboundEvent) error {
@@ -226,7 +226,7 @@ func TestTurnRuntimeAsyncAgentAffectDoesNotEnqueueWithoutAssistantOutput(t *test
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	env := wsMessageToInbound(WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, sessionID, "default")
+	env := mustWSMessageToInbound(t, WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, sessionID, "default")
 	runtime := newChatTurnRuntime(engine, config.TurnPipelineConfig{Enabled: true, MemoryStages: true, RolloutPercent: 100}, turn.NewMemoryJournal(), discardLogger())
 
 	result, err := runtime.Execute(context.Background(), env, &config.Persona{Name: "default", SystemPrompt: "system"}, turn.SinkFunc(func(context.Context, turn.OutboundEvent) error {
@@ -266,7 +266,7 @@ func TestTurnRuntimeSyncBeforeReplyStillSubmitsMoodImpact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	env := wsMessageToInbound(WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, sessionID, "default")
+	env := mustWSMessageToInbound(t, WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, sessionID, "default")
 	runtime := newChatTurnRuntime(engine, config.TurnPipelineConfig{Enabled: true, MemoryStages: true, RolloutPercent: 100}, turn.NewMemoryJournal(), discardLogger())
 
 	result, err := runtime.Execute(context.Background(), env, &config.Persona{Name: "default", SystemPrompt: "system"}, turn.SinkFunc(func(context.Context, turn.OutboundEvent) error {
@@ -310,7 +310,7 @@ func TestTurnRuntimeAgentAffectFailureDoesNotBlockChat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	env := wsMessageToInbound(WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, sessionID, "default")
+	env := mustWSMessageToInbound(t, WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, sessionID, "default")
 	runtime := newChatTurnRuntime(engine, config.TurnPipelineConfig{Enabled: true, MemoryStages: true, RolloutPercent: 100}, turn.NewMemoryJournal(), discardLogger())
 
 	result, err := runtime.Execute(context.Background(), env, &config.Persona{Name: "default", SystemPrompt: "system"}, turn.SinkFunc(func(context.Context, turn.OutboundEvent) error {
@@ -334,7 +334,7 @@ func TestTurnRuntimeUsesPluginHostStageAndOutboundWrappers(t *testing.T) {
 		WithPluginHost(pluginHost),
 	)
 	engine.sendReply = "answer"
-	env := wsMessageToInbound(WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, "session-test", "default")
+	env := mustWSMessageToInbound(t, WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, "session-test", "default")
 	persona := &config.Persona{Name: "default"}
 
 	var events []turn.OutboundEvent
@@ -369,7 +369,7 @@ func TestTurnRuntimeDuplicateReplayDoesNotRunPluginWrappers(t *testing.T) {
 		WithPluginHost(pluginHost),
 	)
 	engine.sendReply = "answer"
-	env := wsMessageToInbound(WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, "session-test", "default")
+	env := mustWSMessageToInbound(t, WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, "session-test", "default")
 	persona := &config.Persona{Name: "default"}
 
 	if _, err := handler.turnRuntime.Execute(context.Background(), env, persona, turn.SinkFunc(func(context.Context, turn.OutboundEvent) error { return nil })); err != nil {
@@ -404,7 +404,7 @@ func TestTurnRuntimeDuplicateRunningReturnsBusyWithoutSecondExecution(t *testing
 	engine.sendReply = "done"
 
 	runtime := newChatTurnRuntime(engine, config.TurnPipelineConfig{Enabled: true}, turn.NewMemoryJournal(), discardLogger())
-	env := wsMessageToInbound(WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, "session-test", "default")
+	env := mustWSMessageToInbound(t, WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, "session-test", "default")
 	persona := &config.Persona{Name: "default"}
 
 	firstDone := make(chan error, 1)
@@ -447,7 +447,7 @@ func TestTurnRuntimeDuplicateDoneReplaysSanitizedSummary(t *testing.T) {
 	_, engine := newTestHandler()
 	engine.sendReply = "answer"
 	runtime := newChatTurnRuntime(engine, config.TurnPipelineConfig{Enabled: true}, turn.NewMemoryJournal(), discardLogger())
-	env := wsMessageToInbound(WSMessage{Type: "message", Content: "hello SECRET=value", RequestID: "request-1"}, "session-test", "default")
+	env := mustWSMessageToInbound(t, WSMessage{Type: "message", Content: "hello SECRET=value", RequestID: "request-1"}, "session-test", "default")
 	persona := &config.Persona{Name: "default"}
 
 	if _, err := runtime.Execute(context.Background(), env, persona, turn.SinkFunc(func(context.Context, turn.OutboundEvent) error { return nil })); err != nil {
@@ -488,7 +488,7 @@ func TestTurnRuntimeDuplicateApprovalWaitReplaysApprovalRequired(t *testing.T) {
 		RejectOptionID: "cancel",
 	}}
 	runtime := newChatTurnRuntime(engine, config.TurnPipelineConfig{Enabled: true}, turn.NewMemoryJournal(), discardLogger())
-	env := wsMessageToInbound(WSMessage{Type: "message", Content: "needs approval", RequestID: "request-1"}, "session-test", "default")
+	env := mustWSMessageToInbound(t, WSMessage{Type: "message", Content: "needs approval", RequestID: "request-1"}, "session-test", "default")
 	persona := &config.Persona{Name: "default"}
 
 	if _, err := runtime.Execute(context.Background(), env, persona, turn.SinkFunc(func(context.Context, turn.OutboundEvent) error { return nil })); err != nil {
@@ -517,7 +517,7 @@ func TestTurnRuntimeCompletesIdempotencyOnFailure(t *testing.T) {
 	_, engine := newTestHandler()
 	engine.sendErr = errors.New("llm down")
 	runtime := newChatTurnRuntime(engine, config.TurnPipelineConfig{Enabled: true}, turn.NewMemoryJournal(), discardLogger())
-	env := wsMessageToInbound(WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, "session-test", "default")
+	env := mustWSMessageToInbound(t, WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, "session-test", "default")
 
 	if _, err := runtime.Execute(context.Background(), env, &config.Persona{Name: "default"}, turn.SinkFunc(func(context.Context, turn.OutboundEvent) error { return nil })); err == nil {
 		t.Fatal("first Execute error = nil, want failure")
@@ -546,7 +546,7 @@ func TestTurnRuntimeMarksOutboundFailedWhenSinkCloseFails(t *testing.T) {
 	engine.sendReply = "answer"
 	journal := turn.NewMemoryJournal()
 	runtime := newChatTurnRuntime(engine, config.TurnPipelineConfig{Enabled: true}, journal, discardLogger())
-	env := wsMessageToInbound(WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, "session-test", "default")
+	env := mustWSMessageToInbound(t, WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, "session-test", "default")
 	closeErr := errors.New("flush failed")
 
 	result, err := runtime.Execute(context.Background(), env, &config.Persona{Name: "default"}, closeFailingSink{err: closeErr})

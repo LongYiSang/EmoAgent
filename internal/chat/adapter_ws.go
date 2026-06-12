@@ -6,7 +6,7 @@ import (
 	"github.com/longyisang/emoagent/internal/turn"
 )
 
-func wsMessageToInbound(msg WSMessage, sessionID, personaName string) turn.InboundEnvelope {
+func wsMessageToInbound(msg WSMessage, sessionID, personaName string) (turn.InboundEnvelope, error) {
 	switch msg.Type {
 	case "approval_action":
 		action := strings.ToLower(strings.TrimSpace(msg.Action))
@@ -23,9 +23,16 @@ func wsMessageToInbound(msg WSMessage, sessionID, personaName string) turn.Inbou
 			},
 		}
 		env.IdempotencyKey = turn.BuildIdempotencyKey(env)
-		return env
+		return env, nil
 	default:
+		parts, err := normalizeUserParts(msg.Content, msg.Parts)
+		if err != nil {
+			return turn.InboundEnvelope{}, err
+		}
 		content := strings.TrimSpace(msg.Content)
+		if len(msg.Parts) > 0 {
+			content = renderUserParts(parts, "history")
+		}
 		env := turn.InboundEnvelope{
 			Kind:       turn.InboundUserMessage,
 			Source:     turn.SourceWebUI,
@@ -35,10 +42,11 @@ func wsMessageToInbound(msg WSMessage, sessionID, personaName string) turn.Inbou
 			Content:    content,
 			UserMessage: &turn.UserMessageInput{
 				Content: content,
+				Parts:   parts,
 			},
 		}
 		env.IdempotencyKey = turn.BuildIdempotencyKey(env)
-		return env
+		return env, nil
 	}
 }
 

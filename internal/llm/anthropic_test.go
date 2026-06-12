@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -65,6 +66,29 @@ func TestAnthropicChat_TextOnly(t *testing.T) {
 	}
 	if len(resp.ContentBlocks) != 1 || resp.ContentBlocks[0].Type != "text" {
 		t.Errorf("ContentBlocks: expected 1 text block, got %+v", resp.ContentBlocks)
+	}
+}
+
+func TestAnthropicStatusLogRedactsImageData(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `provider echoed data:image/png;base64,iVBORw0KGgo=`, http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	var logs bytes.Buffer
+	client := newTestAnthropicClient(server.URL)
+	client.logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	_, err := client.Chat(context.Background(), ChatRequest{
+		Model:    "claude-test",
+		Messages: []Message{{Role: RoleUser, Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("Chat succeeded, want status error")
+	}
+	got := logs.String()
+	if strings.Contains(got, "data:image") || strings.Contains(got, "base64") || strings.Contains(got, "iVBOR") {
+		t.Fatalf("log leaked image data: %s", got)
 	}
 }
 

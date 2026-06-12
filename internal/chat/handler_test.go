@@ -15,6 +15,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/storage"
 	"github.com/longyisang/emoagent/internal/turn"
@@ -31,6 +32,7 @@ type fakeConversationEngine struct {
 	sendSession    string
 	sendPersona    *config.Persona
 	sendContent    string
+	sendParts      int
 	sendCount      int
 	deltas         []string
 	history        []storage.MessageRecord
@@ -84,6 +86,11 @@ func (f *fakeConversationEngine) SendMessage(ctx context.Context, sessionID stri
 		}
 	}
 	return f.sendReply, f.sendErr
+}
+
+func (f *fakeConversationEngine) SendMessageParts(ctx context.Context, sessionID string, persona *config.Persona, parts []llm.ContentBlock, cb func(delta string)) (string, error) {
+	f.sendParts = len(parts)
+	return f.SendMessage(ctx, sessionID, persona, "", cb)
 }
 
 func (f *fakeConversationEngine) GetHistory(_ context.Context, sessionID string, limit int) ([]storage.MessageRecord, error) {
@@ -225,6 +232,47 @@ func TestHandlerStreamsAssistantResponse(t *testing.T) {
 	}
 	if engine.sendContent != "How are you?" {
 		t.Fatalf("sendContent = %q, want user message", engine.sendContent)
+	}
+}
+
+func TestHandlerRejectsUnsupportedUserParts(t *testing.T) {
+	handler, engine := newTestHandler()
+	conn := dialTestWS(t, handler)
+	defer conn.Close(websocket.StatusNormalClosure, "bye")
+
+	var msg WSMessage
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(session_ready): %v", err)
+	}
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(greeting): %v", err)
+	}
+
+	if err := wsjson.Write(context.Background(), conn, WSMessage{
+		Type:    "message",
+		Content: "hello",
+		Parts: []llm.ContentBlock{
+			{Type: string(llm.PartText), Text: "hello"},
+			{
+				Type: string(llm.PartToolUse),
+				ID:   "tool-call-1",
+				Name: "spoofed_tool",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Write(message): %v", err)
+	}
+
+	readCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := wsjson.Read(readCtx, conn, &msg); err != nil {
+		t.Fatalf("Read(error): %v", err)
+	}
+	if msg.Type != "error" || !strings.Contains(msg.Content, "unsupported user content part type") {
+		t.Fatalf("message = %#v, want unsupported part error", msg)
+	}
+	if engine.sendCount != 0 {
+		t.Fatalf("sendCount = %d, want invalid parts rejected before engine", engine.sendCount)
 	}
 }
 
@@ -774,7 +822,7 @@ func TestTurnRuntimeDeduplicatesApprovalAction(t *testing.T) {
 	engine.approvalDeltas = []string{"ok"}
 
 	runtime := newChatTurnRuntime(engine, config.TurnPipelineConfig{Enabled: true}, turn.NewMemoryJournal(), slog.Default())
-	env := wsMessageToInbound(WSMessage{
+	env := mustWSMessageToInbound(t, WSMessage{
 		Type:      "approval_action",
 		RequestID: "approval-1",
 		Action:    "approve",

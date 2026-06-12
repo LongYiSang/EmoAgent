@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -28,6 +29,13 @@ func TestProviderResponseErrorClassification(t *testing.T) {
 	}
 	if IsKind(err, ErrorKindContextOverflow) {
 		t.Fatalf("IsKind(context_overflow) = true, err=%v", err)
+	}
+}
+
+func TestProviderStatusErrorRedactsImageData(t *testing.T) {
+	err := wrapStatusError("openai", "chat", 400, "bad request data:image/png;base64,iVBORw0KGgo=")
+	if strings.Contains(err.Error(), "data:image") || strings.Contains(err.Error(), "base64") || strings.Contains(err.Error(), "iVBOR") {
+		t.Fatalf("status error leaked image data: %v", err)
 	}
 }
 

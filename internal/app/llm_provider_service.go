@@ -107,11 +107,16 @@ func (s *LLMProviderService) RefreshModels(id string) ([]llm.ModelInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	refreshedAt := s.nowText()
+	models, err = s.persistModelCapabilities(provider, models, refreshedAt)
+	if err != nil {
+		return nil, err
+	}
 	payload, err := json.Marshal(models)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.infra.DB.UpdateProviderModelsCache(id, string(payload), s.nowText()); err != nil {
+	if err := s.infra.DB.UpdateProviderModelsCache(id, string(payload), refreshedAt); err != nil {
 		return nil, err
 	}
 	return models, nil
@@ -132,7 +137,102 @@ func (s *LLMProviderService) Models(id string) ([]llm.ModelInfo, error) {
 	if err := json.Unmarshal([]byte(record.ModelsCacheJSON), &models); err != nil {
 		return nil, err
 	}
+	caps, err := s.infra.DB.ListModelCapabilities(context.Background(), id)
+	if err != nil {
+		return nil, err
+	}
+	for i := range models {
+		if capRecord, ok := caps[models[i].ID]; ok {
+			cap := modelCapabilityFromRecord(capRecord)
+			models[i].Capabilities = &cap
+		}
+	}
 	return models, nil
+}
+
+func (s *LLMProviderService) Resolve(ctx context.Context, providerID, modelID string) (*llm.ModelCapabilities, error) {
+	record, err := s.infra.DB.GetModelCapability(ctx, providerID, modelID)
+	if err != nil || record == nil {
+		return nil, err
+	}
+	cap := modelCapabilityFromRecord(*record)
+	return &cap, nil
+}
+
+func (s *LLMProviderService) persistModelCapabilities(provider *config.LLMProvider, models []llm.ModelInfo, refreshedAt string) ([]llm.ModelInfo, error) {
+	existing, err := s.infra.DB.ListModelCapabilities(context.Background(), provider.ID)
+	if err != nil {
+		return nil, err
+	}
+	manual := map[string]llm.ModelCapabilities{}
+	for modelID, record := range existing {
+		if record.CapabilitySource == string(llm.CapabilitySourceManualOverride) {
+			manual[modelID] = modelCapabilityFromRecord(record)
+		}
+	}
+	caps := llm.EnrichModelCapabilities(provider.ID, provider.PresetID, models, refreshedAt, manual)
+	byModel := map[string]llm.ModelCapabilities{}
+	for _, cap := range caps {
+		byModel[cap.ModelID] = cap
+		if err := s.infra.DB.UpsertModelCapability(context.Background(), modelCapabilityToRecord(cap)); err != nil {
+			return nil, err
+		}
+	}
+	for i := range models {
+		if cap, ok := byModel[models[i].ID]; ok {
+			capCopy := cap
+			models[i].Capabilities = &capCopy
+		}
+	}
+	return models, nil
+}
+
+func modelCapabilityFromRecord(record storage.ModelCapabilityRecord) llm.ModelCapabilities {
+	return llm.ModelCapabilities{
+		ProviderID:              record.ProviderID,
+		ModelID:                 record.ModelID,
+		InputModalities:         append([]string(nil), record.InputModalities...),
+		OutputModalities:        append([]string(nil), record.OutputModalities...),
+		ImageTransports:         append([]string(nil), record.ImageTransports...),
+		ImageFormats:            append([]string(nil), record.ImageFormats...),
+		MaxImagesPerRequest:     record.MaxImagesPerRequest,
+		MaxImageBytes:           record.MaxImageBytes,
+		MaxRequestBytes:         record.MaxRequestBytes,
+		MaxLongEdgePixels:       record.MaxLongEdgePixels,
+		SupportsVisionTools:     record.SupportsVisionTools,
+		SupportsVisionStreaming: record.SupportsVisionStreaming,
+		SupportsVisionJSONMode:  record.SupportsVisionJSONMode,
+		ParamPolicyJSON:         record.ParamPolicyJSON,
+		CapabilitySource:        record.CapabilitySource,
+		Confidence:              record.Confidence,
+		LastRefreshedAt:         record.LastRefreshedAt,
+		LastVerifiedAt:          record.LastVerifiedAt,
+		RawProviderJSON:         record.RawProviderJSON,
+	}
+}
+
+func modelCapabilityToRecord(cap llm.ModelCapabilities) storage.ModelCapabilityRecord {
+	return storage.ModelCapabilityRecord{
+		ProviderID:              cap.ProviderID,
+		ModelID:                 cap.ModelID,
+		InputModalities:         append([]string(nil), cap.InputModalities...),
+		OutputModalities:        append([]string(nil), cap.OutputModalities...),
+		ImageTransports:         append([]string(nil), cap.ImageTransports...),
+		ImageFormats:            append([]string(nil), cap.ImageFormats...),
+		MaxImagesPerRequest:     cap.MaxImagesPerRequest,
+		MaxImageBytes:           cap.MaxImageBytes,
+		MaxRequestBytes:         cap.MaxRequestBytes,
+		MaxLongEdgePixels:       cap.MaxLongEdgePixels,
+		SupportsVisionTools:     cap.SupportsVisionTools,
+		SupportsVisionStreaming: cap.SupportsVisionStreaming,
+		SupportsVisionJSONMode:  cap.SupportsVisionJSONMode,
+		ParamPolicyJSON:         cap.ParamPolicyJSON,
+		CapabilitySource:        cap.CapabilitySource,
+		Confidence:              cap.Confidence,
+		LastRefreshedAt:         cap.LastRefreshedAt,
+		LastVerifiedAt:          cap.LastVerifiedAt,
+		RawProviderJSON:         cap.RawProviderJSON,
+	}
 }
 
 func (s *LLMProviderService) EnvStatus(id string) (configcenter.ProviderEnvStatus, error) {

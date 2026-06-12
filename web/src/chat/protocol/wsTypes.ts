@@ -52,6 +52,17 @@ export type ApprovalRequest = {
   [key: string]: unknown;
 };
 
+export type MediaPart = {
+  media_asset_id: string;
+  kind: string;
+  mime_type: string;
+  detail?: 'auto' | 'low' | 'high' | string;
+};
+
+export type ContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image'; media: MediaPart };
+
 export type WSIncoming =
   | { type: 'session_ready'; session_id?: string; SessionID?: string; persona?: string; Persona?: string; is_new?: boolean; IsNew?: boolean }
   | { type: 'greeting'; content?: string }
@@ -71,6 +82,6 @@ export type WSIncoming =
   | { type: 'pong' };
 
 export type WSOutgoing =
-  | { type: 'message'; content: string }
+  | { type: 'message'; content: string; parts?: ContentPart[] }
   | { type: 'approval_action'; request_id: string; action: 'approve' | 'reject' | string; option_id?: string }
   | { type: 'ping' };

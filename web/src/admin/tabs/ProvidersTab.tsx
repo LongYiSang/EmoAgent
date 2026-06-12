@@ -1,6 +1,7 @@
 import { memo, useState } from 'react';
 import { classNames } from '../../shared/lib/classNames';
-import { boolField, field } from '../../shared/lib/data';
+import type { AnyRecord } from '../../shared/lib/api';
+import { arrayField, boolField, field, isRecord, stringField } from '../../shared/lib/data';
 import type { ProviderAdmin } from '../hooks/useProviderAdmin';
 import { matchesQuery } from '../lib/adminData';
 import { Field } from '../components/Field';
@@ -72,8 +73,80 @@ export default memo(function ProvidersTab({
           </div>
           <div className="actions foot"><button className="btn danger" id="delete-provider" type="button" disabled={!selectedProvider} onClick={deleteSelectedProvider}>删除</button></div>
         </form>
-        <div className="section"><h3>模型</h3><div className="models" id="provider-models">{models.map(model => <span className="badge" key={String(model.id || model.name)}>{String(model.id || model.name)}</span>)}</div></div>
+        <div className="section"><h3>模型</h3><div className="models" id="provider-models">{models.map(model => {
+          const name = modelName(model);
+          const badges = modelCapabilityBadges(model);
+          return <span className={classNames('model-chip', modelSupportsImage(model) && 'vision')} key={name}><span className="model-name">{name}</span>{badges.map(badge => <span className="badge model-capability" key={badge}>{badge}</span>)}</span>;
+        })}</div></div>
       </section>
     </div>
   );
 });
+
+function modelName(model: AnyRecord): string {
+  return stringField(model, 'id') || stringField(model, 'name') || 'unknown-model';
+}
+
+function modelSupportsImage(model: AnyRecord): boolean {
+  return capabilityInputModalities(model).includes('image') && capabilityStringArray(model, 'image_transports').length > 0;
+}
+
+function modelCapabilityBadges(model: AnyRecord): string[] {
+  const input = capabilityInputModalities(model);
+  const transports = capabilityStringArray(model, 'image_transports');
+  const formats = capabilityStringArray(model, 'image_formats').map(format => format.replace(/^image\//, ''));
+  const source = capabilityString(model, 'capability_source');
+  const confidence = Number(capabilityField(model, 'confidence', 0));
+  const badges: string[] = [];
+
+  if (input.includes('image') && transports.length) badges.push('vision');
+  else if (input.includes('image')) badges.push('image/no transport');
+  else if (input.includes('text')) badges.push('text');
+  if (transports.length) badges.push(transports.slice(0, 2).join('/'));
+  if (formats.length) badges.push(formats.slice(0, 2).join('/'));
+  if (source) badges.push(capabilitySourceLabel(source));
+  if (confidence > 0) badges.push(`${Math.round(confidence * 100)}%`);
+  return badges;
+}
+
+function capabilityInputModalities(model: AnyRecord): string[] {
+  return capabilityStringArray(model, 'input_modalities');
+}
+
+function capabilityStringArray(model: AnyRecord, key: string): string[] {
+  const cap = field<unknown>(model, 'capabilities', {});
+  const source = isRecord(cap) ? cap : model;
+  return arrayField<unknown>(source, key).map(value => String(value)).filter(Boolean);
+}
+
+function capabilityString(model: AnyRecord, key: string): string {
+  const value = capabilityField(model, key, '');
+  return typeof value === 'string' ? value : value == null ? '' : String(value);
+}
+
+function capabilityField<T>(model: AnyRecord, key: string, fallback: T): T | unknown {
+  const cap = field<unknown>(model, 'capabilities', {});
+  if (isRecord(cap)) {
+    return field<unknown>(cap, key, fallback);
+  }
+  return field<unknown>(model, key, fallback);
+}
+
+function capabilitySourceLabel(source: string): string {
+  switch (source) {
+    case 'manual_override':
+      return 'manual';
+    case 'provider_metadata':
+      return 'metadata';
+    case 'provider_docs_preset':
+      return 'preset';
+    case 'probe_passed':
+      return 'probe';
+    case 'probe_failed':
+      return 'probe failed';
+    case 'merged':
+      return 'merged';
+    default:
+      return source;
+  }
+}

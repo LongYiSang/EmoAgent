@@ -3,6 +3,7 @@ package storage
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 // Migration represents a single schema migration.
@@ -900,6 +901,126 @@ CREATE INDEX IF NOT EXISTS idx_agent_affect_events_batch
 		Version: 24,
 		SQL:     pluginRuntimeSchemaSQL + pluginRuntimeIndexSQL,
 	},
+	{
+		Version: 25,
+		SQL: `
+CREATE TABLE IF NOT EXISTS media_assets (
+    id                  TEXT PRIMARY KEY,
+    sha256              TEXT NOT NULL,
+    kind                TEXT NOT NULL CHECK (kind IN ('image','audio','video','file')),
+    mime_type           TEXT NOT NULL,
+    original_filename   TEXT,
+    file_ext            TEXT,
+    byte_size           INTEGER NOT NULL,
+    width               INTEGER,
+    height              INTEGER,
+    duration_ms         INTEGER,
+    storage_backend     TEXT NOT NULL DEFAULT 'local',
+    storage_uri         TEXT NOT NULL,
+    thumbnail_uri       TEXT,
+    created_by_role     TEXT NOT NULL CHECK (created_by_role IN ('user','assistant','system','tool')),
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    visibility_status   TEXT NOT NULL DEFAULT 'visible'
+        CHECK (visibility_status IN ('visible','hidden','forgotten','purged')),
+    scan_status         TEXT NOT NULL DEFAULT 'pending'
+        CHECK (scan_status IN ('pending','clean','rejected','failed')),
+    retention_policy    TEXT NOT NULL DEFAULT 'chat_asset',
+    expires_at          TEXT,
+    reference_count     INTEGER NOT NULL DEFAULT 0,
+    purged_at           TEXT,
+    purge_reason        TEXT,
+    UNIQUE(sha256, byte_size)
+);
+
+CREATE TABLE IF NOT EXISTS message_parts (
+    id              TEXT PRIMARY KEY,
+    session_id      TEXT NOT NULL,
+    message_id      TEXT NOT NULL,
+    role            TEXT NOT NULL CHECK (role IN ('user','assistant','system','tool')),
+    ordinal         INTEGER NOT NULL,
+    part_type       TEXT NOT NULL CHECK (part_type IN ('text','image','audio','video','file','tool_use','tool_result')),
+    text_content    TEXT,
+    media_asset_id  TEXT,
+    memory_render_policy TEXT NOT NULL DEFAULT 'placeholder_only'
+        CHECK (memory_render_policy IN ('placeholder_only','text_only','never')),
+    history_render_policy TEXT NOT NULL DEFAULT 'placeholder_only'
+        CHECK (history_render_policy IN ('placeholder_only','resend_if_reactivated','never')),
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY(media_asset_id) REFERENCES media_assets(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_parts_message
+    ON message_parts(session_id, message_id, ordinal);
+CREATE INDEX IF NOT EXISTS idx_message_parts_media
+    ON message_parts(media_asset_id);
+
+CREATE TABLE IF NOT EXISTS provider_media_refs (
+    id              TEXT PRIMARY KEY,
+    media_asset_id  TEXT NOT NULL,
+    provider_id     TEXT NOT NULL,
+    model_scope     TEXT,
+    ref_type        TEXT NOT NULL,
+    remote_ref      TEXT NOT NULL,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at      TEXT,
+    last_used_at    TEXT,
+    delete_status   TEXT NOT NULL DEFAULT 'active'
+        CHECK (delete_status IN ('active','delete_queued','deleted','delete_failed')),
+    metadata_json   TEXT,
+    FOREIGN KEY(media_asset_id) REFERENCES media_assets(id)
+);
+
+CREATE TABLE IF NOT EXISTS message_media_deliveries (
+    id              TEXT PRIMARY KEY,
+    message_id      TEXT NOT NULL,
+    part_id         TEXT NOT NULL,
+    media_asset_id  TEXT NOT NULL,
+    provider_id     TEXT NOT NULL,
+    model_id        TEXT NOT NULL,
+    turn_id         TEXT NOT NULL,
+    delivery_scope  TEXT NOT NULL CHECK (delivery_scope IN ('current_turn','reactivated_reference','history_placeholder')),
+    transport       TEXT NOT NULL CHECK (transport IN ('data_url','base64','remote_url','provider_file','placeholder')),
+    status          TEXT NOT NULL CHECK (status IN ('prepared','sent','failed','omitted')),
+    byte_size_sent  INTEGER,
+    error_message   TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_media_deliveries_lookup
+    ON message_media_deliveries(media_asset_id, provider_id, model_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS llm_model_capabilities (
+    id                    TEXT PRIMARY KEY,
+    provider_id            TEXT NOT NULL,
+    model_id               TEXT NOT NULL,
+    input_modalities_json  TEXT NOT NULL DEFAULT '["text"]',
+    output_modalities_json TEXT NOT NULL DEFAULT '["text"]',
+    image_transports_json  TEXT NOT NULL DEFAULT '[]',
+    image_formats_json     TEXT NOT NULL DEFAULT '[]',
+    max_images_per_request INTEGER,
+    max_image_bytes        INTEGER,
+    max_request_bytes      INTEGER,
+    max_long_edge_pixels   INTEGER,
+    supports_vision_tools      INTEGER NOT NULL DEFAULT 0,
+    supports_vision_streaming  INTEGER NOT NULL DEFAULT 0,
+    supports_vision_json_mode  INTEGER NOT NULL DEFAULT 0,
+    param_policy_json      TEXT,
+    capability_source      TEXT NOT NULL DEFAULT 'unknown'
+        CHECK (capability_source IN ('unknown','provider_metadata','provider_docs_preset','manual_override','probe_passed','probe_failed','merged')),
+    confidence             REAL NOT NULL DEFAULT 0.0 CHECK (confidence >= 0 AND confidence <= 1),
+    last_refreshed_at      TEXT,
+    last_verified_at       TEXT,
+    raw_provider_json      TEXT,
+    created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at             TEXT,
+    UNIQUE(provider_id, model_id)
+);
+`,
+	},
+	{
+		Version: 26,
+		SQL:     `SELECT 1;`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.
@@ -963,6 +1084,9 @@ func ApplySchemaRepairs(db *sql.DB) error {
 		return err
 	}
 	if err := ensurePluginRuntimeSchema(db); err != nil {
+		return err
+	}
+	if err := ensureNoImageBase64Guards(db); err != nil {
 		return err
 	}
 	return nil
@@ -1191,6 +1315,108 @@ CREATE INDEX IF NOT EXISTS idx_approval_requests_kind_binding
 		return fmt.Errorf("ensure approval_requests indexes: %w", err)
 	}
 	return nil
+}
+
+func ensureNoImageBase64Guards(db *sql.DB) error {
+	guards := map[string][]string{
+		"messages": {
+			"content",
+			"metadata",
+		},
+		"message_parts": {
+			"text_content",
+		},
+		"message_media_deliveries": {
+			"error_message",
+		},
+		"media_assets": {
+			"storage_uri",
+			"thumbnail_uri",
+		},
+		"memory_segments": {
+			"summary",
+			"last_extraction_error_message",
+		},
+		"memory_extraction_jobs": {
+			"request_json",
+			"result_json",
+			"mirror_sync_result_json",
+			"error_message",
+		},
+		"agent_affect_evaluations": {
+			"input_text",
+			"input_summary",
+			"context_window_snapshot_json",
+			"prompt_snapshot",
+			"response_json",
+		},
+		"agent_affect_jobs": {
+			"trigger_json",
+			"user_text",
+			"assistant_text",
+			"input_summary",
+			"memory_prompt_block",
+			"error_message",
+		},
+		"agent_affect_job_batches": {
+			"batch_input_summary",
+			"context_window_snapshot_json",
+			"error_message",
+		},
+		"agent_affect_plugin_writes": {
+			"request_json",
+		},
+	}
+	for table, columns := range guards {
+		existing, err := tableColumns(db, table)
+		if err != nil {
+			return fmt.Errorf("read %s columns: %w", table, err)
+		}
+		available := make([]string, 0, len(columns))
+		for _, column := range columns {
+			if existing[column] {
+				available = append(available, column)
+			}
+		}
+		if len(available) == 0 {
+			continue
+		}
+		condition := noImageBase64GuardCondition(available)
+		for _, operation := range []string{"INSERT", "UPDATE"} {
+			triggerName := fmt.Sprintf("trg_no_image_base64_%s_%s", table, strings.ToLower(operation))
+			if _, err := db.Exec(fmt.Sprintf("DROP TRIGGER IF EXISTS %s", quoteSQLiteIdent(triggerName))); err != nil {
+				return fmt.Errorf("drop %s trigger on %s: %w", strings.ToLower(operation), table, err)
+			}
+			sql := fmt.Sprintf(`
+CREATE TRIGGER %s
+BEFORE %s ON %s
+WHEN %s
+BEGIN
+    SELECT RAISE(ABORT, 'image base64 is not allowed in %s');
+END;
+`, quoteSQLiteIdent(triggerName), operation, quoteSQLiteIdent(table), condition, table)
+			if _, err := db.Exec(sql); err != nil {
+				return fmt.Errorf("create %s trigger on %s: %w", strings.ToLower(operation), table, err)
+			}
+		}
+	}
+	return nil
+}
+
+func noImageBase64GuardCondition(columns []string) string {
+	parts := make([]string, 0, len(columns))
+	for _, column := range columns {
+		value := "LOWER(COALESCE(NEW." + quoteSQLiteIdent(column) + ", ''))"
+		parts = append(parts, fmt.Sprintf(
+			"((INSTR(%[1]s, 'data:image/') > 0 AND INSTR(%[1]s, ';base64,') > 0) OR INSTR(%[1]s, 'ivborw0kggo') > 0 OR INSTR(%[1]s, '/9j/') > 0)",
+			value,
+		))
+	}
+	return strings.Join(parts, " OR ")
+}
+
+func quoteSQLiteIdent(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
 func tableColumns(db *sql.DB, table string) (map[string]bool, error) {

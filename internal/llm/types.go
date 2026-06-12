@@ -2,6 +2,18 @@ package llm
 
 import "encoding/json"
 
+type ContentPartType string
+
+const (
+	PartText       ContentPartType = "text"
+	PartImage      ContentPartType = "image"
+	PartAudio      ContentPartType = "audio"
+	PartVideo      ContentPartType = "video"
+	PartFile       ContentPartType = "file"
+	PartToolUse    ContentPartType = "tool_use"
+	PartToolResult ContentPartType = "tool_result"
+)
+
 // Role represents a message role in the conversation.
 type Role string
 
@@ -21,11 +33,25 @@ const (
 type ContentBlock struct {
 	Type    string          `json:"type"`               // "text", "tool_use", "tool_result"
 	Text    string          `json:"text,omitempty"`     // for type="text"
+	Media   *MediaPart      `json:"media,omitempty"`    // for image/audio/video/file parts
 	ID      string          `json:"id,omitempty"`       // tool_use ID / tool_result's referenced tool_use_id
 	Name    string          `json:"name,omitempty"`     // tool name (tool_use)
 	Input   json.RawMessage `json:"input,omitempty"`    // tool input JSON (tool_use)
 	Content string          `json:"content,omitempty"`  // tool result content (tool_result)
 	IsError bool            `json:"is_error,omitempty"` // tool_result error flag
+}
+
+type MediaPart struct {
+	MediaAssetID string `json:"media_asset_id,omitempty"`
+	Kind         string `json:"kind"`
+	MimeType     string `json:"mime_type"`
+	Detail       string `json:"detail,omitempty"`
+	AltText      string `json:"alt_text,omitempty"`
+	Transport    string `json:"transport,omitempty"`
+
+	Data        []byte `json:"-"`
+	StorageURI  string `json:"-"`
+	ProviderRef string `json:"-"`
 }
 
 // ToolDef is a provider-agnostic tool definition passed in ChatRequest.
@@ -81,6 +107,8 @@ type ThinkingConfig struct {
 // converts blocks to its wire format (e.g., OpenAI extracts tool_use blocks
 // into its native tool_calls array).
 type Message struct {
+	ID               string         `json:"id,omitempty"`
+	TurnID           string         `json:"turn_id,omitempty"`
 	Role             Role           `json:"role"`
 	Content          string         `json:"content"`
 	ContentBlocks    []ContentBlock `json:"content_blocks,omitempty"`    // structured content (takes precedence when non-empty)

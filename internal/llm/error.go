@@ -107,7 +107,7 @@ func wrapStatusError(provider, operation string, statusCode int, body string) er
 		Provider:   provider,
 		Operation:  operation,
 		StatusCode: statusCode,
-		Message:    body,
+		Message:    SanitizeImageDataForDiagnostics(body),
 	}
 }
 
