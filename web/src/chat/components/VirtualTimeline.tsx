@@ -22,7 +22,14 @@ function timelineItemKey(item: TimelineItem) {
 function estimateTimelineItemSize(item: TimelineItem | undefined) {
   if (!item) return 140;
   if (item.kind === 'message') {
-    return Math.min(600, 80 + Math.ceil(item.content.length / 40) * 20);
+    const textLen = (item.content || '').length;
+    let size = 80 + Math.ceil(textLen / 40) * 20;
+    // Account for images in displayParts (max ~320px tall + margins/padding)
+    const imageCount = (item.displayParts || []).filter((p: any) => p && p.type === 'image').length;
+    if (imageCount > 0) {
+      size += imageCount * 230; // ~ image height + gap + bubble padding
+    }
+    return Math.min(900, Math.max(120, size));
   }
   if (item.kind === 'approval') return 260;
   if (item.kind === 'tool') return 160;

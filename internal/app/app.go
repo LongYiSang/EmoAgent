@@ -2,8 +2,10 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 
 	"github.com/longyisang/emoagent/internal/apperrors"
@@ -30,6 +32,7 @@ var (
 	ErrPersonaNotFound               = apperrors.ErrPersonaNotFound
 	ErrCannotDeleteDefault           = apperrors.ErrCannotDeleteDefault
 	ErrSessionNotFound               = apperrors.ErrSessionNotFound
+	ErrMediaNotFound                 = apperrors.ErrMediaNotFound
 )
 
 // App is the public lifecycle facade for EmoAgent.
@@ -176,6 +179,18 @@ func (a *App) UploadMedia(ctx context.Context, r io.Reader, meta media.UploadMet
 		return nil, err
 	}
 	return services.Media.Upload(ctx, r, meta)
+}
+
+func (a *App) GetMediaAsset(ctx context.Context, mediaAssetID string) (*media.MediaAsset, error) {
+	services, err := a.services()
+	if err != nil {
+		return nil, err
+	}
+	asset, err := services.Media.Get(ctx, mediaAssetID)
+	if err == sql.ErrNoRows {
+		return nil, ErrMediaNotFound
+	}
+	return asset, err
 }
 
 func (a *App) GetAgentAffectConfig(ctx context.Context) (configcenter.AgentAffectConfigResponse, error) {
@@ -482,12 +497,84 @@ func (a *App) GetSessionDetail(ctx context.Context, id string) (*storage.Session
 	return services.Sessions.Detail(ctx, id)
 }
 
+func (a *App) GetSessionMessageParts(ctx context.Context, sessionID string) (map[string][]storage.MessagePartRecord, error) {
+	kernel, err := a.kernelSnapshot()
+	if err != nil {
+		return nil, err
+	}
+	if kernel.Infra == nil || kernel.Infra.DB == nil {
+		return nil, fmt.Errorf("database is required")
+	}
+	return kernel.Infra.DB.GetMessagePartsForSession(ctx, sessionID)
+}
+
+func (a *App) OpenSessionMedia(ctx context.Context, sessionID, mediaAssetID string) (io.ReadCloser, *media.MediaAsset, error) {
+	kernel, err := a.kernelSnapshot()
+	if err != nil {
+		return nil, nil, err
+	}
+	if kernel.Infra == nil || kernel.Infra.DB == nil {
+		return nil, nil, fmt.Errorf("database is required")
+	}
+	services := kernel.Services
+	parts, err := kernel.Infra.DB.GetMessagePartsForSession(ctx, sessionID)
+	if err != nil {
+		return nil, nil, err
+	}
+	linked := false
+	for _, messageParts := range parts {
+		for _, part := range messageParts {
+			if part.MediaAssetID == mediaAssetID {
+				linked = true
+				break
+			}
+		}
+		if linked {
+			break
+		}
+	}
+	if !linked {
+		return nil, nil, ErrMediaNotFound
+	}
+	asset, err := services.Media.Get(ctx, mediaAssetID)
+	if err == sql.ErrNoRows {
+		return nil, nil, ErrMediaNotFound
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	if !isDisplayableImageAsset(asset) {
+		return nil, nil, ErrMediaNotFound
+	}
+	rc, opened, err := services.Media.Open(ctx, mediaAssetID)
+	if err == sql.ErrNoRows {
+		return nil, nil, ErrMediaNotFound
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	if !isDisplayableImageAsset(opened) {
+		_ = rc.Close()
+		return nil, nil, ErrMediaNotFound
+	}
+	return rc, opened, nil
+}
+
 func (a *App) DeleteSession(ctx context.Context, id string) error {
 	services, err := a.services()
 	if err != nil {
 		return err
 	}
 	return services.Sessions.Delete(ctx, id)
+}
+
+func isDisplayableImageAsset(asset *media.MediaAsset) bool {
+	if asset == nil {
+		return false
+	}
+	return asset.Kind == "image" &&
+		strings.HasPrefix(asset.MimeType, "image/") &&
+		(asset.VisibilityStatus == "" || asset.VisibilityStatus == "visible")
 }
 
 func (a *App) ListSessionApprovals(ctx context.Context, sessionID string) ([]protocol.ApprovalRequest, error) {

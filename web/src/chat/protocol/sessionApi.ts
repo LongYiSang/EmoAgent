@@ -1,6 +1,19 @@
 import { requestJSON } from '../../shared/lib/api';
 import type { ApprovalRequest } from './wsTypes';
 
+export type MessageDisplayPart =
+  | { type: 'text'; text?: string }
+  | {
+      type: 'image';
+      media_asset_id?: string;
+      kind?: string;
+      mime_type?: string;
+      byte_size?: number;
+      width?: number;
+      height?: number;
+      display_url?: string;
+    };
+
 export type MessageRecord = {
   id?: string;
   ID?: string;
@@ -13,6 +26,8 @@ export type MessageRecord = {
   CreatedAt?: string;
   metadata?: unknown;
   Metadata?: unknown;
+  parts?: MessageDisplayPart[];
+  Parts?: MessageDisplayPart[];
 };
 
 export type SessionSummary = {

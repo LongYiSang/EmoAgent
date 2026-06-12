@@ -791,6 +791,42 @@ code {
   font-size: 14px;
 }
 
+.message-parts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.message-part-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.58;
+  font-size: 14px;
+}
+
+.message-image-link {
+  display: block;
+  width: fit-content;
+  max-width: min(360px, 100%);
+}
+
+.message-image {
+  display: block;
+  max-width: 100%;
+  max-height: 320px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.7);
+  object-fit: contain;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.message-image-link:hover .message-image {
+  transform: scale(1.02);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+  cursor: zoom-in;
+}
+
 .msg.error .bubble {
   color: var(--color-danger-ink);
   background: var(--color-danger-soft);
@@ -1050,6 +1086,16 @@ code {
   backdrop-filter: blur(14px);
 }
 
+.composer.drag-active {
+  background: rgba(246, 247, 255, 0.96);
+  box-shadow: inset 0 0 0 3px rgba(126, 111, 218, 0.45);
+  transition: box-shadow 0.1s ease, background 0.1s ease;
+}
+
+.composer.drag-active .composer-main {
+  border-color: rgba(126, 111, 218, 0.3);
+}
+
 .composer-main {
   min-width: 0;
 }
@@ -1088,6 +1134,15 @@ code {
   cursor: pointer;
   font-size: 16px;
   line-height: 1;
+}
+
+.attachment-thumb {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  border-radius: 4px;
+  object-fit: cover;
+  background: rgba(0, 0, 0, 0.05);
 }
 
 .composer textarea {

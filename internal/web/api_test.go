@@ -62,6 +62,11 @@ type fakeAdminApp struct {
 	chatSettings           config.ChatConfig
 	lastChatSettings       config.ChatConfig
 	updateChatErr          error
+	messageParts           map[string][]storage.MessagePartRecord
+	mediaAssets            map[string]*media.MediaAsset
+	openMediaBytes         []byte
+	openMediaAsset         *media.MediaAsset
+	openMediaErr           error
 	effectiveConfig        configcenter.EffectiveConfig
 	configIssues           []configcenter.ConfigIssue
 	providerEnvStatus      configcenter.ProviderEnvStatus
@@ -170,6 +175,155 @@ func TestHandleUploadMedia(t *testing.T) {
 		t.Fatalf("body = %s, want media_asset_id", rr.Body.String())
 	}
 }
+
+func TestHandleGetSessionReturnsSafeDisplayParts(t *testing.T) {
+	app := &fakeAdminApp{
+		sessionDetail: &storage.SessionRecord{ID: "session-1", Persona: "default", Title: "chat"},
+		sessionMessages: []storage.MessageRecord{{
+			ID:        "msg-1",
+			SessionID: "session-1",
+			Role:      "user",
+			Content:   "look\n[used image]",
+			CreatedAt: "2026-06-13T00:00:00Z",
+		}},
+		messageParts: map[string][]storage.MessagePartRecord{
+			"msg-1": {
+				{ID: "part-1", SessionID: "session-1", MessageID: "msg-1", Role: "user", Ordinal: 0, PartType: "text", TextContent: "look"},
+				{ID: "part-2", SessionID: "session-1", MessageID: "msg-1", Role: "user", Ordinal: 1, PartType: "image", MediaAssetID: "med_1"},
+			},
+		},
+		mediaAssets: map[string]*media.MediaAsset{
+			"med_1": {
+				ID:         "med_1",
+				Kind:       "image",
+				MimeType:   "image/png",
+				ByteSize:   68,
+				Width:      1,
+				Height:     1,
+				StorageURI: `C:\secret\tiny.png`,
+			},
+		},
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/session-1", nil)
+	req.SetPathValue("id", "session-1")
+	rec := httptest.NewRecorder()
+
+	handler.HandleGetSession(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, forbidden := range []string{"storage_uri", "C:", "secret", "data:image", "base64"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("session detail leaked %q in body: %s", forbidden, body)
+		}
+	}
+	for _, want := range []string{
+		`"parts"`,
+		`"type":"text"`,
+		`"text":"look"`,
+		`"type":"image"`,
+		`"media_asset_id":"med_1"`,
+		`"display_url":"/api/sessions/session-1/media/med_1"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body = %s, want %s", body, want)
+		}
+	}
+}
+
+func TestHandleGetSessionMediaServesLinkedImage(t *testing.T) {
+	app := &fakeAdminApp{
+		openMediaBytes: []byte("png-bytes"),
+		openMediaAsset: &media.MediaAsset{
+			ID:       "med_1",
+			Kind:     "image",
+			MimeType: "image/png",
+		},
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/session-1/media/med_1", nil)
+	req.SetPathValue("id", "session-1")
+	req.SetPathValue("media_id", "med_1")
+	rec := httptest.NewRecorder()
+
+	handler.HandleGetSessionMedia(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "image/png" {
+		t.Fatalf("Content-Type = %q, want image/png", got)
+	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if got := rec.Header().Get("Content-Disposition"); got != "inline" {
+		t.Fatalf("Content-Disposition = %q, want inline", got)
+	}
+	if got := rec.Body.String(); got != "png-bytes" {
+		t.Fatalf("body = %q, want png-bytes", got)
+	}
+}
+
+func TestHandleGetSessionMediaRejectsUnlinkedOrNonImage(t *testing.T) {
+	t.Run("unlinked", func(t *testing.T) {
+		handler := NewAPIHandler(&fakeAdminApp{openMediaErr: apperrors.ErrMediaNotFound}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		req := httptest.NewRequest(http.MethodGet, "/api/sessions/session-1/media/med_missing", nil)
+		req.SetPathValue("id", "session-1")
+		req.SetPathValue("media_id", "med_missing")
+		rec := httptest.NewRecorder()
+
+		handler.HandleGetSessionMedia(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d body=%s, want 404", rec.Code, rec.Body.String())
+		}
+	})
+	t.Run("non-image", func(t *testing.T) {
+		handler := NewAPIHandler(&fakeAdminApp{
+			openMediaBytes: []byte("not image"),
+			openMediaAsset: &media.MediaAsset{
+				ID:       "med_file",
+				Kind:     "file",
+				MimeType: "text/plain",
+			},
+		}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		req := httptest.NewRequest(http.MethodGet, "/api/sessions/session-1/media/med_file", nil)
+		req.SetPathValue("id", "session-1")
+		req.SetPathValue("media_id", "med_file")
+		rec := httptest.NewRecorder()
+
+		handler.HandleGetSessionMedia(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d body=%s, want 404", rec.Code, rec.Body.String())
+		}
+	})
+	t.Run("purged", func(t *testing.T) {
+		handler := NewAPIHandler(&fakeAdminApp{
+			openMediaBytes: []byte("png-bytes"),
+			openMediaAsset: &media.MediaAsset{
+				ID:               "med_purged",
+				Kind:             "image",
+				MimeType:         "image/png",
+				VisibilityStatus: "purged",
+			},
+		}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		req := httptest.NewRequest(http.MethodGet, "/api/sessions/session-1/media/med_purged", nil)
+		req.SetPathValue("id", "session-1")
+		req.SetPathValue("media_id", "med_purged")
+		rec := httptest.NewRecorder()
+
+		handler.HandleGetSessionMedia(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d body=%s, want 404", rec.Code, rec.Body.String())
+		}
+	})
+}
 func (f *fakeAdminApp) ListAgentConfigs() ([]config.AgentConfig, error) {
 	return append([]config.AgentConfig(nil), f.agentConfigs...), nil
 }
@@ -265,6 +419,33 @@ func (f *fakeAdminApp) GetSessionDetail(_ context.Context, id string) (*storage.
 		return nil, nil, f.sessionErr
 	}
 	return f.sessionDetail, append([]storage.MessageRecord(nil), f.sessionMessages...), nil
+}
+func (f *fakeAdminApp) GetSessionMessageParts(_ context.Context, sessionID string) (map[string][]storage.MessagePartRecord, error) {
+	if f.messageParts == nil {
+		return map[string][]storage.MessagePartRecord{}, nil
+	}
+	result := make(map[string][]storage.MessagePartRecord, len(f.messageParts))
+	for messageID, parts := range f.messageParts {
+		result[messageID] = append([]storage.MessagePartRecord(nil), parts...)
+	}
+	return result, nil
+}
+func (f *fakeAdminApp) GetMediaAsset(_ context.Context, mediaID string) (*media.MediaAsset, error) {
+	if f.mediaAssets == nil || f.mediaAssets[mediaID] == nil {
+		return nil, apperrors.ErrMediaNotFound
+	}
+	asset := *f.mediaAssets[mediaID]
+	return &asset, nil
+}
+func (f *fakeAdminApp) OpenSessionMedia(_ context.Context, sessionID, mediaID string) (io.ReadCloser, *media.MediaAsset, error) {
+	if f.openMediaErr != nil {
+		return nil, nil, f.openMediaErr
+	}
+	if f.openMediaAsset == nil {
+		return nil, nil, apperrors.ErrMediaNotFound
+	}
+	asset := *f.openMediaAsset
+	return io.NopCloser(bytes.NewReader(f.openMediaBytes)), &asset, nil
 }
 func (f *fakeAdminApp) DeleteSession(_ context.Context, id string) error {
 	f.lastDeleteSessionID = id

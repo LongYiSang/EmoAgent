@@ -42,6 +42,7 @@ type MediaAsset struct {
 	StorageBackend   string `json:"-"`
 	StorageURI       string `json:"-"`
 	CreatedByRole    string `json:"-"`
+	VisibilityStatus string `json:"-"`
 }
 
 type LocalStore struct {
@@ -116,6 +117,7 @@ func (s *LocalStore) Put(ctx context.Context, r io.Reader, meta UploadMeta) (*Me
 		StorageBackend:   "local",
 		StorageURI:       storagePath,
 		CreatedByRole:    role,
+		VisibilityStatus: "visible",
 	}
 	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO media_assets (
@@ -135,7 +137,8 @@ func (s *LocalStore) Get(ctx context.Context, mediaAssetID string) (*MediaAsset,
 	}
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, sha256, kind, mime_type, COALESCE(original_filename, ''), COALESCE(file_ext, ''),
-		       byte_size, COALESCE(width, 0), COALESCE(height, 0), storage_backend, storage_uri, created_by_role
+		       byte_size, COALESCE(width, 0), COALESCE(height, 0), storage_backend, storage_uri, created_by_role,
+		       visibility_status
 		FROM media_assets
 		WHERE id = ?
 	`, mediaAssetID)
@@ -166,7 +169,8 @@ func (s *LocalStore) MarkPurged(ctx context.Context, mediaAssetID string, reason
 func (s *LocalStore) findByDigest(ctx context.Context, sha string, size int64) (*MediaAsset, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, sha256, kind, mime_type, COALESCE(original_filename, ''), COALESCE(file_ext, ''),
-		       byte_size, COALESCE(width, 0), COALESCE(height, 0), storage_backend, storage_uri, created_by_role
+		       byte_size, COALESCE(width, 0), COALESCE(height, 0), storage_backend, storage_uri, created_by_role,
+		       visibility_status
 		FROM media_assets
 		WHERE sha256 = ? AND byte_size = ?
 	`, sha, size)
@@ -179,8 +183,11 @@ func (s *LocalStore) findByDigest(ctx context.Context, sha string, size int64) (
 
 func scanAsset(row interface{ Scan(dest ...any) error }) (*MediaAsset, error) {
 	var asset MediaAsset
-	if err := row.Scan(&asset.ID, &asset.SHA256, &asset.Kind, &asset.MimeType, &asset.OriginalFilename, &asset.FileExt, &asset.ByteSize, &asset.Width, &asset.Height, &asset.StorageBackend, &asset.StorageURI, &asset.CreatedByRole); err != nil {
+	if err := row.Scan(&asset.ID, &asset.SHA256, &asset.Kind, &asset.MimeType, &asset.OriginalFilename, &asset.FileExt, &asset.ByteSize, &asset.Width, &asset.Height, &asset.StorageBackend, &asset.StorageURI, &asset.CreatedByRole, &asset.VisibilityStatus); err != nil {
 		return nil, err
+	}
+	if asset.VisibilityStatus == "" {
+		asset.VisibilityStatus = "visible"
 	}
 	return &asset, nil
 }

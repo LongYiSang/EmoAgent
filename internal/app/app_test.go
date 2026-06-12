@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -69,6 +70,9 @@ func (a *routeTestAdminApp) GetLLMProviderEnvStatus(id string) (configcenter.Pro
 func (a *routeTestAdminApp) UploadMedia(ctx context.Context, r io.Reader, meta media.UploadMeta) (*media.MediaAsset, error) {
 	return &media.MediaAsset{ID: "med_test", Kind: "image", MimeType: "image/png", ByteSize: 1}, nil
 }
+func (a *routeTestAdminApp) GetMediaAsset(ctx context.Context, mediaAssetID string) (*media.MediaAsset, error) {
+	return nil, ErrMediaNotFound
+}
 func (a *routeTestAdminApp) ListAgentConfigs() ([]config.AgentConfig, error) {
 	return append([]config.AgentConfig(nil), a.agentConfigs...), nil
 }
@@ -120,6 +124,12 @@ func (a *routeTestAdminApp) GetLatestSession(ctx context.Context, persona string
 }
 func (a *routeTestAdminApp) GetSessionDetail(ctx context.Context, id string) (*storage.SessionRecord, []storage.MessageRecord, error) {
 	return nil, nil, nil
+}
+func (a *routeTestAdminApp) GetSessionMessageParts(ctx context.Context, sessionID string) (map[string][]storage.MessagePartRecord, error) {
+	return map[string][]storage.MessagePartRecord{}, nil
+}
+func (a *routeTestAdminApp) OpenSessionMedia(ctx context.Context, sessionID, mediaAssetID string) (io.ReadCloser, *media.MediaAsset, error) {
+	return nil, nil, ErrMediaNotFound
 }
 func (a *routeTestAdminApp) DeleteSession(ctx context.Context, id string) error {
 	return nil
@@ -1631,5 +1641,72 @@ func TestGetSessionDetailReturnsMessages(t *testing.T) {
 	}
 	if messages[0].Content != "hello" || messages[1].Content != "hi" {
 		t.Fatalf("messages = %#v, want [hello hi]", messages)
+	}
+}
+
+func TestOpenSessionMediaRequiresLinkedVisibleImage(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	cfg := config.DefaultConfig()
+	cfg.Media.StorageDir = filepath.Join(t.TempDir(), "media")
+	a := newTestApp(cfg, db, logger)
+	ctx := context.Background()
+	asset, err := a.UploadMedia(ctx, bytes.NewReader(appTinyPNG()), media.UploadMeta{OriginalFilename: "tiny.png", CreatedByRole: "user"})
+	if err != nil {
+		t.Fatalf("UploadMedia: %v", err)
+	}
+	if err := db.CreateSession(ctx, "session-1", "default"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := db.AddMessage(ctx, "msg-1", "session-1", "user", "look\n[used image]"); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+	if err := db.AddMessageParts(ctx, []storage.MessagePartRecord{
+		{ID: "part-1", SessionID: "session-1", MessageID: "msg-1", Role: "user", Ordinal: 0, PartType: "text", TextContent: "look"},
+		{ID: "part-2", SessionID: "session-1", MessageID: "msg-1", Role: "user", Ordinal: 1, PartType: "image", MediaAssetID: asset.ID},
+	}); err != nil {
+		t.Fatalf("AddMessageParts: %v", err)
+	}
+
+	rc, opened, err := a.OpenSessionMedia(ctx, "session-1", asset.ID)
+	if err != nil {
+		t.Fatalf("OpenSessionMedia(linked): %v", err)
+	}
+	body, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if opened == nil || opened.ID != asset.ID || opened.MimeType != "image/png" || len(body) == 0 {
+		t.Fatalf("opened asset = %#v bytes=%d, want linked PNG", opened, len(body))
+	}
+
+	if _, _, err := a.OpenSessionMedia(ctx, "session-2", asset.ID); !errors.Is(err, ErrMediaNotFound) {
+		t.Fatalf("OpenSessionMedia(unlinked) error = %v, want ErrMediaNotFound", err)
+	}
+	if err := a.kernel.Services.Media.Store().MarkPurged(ctx, asset.ID, "test"); err != nil {
+		t.Fatalf("MarkPurged: %v", err)
+	}
+	if _, _, err := a.OpenSessionMedia(ctx, "session-1", asset.ID); !errors.Is(err, ErrMediaNotFound) {
+		t.Fatalf("OpenSessionMedia(purged) error = %v, want ErrMediaNotFound", err)
+	}
+}
+
+func appTinyPNG() []byte {
+	return []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+		0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+		0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41,
+		0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+		0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00,
+		0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
+		0x42, 0x60, 0x82,
 	}
 }

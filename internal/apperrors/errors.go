@@ -14,4 +14,5 @@ var (
 	ErrPersonaNotFound               = errors.New("persona not found")
 	ErrCannotDeleteDefault           = errors.New("cannot delete the active default persona")
 	ErrSessionNotFound               = errors.New("session not found")
+	ErrMediaNotFound                 = errors.New("media not found")
 )

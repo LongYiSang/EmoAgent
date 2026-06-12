@@ -1,6 +1,6 @@
-import { field, parseMaybeJSON, stringField, timelineMillis } from '../../shared/lib/data';
+import { field, numberField, parseMaybeJSON, stringField, timelineMillis } from '../../shared/lib/data';
 import type { AnyRecord } from '../../shared/lib/api';
-import type { MessageRecord } from '../protocol/sessionApi';
+import type { MessageDisplayPart, MessageRecord } from '../protocol/sessionApi';
 import type { ApprovalRequest, ReasoningActivity, ToolActivity } from '../protocol/wsTypes';
 import type { ChatAction, ChatState, TimelineItem } from './chatTypes';
 
@@ -54,6 +54,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         createdAt: action.createdAt || new Date().toISOString(),
         status: action.status,
         parts: action.parts,
+        displayParts: action.displayParts,
       };
       return { ...state, timeline: orderTimeline([...state.timeline, item]) };
     }
@@ -144,14 +145,50 @@ function historyToTimeline(messages: MessageRecord[]): TimelineItem[] {
     const createdAt = stringField(message, 'created_at') || stringField(message, 'createdAt') || new Date().toISOString();
     const id = stringField(message, 'id') || crypto.randomUUID();
     const metadata = parseMaybeJSON(field(message, 'metadata', {}));
+    const displayParts = messageDisplayParts(message);
     if (role === 'assistant') {
       items.push(...thinkingBlocksToTimeline(metadata, createdAt, id));
     }
-    if (content) {
-      items.push({ kind: 'message', id, role, content, createdAt });
+    if (content || displayParts.length > 0) {
+      items.push({ kind: 'message', id, role, content, createdAt, displayParts: displayParts.length > 0 ? displayParts : undefined });
     }
   }
   return orderTimeline(items);
+}
+
+function messageDisplayParts(message: MessageRecord): MessageDisplayPart[] {
+  const rawParts = field<unknown>(message, 'parts', []);
+  if (!Array.isArray(rawParts)) return [];
+  const parts: MessageDisplayPart[] = [];
+  for (const part of rawParts) {
+    const type = stringField(part, 'type');
+    if (type === 'text') {
+      parts.push({ type: 'text', text: stringField(part, 'text') });
+      continue;
+    }
+    if (type === 'image') {
+      const mediaAssetID = stringField(part, 'media_asset_id');
+      const displayURL = stringField(part, 'display_url');
+      if (!mediaAssetID || !displayURL) return [];
+      const imagePart: MessageDisplayPart = {
+        type: 'image',
+        media_asset_id: mediaAssetID,
+        kind: stringField(part, 'kind'),
+        mime_type: stringField(part, 'mime_type'),
+        display_url: displayURL,
+      };
+      const byteSize = numberField(part, 'byte_size');
+      const width = numberField(part, 'width');
+      const height = numberField(part, 'height');
+      if (byteSize > 0) imagePart.byte_size = byteSize;
+      if (width > 0) imagePart.width = width;
+      if (height > 0) imagePart.height = height;
+      parts.push(imagePart);
+      continue;
+    }
+    return [];
+  }
+  return parts;
 }
 
 function thinkingBlocksToTimeline(metadata: AnyRecord, createdAt: string, messageID: string): TimelineItem[] {

@@ -133,6 +133,7 @@ func registerRoutes(mux *http.ServeMux, api *web.APIHandler, chatHandler http.Ha
 	mux.HandleFunc("GET /api/sessions", api.HandleListSessions)
 	mux.HandleFunc("GET /api/sessions/latest", api.HandleGetLatestSession)
 	mux.HandleFunc("GET /api/sessions/{id}", api.HandleGetSession)
+	mux.HandleFunc("GET /api/sessions/{id}/media/{media_id}", api.HandleGetSessionMedia)
 	mux.HandleFunc("GET /api/sessions/{id}/approvals", api.HandleListSessionApprovals)
 	mux.HandleFunc("DELETE /api/sessions/{id}", api.HandleDeleteSession)
 	mux.HandleFunc("POST /api/memory/extractions", api.HandleQueueMemoryExtraction)

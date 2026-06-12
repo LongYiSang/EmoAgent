@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
@@ -45,5 +46,25 @@ func (s *MediaService) Store() *media.LocalStore {
 }
 
 func (s *MediaService) Upload(ctx context.Context, r io.Reader, meta media.UploadMeta) (*media.MediaAsset, error) {
-	return s.Store().Put(ctx, r, meta)
+	store := s.Store()
+	if store == nil {
+		return nil, fmt.Errorf("media store database is required")
+	}
+	return store.Put(ctx, r, meta)
+}
+
+func (s *MediaService) Get(ctx context.Context, mediaAssetID string) (*media.MediaAsset, error) {
+	store := s.Store()
+	if store == nil {
+		return nil, fmt.Errorf("media store database is required")
+	}
+	return store.Get(ctx, mediaAssetID)
+}
+
+func (s *MediaService) Open(ctx context.Context, mediaAssetID string) (io.ReadCloser, *media.MediaAsset, error) {
+	store := s.Store()
+	if store == nil {
+		return nil, nil, fmt.Errorf("media store database is required")
+	}
+	return store.Open(ctx, mediaAssetID)
 }

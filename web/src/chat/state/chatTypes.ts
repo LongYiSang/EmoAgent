@@ -1,12 +1,12 @@
 import type { AnyRecord } from '../../shared/lib/api';
-import type { MessageRecord, SessionSummary } from '../protocol/sessionApi';
+import type { MessageDisplayPart, MessageRecord, SessionSummary } from '../protocol/sessionApi';
 import type { ApprovalRequest, ContentPart, ReasoningActivity, ToolActivity } from '../protocol/wsTypes';
 import type { MemoryJob, MemorySegment } from '../protocol/memoryApi';
 
 export type MessageStatus = 'sent' | 'pending' | 'failed';
 
 export type TimelineItem =
-  | { kind: 'message'; id: string; role: string; content: string; createdAt: string; status?: MessageStatus; parts?: ContentPart[] }
+  | { kind: 'message'; id: string; role: string; content: string; createdAt: string; status?: MessageStatus; parts?: ContentPart[]; displayParts?: MessageDisplayPart[] }
   | { kind: 'approval'; id: string; approval: ApprovalRequest; createdAt: string }
   | { kind: 'tool'; id: string; tool: ToolActivity; createdAt: string; collapsed: boolean }
   | { kind: 'reasoning'; id: string; reasoning: ReasoningActivity; createdAt: string; collapsed: boolean }
@@ -40,7 +40,7 @@ export type ChatAction =
   | { type: 'SET_MEMORY_VISIBLE'; visible: boolean }
   | { type: 'SET_HISTORY'; messages: MessageRecord[] }
   | { type: 'CLEAR_TIMELINE' }
-  | { type: 'ADD_MESSAGE'; role: string; content: string; id?: string; createdAt?: string; status?: MessageStatus; parts?: ContentPart[] }
+  | { type: 'ADD_MESSAGE'; role: string; content: string; id?: string; createdAt?: string; status?: MessageStatus; parts?: ContentPart[]; displayParts?: MessageDisplayPart[] }
   | { type: 'SET_MESSAGE_STATUS'; id: string; status: MessageStatus }
   | { type: 'STREAM_START' }
   | { type: 'STREAM_DELTA'; content: string }

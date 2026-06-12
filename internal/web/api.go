@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -35,6 +36,7 @@ type AdminApp interface {
 	GetLLMProviderModels(id string) ([]llm.ModelInfo, error)
 	GetLLMProviderEnvStatus(id string) (configcenter.ProviderEnvStatus, error)
 	UploadMedia(ctx context.Context, r io.Reader, meta media.UploadMeta) (*media.MediaAsset, error)
+	GetMediaAsset(ctx context.Context, mediaAssetID string) (*media.MediaAsset, error)
 	ListAgentConfigs() ([]config.AgentConfig, error)
 	GetAgentConfig(id string) (*config.AgentConfig, error)
 	GetActiveAgentConfig() (*config.AgentConfig, bool, error)
@@ -52,6 +54,8 @@ type AdminApp interface {
 	ListSessions(ctx context.Context, persona string, limit int) ([]storage.SessionSummary, error)
 	GetLatestSession(ctx context.Context, persona string) (*storage.SessionSummary, error)
 	GetSessionDetail(ctx context.Context, id string) (*storage.SessionRecord, []storage.MessageRecord, error)
+	GetSessionMessageParts(ctx context.Context, sessionID string) (map[string][]storage.MessagePartRecord, error)
+	OpenSessionMedia(ctx context.Context, sessionID, mediaAssetID string) (io.ReadCloser, *media.MediaAsset, error)
 	DeleteSession(ctx context.Context, id string) error
 	ListSessionApprovals(ctx context.Context, sessionID string) ([]protocol.ApprovalRequest, error)
 	QueueMemoryExtraction(ctx context.Context, req MemoryExtractionRequest) (MemoryExtractionQueueResponse, error)
@@ -208,6 +212,23 @@ type MemoryExtractionQueueResponse struct {
 	EnqueuedCount int                           `json:"enqueued_count"`
 	SkippedCount  int                           `json:"skipped_count"`
 	Jobs          []storage.MemoryExtractionJob `json:"jobs"`
+}
+
+type sessionMessageResponse struct {
+	storage.MessageRecord
+	Parts []sessionMessagePartResponse `json:"parts,omitempty"`
+}
+
+type sessionMessagePartResponse struct {
+	Type         string `json:"type"`
+	Text         string `json:"text,omitempty"`
+	MediaAssetID string `json:"media_asset_id,omitempty"`
+	Kind         string `json:"kind,omitempty"`
+	MimeType     string `json:"mime_type,omitempty"`
+	ByteSize     int64  `json:"byte_size,omitempty"`
+	Width        int    `json:"width,omitempty"`
+	Height       int    `json:"height,omitempty"`
+	DisplayURL   string `json:"display_url,omitempty"`
 }
 
 type NaturalMemoryRunRequest struct {
@@ -790,14 +811,50 @@ func (h *APIHandler) HandleGetSession(w http.ResponseWriter, r *http.Request) {
 		h.writeSessionError(w, err)
 		return
 	}
+	renderedMessages, err := h.sessionMessageResponses(r.Context(), session.ID, messages)
+	if err != nil {
+		h.logger.Error("session parts render error", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"id":         session.ID,
 		"persona":    session.Persona,
 		"title":      session.Title,
 		"created_at": session.CreatedAt,
 		"updated_at": session.UpdatedAt,
-		"messages":   messages,
+		"messages":   renderedMessages,
 	})
+}
+
+func (h *APIHandler) HandleGetSessionMedia(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSpace(r.PathValue("id"))
+	mediaAssetID := strings.TrimSpace(r.PathValue("media_id"))
+	if sessionID == "" || mediaAssetID == "" {
+		writeError(w, http.StatusNotFound, "media not found")
+		return
+	}
+	rc, asset, err := h.app.OpenSessionMedia(r.Context(), sessionID, mediaAssetID)
+	if err != nil {
+		h.writeMediaError(w, err)
+		return
+	}
+	if rc == nil || !isDisplayableImageAsset(asset) {
+		if rc != nil {
+			_ = rc.Close()
+		}
+		writeError(w, http.StatusNotFound, "media not found")
+		return
+	}
+	defer rc.Close()
+
+	w.Header().Set("Content-Type", asset.MimeType)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Disposition", "inline")
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	if _, err := io.Copy(w, rc); err != nil {
+		h.logger.Error("session media stream error", "error", err)
+	}
 }
 
 func (h *APIHandler) HandleDeleteSession(w http.ResponseWriter, r *http.Request) {
@@ -891,6 +948,75 @@ func (h *APIHandler) HandleListMemorySegments(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, map[string]any{"segments": segments})
 }
 
+func (h *APIHandler) sessionMessageResponses(ctx context.Context, sessionID string, messages []storage.MessageRecord) ([]sessionMessageResponse, error) {
+	partsByMessage, err := h.app.GetSessionMessageParts(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	responses := make([]sessionMessageResponse, 0, len(messages))
+	mediaCache := map[string]*media.MediaAsset{}
+	for _, message := range messages {
+		response := sessionMessageResponse{MessageRecord: message}
+		if parts := partsByMessage[message.ID]; len(parts) > 0 {
+			rendered, ok, err := h.sessionMessagePartResponses(ctx, sessionID, parts, mediaCache)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				response.Parts = rendered
+			}
+		}
+		responses = append(responses, response)
+	}
+	return responses, nil
+}
+
+func (h *APIHandler) sessionMessagePartResponses(ctx context.Context, sessionID string, parts []storage.MessagePartRecord, mediaCache map[string]*media.MediaAsset) ([]sessionMessagePartResponse, bool, error) {
+	rendered := make([]sessionMessagePartResponse, 0, len(parts))
+	for _, part := range parts {
+		switch part.PartType {
+		case "text":
+			rendered = append(rendered, sessionMessagePartResponse{
+				Type: "text",
+				Text: part.TextContent,
+			})
+		case "image":
+			mediaAssetID := strings.TrimSpace(part.MediaAssetID)
+			if mediaAssetID == "" {
+				return nil, false, nil
+			}
+			asset, ok := mediaCache[mediaAssetID]
+			if !ok {
+				var err error
+				asset, err = h.app.GetMediaAsset(ctx, mediaAssetID)
+				if errors.Is(err, apperrors.ErrMediaNotFound) {
+					return nil, false, nil
+				}
+				if err != nil {
+					return nil, false, err
+				}
+				mediaCache[mediaAssetID] = asset
+			}
+			if !isDisplayableImageAsset(asset) {
+				return nil, false, nil
+			}
+			rendered = append(rendered, sessionMessagePartResponse{
+				Type:         "image",
+				MediaAssetID: mediaAssetID,
+				Kind:         asset.Kind,
+				MimeType:     asset.MimeType,
+				ByteSize:     asset.ByteSize,
+				Width:        asset.Width,
+				Height:       asset.Height,
+				DisplayURL:   sessionMediaDisplayURL(sessionID, mediaAssetID),
+			})
+		default:
+			return nil, false, nil
+		}
+	}
+	return rendered, len(rendered) > 0, nil
+}
+
 func (h *APIHandler) writeNaturalMemoryError(w http.ResponseWriter, err error) {
 	if isNaturalMemoryValidationError(err) {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -952,6 +1078,17 @@ func (h *APIHandler) writeSessionError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, err.Error())
 	default:
 		h.logger.Error("session internal error", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+	}
+}
+
+func (h *APIHandler) writeMediaError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, apperrors.ErrMediaNotFound),
+		errors.Is(err, apperrors.ErrSessionNotFound):
+		writeError(w, http.StatusNotFound, "media not found")
+	default:
+		h.logger.Error("session media internal error", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
 	}
 }
@@ -1065,6 +1202,19 @@ func normalizeNaturalMemoryRunRequest(req *NaturalMemoryRunRequest) {
 	req.LocalDate = strings.TrimSpace(req.LocalDate)
 	req.LocalTime = strings.TrimSpace(req.LocalTime)
 	req.Timezone = strings.TrimSpace(req.Timezone)
+}
+
+func sessionMediaDisplayURL(sessionID, mediaAssetID string) string {
+	return "/api/sessions/" + url.PathEscape(sessionID) + "/media/" + url.PathEscape(mediaAssetID)
+}
+
+func isDisplayableImageAsset(asset *media.MediaAsset) bool {
+	if asset == nil {
+		return false
+	}
+	return asset.Kind == "image" &&
+		strings.HasPrefix(asset.MimeType, "image/") &&
+		(asset.VisibilityStatus == "" || asset.VisibilityStatus == "visible")
 }
 
 func normalizeQuirks(quirks []string) []string {

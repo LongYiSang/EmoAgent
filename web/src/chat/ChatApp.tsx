@@ -2,6 +2,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { AppRail } from '../shared/components/AppRail';
 import { queueMemoryExtraction } from './protocol/memoryApi';
 import { uploadMedia, type UploadedMedia } from './protocol/mediaApi';
+import type { MessageDisplayPart } from './protocol/sessionApi';
 import type { ContentPart, WSOutgoing } from './protocol/wsTypes';
 import type { TimelineItem } from './state/chatTypes';
 import { chatReducer, initialChatState } from './state/chatReducer';
@@ -16,15 +17,20 @@ import { useChatSession } from './hooks/useChatSession';
 import { useChatWebSocket } from './hooks/useChatWebSocket';
 import '../styles.css';
 
+type DraftAttachment = UploadedMedia & {
+  preview_url?: string;
+};
+
 export function ChatApp() {
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
   const [composer, setComposer] = useState('');
-  const [attachments, setAttachments] = useState<UploadedMedia[]>([]);
+  const [attachments, setAttachments] = useState<DraftAttachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [pipelineSnapshot, setPipelineSnapshot] = useState<unknown>(null);
   const contextRef = useRef({ personaKey: '', sessionID: '' });
   const closeSocketRef = useRef<() => Promise<void>>(async () => undefined);
+  const previewURLsRef = useRef(new Set<string>());
 
   useEffect(() => {
     contextRef.current = { personaKey: state.currentPersonaKey, sessionID: state.currentSessionId };
@@ -45,6 +51,33 @@ export function ChatApp() {
     closeSocketRef.current = closeSocket;
   }, [closeSocket]);
 
+  useEffect(() => {
+    const activePreviewURLs = new Set<string>();
+    for (const attachment of attachments) {
+      if (attachment.preview_url) activePreviewURLs.add(attachment.preview_url);
+    }
+    for (const item of state.timeline) {
+      if (item.kind !== 'message') continue;
+      for (const part of item.displayParts || []) {
+        if (part.type === 'image' && part.display_url?.startsWith('blob:')) {
+          activePreviewURLs.add(part.display_url);
+        }
+      }
+    }
+    for (const url of Array.from(previewURLsRef.current)) {
+      if (activePreviewURLs.has(url)) continue;
+      URL.revokeObjectURL(url);
+      previewURLsRef.current.delete(url);
+    }
+  }, [attachments, state.timeline]);
+
+  useEffect(() => () => {
+    for (const url of previewURLsRef.current) {
+      URL.revokeObjectURL(url);
+    }
+    previewURLsRef.current.clear();
+  }, []);
+
   const sendMessage = useCallback(async (content: string, localID: string, parts?: ContentPart[]) => {
     dispatch({ type: 'SET_MESSAGE_STATUS', id: localID, status: 'pending' });
     dispatch({ type: 'SET_SENDING', sending: true });
@@ -63,6 +96,15 @@ export function ChatApp() {
     const content = composer.trim();
     if ((!content && attachments.length === 0) || state.sending || uploading) return;
     const id = crypto.randomUUID();
+    let sessionID = contextRef.current.sessionID || state.currentSessionId;
+    if (attachments.length > 0 && !sessionID) {
+      try {
+        await ensureConnected();
+        sessionID = contextRef.current.sessionID || state.currentSessionId;
+      } catch {
+        sessionID = '';
+      }
+    }
     const parts: ContentPart[] = [
       ...(content ? [{ type: 'text', text: content } satisfies ContentPart] : []),
       ...attachments.map(asset => ({
@@ -76,29 +118,52 @@ export function ChatApp() {
       } satisfies ContentPart)),
     ];
     const visibleContent = [content, ...attachments.map(() => '[used image]')].filter(Boolean).join('\n');
-    dispatch({ type: 'ADD_MESSAGE', id, role: 'user', content: visibleContent, createdAt: new Date().toISOString(), status: 'pending', parts });
+    const displayParts = outgoingDisplayParts(content, attachments, sessionID);
+    dispatch({ type: 'ADD_MESSAGE', id, role: 'user', content: visibleContent, createdAt: new Date().toISOString(), status: 'pending', parts, displayParts });
     setComposer('');
     setAttachments([]);
     await sendMessage(content || visibleContent, id, parts);
-  }, [attachments, composer, sendMessage, state.sending, uploading]);
+  }, [attachments, composer, ensureConnected, sendMessage, state.currentSessionId, state.sending, uploading]);
 
-  const handleFiles = useCallback(async (files: FileList) => {
-    if (!files.length) return;
+  const handleFiles = useCallback(async (files: FileList | File[]) => {
+    if (state.sending || uploading) return;
+    const allFiles = Array.from(files);
+    if (!allFiles.length) return;
+    const imageFiles = supportedImageFiles(allFiles);
+    if (!imageFiles.length) {
+      dispatch({ type: 'SET_STATUS', status: '仅支持 PNG/JPEG 图片' });
+      return;
+    }
+    const skippedUnsupported = imageFiles.length < allFiles.length;
     setUploading(true);
     dispatch({ type: 'SET_STATUS', status: '上传图片...' });
+    const createdPreviewURLs: string[] = [];
     try {
-      const uploaded: UploadedMedia[] = [];
-      for (const file of Array.from(files)) {
-        uploaded.push(await uploadMedia(file));
+      // Process uploads in parallel for better UX with multiple images.
+      // (Previously had client-side resizing for performance, but that feature is disabled for now
+      //  to preserve original image quality when sending to the AI.)
+      const tasks = imageFiles.map(async (file) => {
+        const previewURL = URL.createObjectURL(file);
+        createdPreviewURLs.push(previewURL);
+        const asset = await uploadMedia(file); // use original file directly
+        return { ...asset, preview_url: previewURL } as DraftAttachment;
+      });
+      const uploaded = await Promise.all(tasks);
+      for (const attachment of uploaded) {
+        if (attachment.preview_url) previewURLsRef.current.add(attachment.preview_url);
       }
       setAttachments(current => [...current, ...uploaded]);
-      dispatch({ type: 'SET_STATUS', status: '' });
+      dispatch({ type: 'SET_STATUS', status: skippedUnsupported ? '已忽略非 PNG/JPEG 图片' : '' });
     } catch (error) {
+      // Revoke any previews created in this batch on failure
+      for (const url of createdPreviewURLs) {
+        URL.revokeObjectURL(url);
+      }
       dispatch({ type: 'SET_STATUS', status: error instanceof Error ? error.message : '图片上传失败' });
     } finally {
       setUploading(false);
     }
-  }, []);
+  }, [state.sending, uploading]);
 
   const removeAttachment = useCallback((id: string) => {
     setAttachments(current => current.filter(item => item.media_asset_id !== id));
@@ -179,7 +244,11 @@ export function ChatApp() {
             value={composer}
             sending={state.sending}
             uploading={uploading}
-            attachments={attachments.map(item => ({ id: item.media_asset_id, label: item.original_filename || item.mime_type }))}
+            attachments={attachments.map(item => ({
+              id: item.media_asset_id,
+              label: item.original_filename || item.mime_type,
+              preview: item.preview_url
+            }))}
             onChange={setComposer}
             onFiles={handleFiles}
             onRemoveAttachment={removeAttachment}
@@ -197,4 +266,31 @@ export function ChatApp() {
 
 function textContentFromParts(parts: ContentPart[]): string {
   return parts.filter(part => part.type === 'text').map(part => part.text).join('\n').trim();
+}
+
+function outgoingDisplayParts(content: string, attachments: DraftAttachment[], sessionID: string): MessageDisplayPart[] | undefined {
+  if (!content && attachments.length === 0) return undefined;
+  const parts: MessageDisplayPart[] = [];
+  if (content) parts.push({ type: 'text', text: content });
+  for (const asset of attachments) {
+    parts.push({
+      type: 'image',
+      media_asset_id: asset.media_asset_id,
+      kind: asset.kind,
+      mime_type: asset.mime_type,
+      byte_size: asset.byte_size,
+      width: asset.width,
+      height: asset.height,
+      display_url: asset.preview_url || (sessionID ? sessionMediaDisplayURL(sessionID, asset.media_asset_id) : undefined),
+    });
+  }
+  return parts;
+}
+
+function sessionMediaDisplayURL(sessionID: string, mediaAssetID: string): string {
+  return `/api/sessions/${encodeURIComponent(sessionID)}/media/${encodeURIComponent(mediaAssetID)}`;
+}
+
+function supportedImageFiles(files: File[]): File[] {
+  return files.filter(file => file.type === 'image/png' || file.type === 'image/jpeg');
 }
