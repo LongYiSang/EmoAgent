@@ -29,6 +29,7 @@ export default defineConfig({
       input: {
         index: resolve(__dirname, 'index.html'),
         admin: resolve(__dirname, 'admin.html'),
+        plugins: resolve(__dirname, 'plugins.html'),
       },
     },
   },

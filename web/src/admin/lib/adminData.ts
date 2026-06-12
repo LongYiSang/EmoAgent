@@ -2,7 +2,9 @@ import type { AnyRecord } from '../../shared/lib/api';
 import { field } from '../../shared/lib/data';
 import type { AgentConfig, Persona, Provider, ProviderPreset } from '../protocol/adminApi';
 
-export type TabID = 'providers' | 'agents' | 'personas' | 'chat-settings' | 'memory-core' | 'agent-affect' | 'plugins' | 'pipelines' | 'retrieval-mirror' | 'sidecar' | 'privacy-forget' | 'retention' | 'diagnostics';
+export { matchesQuery } from '../../shared/lib/search';
+
+export type TabID = 'providers' | 'agents' | 'personas' | 'chat-settings' | 'memory-core' | 'agent-affect' | 'pipelines' | 'retrieval-mirror' | 'sidecar' | 'privacy-forget' | 'retention' | 'diagnostics';
 
 export const tabs: Array<{ id: TabID; label: string }> = [
   { id: 'providers', label: '模型服务' },
@@ -11,7 +13,6 @@ export const tabs: Array<{ id: TabID; label: string }> = [
   { id: 'chat-settings', label: '聊天设置' },
   { id: 'memory-core', label: 'Memory Core' },
   { id: 'agent-affect', label: 'Agent Affect' },
-  { id: 'plugins', label: '插件' },
   { id: 'pipelines', label: 'Pipeline' },
   { id: 'retrieval-mirror', label: '检索' },
   { id: 'sidecar', label: 'Sidecar' },
@@ -134,12 +135,6 @@ export function pipelineThinkingOptions(selected: string): Array<{ value: string
     required: '必需',
   };
   return values.map(value => ({ value, label: labels[value] || value || (selected ? '继承' : '继承') }));
-}
-
-export function matchesQuery(query: string, ...values: unknown[]) {
-  const needle = query.trim().toLowerCase();
-  if (!needle) return true;
-  return values.map(value => String(value || '').toLowerCase()).join(' ').includes(needle);
 }
 
 export function providerPresetForBinding(providers: Provider[], presets: ProviderPreset[], providerID: string) {
