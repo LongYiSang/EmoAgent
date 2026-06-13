@@ -328,14 +328,16 @@ func (e *Engine) SendMessageParts(ctx context.Context, sessionID string, persona
 }
 
 type turnOptions struct {
-	persistUser  bool
-	userContent  string
-	userParts    []llm.ContentBlock
-	turnID       string
-	extraSystem  string
-	disableTools bool
-	deferCommit  bool
-	output       *deferredTurnOutput
+	persistUser       bool
+	userContent       string
+	userParts         []llm.ContentBlock
+	turnID            string
+	extraSystem       string
+	disableTools      bool
+	deferCommit       bool
+	output            *deferredTurnOutput
+	preparedAnchor    turnMemoryAnchor
+	hasPreparedAnchor bool
 }
 
 type turnMemoryAnchor struct {
@@ -562,12 +564,18 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	if err != nil {
 		return "", err
 	}
+	if !opts.persistUser && opts.hasPreparedAnchor {
+		memoryAnchor = opts.preparedAnchor
+	}
 	if !opts.persistUser && len(opts.userParts) > 0 {
 		parts, err := normalizeUserParts(opts.userContent, opts.userParts)
 		if err != nil {
 			return "", err
 		}
 		turnID := opts.turnID
+		if turnID == "" {
+			turnID = memoryAnchor.turnID
+		}
 		if turnID == "" {
 			turnID = uuid.NewString()
 		}

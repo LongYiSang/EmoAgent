@@ -213,6 +213,10 @@ func (s *MemoryService) QueueExtraction(ctx context.Context, req web.MemoryExtra
 
 	resp := web.MemoryExtractionQueueResponse{Status: "queued"}
 	for _, segment := range segments {
+		if strings.TrimSpace(segment.LastUserEpisodeID) == "" && strings.TrimSpace(segment.LastAssistantEpisodeID) == "" {
+			resp.SkippedCount++
+			continue
+		}
 		if !req.Force && !manualExtractionEligible(segment.ExtractionStatus) {
 			resp.SkippedCount++
 			continue

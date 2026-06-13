@@ -1,10 +1,12 @@
 package chat
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +15,7 @@ import (
 	"github.com/longyisang/emoagent/internal/agentaffect"
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/media"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/turn"
 )
@@ -242,6 +245,75 @@ func TestTurnRuntimeAsyncAgentAffectDoesNotEnqueueWithoutAssistantOutput(t *test
 	if affect.enqueueCalls != 0 {
 		t.Fatalf("enqueue calls = %d, want 0 without assistant output", affect.enqueueCalls)
 	}
+}
+
+func TestTurnRuntimeMemoryStagesMediaDeliveryUsesPreparedMessageID(t *testing.T) {
+	fakeLLM := &fakeLLMClient{
+		response: &llm.ChatResponse{
+			ID:         "resp-1",
+			Content:    "answer",
+			StopReason: "end_turn",
+		},
+	}
+	engine, db, _ := newTestEngine(t, fakeLLM)
+	store := media.NewLocalStore(db.SqlDB(), filepath.Join(t.TempDir(), "media"), media.StoreOptions{MaxBytes: 1024 * 1024})
+	asset, err := store.Put(context.Background(), bytes.NewReader(chatTinyPNG()), media.UploadMeta{CreatedByRole: "user"})
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	engine.mediaStore = store
+	engine.mediaPlanner = media.NewPlanner(store, staticMediaResolver{caps: &llm.ModelCapabilities{
+		ProviderID:       "openai",
+		ModelID:          "test-model",
+		InputModalities:  []string{"text", "image"},
+		OutputModalities: []string{"text"},
+		ImageTransports:  []string{media.TransportDataURL},
+		ImageFormats:     []string{"image/png"},
+		CapabilitySource: string(llm.CapabilitySourceProviderDocsPreset),
+		Confidence:       0.9,
+	}})
+	engine.providerID = "openai"
+	engine.memory = &fakeMemoryBridge{ensureResult: MemorySegmentRef{SegmentID: "segment-current", MemorySessionID: "memory-current"}}
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	env := mustWSMessageToInbound(t, WSMessage{
+		Type:      "message",
+		Content:   "look",
+		RequestID: "request-1",
+		Parts: []llm.ContentBlock{
+			{Type: string(llm.PartText), Text: "look"},
+			{Type: string(llm.PartImage), Media: &llm.MediaPart{MediaAssetID: asset.ID, Kind: "image", MimeType: "image/png"}},
+		},
+	}, sessionID, "default")
+	runtime := newChatTurnRuntime(engine, config.TurnPipelineConfig{Enabled: true, MemoryStages: true, RolloutPercent: 100}, turn.NewMemoryJournal(), discardLogger())
+
+	result, err := runtime.Execute(context.Background(), env, &config.Persona{Name: "default", SystemPrompt: "system"}, turn.SinkFunc(func(context.Context, turn.OutboundEvent) error {
+		return nil
+	}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Status != "done" {
+		t.Fatalf("status = %q, want done", result.Status)
+	}
+
+	messageID := userMessageIDWithPlaceholder(t, db, sessionID)
+	deliveries, err := db.ListMediaDeliveriesForMessage(context.Background(), messageID)
+	if err != nil {
+		t.Fatalf("ListMediaDeliveriesForMessage: %v", err)
+	}
+	for _, delivery := range deliveries {
+		if delivery.Status == media.DeliveryStatusSent && delivery.DeliveryScope == media.DeliveryScopeCurrentTurn {
+			if delivery.MessageID != messageID || delivery.PartID == "" || delivery.MediaAssetID != asset.ID {
+				t.Fatalf("delivery = %#v, want prepared message/part/media ids", delivery)
+			}
+			return
+		}
+	}
+	t.Fatalf("deliveries = %#v, want sent current_turn delivery", deliveries)
 }
 
 func TestTurnRuntimeSyncBeforeReplyStillSubmitsMoodImpact(t *testing.T) {

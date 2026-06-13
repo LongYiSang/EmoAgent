@@ -577,6 +577,7 @@ func (r *chatTurnRuntime) messageStage(persona *config.Persona) turn.Stage {
 						stringDiagnostic(tc, "agent_affect_prompt_block"),
 					)
 					var output deferredTurnOutput
+					preparedAnchor, hasPreparedAnchor := tc.Diagnostics["memory_anchor"].(turnMemoryAnchor)
 					reply, err = engine.sendTurn(ctx, tc.Inbound.SessionID, persona, func(delta string) {
 						if delta == "" || tc.Stream == nil {
 							return
@@ -584,20 +585,22 @@ func (r *chatTurnRuntime) messageStage(persona *config.Persona) turn.Stage {
 						streamedDelta = true
 						_ = tc.Stream.Emit(ctx, turn.OutboundEvent{Type: turn.EventStreamDelta, Content: delta})
 					}, turnOptions{
-						persistUser: false,
-						userContent: tc.Inbound.UserMessage.Content,
-						userParts:   tc.Inbound.UserMessage.Parts,
-						turnID:      tc.TurnID,
-						extraSystem: extraSystem,
-						deferCommit: true,
-						output:      &output,
+						persistUser:       false,
+						userContent:       tc.Inbound.UserMessage.Content,
+						userParts:         tc.Inbound.UserMessage.Parts,
+						turnID:            tc.TurnID,
+						extraSystem:       extraSystem,
+						deferCommit:       true,
+						output:            &output,
+						preparedAnchor:    preparedAnchor,
+						hasPreparedAnchor: hasPreparedAnchor,
 					})
 					if snapshot, ok := tc.Diagnostics["memory_prompt_snapshot"].(*memoryPromptSnapshot); ok {
 						output.memorySnapshot = snapshot
 					}
-					if anchor, ok := tc.Diagnostics["memory_anchor"].(turnMemoryAnchor); ok {
-						output.memorySegment = anchor.memorySegment
-						output.hasMemorySegment = anchor.hasMemorySegment
+					if hasPreparedAnchor {
+						output.memorySegment = preparedAnchor.memorySegment
+						output.hasMemorySegment = preparedAnchor.hasMemorySegment
 					}
 					ensureDiagnostics(tc)
 					tc.Diagnostics["turn_output"] = output

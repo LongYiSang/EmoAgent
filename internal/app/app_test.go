@@ -1056,6 +1056,65 @@ func TestQueueMemoryExtractionEnqueuesSessionSegmentsImmediately(t *testing.T) {
 	}
 }
 
+func TestQueueMemoryExtractionSkipsEmptySegments(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	if err := db.CreateSession(ctx, "chat-memory-empty", "default"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	emptySegment, err := db.CreateMemorySegment(ctx, storage.CreateMemorySegmentParams{
+		ID:              "segment-memory-empty",
+		ChatSessionID:   "chat-memory-empty",
+		PersonaID:       "default",
+		MemorySessionID: "memory-session-empty",
+	})
+	if err != nil {
+		t.Fatalf("CreateMemorySegment(empty): %v", err)
+	}
+	if err := db.FinalizeMemorySegment(ctx, emptySegment.ID, "test_empty", ""); err != nil {
+		t.Fatalf("FinalizeMemorySegment(empty): %v", err)
+	}
+	nonEmptySegment, err := db.CreateMemorySegment(ctx, storage.CreateMemorySegmentParams{
+		ID:              "segment-memory-nonempty",
+		ChatSessionID:   "chat-memory-empty",
+		PersonaID:       "default",
+		MemorySessionID: "memory-session-nonempty",
+	})
+	if err != nil {
+		t.Fatalf("CreateMemorySegment(non-empty): %v", err)
+	}
+	if err := db.UpdateMemorySegmentEpisode(ctx, nonEmptySegment.ID, "user", "episode-user"); err != nil {
+		t.Fatalf("UpdateMemorySegmentEpisode(user): %v", err)
+	}
+	cfg := config.DefaultConfig()
+	cfg.Memory.Extraction.Enabled = true
+	a := newTestApp(cfg, db, logger)
+
+	resp, err := a.QueueMemoryExtraction(ctx, web.MemoryExtractionRequest{SessionID: "chat-memory-empty", Scope: "session", Mode: "apply"})
+	if err != nil {
+		t.Fatalf("QueueMemoryExtraction(session): %v", err)
+	}
+	if resp.EnqueuedCount != 1 || resp.SkippedCount != 1 || len(resp.Jobs) != 1 {
+		t.Fatalf("session resp = %#v, want one enqueued and one skipped", resp)
+	}
+	if resp.Jobs[0].SegmentID != nonEmptySegment.ID {
+		t.Fatalf("job segment = %q, want %q", resp.Jobs[0].SegmentID, nonEmptySegment.ID)
+	}
+
+	resp, err = a.QueueMemoryExtraction(ctx, web.MemoryExtractionRequest{SegmentID: emptySegment.ID, Scope: "segment", Mode: "apply", Force: true})
+	if err != nil {
+		t.Fatalf("QueueMemoryExtraction(segment force): %v", err)
+	}
+	if resp.EnqueuedCount != 0 || resp.SkippedCount != 1 || len(resp.Jobs) != 0 {
+		t.Fatalf("segment resp = %#v, want empty segment skipped even with force", resp)
+	}
+}
+
 func TestQueueMemoryExtractionSkipsSucceededSegmentUnlessForced(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
@@ -1075,6 +1134,13 @@ func TestQueueMemoryExtractionSkipsSucceededSegmentUnlessForced(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("CreateMemorySegment: %v", err)
+	}
+	if err := db.UpdateMemorySegmentEpisode(ctx, segment.ID, "user", "episode-user"); err != nil {
+		t.Fatalf("UpdateMemorySegmentEpisode(user): %v", err)
+	}
+	segment, err = db.GetMemorySegment(ctx, segment.ID)
+	if err != nil {
+		t.Fatalf("GetMemorySegment: %v", err)
 	}
 	if err := db.UpdateMemorySegmentExtractionCompleted(ctx, segment.ID, storage.MemorySegmentExtractionCompleted{
 		JobID:            "job-old",
