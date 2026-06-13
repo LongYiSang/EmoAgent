@@ -40,7 +40,7 @@ promptBlock := memoryhost.FormatMemoryContextForPrompt(memoryContext, excludedEp
 
 EmoAgent 是运行时配置中心：`config.yaml` 作为首次启动 seed，Provider Center 和 runtime settings 作为运行时来源，`/api/config/effective`、`/api/config/validate`、`/api/config/issues` 用于查看生效配置、依赖问题和 auto-fix 建议。运行时保存入口是 `/api/memory/config`、`/api/memory/features` 和 `runtime_settings`；无效配置会返回 issues，不写成 active runtime setting。
 
-MemoryCore 继续保持 standalone：它只暴露 `LoadEffectiveOptions.ProviderRegistry` / `Overrides`，不读取 EmoAgent DB，也不 import EmoAgent 包。EmoAgent 打开 MemoryCore 时会把 DB 中的 Provider Center 转成 MemoryCore `ProviderRegistry`，并把 `memory.provider_bindings.*` / runtime settings 合成 MemoryCore overrides；过渡期 `config/memorycore.yaml` 仍可作为 standalone fallback，但普通 EmoAgent 用户不应在其中重复维护 LLM provider。旧 `memory.extraction.provider` 已废弃为兼容字段，新配置应迁移到 `memory.provider_bindings.extraction`。
+MemoryCore 继续保持 standalone：它只暴露 `LoadEffectiveOptions.ProviderRegistry` / `Overrides`，不读取 EmoAgent DB，也不 import EmoAgent 包。EmoAgent 打开 MemoryCore 时会把 DB 中的 Provider Center 转成 MemoryCore `ProviderRegistry`，并把 `memory.provider_bindings.*` / runtime settings 合成 MemoryCore overrides；过渡期 `config/memorycore.yaml` 仍可作为 standalone fallback，但普通 EmoAgent 用户不应在其中重复维护 LLM provider。旧 `memory.extraction.provider` 已废弃为兼容字段，新配置应迁移到 `memory.provider_bindings.extraction`，并通过对应 binding 的可选 `max_tokens` / `thinking` 覆盖 pipeline 参数。
 
 API key 不写入 YAML/TOML/DB 明文；Provider Center 和 generated sidecar TOML 只保存 `api_key_env`，前端只显示环境变量 present/missing 状态。Managed sidecar 由 EmoAgent 生成 `data/runtime/sidecar.generated.toml` 并只监听 loopback；`sidecar/config.toml` 仅保留为 standalone Python sidecar 示例。
 

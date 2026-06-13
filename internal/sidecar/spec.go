@@ -15,6 +15,7 @@ type ProviderBinding struct {
 	EndpointURL string
 	APIKeyEnv   string
 	Model       string
+	MaxTokens   int
 	Dimensions  int
 	TopK        int
 }

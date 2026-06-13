@@ -348,6 +348,7 @@ type MemoryProviderBindingConfig struct {
 	Enabled    bool                           `yaml:"enabled" json:"enabled"`
 	ProviderID string                         `yaml:"provider_id" json:"provider_id"`
 	Model      string                         `yaml:"model" json:"model"`
+	MaxTokens  int                            `yaml:"max_tokens" json:"max_tokens"`
 	Thinking   MemoryExtractionThinkingConfig `yaml:"thinking" json:"thinking"`
 	Dimensions int                            `yaml:"dimensions" json:"dimensions"`
 	TopK       int                            `yaml:"top_k" json:"top_k"`

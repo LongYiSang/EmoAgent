@@ -64,3 +64,12 @@ func TestBuildIssuesCoversMemoryCoreFeatureDependencies(t *testing.T) {
 		requireConfigIssue(t, issues, path)
 	}
 }
+
+func TestBuildIssuesRejectsNegativeMemoryPipelineMaxTokens(t *testing.T) {
+	seed := config.DefaultConfig()
+	seed.Memory.ProviderBindings.Extraction.MaxTokens = -1
+
+	issues := BuildIssues(seed, nil, nil)
+
+	requireConfigIssue(t, issues, "memory.provider_bindings.extraction.max_tokens")
+}

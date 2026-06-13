@@ -127,12 +127,11 @@ export function pipelineProviderOptions(providers: Provider[], key: string, sele
 }
 
 export function pipelineThinkingOptions(selected: string): Array<{ value: string; label: string }> {
-  const values = ['', 'disabled', 'optional', 'required'];
+  const values = ['', 'enabled', 'disabled'];
   const labels: Record<string, string> = {
     '': '继承',
-    disabled: '关闭',
-    optional: '可选',
-    required: '必需',
+    enabled: 'enabled',
+    disabled: 'disabled',
   };
   return values.map(value => ({ value, label: labels[value] || value || (selected ? '继承' : '继承') }));
 }

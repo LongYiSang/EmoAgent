@@ -739,7 +739,8 @@ func llmPipelineOverride(binding config.MemoryProviderBindingConfig) *memconfig.
 	providerID := strings.TrimSpace(binding.ProviderID)
 	model := strings.TrimSpace(binding.Model)
 	thinkingType := strings.TrimSpace(binding.Thinking.Type)
-	if providerID == "" && model == "" && thinkingType == "" {
+	maxTokens := binding.MaxTokens
+	if providerID == "" && model == "" && thinkingType == "" && maxTokens == 0 {
 		return nil
 	}
 	override := memconfig.LLMPipelineOverrides{}
@@ -748,6 +749,9 @@ func llmPipelineOverride(binding config.MemoryProviderBindingConfig) *memconfig.
 	}
 	if model != "" {
 		override.Model = &model
+	}
+	if maxTokens != 0 {
+		override.MaxOutputTokens = &maxTokens
 	}
 	if thinkingType != "" {
 		override.Thinking = &memconfig.ThinkingConfig{Type: thinkingType}
@@ -759,7 +763,8 @@ func curationLLMOverride(binding config.MemoryProviderBindingConfig) *memconfig.
 	providerID := strings.TrimSpace(binding.ProviderID)
 	model := strings.TrimSpace(binding.Model)
 	thinkingType := strings.TrimSpace(binding.Thinking.Type)
-	if providerID == "" && model == "" && thinkingType == "" {
+	maxTokens := binding.MaxTokens
+	if providerID == "" && model == "" && thinkingType == "" && maxTokens == 0 {
 		return nil
 	}
 	override := memconfig.CurationLLMOverrides{}
@@ -768,6 +773,9 @@ func curationLLMOverride(binding config.MemoryProviderBindingConfig) *memconfig.
 	}
 	if model != "" {
 		override.Model = &model
+	}
+	if maxTokens != 0 {
+		override.MaxTokens = &maxTokens
 	}
 	if thinkingType != "" {
 		override.Thinking = &memconfig.ThinkingConfig{Type: thinkingType}
@@ -900,6 +908,7 @@ func sidecarProviderBinding(path string, binding config.MemoryProviderBindingCon
 		EndpointURL: strings.TrimSpace(provider.BaseURL),
 		APIKeyEnv:   strings.TrimSpace(provider.APIKeyEnv),
 		Model:       strings.TrimSpace(binding.Model),
+		MaxTokens:   binding.MaxTokens,
 		Dimensions:  binding.Dimensions,
 		TopK:        binding.TopK,
 	}, nil

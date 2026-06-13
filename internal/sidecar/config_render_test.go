@@ -22,6 +22,7 @@ func TestRenderGeneratedConfigUsesEnvNamesWithoutSecretValues(t *testing.T) {
 		BaseURL:   "https://api.deepseek.com",
 		APIKeyEnv: "MEMORYCORE_LLM_API_KEY",
 		Model:     "deepseek-v4-flash",
+		MaxTokens: 1204,
 	}
 	spec.Rerank = ProviderBinding{
 		Provider:    "dashscope-vl",
@@ -45,6 +46,7 @@ func TestRenderGeneratedConfigUsesEnvNamesWithoutSecretValues(t *testing.T) {
 		`top_n = 12`,
 		`[query_analysis]`,
 		`api_key_env = "MEMORYCORE_LLM_API_KEY"`,
+		`max_tokens = 1204`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("generated TOML missing %q:\n%s", want, text)

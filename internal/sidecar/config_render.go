@@ -40,7 +40,7 @@ func RenderConfig(spec Spec) ([]byte, error) {
 	writeSection(&b, "query_analysis")
 	writeProvider(&b, spec.QueryAnalysis)
 	writeInt(&b, "timeout_seconds", 30)
-	writeInt(&b, "max_tokens", 768)
+	writeInt(&b, "max_tokens", defaultInt(spec.QueryAnalysis.MaxTokens, 768))
 	writeFloat(&b, "temperature", 0)
 	writeString(&b, "response_format", "json_object")
 	writeString(&b, "prompt_version", "memory_query_analysis_v1")

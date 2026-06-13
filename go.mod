@@ -23,4 +23,4 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-//replace github.com/longyisang/emoagent-memorycore => D:/Dev/Project/Agent/EmoAgent-MemoryCore
+replace github.com/longyisang/emoagent-memorycore => D:/Dev/Project/Agent/EmoAgent-MemoryCore

@@ -97,6 +97,17 @@ func BuildIssues(seed *config.Config, providers []ProviderEffective, memoryCore 
 			}
 		}
 	}
+	for path, binding := range map[string]config.MemoryProviderBindingConfig{
+		"memory.provider_bindings.prefilter.max_tokens":         seed.Memory.ProviderBindings.Prefilter,
+		"memory.provider_bindings.extraction.max_tokens":        seed.Memory.ProviderBindings.Extraction,
+		"memory.provider_bindings.extraction_repair.max_tokens": seed.Memory.ProviderBindings.ExtractionRepair,
+		"memory.provider_bindings.query_analysis.max_tokens":    seed.Memory.ProviderBindings.QueryAnalysis,
+		"memory.provider_bindings.curation.max_tokens":          seed.Memory.ProviderBindings.Curation,
+	} {
+		if binding.MaxTokens < 0 {
+			issues = append(issues, ConfigIssue{Path: path, Severity: "error", Message: "max_tokens must be >= 0"})
+		}
+	}
 	if seed.Memory.Sidecar.Enabled && seed.Memory.Sidecar.Managed && !seed.Memory.Enabled {
 		issues = append(issues, disabledIssue(
 			"memory.sidecar.managed",

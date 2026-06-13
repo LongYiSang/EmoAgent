@@ -1074,7 +1074,7 @@ func TestHandleMemoryConfigAndSidecarEndpoints(t *testing.T) {
 		t.Fatalf("GET memory status = %d, want 200", getMemoryRec.Code)
 	}
 
-	putMemoryReq := httptest.NewRequest(http.MethodPut, "/api/memory/config", bytes.NewBufferString(`{"memory":{"enabled":true,"config_path":"./config/memorycore.yaml"}}`))
+	putMemoryReq := httptest.NewRequest(http.MethodPut, "/api/memory/config", bytes.NewBufferString(`{"memory":{"enabled":true,"config_path":"./config/memorycore.yaml","provider_bindings":{"extraction":{"provider_id":"moonshot","model":"memory-model","max_tokens":1202}}}}`))
 	putMemoryRec := httptest.NewRecorder()
 	handler.HandleUpdateMemoryConfig(putMemoryRec, putMemoryReq)
 	if putMemoryRec.Code != http.StatusOK {
@@ -1082,6 +1082,9 @@ func TestHandleMemoryConfigAndSidecarEndpoints(t *testing.T) {
 	}
 	if !app.lastMemoryConfig.Enabled || app.lastMemoryConfig.ConfigPath != "./config/memorycore.yaml" {
 		t.Fatalf("lastMemoryConfig = %#v", app.lastMemoryConfig)
+	}
+	if app.lastMemoryConfig.ProviderBindings.Extraction.MaxTokens != 1202 {
+		t.Fatalf("extraction max tokens = %d, want 1202", app.lastMemoryConfig.ProviderBindings.Extraction.MaxTokens)
 	}
 
 	statusReq := httptest.NewRequest(http.MethodGet, "/api/sidecar/status", nil)

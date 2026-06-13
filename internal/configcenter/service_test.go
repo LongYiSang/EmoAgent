@@ -155,7 +155,7 @@ func TestBuildEffectiveMergesRuntimeSettingsIntoMemoryCoreAndSidecar(t *testing.
 	if err := db.UpsertRuntimeSetting("memory.sidecar", "config", `{"enabled":true,"managed":true,"adapter":"trivium","host":"127.0.0.1","port":8765,"url":"http://127.0.0.1:8765","config_path":"./data/runtime/sidecar.generated.toml"}`, "ui"); err != nil {
 		t.Fatalf("UpsertRuntimeSetting sidecar: %v", err)
 	}
-	if err := db.UpsertRuntimeSetting("memory.provider_bindings", "config", `{"prefilter":{"provider_id":"moonshot","model":"prefilter-model"},"extraction":{"provider_id":"moonshot","model":"memory-model","thinking":{"type":"enabled"}},"extraction_repair":{"provider_id":"moonshot","model":"repair-model"},"query_analysis":{"provider_id":"moonshot","model":"analysis-model"},"curation":{"provider_id":"moonshot","model":"curation-model","thinking":{"type":"enabled"}},"embedding":{"enabled":true,"provider_id":"dashscope_embedding","model":"text-embedding-v4","dimensions":1536}}`, "ui"); err != nil {
+	if err := db.UpsertRuntimeSetting("memory.provider_bindings", "config", `{"prefilter":{"provider_id":"moonshot","model":"prefilter-model","max_tokens":1201},"extraction":{"provider_id":"moonshot","model":"memory-model","max_tokens":1202,"thinking":{"type":"enabled"}},"extraction_repair":{"provider_id":"moonshot","model":"repair-model","max_tokens":1203},"query_analysis":{"provider_id":"moonshot","model":"analysis-model","max_tokens":1204},"curation":{"provider_id":"moonshot","model":"curation-model","max_tokens":1205,"thinking":{"type":"enabled"}},"embedding":{"enabled":true,"provider_id":"dashscope_embedding","model":"text-embedding-v4","dimensions":1536}}`, "ui"); err != nil {
 		t.Fatalf("UpsertRuntimeSetting bindings: %v", err)
 	}
 
@@ -192,17 +192,32 @@ func TestBuildEffectiveMergesRuntimeSettingsIntoMemoryCoreAndSidecar(t *testing.
 	if effective.MemoryCore.Pipelines.Extraction.Thinking.Type != "enabled" {
 		t.Fatalf("extraction thinking = %#v", effective.MemoryCore.Pipelines.Extraction.Thinking)
 	}
+	if effective.MemoryCore.Pipelines.Extraction.Params.MaxOutputTokens != 1202 {
+		t.Fatalf("extraction max output tokens = %d, want 1202", effective.MemoryCore.Pipelines.Extraction.Params.MaxOutputTokens)
+	}
 	if effective.MemoryCore.Pipelines.Prefilter.Model != "prefilter-model" {
 		t.Fatalf("prefilter pipeline = %#v", effective.MemoryCore.Pipelines.Prefilter)
+	}
+	if effective.MemoryCore.Pipelines.Prefilter.Params.MaxOutputTokens != 1201 {
+		t.Fatalf("prefilter max output tokens = %d, want 1201", effective.MemoryCore.Pipelines.Prefilter.Params.MaxOutputTokens)
 	}
 	if effective.MemoryCore.Pipelines.ExtractionRepair.Model != "repair-model" {
 		t.Fatalf("extraction repair pipeline = %#v", effective.MemoryCore.Pipelines.ExtractionRepair)
 	}
+	if effective.MemoryCore.Pipelines.ExtractionRepair.Params.MaxOutputTokens != 1203 {
+		t.Fatalf("extraction repair max output tokens = %d, want 1203", effective.MemoryCore.Pipelines.ExtractionRepair.Params.MaxOutputTokens)
+	}
 	if effective.MemoryCore.Pipelines.QueryAnalysis.Model != "analysis-model" {
 		t.Fatalf("query analysis pipeline = %#v", effective.MemoryCore.Pipelines.QueryAnalysis)
 	}
+	if effective.MemoryCore.Pipelines.QueryAnalysis.Params.MaxOutputTokens != 1204 {
+		t.Fatalf("query analysis max output tokens = %d, want 1204", effective.MemoryCore.Pipelines.QueryAnalysis.Params.MaxOutputTokens)
+	}
 	if effective.MemoryCore.SemanticOps.Curation.LLM.Model != "curation-model" {
 		t.Fatalf("curation llm = %#v", effective.MemoryCore.SemanticOps.Curation.LLM)
+	}
+	if effective.MemoryCore.SemanticOps.Curation.LLM.MaxTokens != 1205 {
+		t.Fatalf("curation max tokens = %d, want 1205", effective.MemoryCore.SemanticOps.Curation.LLM.MaxTokens)
 	}
 	if effective.MemoryCore.SemanticOps.Curation.LLM.Thinking.Type != "enabled" {
 		t.Fatalf("curation thinking = %#v", effective.MemoryCore.SemanticOps.Curation.LLM.Thinking)
@@ -216,6 +231,7 @@ func TestBuildEffectiveMergesRuntimeSettingsIntoMemoryCoreAndSidecar(t *testing.
 		`api_key_env = "DASHSCOPE_API_KEY"`,
 		`model = "text-embedding-v4"`,
 		`dimensions = 1536`,
+		`max_tokens = 1204`,
 	} {
 		if !strings.Contains(effective.SidecarGeneratedConfig, want) {
 			t.Fatalf("generated sidecar TOML missing %q:\n%s", want, effective.SidecarGeneratedConfig)

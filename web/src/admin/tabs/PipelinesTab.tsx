@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { field, pretty } from '../../shared/lib/data';
+import { field, pretty, toInt } from '../../shared/lib/data';
 import type { AnyRecord } from '../../shared/lib/api';
 import type { Provider } from '../protocol/adminApi';
 import { llmPipelineKeys, memoryPipelineBindings, pipelineProviderOptions, pipelineThinkingOptions } from '../lib/adminData';
@@ -19,6 +19,16 @@ export default memo(function PipelinesTab({ providers, memoryDraft, updateMemory
     updateMemoryPath(['provider_bindings', key, ...path], value);
   }
 
+  function formatMaxTokens(value: unknown) {
+    if (value === undefined || value === null || value === '' || value === 0) return '';
+    return String(value);
+  }
+
+  function parseMaxTokens(value: string) {
+    const parsed = toInt(value);
+    return parsed === 0 ? undefined : parsed;
+  }
+
   return (
     <div className="section">
       <div className="hero"><div><h2>管线</h2><div className="meta">通过 provider_id 与 model 选择 Provider/Model 绑定</div></div><button className="btn primary" id="save-pipelines" type="button" onClick={savePipelines}>保存</button></div>
@@ -29,6 +39,7 @@ export default memo(function PipelinesTab({ providers, memoryDraft, updateMemory
             <div className="pipeline-row" key={key}>
               <div className="field"><label htmlFor={`mem-${key}-provider`}>{label} provider_id</label><select id={`mem-${key}-provider`} value={String(binding.provider_id || '')} onChange={event => setBinding(key, ['provider_id'], event.target.value)}>{pipelineProviderOptions(providers, key, String(binding.provider_id || '')).map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>
               <Field id={`mem-${key}-model`} label={`${label} model`} value={String(binding.model || '')} onChange={value => setBinding(key, ['model'], value)} mono />
+              {llmPipelineKeys.has(key) && <Field id={`mem-${key}-max-tokens`} label={`${label} max_tokens`} type="number" value={formatMaxTokens(binding.max_tokens)} onChange={value => setBinding(key, ['max_tokens'], parseMaxTokens(value))} />}
               {llmPipelineKeys.has(key) && <div className="field"><label htmlFor={`mem-${key}-thinking`}>{label} Thinking 模式开关</label><select id={`mem-${key}-thinking`} value={String(field(field(binding, 'thinking', {}), 'type', ''))} onChange={event => setBinding(key, ['thinking', 'type'], event.target.value)}>{pipelineThinkingOptions(String(field(field(binding, 'thinking', {}), 'type', ''))).map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>}
             </div>
           );

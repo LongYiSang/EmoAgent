@@ -147,7 +147,7 @@ go build -o ./bin/emoagent ./cmd/emoagent
 - `config/memorycore.yaml`：MemoryCore standalone fallback / transition overlay。EmoAgent 打开 MemoryCore 时会注入 ProviderRegistry 和 runtime overrides，因此普通用户不需要在这里维护重复的 LLM provider。
 - `config/memory_manual_rules.yaml`：手动记忆固定和忘记规则。
 
-当 `memory.enabled=true` 时，EmoAgent 会通过 `memoryhost.OpenFromConfigWithOptions` 打开 MemoryCore，并把 Provider Center 中的 provider 转成 MemoryCore `ProviderRegistry`。MemoryCore pipeline 的运行时选择应写入 `memory.provider_bindings.*` 或 DB `runtime_settings`，只保存 `provider_id + model`；旧的 `memory.extraction.provider` 仅作为过渡兼容字段，不再作为主配置入口。`memory.sidecar.enabled=true` 时会先按 `managed/external` 模式检查 sidecar；健康时注入 `sidecar.url`，失败且 `fail_open=true` 时降级关闭 mirror/sidecar，保留 SQLite/FTS 路径。
+当 `memory.enabled=true` 时，EmoAgent 会通过 `memoryhost.OpenFromConfigWithOptions` 打开 MemoryCore，并把 Provider Center 中的 provider 转成 MemoryCore `ProviderRegistry`。MemoryCore pipeline 的运行时选择应写入 `memory.provider_bindings.*` 或 DB `runtime_settings`，保存 `provider_id`、`model` 以及可选的 `max_tokens` / `thinking`；旧的 `memory.extraction.provider` 仅作为过渡兼容字段，不再作为主配置入口。`memory.sidecar.enabled=true` 时会先按 `managed/external` 模式检查 sidecar；健康时注入 `sidecar.url`，失败且 `fail_open=true` 时降级关闭 mirror/sidecar，保留 SQLite/FTS 路径。
 
 ### Sidecar 简易安装
 
