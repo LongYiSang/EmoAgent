@@ -52,6 +52,8 @@ export function ChatApp() {
   }, [closeSocket]);
 
   useEffect(() => {
+    const hasAttachmentPreview = attachments.some(attachment => attachment.preview_url);
+    if (previewURLsRef.current.size === 0 && !hasAttachmentPreview) return;
     const activePreviewURLs = new Set<string>();
     for (const attachment of attachments) {
       if (attachment.preview_url) activePreviewURLs.add(attachment.preview_url);

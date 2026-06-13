@@ -180,16 +180,16 @@ export function useChatWebSocket({ dispatch, contextRef, refreshSessions, refres
         case 'stream_end':
           flushPendingStreamDelta();
           flushPendingReasoningDeltas();
-          dispatch({ type: 'STREAM_END' });
+          dispatch({ type: 'SET_SENDING', sending: false });
           dispatch({ type: 'COLLAPSE_ACTIVITIES' });
           dispatch({ type: 'CLEAR_WORK_PROGRESS' });
-          await refreshSessions();
           try {
             await reloadSessionHistory();
           } catch {
             // Keep streamed content visible if history reload fails.
           }
-          await Promise.all([refreshApprovals(), refreshMemoryStatus()]);
+          dispatch({ type: 'STREAM_END' });
+          await Promise.all([refreshSessions(), refreshApprovals(), refreshMemoryStatus()]);
           break;
         case 'reasoning_start':
           flushPendingReasoningDeltas();

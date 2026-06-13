@@ -54,9 +54,11 @@ export function VirtualTimeline({
   const sessionRef = useRef(sessionID);
   const forceScrollAfterSessionChangeRef = useRef(true);
   const sessionScrollFrameRef = useRef<number | null>(null);
+  const settleScrollFrameRef = useRef<number | null>(null);
   const [activityOpenByKey, setActivityOpenByKey] = useState<Record<string, boolean>>({});
   const itemKeys = useMemo(() => items.map(timelineItemKey), [items]);
   const itemSignature = itemKeys.length ? itemKeys[0] + ':' + itemKeys[itemKeys.length - 1] : '';
+  const shouldFollowToBottomRef = useRef(true);
 
   const getItemKey = useCallback((index: number) => itemKeys[index] || index, [itemKeys]);
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
@@ -69,14 +71,53 @@ export function VirtualTimeline({
     anchorTo: 'end',
     followOnAppend: true,
     scrollEndThreshold: 48,
+    directDomUpdates: true,
+    directDomUpdatesMode: 'transform',
   });
+
+  const cancelSettleScroll = useCallback(() => {
+    if (settleScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(settleScrollFrameRef.current);
+      settleScrollFrameRef.current = null;
+    }
+  }, []);
+
+  const scheduleSettleScroll = useCallback(() => {
+    cancelSettleScroll();
+    let remainingFrames = 3;
+    const settle = () => {
+      settleScrollFrameRef.current = null;
+      const parent = parentRef.current;
+      if (!parent || !shouldFollowToBottomRef.current) return;
+      virtualizer.scrollToEnd({ behavior: 'auto' });
+      parent.scrollTop = parent.scrollHeight;
+      remainingFrames -= 1;
+      if (remainingFrames > 0) {
+        settleScrollFrameRef.current = window.requestAnimationFrame(settle);
+      }
+    };
+    settleScrollFrameRef.current = window.requestAnimationFrame(settle);
+  }, [cancelSettleScroll, virtualizer]);
 
   useLayoutEffect(() => {
     if (sessionRef.current === sessionID) return;
     sessionRef.current = sessionID;
     forceScrollAfterSessionChangeRef.current = true;
+    shouldFollowToBottomRef.current = true;
     setActivityOpenByKey({});
   }, [sessionID]);
+
+  useLayoutEffect(() => {
+    const parent = parentRef.current;
+    if (!parent) return;
+    const updateShouldFollow = () => {
+      const distanceFromEnd = parent.scrollHeight - parent.clientHeight - parent.scrollTop;
+      shouldFollowToBottomRef.current = distanceFromEnd <= 48;
+    };
+    updateShouldFollow();
+    parent.addEventListener('scroll', updateShouldFollow, { passive: true });
+    return () => parent.removeEventListener('scroll', updateShouldFollow);
+  }, []);
 
   useLayoutEffect(() => {
     if (sessionScrollFrameRef.current !== null) {
@@ -88,6 +129,7 @@ export function VirtualTimeline({
       sessionScrollFrameRef.current = null;
       if (!forceScrollAfterSessionChangeRef.current) return;
       virtualizer.scrollToEnd({ behavior: 'auto' });
+      if (parentRef.current) parentRef.current.scrollTop = parentRef.current.scrollHeight;
       forceScrollAfterSessionChangeRef.current = false;
     });
     return () => {
@@ -98,19 +140,20 @@ export function VirtualTimeline({
     };
   }, [itemSignature, items.length, sessionID, virtualizer]);
 
+  useLayoutEffect(() => {
+    if (shouldFollowToBottomRef.current) {
+      scheduleSettleScroll();
+    }
+  }, [items, pendingAssistantId, scheduleSettleScroll]);
+
   useLayoutEffect(() => () => {
     if (sessionScrollFrameRef.current !== null) window.cancelAnimationFrame(sessionScrollFrameRef.current);
-  }, []);
-
-  useLayoutEffect(() => {
-    if (pendingAssistantId && virtualizer.isAtEnd(48)) {
-      virtualizer.scrollToEnd({ behavior: 'auto' });
-    }
-  }, [pendingAssistantId, virtualizer]);
+    cancelSettleScroll();
+  }, [cancelSettleScroll]);
 
   return (
     <div className="messages" id="messages" ref={parentRef}>
-      <div className="timeline-virtualizer" style={{ height: virtualizer.getTotalSize() }}>
+      <div className="timeline-virtualizer" ref={virtualizer.containerRef}>
         {virtualizer.getVirtualItems().map(virtualItem => {
           const item = items[virtualItem.index];
           if (!item) return null;
@@ -124,7 +167,6 @@ export function VirtualTimeline({
               className="timeline-virtual-row"
               data-index={virtualItem.index}
               ref={virtualizer.measureElement}
-              style={{ transform: `translateY(${virtualItem.start}px)` }}
             >
               <TimelineEntry
                 item={item}
