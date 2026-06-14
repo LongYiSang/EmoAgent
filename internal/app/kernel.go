@@ -88,7 +88,7 @@ func newServices(infra *Infra) *Services {
 		agentAffect:  services.AgentAffect,
 	}
 	services.Sessions = &SessionService{infra: infra, work: services.Work}
-	services.PromptCenter = &PromptCenterService{infra: infra, agentRuntime: services.AgentRuntime}
+	services.PromptCenter = &PromptCenterService{infra: infra, agentRuntime: services.AgentRuntime, personas: services.Personas, memory: services.Memory, agentAffect: services.AgentAffect}
 	services.AgentRuntime.chat = services.Chat
 	return services
 }

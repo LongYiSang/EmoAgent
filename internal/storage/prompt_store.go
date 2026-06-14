@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/longyisang/emoagent/internal/promptcenter"
@@ -218,6 +219,41 @@ func (d *DB) GetRenderSnapshot(ctx context.Context, id string) (*promptcenter.Re
 		return nil, err
 	}
 	return &snapshot, nil
+}
+
+func (d *DB) CleanupRenderSnapshots(ctx context.Context, retentionDays int, maxRows int) (promptcenter.CleanupResult, error) {
+	result := promptcenter.CleanupResult{}
+	if retentionDays > 0 {
+		cutoff := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour).Format(time.RFC3339Nano)
+		res, err := d.db.ExecContext(ctx, `
+			DELETE FROM prompt_render_snapshots
+			WHERE julianday(created_at) < julianday(?)
+		`, cutoff)
+		if err != nil {
+			return result, err
+		}
+		if rows, err := res.RowsAffected(); err == nil {
+			result.DeletedByRetention = int(rows)
+		}
+	}
+	if maxRows > 0 {
+		res, err := d.db.ExecContext(ctx, `
+			DELETE FROM prompt_render_snapshots
+			WHERE id NOT IN (
+				SELECT id
+				FROM prompt_render_snapshots
+				ORDER BY created_at DESC, id DESC
+				LIMIT ?
+			)
+		`, maxRows)
+		if err != nil {
+			return result, err
+		}
+		if rows, err := res.RowsAffected(); err == nil {
+			result.DeletedByMaxRows = int(rows)
+		}
+	}
+	return result, nil
 }
 
 func scanRenderSnapshot(row scanner) (promptcenter.RenderSnapshot, error) {

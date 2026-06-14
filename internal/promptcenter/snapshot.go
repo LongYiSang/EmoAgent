@@ -2,11 +2,19 @@ package promptcenter
 
 type RenderComponent struct {
 	ComponentID   string `json:"component_id"`
+	Name          string `json:"name,omitempty"`
 	Source        string `json:"source"`
-	ScopeType     string `json:"scope_type"`
-	ScopeID       string `json:"scope_id"`
-	DefaultHash   string `json:"default_hash"`
+	ScopeType     string `json:"scope_type,omitempty"`
+	ScopeID       string `json:"scope_id,omitempty"`
+	DefaultHash   string `json:"default_hash,omitempty"`
 	EffectiveHash string `json:"effective_hash"`
+	SectionName   string `json:"section_name,omitempty"`
+	Kind          string `json:"kind,omitempty"`
+	Editable      bool   `json:"editable"`
+	Dynamic       bool   `json:"dynamic"`
+	TextLength    int    `json:"text_length,omitempty"`
+	Truncated     bool   `json:"truncated,omitempty"`
+	MetadataJSON  string `json:"metadata_json,omitempty"`
 }
 
 type RenderSnapshot struct {
@@ -43,4 +51,14 @@ type SnapshotFilter struct {
 	SessionID string `json:"session_id"`
 	Purpose   string `json:"purpose"`
 	Limit     int    `json:"limit"`
+}
+
+type SnapshotRenderOptions struct {
+	StoreRenderedText    bool
+	MaxRenderedTextChars int
+}
+
+type CleanupResult struct {
+	DeletedByRetention int `json:"deleted_by_retention"`
+	DeletedByMaxRows   int `json:"deleted_by_max_rows"`
 }

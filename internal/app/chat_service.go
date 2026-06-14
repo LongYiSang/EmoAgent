@@ -107,6 +107,7 @@ func (s *ChatService) BuildEngine(dispatcher *tool.Dispatcher) *chat.Engine {
 		MediaResolver:      mediaResolver,
 		AgentID:            agentID,
 		PersonaKey:         personaKey,
+		PromptSnapshots:    cfg.PromptCenter.Snapshots,
 	})
 	return s.engine
 }

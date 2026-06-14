@@ -2,6 +2,7 @@ package promptcenter
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 )
 
@@ -54,6 +55,68 @@ func TestHashTextIsStableSHA256(t *testing.T) {
 	}
 	if HashText("hello") == HashText("hello\n") {
 		t.Fatalf("HashText should distinguish trailing newline")
+	}
+}
+
+func TestDynamicComponentBuildsHashAndMetadata(t *testing.T) {
+	text := "你好🙂"
+	component := DynamicComponent(ComponentEmotionPersona, "persona", SourcePersona, text, map[string]any{
+		"persona_key": "default",
+	})
+
+	if component.ComponentID != ComponentEmotionPersona || component.SectionName != "persona" || component.Source != SourcePersona {
+		t.Fatalf("component identity = %#v", component)
+	}
+	if !component.Dynamic || component.Editable {
+		t.Fatalf("component dynamic/editable = %#v", component)
+	}
+	if component.EffectiveHash != HashText(text) {
+		t.Fatalf("EffectiveHash = %q, want hash of text", component.EffectiveHash)
+	}
+	if component.TextLength != len([]rune(text)) {
+		t.Fatalf("TextLength = %d, want rune count", component.TextLength)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(component.MetadataJSON), &metadata); err != nil {
+		t.Fatalf("metadata json: %v", err)
+	}
+	if metadata["persona_key"] != "default" {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+}
+
+func TestBuildRenderSnapshotTruncatesRenderedTextWithoutChangingFinalHash(t *testing.T) {
+	full := "abcdef"
+	snapshot, err := BuildRenderSnapshot(RenderSnapshot{
+		ID:           "snap-1",
+		Purpose:      "emotion_chat",
+		RenderedText: full,
+	}, SnapshotRenderOptions{
+		StoreRenderedText:    true,
+		MaxRenderedTextChars: 3,
+	})
+	if err != nil {
+		t.Fatalf("BuildRenderSnapshot: %v", err)
+	}
+	if snapshot.FinalHash != HashText(full) {
+		t.Fatalf("FinalHash = %q, want hash of full prompt", snapshot.FinalHash)
+	}
+	if snapshot.RenderedText != "abc" || !snapshot.Truncated {
+		t.Fatalf("snapshot text/truncated = %q/%v", snapshot.RenderedText, snapshot.Truncated)
+	}
+
+	hashOnly, err := BuildRenderSnapshot(RenderSnapshot{
+		ID:           "snap-2",
+		Purpose:      "emotion_chat",
+		RenderedText: full,
+	}, SnapshotRenderOptions{
+		StoreRenderedText: false,
+	})
+	if err != nil {
+		t.Fatalf("BuildRenderSnapshot hash-only: %v", err)
+	}
+	if hashOnly.FinalHash != HashText(full) || hashOnly.RenderedText != "" || hashOnly.Truncated {
+		t.Fatalf("hash-only snapshot = %#v", hashOnly)
 	}
 }
 
@@ -182,6 +245,56 @@ func TestResolverMarksStaleOverride(t *testing.T) {
 	}
 }
 
+func TestResolverResolveTextNilSafe(t *testing.T) {
+	var resolver *Resolver
+	if got := resolver.ResolveText(context.Background(), ComponentEmotionOperatingContract, PromptScope{}); got != "" {
+		t.Fatalf("nil resolver ResolveText = %q, want empty", got)
+	}
+	if got := NewResolver(nil, nil).ResolveText(context.Background(), ComponentEmotionOperatingContract, PromptScope{}); got != "" {
+		t.Fatalf("nil catalog ResolveText = %q, want empty", got)
+	}
+}
+
+func TestResolverFallbackEmitsWarning(t *testing.T) {
+	ctx := context.Background()
+	catalog := mustTestCatalog(t)
+	component := catalog.MustGet(ComponentEmotionOperatingContract)
+	var warnings []ResolveWarning
+	resolver := NewResolverWithWarning(catalog, errorStore{}, func(w ResolveWarning) {
+		warnings = append(warnings, w)
+	})
+
+	resolved, err := resolver.Resolve(ctx, component.ID, PromptScope{})
+	if err != nil {
+		t.Fatalf("Resolve fallback: %v", err)
+	}
+	if resolved.Text != component.DefaultText || resolved.Source != SourceEmbeddedDefault {
+		t.Fatalf("resolved = %#v", resolved)
+	}
+	if len(warnings) != 1 || warnings[0].ComponentID != component.ID || warnings[0].Code != "store_error" {
+		t.Fatalf("warnings = %#v", warnings)
+	}
+}
+
+func TestDetailFromComponentReportsScopeStale(t *testing.T) {
+	catalog := mustTestCatalog(t)
+	component := catalog.MustGet(ComponentRunningSummaryRepair)
+	global := &OverrideRecord{DefaultHashAtEdit: "old-global"}
+	agent := &OverrideRecord{DefaultHashAtEdit: component.DefaultHash}
+	resolved := resolvedFromComponent(component, "custom", SourceGlobalOverride, ScopeGlobal, "", global)
+
+	detail := DetailFromComponent(component, global, agent, resolved)
+	if !detail.GlobalOverrideStale {
+		t.Fatalf("expected global override stale")
+	}
+	if detail.AgentOverrideStale {
+		t.Fatalf("did not expect agent override stale")
+	}
+	if !detail.EffectiveOverrideStale || !detail.StaleOverride {
+		t.Fatalf("effective stale flags = effective:%v legacy:%v", detail.EffectiveOverrideStale, detail.StaleOverride)
+	}
+}
+
 func TestValidateUpsertOverride(t *testing.T) {
 	ctx := context.Background()
 	catalog := mustTestCatalog(t)
@@ -269,6 +382,33 @@ func TestValidateUpsertOverride(t *testing.T) {
 	}
 	if err := ValidateUpsertOverride(ctx, catalog, agentExists, valid); err != nil {
 		t.Fatalf("valid request rejected: %v", err)
+	}
+}
+
+func TestLintOverrideWarnings(t *testing.T) {
+	catalog := mustTestCatalog(t)
+	component := catalog.MustGet(ComponentRunningSummarySystem)
+	warnings := LintOverride(component, UpsertOverrideRequest{
+		ComponentID:  component.ID,
+		ScopeType:    ScopeGlobal,
+		Mode:         OverrideModeCustom,
+		OverrideText: "Summarize the conversation in prose.",
+	})
+	if len(warnings) == 0 {
+		t.Fatalf("expected lint warnings")
+	}
+	if warnings[0].ComponentID != component.ID || warnings[0].Severity != "warning" {
+		t.Fatalf("warnings = %#v", warnings)
+	}
+
+	warnings = LintOverride(component, UpsertOverrideRequest{
+		ComponentID:  component.ID,
+		ScopeType:    ScopeGlobal,
+		Mode:         OverrideModeCustom,
+		OverrideText: component.DefaultText,
+	})
+	if len(warnings) != 0 {
+		t.Fatalf("default text warnings = %#v", warnings)
 	}
 }
 

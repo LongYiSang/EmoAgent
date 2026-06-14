@@ -36,11 +36,49 @@ export type PromptComponentDetail = {
   effective_hash: string;
   default_hash_at_edit?: string;
   stale_override: boolean;
+  global_override_stale: boolean;
+  agent_override_stale: boolean;
+  effective_override_stale: boolean;
 };
 
 export type PromptComponentsResponse = {
   agent_id: string;
   components: PromptComponentDetail[];
+};
+
+export type RenderComponent = {
+  component_id: string;
+  name?: string;
+  source: string;
+  scope_type?: string;
+  scope_id?: string;
+  default_hash?: string;
+  effective_hash: string;
+  section_name?: string;
+  kind?: string;
+  editable?: boolean;
+  dynamic?: boolean;
+  text_length?: number;
+  truncated?: boolean;
+  metadata_json?: string;
+};
+
+export type PromptPreviewWarning = {
+  code: string;
+  severity: string;
+  message: string;
+};
+
+export type PromptLintWarning = {
+  component_id: string;
+  code: string;
+  severity: string;
+  message: string;
+};
+
+export type PromptOverrideMutationResponse = {
+  ok: boolean;
+  warnings?: PromptLintWarning[];
 };
 
 export type PromptPreviewResponse = {
@@ -49,11 +87,8 @@ export type PromptPreviewResponse = {
   purpose: string;
   rendered_text: string;
   final_hash: string;
-  components: Array<{
-    component_id: string;
-    source: string;
-    effective_hash: string;
-  }>;
+  components: RenderComponent[];
+  warnings?: PromptPreviewWarning[];
 };
 
 export type PromptSnapshotSummary = {
@@ -71,7 +106,7 @@ export type PromptSnapshotSummary = {
 export type PromptSnapshotDetail = PromptSnapshotSummary & {
   request_id: string;
   turn_id: string;
-  components: Array<Record<string, unknown>>;
+  components: RenderComponent[];
   components_json: string;
   rendered_text: string;
 };
@@ -93,8 +128,8 @@ export async function savePromptOverride(req: {
   mode: 'custom' | 'use_default';
   override_text?: string;
   note?: string;
-}): Promise<void> {
-  await requestJSON('/api/prompts/overrides', {
+}): Promise<PromptOverrideMutationResponse> {
+  return requestJSON<PromptOverrideMutationResponse>('/api/prompts/overrides', {
     method: 'PUT',
     body: {
       ...req,
@@ -111,9 +146,16 @@ export async function deletePromptOverride(componentID: string, scopeType: 'glob
 }
 
 export async function previewPrompt(req: {
+  mode?: 'component' | 'full';
   agent_id: string;
   purpose: string;
-  component_ids: string[];
+  persona_key?: string;
+  session_id?: string;
+  user_message?: string;
+  component_ids?: string[];
+  component_id?: string;
+  include_memory?: boolean;
+  include_agent_affect?: boolean;
 }): Promise<PromptPreviewResponse> {
   return requestJSON<PromptPreviewResponse>('/api/prompts/preview', { method: 'POST', body: req });
 }

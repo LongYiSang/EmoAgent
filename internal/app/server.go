@@ -40,6 +40,7 @@ func BuildServer(ctx context.Context, kernel *Kernel, facade *App) (*Server, err
 
 	engine := kernel.Services.Chat.BuildEngine(dispatcher)
 	kernel.Services.Chat.StartBackground(ctx)
+	kernel.Services.PromptCenter.StartBackground(ctx)
 	chatHandler := chat.NewHandler(engine, facade, kernel.Infra.Logger, kernel.Services.Chat.HandlerOptions()...)
 
 	api := web.NewAPIHandler(facade, kernel.Infra.Logger)

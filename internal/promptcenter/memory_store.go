@@ -161,6 +161,40 @@ func (s *MemoryStore) GetRenderSnapshot(_ context.Context, id string) (*RenderSn
 	return &copy, nil
 }
 
+func (s *MemoryStore) CleanupRenderSnapshots(_ context.Context, retentionDays int, maxRows int) (CleanupResult, error) {
+	if s == nil {
+		return CleanupResult{}, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := CleanupResult{}
+	if retentionDays > 0 {
+		cutoff := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour)
+		for id, snapshot := range s.snapshots {
+			createdAt, err := time.Parse(time.RFC3339Nano, snapshot.CreatedAt)
+			if err != nil {
+				createdAt, err = time.Parse(time.RFC3339, snapshot.CreatedAt)
+			}
+			if err == nil && createdAt.Before(cutoff) {
+				delete(s.snapshots, id)
+				result.DeletedByRetention++
+			}
+		}
+	}
+	if maxRows > 0 && len(s.snapshots) > maxRows {
+		items := make([]RenderSnapshot, 0, len(s.snapshots))
+		for _, snapshot := range s.snapshots {
+			items = append(items, snapshot)
+		}
+		sort.Slice(items, func(i, j int) bool { return items[i].CreatedAt > items[j].CreatedAt })
+		for _, snapshot := range items[maxRows:] {
+			delete(s.snapshots, snapshot.ID)
+			result.DeletedByMaxRows++
+		}
+	}
+	return result, nil
+}
+
 func overrideKey(componentID, scopeType, scopeID string) string {
 	return componentID + "\x00" + scopeType + "\x00" + scopeID
 }

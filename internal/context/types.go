@@ -50,6 +50,16 @@ type SummaryUpdateReport struct {
 	ReasoningLength    int
 	FailureCount       int
 	RetryAfter         string
+	PromptAudit        *SummaryPromptAudit
+	RepairPromptAudit  *SummaryPromptAudit
+}
+
+type SummaryPromptAudit struct {
+	Purpose      string
+	SystemPrompt string
+	Components   []promptcenter.RenderComponent
+	Model        string
+	Attempted    bool
 }
 
 // ContextState is the persisted session-level context metadata stored in sessions.metadata.

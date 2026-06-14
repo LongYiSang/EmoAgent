@@ -29,13 +29,17 @@ func TestPromptCenterAdminServiceOverridePrecedence(t *testing.T) {
 	}
 	defaultText := detail.DefaultText
 
-	if err := app.UpsertPromptOverride(ctx, promptcenter.UpsertOverrideRequest{
+	resp, err := app.UpsertPromptOverride(ctx, promptcenter.UpsertOverrideRequest{
 		ComponentID:  componentID,
 		ScopeType:    promptcenter.ScopeGlobal,
 		Mode:         promptcenter.OverrideModeCustom,
 		OverrideText: "global text",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("UpsertPromptOverride global: %v", err)
+	}
+	if !resp.OK || len(resp.Warnings) == 0 {
+		t.Fatalf("expected lint warnings for minimal global override, resp=%#v", resp)
 	}
 	detail, err = app.GetPromptComponent(ctx, componentID, "agent-a")
 	if err != nil {
@@ -47,8 +51,11 @@ func TestPromptCenterAdminServiceOverridePrecedence(t *testing.T) {
 	if detail.GlobalOverride.DefaultHashAtEdit == "" || detail.GlobalOverride.DefaultHashAtEdit != detail.DefaultHash {
 		t.Fatalf("global default hash at edit = %#v default=%s", detail.GlobalOverride, detail.DefaultHash)
 	}
+	if detail.GlobalOverrideStale || detail.AgentOverrideStale || detail.EffectiveOverrideStale {
+		t.Fatalf("fresh stale flags = %#v", detail)
+	}
 
-	if err := app.UpsertPromptOverride(ctx, promptcenter.UpsertOverrideRequest{
+	if _, err := app.UpsertPromptOverride(ctx, promptcenter.UpsertOverrideRequest{
 		ComponentID:  componentID,
 		ScopeType:    promptcenter.ScopeAgent,
 		ScopeID:      "agent-a",
@@ -65,7 +72,33 @@ func TestPromptCenterAdminServiceOverridePrecedence(t *testing.T) {
 		t.Fatalf("agent detail = %#v", detail)
 	}
 
-	if err := app.UpsertPromptOverride(ctx, promptcenter.UpsertOverrideRequest{
+	if err := db.UpsertOverride(ctx, promptcenter.UpsertOverrideRequest{
+		ComponentID:            componentID,
+		ScopeType:              promptcenter.ScopeGlobal,
+		Mode:                   promptcenter.OverrideModeCustom,
+		OverrideText:           "stale global text",
+		DefaultHashAtEdit:      "old-default-hash",
+		TrustDefaultHashAtEdit: true,
+	}); err != nil {
+		t.Fatalf("UpsertOverride stale global: %v", err)
+	}
+	detail, err = app.GetPromptComponent(ctx, componentID, "agent-a")
+	if err != nil {
+		t.Fatalf("GetPromptComponent stale global with agent override: %v", err)
+	}
+	if !detail.GlobalOverrideStale || detail.AgentOverrideStale || detail.EffectiveOverrideStale {
+		t.Fatalf("stale global hidden by agent override flags = %#v", detail)
+	}
+	if _, err := app.UpsertPromptOverride(ctx, promptcenter.UpsertOverrideRequest{
+		ComponentID:  componentID,
+		ScopeType:    promptcenter.ScopeGlobal,
+		Mode:         promptcenter.OverrideModeCustom,
+		OverrideText: "global text",
+	}); err != nil {
+		t.Fatalf("restore global override: %v", err)
+	}
+
+	if _, err := app.UpsertPromptOverride(ctx, promptcenter.UpsertOverrideRequest{
 		ComponentID: componentID,
 		ScopeType:   promptcenter.ScopeAgent,
 		ScopeID:     "agent-a",
@@ -151,10 +184,87 @@ func TestPromptCenterAdminServiceOverridePrecedence(t *testing.T) {
 	}
 }
 
+func TestPromptCenterAdminServiceFullEmotionPreview(t *testing.T) {
+	app, _ := newPromptCenterTestApp(t)
+	setTestPersonas(app, map[string]*config.Persona{
+		"default": {Name: "Default", SystemPrompt: "You are warm."},
+	})
+
+	preview, err := app.PreviewPrompt(context.Background(), promptcenter.PromptPreviewRequest{
+		Mode:       "full",
+		Purpose:    "emotion_chat_full",
+		AgentID:    "agent-a",
+		PersonaKey: "default",
+	})
+	if err != nil {
+		t.Fatalf("PreviewPrompt full: %v", err)
+	}
+	for _, snippet := range []string{"<persona>", "You are warm.", "<operating_contract>", "<runtime_context>", "<internal_context_data_policy>"} {
+		if !strings.Contains(preview.RenderedText, snippet) {
+			t.Fatalf("full preview missing %q:\n%s", snippet, preview.RenderedText)
+		}
+	}
+	for _, id := range []string{
+		promptcenter.ComponentEmotionPersona,
+		promptcenter.ComponentEmotionRuntimeContext,
+		promptcenter.ComponentEmotionOperatingContract,
+		promptcenter.ComponentEmotionInternalContextDataPolicy,
+	} {
+		if findPreviewComponent(preview.Components, id).ComponentID == "" {
+			t.Fatalf("preview components = %#v, missing %s", preview.Components, id)
+		}
+	}
+	if preview.FinalHash != promptcenter.HashText(preview.RenderedText) {
+		t.Fatalf("FinalHash = %q, want rendered hash", preview.FinalHash)
+	}
+	for _, code := range []string{"no_session", "memory_preview_disabled", "agent_affect_preview_disabled"} {
+		if !hasPreviewWarning(preview.Warnings, code) {
+			t.Fatalf("warnings = %#v, missing %s", preview.Warnings, code)
+		}
+	}
+
+	testConfig(app).AgentAffect.Enabled = true
+	withAffect, err := app.PreviewPrompt(context.Background(), promptcenter.PromptPreviewRequest{
+		Mode:               "full",
+		Purpose:            "emotion_chat_full",
+		AgentID:            "agent-a",
+		PersonaKey:         "default",
+		IncludeAgentAffect: true,
+	})
+	if err != nil {
+		t.Fatalf("PreviewPrompt full with affect: %v", err)
+	}
+	if !strings.Contains(withAffect.RenderedText, "[Agent Mood]") {
+		t.Fatalf("full preview missing agent affect block:\n%s", withAffect.RenderedText)
+	}
+	if findPreviewComponent(withAffect.Components, promptcenter.ComponentAgentAffectPromptBlock).ComponentID == "" {
+		t.Fatalf("preview components missing agent affect: %#v", withAffect.Components)
+	}
+	if hasPreviewWarning(withAffect.Warnings, "agent_affect_preview_disabled") {
+		t.Fatalf("with affect warnings = %#v", withAffect.Warnings)
+	}
+
+	withMemory, err := app.PreviewPrompt(context.Background(), promptcenter.PromptPreviewRequest{
+		Mode:          "full",
+		Purpose:       "emotion_chat_full",
+		AgentID:       "agent-a",
+		PersonaKey:    "default",
+		SessionID:     "session-preview",
+		UserMessage:   "hello",
+		IncludeMemory: true,
+	})
+	if err != nil {
+		t.Fatalf("PreviewPrompt full with memory: %v", err)
+	}
+	if !hasPreviewWarning(withMemory.Warnings, "memory_preview_unavailable") {
+		t.Fatalf("with memory warnings = %#v", withMemory.Warnings)
+	}
+}
+
 func TestPromptCenterAdminServiceValidationRejectsMissingAgent(t *testing.T) {
 	app, _ := newPromptCenterTestApp(t)
 	ctx := context.Background()
-	err := app.UpsertPromptOverride(ctx, promptcenter.UpsertOverrideRequest{
+	_, err := app.UpsertPromptOverride(ctx, promptcenter.UpsertOverrideRequest{
 		ComponentID:  promptcenter.ComponentEmotionOperatingContract,
 		ScopeType:    promptcenter.ScopeAgent,
 		ScopeID:      "missing-agent",
@@ -245,4 +355,22 @@ func findPromptDetail(t *testing.T, details []promptcenter.PromptComponentDetail
 	}
 	t.Fatalf("detail %s not found", id)
 	return promptcenter.PromptComponentDetail{}
+}
+
+func findPreviewComponent(components []promptcenter.RenderComponent, id string) promptcenter.RenderComponent {
+	for _, component := range components {
+		if component.ComponentID == id {
+			return component
+		}
+	}
+	return promptcenter.RenderComponent{}
+}
+
+func hasPreviewWarning(warnings []promptcenter.PromptPreviewWarning, code string) bool {
+	for _, warning := range warnings {
+		if warning.Code == code {
+			return true
+		}
+	}
+	return false
 }

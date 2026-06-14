@@ -3,11 +3,14 @@ import type { AdminStatusControls } from './useAdminStatus';
 import {
   deletePromptOverride,
   loadPromptComponents,
+  loadPromptSnapshot,
   loadPromptSnapshots,
   previewPrompt,
   savePromptOverride,
   type PromptComponentDetail,
+  type PromptLintWarning,
   type PromptPreviewResponse,
+  type PromptSnapshotDetail,
   type PromptSnapshotSummary,
 } from '../protocol/promptCenterApi';
 
@@ -21,7 +24,14 @@ export function usePromptCenterAdmin({ setStatus, showError }: PromptCenterAdmin
   const [agentDraft, setAgentDraft] = useState('');
   const [showOverriddenOnly, setShowOverriddenOnly] = useState(false);
   const [preview, setPreview] = useState<PromptPreviewResponse | null>(null);
+  const [lintWarnings, setLintWarnings] = useState<PromptLintWarning[]>([]);
   const [snapshots, setSnapshots] = useState<PromptSnapshotSummary[]>([]);
+  const [selectedSnapshotID, setSelectedSnapshotID] = useState('');
+  const [snapshotDetail, setSnapshotDetail] = useState<PromptSnapshotDetail | null>(null);
+  const [fullPreviewSessionID, setFullPreviewSessionID] = useState('');
+  const [fullPreviewUserMessage, setFullPreviewUserMessage] = useState('');
+  const [includeMemoryPreview, setIncludeMemoryPreview] = useState(false);
+  const [includeAgentAffectPreview, setIncludeAgentAffectPreview] = useState(false);
 
   const selectedComponent = useMemo(
     () => components.find(item => item.id === selectedComponentID) || null,
@@ -35,8 +45,14 @@ export function usePromptCenterAdmin({ setStatus, showError }: PromptCenterAdmin
 
   const selectPromptComponent = useCallback((id: string, source = components) => {
     setSelectedComponentID(id);
+    setLintWarnings([]);
     applyDrafts(source.find(item => item.id === id) || null);
   }, [applyDrafts, components]);
+
+  const confirmProtocolSensitiveSave = useCallback(() => {
+    if (selectedComponent?.risk_level !== 'protocol_sensitive') return true;
+    return window.confirm('此提示词会影响协议、工具调用或 JSON 输出。确认保存当前修改？');
+  }, [selectedComponent]);
 
   const reloadPromptCenter = useCallback(async (agentID = selectedAgentID) => {
     setStatus('正在加载提示词中心...');
@@ -55,6 +71,8 @@ export function usePromptCenterAdmin({ setStatus, showError }: PromptCenterAdmin
       await reloadPromptCenter(agentID);
       const nextSnapshots = await loadPromptSnapshots({ agent_id: agentID, limit: 20 });
       setSnapshots(nextSnapshots);
+      setSelectedSnapshotID('');
+      setSnapshotDetail(null);
     } catch (error) {
       showError(error);
     }
@@ -62,32 +80,49 @@ export function usePromptCenterAdmin({ setStatus, showError }: PromptCenterAdmin
 
   const reloadPromptSnapshots = useCallback(async (agentID = selectedAgentID) => {
     try {
-      setSnapshots(await loadPromptSnapshots({ agent_id: agentID, limit: 20 }));
+      const items = await loadPromptSnapshots({ agent_id: agentID, limit: 20 });
+      setSnapshots(items);
+      if (selectedSnapshotID && !items.some(item => item.id === selectedSnapshotID)) {
+        setSelectedSnapshotID('');
+        setSnapshotDetail(null);
+      }
     } catch (error) {
       showError(error);
     }
-  }, [selectedAgentID, showError]);
+  }, [selectedAgentID, selectedSnapshotID, showError]);
+
+  const selectPromptSnapshot = useCallback(async (id: string) => {
+    try {
+      setSelectedSnapshotID(id);
+      setSnapshotDetail(await loadPromptSnapshot(id));
+    } catch (error) {
+      showError(error);
+    }
+  }, [showError]);
 
   const saveGlobalOverride = useCallback(async () => {
     if (!selectedComponent) return;
+    if (!confirmProtocolSensitiveSave()) return;
     try {
-      await savePromptOverride({
+      const resp = await savePromptOverride({
         component_id: selectedComponent.id,
         scope_type: 'global',
         mode: 'custom',
         override_text: globalDraft,
       });
       await reloadPromptCenter(selectedAgentID);
+      setLintWarnings(resp.warnings || []);
       setStatus('全局覆盖已保存');
     } catch (error) {
       showError(error);
     }
-  }, [globalDraft, reloadPromptCenter, selectedAgentID, selectedComponent, setStatus, showError]);
+  }, [confirmProtocolSensitiveSave, globalDraft, reloadPromptCenter, selectedAgentID, selectedComponent, setStatus, showError]);
 
   const resetGlobalOverride = useCallback(async () => {
     if (!selectedComponent) return;
     try {
       await deletePromptOverride(selectedComponent.id, 'global');
+      setLintWarnings([]);
       await reloadPromptCenter(selectedAgentID);
       setStatus('全局已恢复内置默认');
     } catch (error) {
@@ -97,8 +132,9 @@ export function usePromptCenterAdmin({ setStatus, showError }: PromptCenterAdmin
 
   const saveAgentOverride = useCallback(async () => {
     if (!selectedComponent || !selectedAgentID) return;
+    if (!confirmProtocolSensitiveSave()) return;
     try {
-      await savePromptOverride({
+      const resp = await savePromptOverride({
         component_id: selectedComponent.id,
         scope_type: 'agent',
         scope_id: selectedAgentID,
@@ -106,16 +142,18 @@ export function usePromptCenterAdmin({ setStatus, showError }: PromptCenterAdmin
         override_text: agentDraft,
       });
       await reloadPromptCenter(selectedAgentID);
+      setLintWarnings(resp.warnings || []);
       setStatus('Agent 自定义已保存');
     } catch (error) {
       showError(error);
     }
-  }, [agentDraft, reloadPromptCenter, selectedAgentID, selectedComponent, setStatus, showError]);
+  }, [agentDraft, confirmProtocolSensitiveSave, reloadPromptCenter, selectedAgentID, selectedComponent, setStatus, showError]);
 
   const inheritGlobal = useCallback(async () => {
     if (!selectedComponent || !selectedAgentID) return;
     try {
       await deletePromptOverride(selectedComponent.id, 'agent', selectedAgentID);
+      setLintWarnings([]);
       await reloadPromptCenter(selectedAgentID);
       setStatus('Agent 已继承全局设置');
     } catch (error) {
@@ -125,19 +163,21 @@ export function usePromptCenterAdmin({ setStatus, showError }: PromptCenterAdmin
 
   const useEmbeddedDefault = useCallback(async () => {
     if (!selectedComponent || !selectedAgentID) return;
+    if (!confirmProtocolSensitiveSave()) return;
     try {
-      await savePromptOverride({
+      const resp = await savePromptOverride({
         component_id: selectedComponent.id,
         scope_type: 'agent',
         scope_id: selectedAgentID,
         mode: 'use_default',
       });
       await reloadPromptCenter(selectedAgentID);
+      setLintWarnings(resp.warnings || []);
       setStatus('Agent 已使用内置默认');
     } catch (error) {
       showError(error);
     }
-  }, [reloadPromptCenter, selectedAgentID, selectedComponent, setStatus, showError]);
+  }, [confirmProtocolSensitiveSave, reloadPromptCenter, selectedAgentID, selectedComponent, setStatus, showError]);
 
   const previewEffectivePrompt = useCallback(async () => {
     if (!selectedComponent) return;
@@ -152,6 +192,25 @@ export function usePromptCenterAdmin({ setStatus, showError }: PromptCenterAdmin
       showError(error);
     }
   }, [selectedAgentID, selectedComponent, setStatus, showError]);
+
+  const previewFullEmotionPrompt = useCallback(async () => {
+    if (!selectedAgentID) return;
+    try {
+      setPreview(await previewPrompt({
+        mode: 'full',
+        agent_id: selectedAgentID,
+        persona_key: '',
+        purpose: 'emotion_chat_full',
+        session_id: fullPreviewSessionID,
+        user_message: fullPreviewUserMessage,
+        include_memory: includeMemoryPreview,
+        include_agent_affect: includeAgentAffectPreview,
+      }));
+      setStatus('完整 Emotion prompt 预览已更新');
+    } catch (error) {
+      showError(error);
+    }
+  }, [fullPreviewSessionID, fullPreviewUserMessage, includeAgentAffectPreview, includeMemoryPreview, selectedAgentID, setStatus, showError]);
 
   const visibleComponents = useMemo(() => {
     if (!showOverriddenOnly) return components;
@@ -168,19 +227,32 @@ export function usePromptCenterAdmin({ setStatus, showError }: PromptCenterAdmin
     agentDraft,
     showOverriddenOnly,
     preview,
+    lintWarnings,
     snapshots,
+    selectedSnapshotID,
+    snapshotDetail,
+    fullPreviewSessionID,
+    fullPreviewUserMessage,
+    includeMemoryPreview,
+    includeAgentAffectPreview,
     reloadPromptCenter,
     setPromptAgentID,
     selectPromptComponent,
+    selectPromptSnapshot,
     setGlobalDraft,
     setAgentDraft,
     setShowOverriddenOnly,
+    setFullPreviewSessionID,
+    setFullPreviewUserMessage,
+    setIncludeMemoryPreview,
+    setIncludeAgentAffectPreview,
     saveGlobalOverride,
     resetGlobalOverride,
     saveAgentOverride,
     inheritGlobal,
     useEmbeddedDefault,
     previewEffectivePrompt,
+    previewFullEmotionPrompt,
     reloadPromptSnapshots,
   }), [
     components,
@@ -192,16 +264,25 @@ export function usePromptCenterAdmin({ setStatus, showError }: PromptCenterAdmin
     agentDraft,
     showOverriddenOnly,
     preview,
+    lintWarnings,
     snapshots,
+    selectedSnapshotID,
+    snapshotDetail,
+    fullPreviewSessionID,
+    fullPreviewUserMessage,
+    includeMemoryPreview,
+    includeAgentAffectPreview,
     reloadPromptCenter,
     setPromptAgentID,
     selectPromptComponent,
+    selectPromptSnapshot,
     saveGlobalOverride,
     resetGlobalOverride,
     saveAgentOverride,
     inheritGlobal,
     useEmbeddedDefault,
     previewEffectivePrompt,
+    previewFullEmotionPrompt,
     reloadPromptSnapshots,
   ]);
 }

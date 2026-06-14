@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/longyisang/emoagent/internal/promptcenter"
 )
@@ -165,5 +166,101 @@ func TestPromptRenderSnapshotCRUD(t *testing.T) {
 	}
 	if len(rawComponents) != 1 || rawComponents[0].ComponentID != promptcenter.ComponentEmotionOperatingContract {
 		t.Fatalf("components_json decoded = %#v", rawComponents)
+	}
+}
+
+func TestSnapshotDetailDecodesExtendedComponents(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	component := promptcenter.DynamicComponent(promptcenter.ComponentEmotionPersona, "persona", promptcenter.SourcePersona, "system", map[string]any{
+		"persona_key": "default",
+	})
+	snapshot, err := promptcenter.BuildRenderSnapshot(promptcenter.RenderSnapshot{
+		ID:           "snap-extended",
+		Purpose:      "emotion_chat",
+		RenderedText: "system",
+		Components:   []promptcenter.RenderComponent{component},
+	})
+	if err != nil {
+		t.Fatalf("BuildRenderSnapshot: %v", err)
+	}
+	if err := db.SaveRenderSnapshot(ctx, snapshot); err != nil {
+		t.Fatalf("SaveRenderSnapshot: %v", err)
+	}
+
+	got, err := db.GetRenderSnapshot(ctx, "snap-extended")
+	if err != nil {
+		t.Fatalf("GetRenderSnapshot: %v", err)
+	}
+	if got == nil || len(got.Components) != 1 {
+		t.Fatalf("snapshot = %#v", got)
+	}
+	if !got.Components[0].Dynamic || got.Components[0].SectionName != "persona" || got.Components[0].TextLength != len([]rune("system")) {
+		t.Fatalf("extended component = %#v", got.Components[0])
+	}
+}
+
+func TestCleanupRenderSnapshotsByRetentionDays(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	savePromptSnapshotForCleanup(t, db, "old", now.Add(-48*time.Hour))
+	savePromptSnapshotForCleanup(t, db, "new", now)
+
+	result, err := db.CleanupRenderSnapshots(ctx, 1, 0)
+	if err != nil {
+		t.Fatalf("CleanupRenderSnapshots: %v", err)
+	}
+	if result.DeletedByRetention != 1 {
+		t.Fatalf("DeletedByRetention = %d, want 1", result.DeletedByRetention)
+	}
+	if got, err := db.GetRenderSnapshot(ctx, "old"); err != nil || got != nil {
+		t.Fatalf("old snapshot after cleanup = %#v, err=%v", got, err)
+	}
+	if got, err := db.GetRenderSnapshot(ctx, "new"); err != nil || got == nil {
+		t.Fatalf("new snapshot after cleanup = %#v, err=%v", got, err)
+	}
+}
+
+func TestCleanupRenderSnapshotsByMaxRows(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	base := time.Now().UTC()
+	savePromptSnapshotForCleanup(t, db, "oldest", base.Add(-2*time.Hour))
+	savePromptSnapshotForCleanup(t, db, "middle", base.Add(-1*time.Hour))
+	savePromptSnapshotForCleanup(t, db, "newest", base)
+
+	result, err := db.CleanupRenderSnapshots(ctx, 0, 2)
+	if err != nil {
+		t.Fatalf("CleanupRenderSnapshots: %v", err)
+	}
+	if result.DeletedByMaxRows != 1 {
+		t.Fatalf("DeletedByMaxRows = %d, want 1", result.DeletedByMaxRows)
+	}
+	if got, err := db.GetRenderSnapshot(ctx, "oldest"); err != nil || got != nil {
+		t.Fatalf("oldest snapshot after cleanup = %#v, err=%v", got, err)
+	}
+	items, err := db.ListRenderSnapshots(ctx, promptcenter.SnapshotFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListRenderSnapshots: %v", err)
+	}
+	if len(items) != 2 || items[0].ID != "newest" || items[1].ID != "middle" {
+		t.Fatalf("remaining snapshots = %#v, want newest and middle", items)
+	}
+}
+
+func savePromptSnapshotForCleanup(t *testing.T, db *DB, id string, createdAt time.Time) {
+	t.Helper()
+	snapshot, err := promptcenter.BuildRenderSnapshot(promptcenter.RenderSnapshot{
+		ID:           id,
+		Purpose:      "emotion_chat",
+		RenderedText: "system " + id,
+		CreatedAt:    createdAt.Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		t.Fatalf("BuildRenderSnapshot(%s): %v", id, err)
+	}
+	if err := db.SaveRenderSnapshot(context.Background(), snapshot); err != nil {
+		t.Fatalf("SaveRenderSnapshot(%s): %v", id, err)
 	}
 }

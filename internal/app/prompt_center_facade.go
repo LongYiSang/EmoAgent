@@ -22,10 +22,10 @@ func (a *App) GetPromptComponent(ctx context.Context, id, agentID string) (promp
 	return services.PromptCenter.GetComponent(ctx, id, agentID)
 }
 
-func (a *App) UpsertPromptOverride(ctx context.Context, req promptcenter.UpsertOverrideRequest) error {
+func (a *App) UpsertPromptOverride(ctx context.Context, req promptcenter.UpsertOverrideRequest) (promptcenter.UpsertOverrideResponse, error) {
 	services, err := a.services()
 	if err != nil {
-		return err
+		return promptcenter.UpsertOverrideResponse{}, err
 	}
 	return services.PromptCenter.UpsertOverride(ctx, req)
 }

@@ -11,11 +11,24 @@ const (
 	SourceGlobalOverride  = "global_override"
 	SourceAgentOverride   = "agent_override"
 	SourceAgentDefault    = "agent_default"
+
+	SourcePersona            = "persona"
+	SourceRuntimeDynamic     = "runtime_dynamic"
+	SourcePendingWorkDynamic = "pending_work_dynamic"
+	SourceMemoryDynamic      = "memory_dynamic"
+	SourceAgentAffectDynamic = "agent_affect_dynamic"
+	SourceExtraSystemDynamic = "extra_system_dynamic"
 )
 
 const (
 	ComponentEmotionOperatingContract         = "emotion.operating_contract"
 	ComponentEmotionInternalContextDataPolicy = "emotion.internal_context_data_policy"
+	ComponentEmotionPersona                   = "emotion.persona"
+	ComponentEmotionRuntimeContext            = "emotion.runtime_context"
+	ComponentEmotionPendingWork               = "emotion.pending_work"
+	ComponentMemoryPromptBlock                = "memory.prompt_block"
+	ComponentAgentAffectPromptBlock           = "agent_affect.prompt_block"
+	ComponentTurnExtraSystem                  = "turn.extra_system"
 	ComponentRunningSummarySystem             = "context.running_summary.system"
 	ComponentRunningSummaryRepair             = "context.running_summary.repair"
 	ComponentWorkRuntimeDeciderSystem         = "work.runtime_decider.system"
@@ -96,12 +109,16 @@ type DeleteOverrideRequest struct {
 
 type ResolvedPrompt struct {
 	ComponentID       string `json:"component_id"`
+	Name              string `json:"name,omitempty"`
 	Text              string `json:"text"`
 	Source            string `json:"source"`
 	ScopeType         string `json:"scope_type"`
 	ScopeID           string `json:"scope_id"`
 	DefaultHash       string `json:"default_hash"`
 	EffectiveHash     string `json:"effective_hash"`
+	Kind              string `json:"kind,omitempty"`
+	Editable          bool   `json:"editable"`
+	TextLength        int    `json:"text_length,omitempty"`
 	DefaultHashAtEdit string `json:"default_hash_at_edit,omitempty"`
 	StaleOverride     bool   `json:"stale_override"`
 }

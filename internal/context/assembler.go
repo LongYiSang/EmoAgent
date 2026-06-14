@@ -151,16 +151,26 @@ func buildEmotionContext(ctx stdcontext.Context, persona *config.Persona, histor
 func buildEmotionSystemPrompt(ctx stdcontext.Context, persona *config.Persona, pendingDecisions any, env runtimeenv.Facts, resolver *promptcenter.Resolver, scope promptcenter.PromptScope) (string, []promptcenter.RenderComponent) {
 	operatingContract, operatingComponent := resolvePromptComponent(ctx, resolver, promptcenter.ComponentEmotionOperatingContract, scope, delegationGuideline)
 	internalPolicy, policyComponent := resolvePromptComponent(ctx, resolver, promptcenter.ComponentEmotionInternalContextDataPolicy, scope, internalContextDataPolicy)
+	personaText := buildPersonaPrompt(persona)
+	runtimeText := buildRuntimeContextText(env)
+	pendingNote := buildPendingNoteIfAny(pendingDecisions)
 	sections := []string{
-		wrapSystemSection("persona", buildPersonaPrompt(persona)),
+		wrapSystemSection("persona", personaText),
 		wrapSystemSection("operating_contract", operatingContract),
-		wrapSystemSection("runtime_context", buildRuntimeContextText(env)),
+		wrapSystemSection("runtime_context", runtimeText),
 		wrapSystemSection("internal_context_data_policy", internalPolicy),
 	}
-	if note := buildPendingNoteIfAny(pendingDecisions); note != "" {
-		sections = append(sections, wrapSystemSection("pending_work", note))
+	components := []promptcenter.RenderComponent{
+		promptcenter.DynamicComponent(promptcenter.ComponentEmotionPersona, "persona", promptcenter.SourcePersona, personaText, map[string]any{"persona_key": scope.PersonaKey}),
+		withComponentSection(operatingComponent, "operating_contract"),
+		promptcenter.DynamicComponent(promptcenter.ComponentEmotionRuntimeContext, "runtime_context", promptcenter.SourceRuntimeDynamic, runtimeText, nil),
+		withComponentSection(policyComponent, "internal_context_data_policy"),
 	}
-	return strings.Join(sections, "\n\n"), []promptcenter.RenderComponent{operatingComponent, policyComponent}
+	if pendingNote != "" {
+		sections = append(sections, wrapSystemSection("pending_work", pendingNote))
+		components = append(components, promptcenter.DynamicComponent(promptcenter.ComponentEmotionPendingWork, "pending_work", promptcenter.SourcePendingWorkDynamic, pendingNote, nil))
+	}
+	return strings.Join(sections, "\n\n"), components
 }
 
 func resolvePromptComponent(ctx stdcontext.Context, resolver *promptcenter.Resolver, componentID string, scope promptcenter.PromptScope, fallbackText string) (string, promptcenter.RenderComponent) {
@@ -189,12 +199,22 @@ func resolvePromptComponent(ctx stdcontext.Context, resolver *promptcenter.Resol
 func renderComponentFromResolved(resolved promptcenter.ResolvedPrompt) promptcenter.RenderComponent {
 	return promptcenter.RenderComponent{
 		ComponentID:   resolved.ComponentID,
+		Name:          resolved.Name,
 		Source:        resolved.Source,
 		ScopeType:     resolved.ScopeType,
 		ScopeID:       resolved.ScopeID,
 		DefaultHash:   resolved.DefaultHash,
 		EffectiveHash: resolved.EffectiveHash,
+		Kind:          resolved.Kind,
+		Editable:      resolved.Editable,
+		Dynamic:       false,
+		TextLength:    resolved.TextLength,
 	}
+}
+
+func withComponentSection(component promptcenter.RenderComponent, sectionName string) promptcenter.RenderComponent {
+	component.SectionName = sectionName
+	return component
 }
 
 func buildPersonaPrompt(persona *config.Persona) string {

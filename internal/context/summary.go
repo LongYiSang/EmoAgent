@@ -195,7 +195,14 @@ func UpdateRunningSummaryWithParamsAndPromptResolver(
 	report.Attempted = true
 	report.DeltaCount = len(delta)
 
-	systemPrompt, _ := resolvePromptComponent(ctx, resolver, promptcenter.ComponentRunningSummarySystem, scope, summarySystemPrompt)
+	systemPrompt, systemComponent := resolvePromptComponent(ctx, resolver, promptcenter.ComponentRunningSummarySystem, scope, summarySystemPrompt)
+	report.PromptAudit = &SummaryPromptAudit{
+		Purpose:      "context.running_summary.update",
+		SystemPrompt: systemPrompt,
+		Components:   []promptcenter.RenderComponent{withComponentSection(systemComponent, "running_summary_system")},
+		Model:        model,
+		Attempted:    true,
+	}
 	req, err := buildSummaryRequestWithParamsAndSystemPrompt(model, params, persona, current.RunningSummary, delta, systemPrompt)
 	if err != nil {
 		markSummaryFailure(&current, err, now, defaultSummaryFailureCooldown)
@@ -214,7 +221,14 @@ func UpdateRunningSummaryWithParamsAndPromptResolver(
 
 	nextSummary, err := parseRunningSummaryResponse(resp)
 	if err != nil {
-		repairPrompt, _ := resolvePromptComponent(ctx, resolver, promptcenter.ComponentRunningSummaryRepair, scope, summaryRepairSystemPrompt)
+		repairPrompt, repairComponent := resolvePromptComponent(ctx, resolver, promptcenter.ComponentRunningSummaryRepair, scope, summaryRepairSystemPrompt)
+		report.RepairPromptAudit = &SummaryPromptAudit{
+			Purpose:      "context.running_summary.repair",
+			SystemPrompt: repairPrompt,
+			Components:   []promptcenter.RenderComponent{withComponentSection(repairComponent, "running_summary_repair")},
+			Model:        model,
+			Attempted:    true,
+		}
 		repairReq, repairBuildErr := buildSummaryRepairRequestWithSystemPrompt(req, resp, err, repairPrompt)
 		if repairBuildErr == nil {
 			repairResp, repairErr := client.Chat(ctx, repairReq)

@@ -150,12 +150,24 @@ func TestBuildEmotionContextPromptCenterResolverPreservesDefaultsAndAppliesOverr
 	if normalizeRuntimeContextForTest(resolved.System) != normalizeRuntimeContextForTest(legacy.System) {
 		t.Fatalf("no-override system changed\nlegacy:\n%s\nresolved:\n%s", legacy.System, resolved.System)
 	}
-	if len(resolved.PromptComponents) != 2 {
-		t.Fatalf("PromptComponents = %#v, want operating contract and policy", resolved.PromptComponents)
+	personaComponent := findPromptComponent(resolved.PromptComponents, promptcenter.ComponentEmotionPersona)
+	runtimeComponent := findPromptComponent(resolved.PromptComponents, promptcenter.ComponentEmotionRuntimeContext)
+	operatingComponent := findPromptComponent(resolved.PromptComponents, promptcenter.ComponentEmotionOperatingContract)
+	policyComponent := findPromptComponent(resolved.PromptComponents, promptcenter.ComponentEmotionInternalContextDataPolicy)
+	for _, component := range []promptcenter.RenderComponent{personaComponent, runtimeComponent, operatingComponent, policyComponent} {
+		if component.ComponentID == "" {
+			t.Fatalf("PromptComponents = %#v, want persona/runtime/operating/policy", resolved.PromptComponents)
+		}
 	}
-	for _, component := range resolved.PromptComponents {
-		if component.Source != promptcenter.SourceEmbeddedDefault {
-			t.Fatalf("default prompt component = %#v, want embedded default", component)
+	if !personaComponent.Dynamic || personaComponent.Source != promptcenter.SourcePersona {
+		t.Fatalf("persona component = %#v, want persona dynamic source", personaComponent)
+	}
+	if !runtimeComponent.Dynamic || runtimeComponent.Source != promptcenter.SourceRuntimeDynamic {
+		t.Fatalf("runtime component = %#v, want runtime dynamic source", runtimeComponent)
+	}
+	for _, component := range []promptcenter.RenderComponent{operatingComponent, policyComponent} {
+		if component.Source != promptcenter.SourceEmbeddedDefault || component.Dynamic {
+			t.Fatalf("default static prompt component = %#v, want embedded default static", component)
 		}
 	}
 
@@ -171,7 +183,7 @@ func TestBuildEmotionContextPromptCenterResolverPreservesDefaultsAndAppliesOverr
 	if err != nil {
 		t.Fatalf("BuildEmotionContextWithStateAndPromptResolver global: %v", err)
 	}
-	if !strings.Contains(resolved.System, "<operating_contract>\nglobal operating contract\n</operating_contract>") || resolved.PromptComponents[0].Source != promptcenter.SourceGlobalOverride {
+	if !strings.Contains(resolved.System, "<operating_contract>\nglobal operating contract\n</operating_contract>") || findPromptComponent(resolved.PromptComponents, promptcenter.ComponentEmotionOperatingContract).Source != promptcenter.SourceGlobalOverride {
 		t.Fatalf("global override not applied: system=%s components=%#v", resolved.System, resolved.PromptComponents)
 	}
 
@@ -188,7 +200,7 @@ func TestBuildEmotionContextPromptCenterResolverPreservesDefaultsAndAppliesOverr
 	if err != nil {
 		t.Fatalf("BuildEmotionContextWithStateAndPromptResolver agent: %v", err)
 	}
-	if !strings.Contains(resolved.System, "<operating_contract>\nagent operating contract\n</operating_contract>") || resolved.PromptComponents[0].Source != promptcenter.SourceAgentOverride {
+	if !strings.Contains(resolved.System, "<operating_contract>\nagent operating contract\n</operating_contract>") || findPromptComponent(resolved.PromptComponents, promptcenter.ComponentEmotionOperatingContract).Source != promptcenter.SourceAgentOverride {
 		t.Fatalf("agent override not applied: system=%s components=%#v", resolved.System, resolved.PromptComponents)
 	}
 
@@ -204,7 +216,7 @@ func TestBuildEmotionContextPromptCenterResolverPreservesDefaultsAndAppliesOverr
 	if err != nil {
 		t.Fatalf("BuildEmotionContextWithStateAndPromptResolver use_default: %v", err)
 	}
-	if strings.Contains(resolved.System, "global operating contract") || resolved.PromptComponents[0].Source != promptcenter.SourceAgentDefault {
+	if strings.Contains(resolved.System, "global operating contract") || findPromptComponent(resolved.PromptComponents, promptcenter.ComponentEmotionOperatingContract).Source != promptcenter.SourceAgentDefault {
 		t.Fatalf("agent use_default should bypass global: system=%s components=%#v", resolved.System, resolved.PromptComponents)
 	}
 	if !strings.Contains(resolved.System, "Emotion Work Delegation Contract") {
@@ -218,7 +230,7 @@ func TestBuildEmotionContextPromptCenterResolverPreservesDefaultsAndAppliesOverr
 	if err != nil {
 		t.Fatalf("BuildEmotionContextWithStateAndPromptResolver delete: %v", err)
 	}
-	if !strings.Contains(resolved.System, "global operating contract") || resolved.PromptComponents[0].Source != promptcenter.SourceGlobalOverride {
+	if !strings.Contains(resolved.System, "global operating contract") || findPromptComponent(resolved.PromptComponents, promptcenter.ComponentEmotionOperatingContract).Source != promptcenter.SourceGlobalOverride {
 		t.Fatalf("agent delete should inherit global: system=%s components=%#v", resolved.System, resolved.PromptComponents)
 	}
 }
@@ -534,6 +546,10 @@ func TestBuildEmotionContextWithPendingSummariesAddsResumeNote(t *testing.T) {
 	if !strings.Contains(assembled.System, "approval_request_id") {
 		t.Fatalf("system prompt should explain resume_work approval_request_id usage: %s", assembled.System)
 	}
+	pendingComponent := findPromptComponent(assembled.PromptComponents, promptcenter.ComponentEmotionPendingWork)
+	if !pendingComponent.Dynamic || pendingComponent.Source != promptcenter.SourcePendingWorkDynamic {
+		t.Fatalf("pending component = %#v, want pending work dynamic", pendingComponent)
+	}
 }
 
 func TestBuildEmotionContext_IncludesToolApprovalGuidance(t *testing.T) {
@@ -780,7 +796,7 @@ func TestRunningSummaryUsesPromptCenterResolver(t *testing.T) {
 		},
 	}
 
-	_, _, err = ctxpkg.UpdateRunningSummaryWithParamsAndPromptResolver(
+	_, report, err := ctxpkg.UpdateRunningSummaryWithParamsAndPromptResolver(
 		context.Background(),
 		client,
 		"summary-model",
@@ -797,6 +813,15 @@ func TestRunningSummaryUsesPromptCenterResolver(t *testing.T) {
 	}
 	if client.lastReq.System != "custom summary system" {
 		t.Fatalf("summary system prompt = %q, want custom override", client.lastReq.System)
+	}
+	if report.PromptAudit == nil {
+		t.Fatalf("PromptAudit is nil")
+	}
+	if report.PromptAudit.Purpose != "context.running_summary.update" || report.PromptAudit.SystemPrompt != "custom summary system" {
+		t.Fatalf("PromptAudit = %#v", report.PromptAudit)
+	}
+	if len(report.PromptAudit.Components) != 1 || report.PromptAudit.Components[0].ComponentID != promptcenter.ComponentRunningSummarySystem {
+		t.Fatalf("PromptAudit.Components = %#v", report.PromptAudit.Components)
 	}
 }
 
@@ -822,7 +847,7 @@ func TestRunningSummaryRepairUsesPromptCenterResolver(t *testing.T) {
 		},
 	}
 
-	_, _, err = ctxpkg.UpdateRunningSummaryWithParamsAndPromptResolver(
+	_, report, err := ctxpkg.UpdateRunningSummaryWithParamsAndPromptResolver(
 		context.Background(),
 		client,
 		"summary-model",
@@ -842,6 +867,15 @@ func TestRunningSummaryRepairUsesPromptCenterResolver(t *testing.T) {
 	}
 	if client.chatRequests[1].System != "custom repair system" {
 		t.Fatalf("repair system prompt = %q, want custom override", client.chatRequests[1].System)
+	}
+	if report.RepairPromptAudit == nil {
+		t.Fatalf("RepairPromptAudit is nil")
+	}
+	if report.RepairPromptAudit.Purpose != "context.running_summary.repair" || report.RepairPromptAudit.SystemPrompt != "custom repair system" {
+		t.Fatalf("RepairPromptAudit = %#v", report.RepairPromptAudit)
+	}
+	if len(report.RepairPromptAudit.Components) != 1 || report.RepairPromptAudit.Components[0].ComponentID != promptcenter.ComponentRunningSummaryRepair {
+		t.Fatalf("RepairPromptAudit.Components = %#v", report.RepairPromptAudit.Components)
 	}
 }
 
@@ -1129,6 +1163,15 @@ func normalizeRuntimeContextForTest(system string) string {
 	}
 	end += len("</runtime_context>")
 	return system[:start] + "<runtime_context>\n(normalized)\n</runtime_context>" + system[end:]
+}
+
+func findPromptComponent(components []promptcenter.RenderComponent, id string) promptcenter.RenderComponent {
+	for _, component := range components {
+		if component.ComponentID == id {
+			return component
+		}
+	}
+	return promptcenter.RenderComponent{}
 }
 
 func openContextTestDB(t *testing.T) *storage.DB {

@@ -16,6 +16,7 @@ import (
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/media"
+	"github.com/longyisang/emoagent/internal/promptcenter"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/turn"
 )
@@ -152,7 +153,9 @@ func TestTurnRuntimeAsyncAgentAffectReadsMoodAndEnqueuesAfterOutput(t *testing.T
 			StopReason: "end_turn",
 		},
 	}
-	engine, _, _ := newTestEngine(t, fakeLLM)
+	engine, db, _ := newTestEngine(t, fakeLLM)
+	engine.agentID = "agent-a"
+	engine.personaKey = "default"
 	bridge := &fakeMemoryBridge{
 		ensureResult:  MemorySegmentRef{SegmentID: "segment-current", MemorySessionID: "memory-current"},
 		retrieveBlock: "[Memory]\nRelevant memory.",
@@ -206,6 +209,26 @@ func TestTurnRuntimeAsyncAgentAffectReadsMoodAndEnqueuesAfterOutput(t *testing.T
 	}
 	if affect.enqueueReq.Trigger.SourceRefID != "episode-user" || affect.enqueueReq.BaseStateID != "state-1" {
 		t.Fatalf("enqueue trigger/base state = %#v", affect.enqueueReq)
+	}
+	items, err := db.ListRenderSnapshots(context.Background(), promptcenter.SnapshotFilter{AgentID: "agent-a", Purpose: "emotion_chat", Limit: 5})
+	if err != nil {
+		t.Fatalf("ListRenderSnapshots: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("snapshots = %#v, want one emotion_chat snapshot", items)
+	}
+	snapshot, err := db.GetRenderSnapshot(context.Background(), items[0].ID)
+	if err != nil {
+		t.Fatalf("GetRenderSnapshot: %v", err)
+	}
+	if snapshot.RequestID != "request-1" {
+		t.Fatalf("snapshot request_id = %q, want inbound request id", snapshot.RequestID)
+	}
+	for _, id := range []string{promptcenter.ComponentMemoryPromptBlock, promptcenter.ComponentAgentAffectPromptBlock} {
+		component := findRenderComponent(snapshot.Components, id)
+		if !component.Dynamic {
+			t.Fatalf("snapshot component %s = %#v, want dynamic component", id, component)
+		}
 	}
 }
 

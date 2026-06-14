@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/longyisang/emoagent/internal/agentaffect"
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/promptcenter"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/turn"
 )
@@ -515,6 +516,29 @@ func joinSystemBlocks(blocks ...string) string {
 	return strings.Join(out, "\n\n")
 }
 
+func extraSystemRenderComponents(tc *turn.TurnContext, memoryBlock, agentAffectBlock string) []promptcenter.RenderComponent {
+	if tc == nil || tc.Diagnostics == nil {
+		return nil
+	}
+	var components []promptcenter.RenderComponent
+	if strings.TrimSpace(memoryBlock) != "" {
+		if snapshot, ok := tc.Diagnostics["memory_prompt_snapshot"].(*memoryPromptSnapshot); ok && snapshot != nil {
+			components = append(components, memoryPromptRenderComponent(snapshot))
+		} else {
+			components = append(components, promptcenter.DynamicComponent(promptcenter.ComponentMemoryPromptBlock, "memory_context", promptcenter.SourceMemoryDynamic, memoryBlock, map[string]any{
+				"prompt_chars": len([]rune(memoryBlock)),
+			}))
+		}
+	}
+	if strings.TrimSpace(agentAffectBlock) != "" {
+		components = append(components, promptcenter.DynamicComponent(promptcenter.ComponentAgentAffectPromptBlock, "agent_affect", promptcenter.SourceAgentAffectDynamic, agentAffectBlock, map[string]any{
+			"persona_key": tc.Inbound.PersonaKey,
+			"session_id":  tc.Inbound.SessionID,
+		}))
+	}
+	return components
+}
+
 func (r *chatTurnRuntime) normalizeStage() turn.Stage {
 	return turn.StageFunc{
 		NameValue: turn.StageNormalize,
@@ -572,10 +596,13 @@ func (r *chatTurnRuntime) messageStage(persona *config.Persona) turn.Stage {
 			var err error
 			if r.cfg.MemoryStages {
 				if engine, ok := r.engine.(*Engine); ok {
+					memoryBlock := stringDiagnostic(tc, "memory_prompt_block")
+					agentAffectBlock := stringDiagnostic(tc, "agent_affect_prompt_block")
 					extraSystem := joinSystemBlocks(
-						stringDiagnostic(tc, "memory_prompt_block"),
-						stringDiagnostic(tc, "agent_affect_prompt_block"),
+						memoryBlock,
+						agentAffectBlock,
 					)
+					extraSystemComponents := extraSystemRenderComponents(tc, memoryBlock, agentAffectBlock)
 					var output deferredTurnOutput
 					preparedAnchor, hasPreparedAnchor := tc.Diagnostics["memory_anchor"].(turnMemoryAnchor)
 					reply, err = engine.sendTurn(ctx, tc.Inbound.SessionID, persona, func(delta string) {
@@ -585,15 +612,17 @@ func (r *chatTurnRuntime) messageStage(persona *config.Persona) turn.Stage {
 						streamedDelta = true
 						_ = tc.Stream.Emit(ctx, turn.OutboundEvent{Type: turn.EventStreamDelta, Content: delta})
 					}, turnOptions{
-						persistUser:       false,
-						userContent:       tc.Inbound.UserMessage.Content,
-						userParts:         tc.Inbound.UserMessage.Parts,
-						turnID:            tc.TurnID,
-						extraSystem:       extraSystem,
-						deferCommit:       true,
-						output:            &output,
-						preparedAnchor:    preparedAnchor,
-						hasPreparedAnchor: hasPreparedAnchor,
+						persistUser:           false,
+						userContent:           tc.Inbound.UserMessage.Content,
+						userParts:             tc.Inbound.UserMessage.Parts,
+						turnID:                tc.TurnID,
+						requestID:             tc.Inbound.RequestID,
+						extraSystem:           extraSystem,
+						extraSystemComponents: extraSystemComponents,
+						deferCommit:           true,
+						output:                &output,
+						preparedAnchor:        preparedAnchor,
+						hasPreparedAnchor:     hasPreparedAnchor,
 					})
 					if snapshot, ok := tc.Diagnostics["memory_prompt_snapshot"].(*memoryPromptSnapshot); ok {
 						output.memorySnapshot = snapshot
@@ -614,13 +643,29 @@ func (r *chatTurnRuntime) messageStage(persona *config.Persona) turn.Stage {
 					})
 				}
 			} else {
-				reply, err = r.engine.SendMessage(ctx, tc.Inbound.SessionID, persona, tc.Inbound.UserMessage.Content, func(delta string) {
-					if delta == "" || tc.Stream == nil {
-						return
-					}
-					streamedDelta = true
-					_ = tc.Stream.Emit(ctx, turn.OutboundEvent{Type: turn.EventStreamDelta, Content: delta})
-				})
+				if engine, ok := r.engine.(*Engine); ok {
+					reply, err = engine.sendTurn(ctx, tc.Inbound.SessionID, persona, func(delta string) {
+						if delta == "" || tc.Stream == nil {
+							return
+						}
+						streamedDelta = true
+						_ = tc.Stream.Emit(ctx, turn.OutboundEvent{Type: turn.EventStreamDelta, Content: delta})
+					}, turnOptions{
+						persistUser: true,
+						userContent: tc.Inbound.UserMessage.Content,
+						userParts:   tc.Inbound.UserMessage.Parts,
+						turnID:      tc.TurnID,
+						requestID:   tc.Inbound.RequestID,
+					})
+				} else {
+					reply, err = r.engine.SendMessage(ctx, tc.Inbound.SessionID, persona, tc.Inbound.UserMessage.Content, func(delta string) {
+						if delta == "" || tc.Stream == nil {
+							return
+						}
+						streamedDelta = true
+						_ = tc.Stream.Emit(ctx, turn.OutboundEvent{Type: turn.EventStreamDelta, Content: delta})
+					})
+				}
 			}
 			if err != nil && !errors.Is(err, errApprovalPending) {
 				return turn.StageResult{NextState: turn.StateFailed, Terminal: true, Status: "failed", ErrorKind: "llm_failed"}, err

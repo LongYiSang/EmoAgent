@@ -92,6 +92,7 @@ type EngineConfig struct {
 	PersonaKey         string
 	PromptResolver     *promptcenter.Resolver
 	PromptStore        promptcenter.Store
+	PromptSnapshots    config.PromptSnapshotConfig
 }
 
 // RuntimeConfig is the hot-swappable subset of EngineConfig used for new requests.
@@ -114,38 +115,39 @@ type RuntimeConfig struct {
 
 // Engine assembles conversation context and forwards requests to the LLM.
 type Engine struct {
-	mu                 sync.RWMutex
-	llm                llm.Client
-	summaryLLM         llm.Client
-	db                 *storage.DB
-	logger             *slog.Logger
-	model              string
-	params             llm.RequestParams
-	summaryModel       string
-	summaryParams      llm.RequestParams
-	summaryTemperature *float64
-	summaryMaxTokens   int
-	maxTokens          int
-	temperature        float64
-	contextCfg         config.ContextConfig
-	provider           string
-	providerID         string
-	providerName       string
-	registry           *tool.Registry
-	dispatcher         *tool.Dispatcher
-	pending            *work.PendingRegistry
-	approvals          *work.ApprovalService
-	environment        runtimeenv.Facts
-	realtimeStreaming  bool
-	memory             MemoryBridge
-	memoryRetrieval    config.MemoryRetrievalConfig
-	agentAffect        AgentAffectRuntime
-	mediaStore         media.Store
-	mediaPlanner       *media.Planner
-	agentID            string
-	personaKey         string
-	promptResolver     *promptcenter.Resolver
-	promptStore        promptcenter.Store
+	mu                   sync.RWMutex
+	llm                  llm.Client
+	summaryLLM           llm.Client
+	db                   *storage.DB
+	logger               *slog.Logger
+	model                string
+	params               llm.RequestParams
+	summaryModel         string
+	summaryParams        llm.RequestParams
+	summaryTemperature   *float64
+	summaryMaxTokens     int
+	maxTokens            int
+	temperature          float64
+	contextCfg           config.ContextConfig
+	provider             string
+	providerID           string
+	providerName         string
+	registry             *tool.Registry
+	dispatcher           *tool.Dispatcher
+	pending              *work.PendingRegistry
+	approvals            *work.ApprovalService
+	environment          runtimeenv.Facts
+	realtimeStreaming    bool
+	memory               MemoryBridge
+	memoryRetrieval      config.MemoryRetrievalConfig
+	agentAffect          AgentAffectRuntime
+	mediaStore           media.Store
+	mediaPlanner         *media.Planner
+	agentID              string
+	personaKey           string
+	promptResolver       *promptcenter.Resolver
+	promptStore          promptcenter.Store
+	promptSnapshotConfig config.PromptSnapshotConfig
 }
 
 // UpdateConfig hot-swaps the active LLM client and request parameters for new sends.
@@ -221,57 +223,69 @@ func NewEngine(cfg EngineConfig) *Engine {
 	}
 	promptResolver := cfg.PromptResolver
 	if promptResolver == nil {
-		promptResolver = newPromptResolver(promptStore)
+		promptResolver = newPromptResolver(promptStore, cfg.Logger)
 	}
 
 	return &Engine{
-		llm:                cfg.LLM,
-		summaryLLM:         firstClient(cfg.SummaryLLM, cfg.LLM),
-		db:                 cfg.DB,
-		logger:             cfg.Logger,
-		model:              cfg.Model,
-		params:             effectiveConfigParams(cfg.Params, cfg.MaxTokens, cfg.Temperature, true),
-		summaryModel:       cfg.SummaryModel,
-		summaryParams:      effectiveSummaryConfigParams(cfg.SummaryParams, cfg.SummaryMaxTokens, cfg.SummaryTemperature),
-		summaryTemperature: cloneFloat64Ptr(cfg.SummaryTemperature),
-		summaryMaxTokens:   cfg.SummaryMaxTokens,
-		maxTokens:          cfg.MaxTokens,
-		temperature:        cfg.Temperature,
-		contextCfg:         contextCfg,
-		provider:           cfg.Provider,
-		providerID:         firstNonEmptyString(cfg.ProviderID, cfg.Provider),
-		providerName:       providerDisplayName(cfg.ProviderName, cfg.Provider),
-		registry:           cfg.Registry,
-		dispatcher:         cfg.Dispatcher,
-		pending:            cfg.Pending,
-		approvals:          cfg.Approvals,
-		environment:        cfg.Environment,
-		realtimeStreaming:  cfg.RealtimeStreaming,
-		memory:             cfg.Memory,
-		memoryRetrieval:    cfg.MemoryRetrieval,
-		agentAffect:        cfg.AgentAffect,
-		mediaStore:         cfg.MediaStore,
-		mediaPlanner:       media.NewPlanner(cfg.MediaStore, cfg.MediaResolver),
-		agentID:            strings.TrimSpace(cfg.AgentID),
-		personaKey:         strings.TrimSpace(cfg.PersonaKey),
-		promptResolver:     promptResolver,
-		promptStore:        promptStore,
+		llm:                  cfg.LLM,
+		summaryLLM:           firstClient(cfg.SummaryLLM, cfg.LLM),
+		db:                   cfg.DB,
+		logger:               cfg.Logger,
+		model:                cfg.Model,
+		params:               effectiveConfigParams(cfg.Params, cfg.MaxTokens, cfg.Temperature, true),
+		summaryModel:         cfg.SummaryModel,
+		summaryParams:        effectiveSummaryConfigParams(cfg.SummaryParams, cfg.SummaryMaxTokens, cfg.SummaryTemperature),
+		summaryTemperature:   cloneFloat64Ptr(cfg.SummaryTemperature),
+		summaryMaxTokens:     cfg.SummaryMaxTokens,
+		maxTokens:            cfg.MaxTokens,
+		temperature:          cfg.Temperature,
+		contextCfg:           contextCfg,
+		provider:             cfg.Provider,
+		providerID:           firstNonEmptyString(cfg.ProviderID, cfg.Provider),
+		providerName:         providerDisplayName(cfg.ProviderName, cfg.Provider),
+		registry:             cfg.Registry,
+		dispatcher:           cfg.Dispatcher,
+		pending:              cfg.Pending,
+		approvals:            cfg.Approvals,
+		environment:          cfg.Environment,
+		realtimeStreaming:    cfg.RealtimeStreaming,
+		memory:               cfg.Memory,
+		memoryRetrieval:      cfg.MemoryRetrieval,
+		agentAffect:          cfg.AgentAffect,
+		mediaStore:           cfg.MediaStore,
+		mediaPlanner:         media.NewPlanner(cfg.MediaStore, cfg.MediaResolver),
+		agentID:              strings.TrimSpace(cfg.AgentID),
+		personaKey:           strings.TrimSpace(cfg.PersonaKey),
+		promptResolver:       promptResolver,
+		promptStore:          promptStore,
+		promptSnapshotConfig: normalizePromptSnapshotConfig(cfg.PromptSnapshots),
 	}
 }
 
-func newPromptResolver(store promptcenter.Store) *promptcenter.Resolver {
+func newPromptResolver(store promptcenter.Store, logger *slog.Logger) *promptcenter.Resolver {
 	catalog, err := promptcenter.DefaultCatalog()
 	if err != nil {
 		return nil
 	}
-	return promptcenter.NewResolver(catalog, store)
+	return promptcenter.NewResolverWithWarning(catalog, store, func(warning promptcenter.ResolveWarning) {
+		if logger != nil {
+			logger.Warn("prompt resolver fallback", "component_id", warning.ComponentID, "code", warning.Code, "message", warning.Message)
+		}
+	})
 }
 
 func (e *Engine) savePromptRenderSnapshot(ctx context.Context, store promptcenter.Store, input promptcenter.RenderSnapshot) {
 	if store == nil {
 		return
 	}
-	snapshot, err := promptcenter.BuildRenderSnapshot(input)
+	cfg := normalizePromptSnapshotConfig(e.promptSnapshotConfig)
+	if !cfg.Enabled {
+		return
+	}
+	snapshot, err := promptcenter.BuildRenderSnapshot(input, promptcenter.SnapshotRenderOptions{
+		StoreRenderedText:    cfg.StoreRenderedText,
+		MaxRenderedTextChars: cfg.MaxRenderedTextChars,
+	})
 	if err != nil {
 		if e.logger != nil {
 			e.logger.Warn("failed to build prompt render snapshot", "purpose", input.Purpose, "error", err)
@@ -281,6 +295,34 @@ func (e *Engine) savePromptRenderSnapshot(ctx context.Context, store promptcente
 	if err := store.SaveRenderSnapshot(context.WithoutCancel(ctx), snapshot); err != nil && e.logger != nil {
 		e.logger.Warn("failed to save prompt render snapshot", "purpose", snapshot.Purpose, "session", snapshot.SessionID, "agent_id", snapshot.AgentID, "error", err)
 	}
+}
+
+func (e *Engine) saveSummaryPromptSnapshots(ctx context.Context, store promptcenter.Store, report contextutil.SummaryUpdateReport, sessionID, agentID, personaKey, model, turnID, requestID string) {
+	for _, audit := range []*contextutil.SummaryPromptAudit{report.PromptAudit, report.RepairPromptAudit} {
+		if audit == nil || !audit.Attempted || strings.TrimSpace(audit.SystemPrompt) == "" {
+			continue
+		}
+		snapshotModel := firstNonEmptyString(audit.Model, model)
+		e.savePromptRenderSnapshot(ctx, store, promptcenter.RenderSnapshot{
+			ID:           uuid.NewString(),
+			RequestID:    requestID,
+			TurnID:       turnID,
+			SessionID:    sessionID,
+			AgentID:      agentID,
+			PersonaKey:   personaKey,
+			Purpose:      audit.Purpose,
+			Model:        snapshotModel,
+			Components:   audit.Components,
+			RenderedText: audit.SystemPrompt,
+		})
+	}
+}
+
+func normalizePromptSnapshotConfig(cfg config.PromptSnapshotConfig) config.PromptSnapshotConfig {
+	if cfg == (config.PromptSnapshotConfig{}) {
+		return config.DefaultConfig().PromptCenter.Snapshots
+	}
+	return cfg
 }
 
 // RuntimeConfig returns a snapshot of the engine's active request configuration.
@@ -379,16 +421,18 @@ func (e *Engine) SendMessageParts(ctx context.Context, sessionID string, persona
 }
 
 type turnOptions struct {
-	persistUser       bool
-	userContent       string
-	userParts         []llm.ContentBlock
-	turnID            string
-	extraSystem       string
-	disableTools      bool
-	deferCommit       bool
-	output            *deferredTurnOutput
-	preparedAnchor    turnMemoryAnchor
-	hasPreparedAnchor bool
+	persistUser           bool
+	userContent           string
+	userParts             []llm.ContentBlock
+	turnID                string
+	requestID             string
+	extraSystem           string
+	extraSystemComponents []promptcenter.RenderComponent
+	disableTools          bool
+	deferCommit           bool
+	output                *deferredTurnOutput
+	preparedAnchor        turnMemoryAnchor
+	hasPreparedAnchor     bool
 }
 
 type turnMemoryAnchor struct {
@@ -615,6 +659,10 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 		return "", errors.New("persona is required")
 	}
 	personaKey = firstNonEmptyString(personaKey, persona.Name)
+	requestID := strings.TrimSpace(opts.requestID)
+	if requestID == "" {
+		requestID = uuid.NewString()
+	}
 
 	memoryAnchor, err := e.prepareInputAndMemoryAnchor(ctx, sessionID, opts)
 	if err != nil {
@@ -669,14 +717,15 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	}
 	summaryCtx, cancelSummary := context.WithTimeout(ctx, 8*time.Second)
 	promptScope := promptcenter.PromptScope{AgentID: agentID, PersonaKey: personaKey}
-	if nextState, report, updateErr := contextutil.UpdateRunningSummaryWithParamsAndPromptResolver(summaryCtx, summaryClient, effectiveSummaryModel(model, summaryModel), summaryParams, persona, history, state, contextCfg, promptResolver, promptScope); updateErr != nil {
-		cancelSummary()
+	summaryRequestModel := effectiveSummaryModel(model, summaryModel)
+	nextState, report, updateErr := contextutil.UpdateRunningSummaryWithParamsAndPromptResolver(summaryCtx, summaryClient, summaryRequestModel, summaryParams, persona, history, state, contextCfg, promptResolver, promptScope)
+	cancelSummary()
+	if updateErr != nil {
 		if nextState != nil {
 			state = nextState
 		}
 		logSummaryUpdate(e.logger, slog.LevelWarn, sessionID, report, updateErr)
 	} else {
-		cancelSummary()
 		state = nextState
 		if report.Attempted {
 			logSummaryUpdate(e.logger, slog.LevelInfo, sessionID, report, nil)
@@ -684,6 +733,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 			logSummaryUpdate(e.logger, slog.LevelDebug, sessionID, report, nil)
 		}
 	}
+	e.saveSummaryPromptSnapshots(ctx, promptStore, report, sessionID, agentID, personaKey, summaryRequestModel, memoryAnchor.turnID, requestID)
 
 	var pendingDecisions []protocol.DecisionSummary
 	if pending != nil {
@@ -702,6 +752,11 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	}
 	if opts.extraSystem != "" {
 		assembled.System += "\n\n" + opts.extraSystem
+		if len(opts.extraSystemComponents) > 0 {
+			assembled.PromptComponents = append(assembled.PromptComponents, opts.extraSystemComponents...)
+		} else {
+			assembled.PromptComponents = append(assembled.PromptComponents, promptcenter.DynamicComponent(promptcenter.ComponentTurnExtraSystem, "extra_system", promptcenter.SourceExtraSystemDynamic, opts.extraSystem, nil))
+		}
 	}
 	var memorySnapshot *memoryPromptSnapshot
 	if opts.persistUser {
@@ -713,6 +768,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	}
 	if memorySnapshot != nil && memorySnapshot.PromptBlock != "" {
 		assembled.System += "\n\n" + memorySnapshot.PromptBlock
+		assembled.PromptComponents = append(assembled.PromptComponents, memoryPromptRenderComponent(memorySnapshot))
 		assembled.Budget = contextutil.NewBudget(contextCfg, assembled.System, assembled.Messages)
 		assembled.CompactReport.PreEstimatedTokens = assembled.Budget.EstimatedTokens
 		assembled.CompactReport.PostEstimatedTokens = assembled.Budget.EstimatedTokens
@@ -774,7 +830,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	}
 	e.savePromptRenderSnapshot(ctx, promptStore, promptcenter.RenderSnapshot{
 		ID:           uuid.NewString(),
-		RequestID:    uuid.NewString(),
+		RequestID:    requestID,
 		TurnID:       memoryAnchor.turnID,
 		SessionID:    sessionID,
 		AgentID:      agentID,
@@ -1704,6 +1760,17 @@ func (e *Engine) retrieveMemoryPrompt(ctx context.Context, sessionID string, que
 		return nil, nil
 	}
 	return &memoryPromptSnapshot{PromptBlock: memoryBlock, PipelineTrace: pipelineTrace, RecordMetadata: memoryRetrieval.PipelineDebug}, nil
+}
+
+func memoryPromptRenderComponent(snapshot *memoryPromptSnapshot) promptcenter.RenderComponent {
+	if snapshot == nil {
+		return promptcenter.RenderComponent{}
+	}
+	return promptcenter.DynamicComponent(promptcenter.ComponentMemoryPromptBlock, "memory_context", promptcenter.SourceMemoryDynamic, snapshot.PromptBlock, map[string]any{
+		"record_metadata":    snapshot.RecordMetadata,
+		"has_pipeline_trace": snapshot.PipelineTrace != nil,
+		"prompt_chars":       len([]rune(snapshot.PromptBlock)),
+	})
 }
 
 func (e *Engine) ensureMemorySegment(ctx context.Context, sessionID string) (MemorySegmentRef, bool) {

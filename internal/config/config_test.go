@@ -55,6 +55,21 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Chat.TurnPipeline.Idempotency.DuplicateRunning != "busy" {
 		t.Errorf("default duplicate_running = %q, want busy", cfg.Chat.TurnPipeline.Idempotency.DuplicateRunning)
 	}
+	if !cfg.PromptCenter.Snapshots.Enabled {
+		t.Error("default prompt_center.snapshots.enabled = false, want true")
+	}
+	if !cfg.PromptCenter.Snapshots.StoreRenderedText {
+		t.Error("default prompt_center.snapshots.store_rendered_text = false, want true")
+	}
+	if cfg.PromptCenter.Snapshots.MaxRenderedTextChars != 50000 {
+		t.Errorf("default prompt_center.snapshots.max_rendered_text_chars = %d, want 50000", cfg.PromptCenter.Snapshots.MaxRenderedTextChars)
+	}
+	if cfg.PromptCenter.Snapshots.RetentionDays != 30 {
+		t.Errorf("default prompt_center.snapshots.retention_days = %d, want 30", cfg.PromptCenter.Snapshots.RetentionDays)
+	}
+	if cfg.PromptCenter.Snapshots.MaxRows != 1000 {
+		t.Errorf("default prompt_center.snapshots.max_rows = %d, want 1000", cfg.PromptCenter.Snapshots.MaxRows)
+	}
 	if cfg.Plugins.Enabled {
 		t.Error("default plugins.enabled = true, want false")
 	}
@@ -319,6 +334,31 @@ func TestLoadMissingFile(t *testing.T) {
 	}
 	if cfg.Server.Port != 8080 {
 		t.Errorf("expected defaults, got port %d", cfg.Server.Port)
+	}
+}
+
+func TestLoadPromptCenterSnapshotConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+prompt_center:
+  snapshots:
+    enabled: false
+    store_rendered_text: false
+    max_rendered_text_chars: 123
+    retention_days: 7
+    max_rows: 42
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := cfg.PromptCenter.Snapshots
+	if got.Enabled || got.StoreRenderedText || got.MaxRenderedTextChars != 123 || got.RetentionDays != 7 || got.MaxRows != 42 {
+		t.Fatalf("prompt center snapshots = %#v", got)
 	}
 }
 

@@ -24,17 +24,23 @@ import (
 )
 
 type fakeLLMClient struct {
-	lastRequest  llm.ChatRequest
-	chatRequests []llm.ChatRequest
-	chatResponse *llm.ChatResponse
-	chatErr      error
-	response     *llm.ChatResponse
-	err          error
-	deltas       []string
+	lastRequest   llm.ChatRequest
+	chatRequests  []llm.ChatRequest
+	chatResponses []*llm.ChatResponse
+	chatResponse  *llm.ChatResponse
+	chatErr       error
+	response      *llm.ChatResponse
+	err           error
+	deltas        []string
 }
 
 func (f *fakeLLMClient) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 	f.chatRequests = append(f.chatRequests, req)
+	if len(f.chatResponses) > 0 {
+		resp := f.chatResponses[0]
+		f.chatResponses = f.chatResponses[1:]
+		return resp, nil
+	}
 	if f.chatResponse != nil || f.chatErr != nil {
 		return f.chatResponse, f.chatErr
 	}
@@ -548,20 +554,75 @@ func TestEngineRecordsEmotionPromptRenderSnapshot(t *testing.T) {
 	if snapshot.AgentID != "agent-a" || snapshot.PersonaKey != "default" || snapshot.SessionID != sessionID || snapshot.Purpose != "emotion_chat" {
 		t.Fatalf("snapshot scope = %#v", snapshot)
 	}
+	if strings.TrimSpace(snapshot.RequestID) == "" {
+		t.Fatalf("snapshot request_id is empty")
+	}
 	if snapshot.RenderedText != fakeLLM.lastRequest.System {
 		t.Fatalf("snapshot.RenderedText != request system\nsnapshot=%s\nrequest=%s", snapshot.RenderedText, fakeLLM.lastRequest.System)
 	}
 	if snapshot.FinalHash != promptcenter.HashText(fakeLLM.lastRequest.System) {
 		t.Fatalf("snapshot.FinalHash = %q, want hash of rendered system", snapshot.FinalHash)
 	}
-	if len(snapshot.Components) != 2 {
-		t.Fatalf("snapshot.Components = %#v, want two prompt components", snapshot.Components)
-	}
-	if snapshot.Components[0].ComponentID != promptcenter.ComponentEmotionOperatingContract || snapshot.Components[1].ComponentID != promptcenter.ComponentEmotionInternalContextDataPolicy {
-		t.Fatalf("snapshot.Components = %#v, want emotion prompt components", snapshot.Components)
+	for _, id := range []string{
+		promptcenter.ComponentEmotionPersona,
+		promptcenter.ComponentEmotionRuntimeContext,
+		promptcenter.ComponentEmotionOperatingContract,
+		promptcenter.ComponentEmotionInternalContextDataPolicy,
+	} {
+		if findRenderComponent(snapshot.Components, id).ComponentID == "" {
+			t.Fatalf("snapshot.Components = %#v, missing %s", snapshot.Components, id)
+		}
 	}
 	if !strings.Contains(snapshot.ComponentsJSON, promptcenter.ComponentEmotionOperatingContract) {
 		t.Fatalf("ComponentsJSON = %q, want serialized component IDs", snapshot.ComponentsJSON)
+	}
+}
+
+func TestEnginePromptSnapshotUsesRequestIDAndTruncatesRenderedText(t *testing.T) {
+	fakeLLM := &fakeLLMClient{
+		response: &llm.ChatResponse{ID: "resp-1", Content: "ok", Model: "test-model"},
+	}
+	engine, db, _ := newTestEngine(t, fakeLLM)
+	engine.agentID = "agent-a"
+	engine.personaKey = "default"
+	engine.promptSnapshotConfig = config.PromptSnapshotConfig{
+		Enabled:              true,
+		StoreRenderedText:    true,
+		MaxRenderedTextChars: 12,
+	}
+
+	ctx := context.Background()
+	sessionID, err := engine.StartSession(ctx, "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if _, err := engine.sendTurn(ctx, sessionID, &config.Persona{Name: "default", SystemPrompt: "system"}, nil, turnOptions{
+		persistUser: true,
+		userContent: "hello",
+		requestID:   "inbound-req-1",
+	}); err != nil {
+		t.Fatalf("sendTurn: %v", err)
+	}
+
+	items, err := db.ListRenderSnapshots(ctx, promptcenter.SnapshotFilter{AgentID: "agent-a", Purpose: "emotion_chat", Limit: 5})
+	if err != nil {
+		t.Fatalf("ListRenderSnapshots: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("snapshots = %#v, want one", items)
+	}
+	snapshot, err := db.GetRenderSnapshot(ctx, items[0].ID)
+	if err != nil {
+		t.Fatalf("GetRenderSnapshot: %v", err)
+	}
+	if snapshot.RequestID != "inbound-req-1" {
+		t.Fatalf("RequestID = %q, want inbound request id", snapshot.RequestID)
+	}
+	if !snapshot.Truncated || snapshot.RenderedText != string([]rune(fakeLLM.lastRequest.System)[:12]) {
+		t.Fatalf("snapshot text/truncated = %q/%v", snapshot.RenderedText, snapshot.Truncated)
+	}
+	if snapshot.FinalHash != promptcenter.HashText(fakeLLM.lastRequest.System) {
+		t.Fatalf("FinalHash = %q, want full prompt hash", snapshot.FinalHash)
 	}
 }
 
@@ -1508,6 +1569,50 @@ func newTestEngine(t *testing.T, client llm.Client) (*Engine, *storage.DB, *slog
 	return engine, db, logger
 }
 
+func findRenderComponent(components []promptcenter.RenderComponent, id string) promptcenter.RenderComponent {
+	for _, component := range components {
+		if component.ComponentID == id {
+			return component
+		}
+	}
+	return promptcenter.RenderComponent{}
+}
+
+func addSummaryHistory(t *testing.T, db *storage.DB, sessionID string) {
+	t.Helper()
+	for _, msg := range []struct {
+		id      string
+		role    string
+		content string
+	}{
+		{id: "summary-old-user", role: "user", content: "old user"},
+		{id: "summary-old-assistant", role: "assistant", content: "old assistant"},
+	} {
+		if err := db.AddMessage(context.Background(), msg.id, sessionID, msg.role, msg.content); err != nil {
+			t.Fatalf("AddMessage(%s): %v", msg.id, err)
+		}
+	}
+}
+
+func getOnlyPromptSnapshot(t *testing.T, db *storage.DB, filter promptcenter.SnapshotFilter) *promptcenter.RenderSnapshot {
+	t.Helper()
+	items, err := db.ListRenderSnapshots(context.Background(), filter)
+	if err != nil {
+		t.Fatalf("ListRenderSnapshots: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("snapshots = %#v, want exactly one", items)
+	}
+	snapshot, err := db.GetRenderSnapshot(context.Background(), items[0].ID)
+	if err != nil {
+		t.Fatalf("GetRenderSnapshot: %v", err)
+	}
+	if snapshot == nil {
+		t.Fatal("snapshot is nil")
+	}
+	return snapshot
+}
+
 // --- Tool loop tests ---
 
 // toolLoopLLMClient simulates an LLM that returns tool_use on the first call
@@ -2074,6 +2179,79 @@ func TestSummaryModelFallsBackToPrimaryModelWhenEmpty(t *testing.T) {
 	}
 	if fakeLLM.chatRequests[0].Model != "test-model" {
 		t.Fatalf("summary request model = %q, want fallback test-model", fakeLLM.chatRequests[0].Model)
+	}
+}
+
+func TestEngineSummaryPromptSnapshotRecorded(t *testing.T) {
+	fakeLLM := &fakeLLMClient{
+		response: &llm.ChatResponse{ID: "resp-1", Content: "ok", StopReason: "end_turn"},
+	}
+	engine, db, _ := newTestEngine(t, fakeLLM)
+	engine.agentID = "agent-a"
+	engine.personaKey = "default"
+	engine.contextCfg.KeepRecentUserTurns = 1
+
+	ctx := context.Background()
+	sessionID, err := engine.StartSession(ctx, "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	addSummaryHistory(t, db, sessionID)
+	if _, err := engine.SendMessage(ctx, sessionID, &config.Persona{Name: "default", SystemPrompt: "system"}, "latest user", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	snapshot := getOnlyPromptSnapshot(t, db, promptcenter.SnapshotFilter{AgentID: "agent-a", Purpose: "context.running_summary.update", Limit: 5})
+	if snapshot.Model != "summary-model" {
+		t.Fatalf("summary snapshot model = %q, want summary-model", snapshot.Model)
+	}
+	if snapshot.RenderedText != fakeLLM.chatRequests[0].System {
+		t.Fatalf("summary snapshot rendered_text = %q, want system prompt only", snapshot.RenderedText)
+	}
+	if strings.Contains(snapshot.RenderedText, "old user") || strings.Contains(snapshot.RenderedText, "latest user") {
+		t.Fatalf("summary snapshot leaked history: %s", snapshot.RenderedText)
+	}
+	if findRenderComponent(snapshot.Components, promptcenter.ComponentRunningSummarySystem).ComponentID == "" {
+		t.Fatalf("summary snapshot components = %#v, want running summary system component", snapshot.Components)
+	}
+}
+
+func TestEngineSummaryRepairPromptSnapshotRecorded(t *testing.T) {
+	fakeLLM := &fakeLLMClient{
+		chatResponses: []*llm.ChatResponse{
+			{ID: "summary-1", Model: "summary-model", Content: "not json"},
+			{ID: "summary-2", Model: "summary-model", Content: engineSummaryContent("repaired")},
+		},
+		response: &llm.ChatResponse{ID: "resp-1", Content: "ok", StopReason: "end_turn"},
+	}
+	engine, db, _ := newTestEngine(t, fakeLLM)
+	engine.agentID = "agent-a"
+	engine.personaKey = "default"
+	engine.contextCfg.KeepRecentUserTurns = 1
+
+	ctx := context.Background()
+	sessionID, err := engine.StartSession(ctx, "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	addSummaryHistory(t, db, sessionID)
+	if _, err := engine.SendMessage(ctx, sessionID, &config.Persona{Name: "default", SystemPrompt: "system"}, "latest user", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	updateSnapshot := getOnlyPromptSnapshot(t, db, promptcenter.SnapshotFilter{AgentID: "agent-a", Purpose: "context.running_summary.update", Limit: 5})
+	if findRenderComponent(updateSnapshot.Components, promptcenter.ComponentRunningSummarySystem).ComponentID == "" {
+		t.Fatalf("update snapshot components = %#v", updateSnapshot.Components)
+	}
+	repairSnapshot := getOnlyPromptSnapshot(t, db, promptcenter.SnapshotFilter{AgentID: "agent-a", Purpose: "context.running_summary.repair", Limit: 5})
+	if repairSnapshot.RenderedText != fakeLLM.chatRequests[1].System {
+		t.Fatalf("repair snapshot rendered_text = %q, want repair system prompt only", repairSnapshot.RenderedText)
+	}
+	if strings.Contains(repairSnapshot.RenderedText, "old user") || strings.Contains(repairSnapshot.RenderedText, "latest user") {
+		t.Fatalf("repair snapshot leaked history: %s", repairSnapshot.RenderedText)
+	}
+	if findRenderComponent(repairSnapshot.Components, promptcenter.ComponentRunningSummaryRepair).ComponentID == "" {
+		t.Fatalf("repair snapshot components = %#v, want repair component", repairSnapshot.Components)
 	}
 }
 

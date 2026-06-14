@@ -17,6 +17,7 @@ type Config struct {
 	Chat         ChatConfig         `yaml:"chat"`
 	Context      ContextConfig      `yaml:"context"`
 	Work         WorkConfig         `yaml:"work"`
+	PromptCenter PromptCenterConfig `yaml:"prompt_center" json:"prompt_center"`
 	LLMProviders []LLMProvider      `yaml:"llm_providers"`
 	AgentConfigs []AgentConfig      `yaml:"agent_configs"`
 	Agent        AgentRuntimeConfig `yaml:"agent"`
@@ -36,6 +37,18 @@ type MediaConfig struct {
 	StorageDir string `yaml:"storage_dir" json:"storage_dir"`
 	MaxBytes   int64  `yaml:"max_bytes" json:"max_bytes"`
 	MaxPixels  int    `yaml:"max_pixels" json:"max_pixels"`
+}
+
+type PromptCenterConfig struct {
+	Snapshots PromptSnapshotConfig `yaml:"snapshots" json:"snapshots"`
+}
+
+type PromptSnapshotConfig struct {
+	Enabled              bool `yaml:"enabled" json:"enabled"`
+	StoreRenderedText    bool `yaml:"store_rendered_text" json:"store_rendered_text"`
+	MaxRenderedTextChars int  `yaml:"max_rendered_text_chars" json:"max_rendered_text_chars"`
+	RetentionDays        int  `yaml:"retention_days" json:"retention_days"`
+	MaxRows              int  `yaml:"max_rows" json:"max_rows"`
 }
 
 type TimeConfig struct {
@@ -1014,6 +1027,15 @@ func DefaultConfig() *Config {
 			ToolResultSoftTokens: 1000,
 			ToolResultHardTokens: 3000,
 		},
+		PromptCenter: PromptCenterConfig{
+			Snapshots: PromptSnapshotConfig{
+				Enabled:              true,
+				StoreRenderedText:    true,
+				MaxRenderedTextChars: 50000,
+				RetentionDays:        30,
+				MaxRows:              1000,
+			},
+		},
 		DB: DBConfig{
 			Path: "./data/emo.db",
 		},
@@ -1386,6 +1408,15 @@ func (c *Config) Validate() error {
 	}
 	if err := c.Context.Validate(); err != nil {
 		return fmt.Errorf("context: %w", err)
+	}
+	if c.PromptCenter.Snapshots.MaxRenderedTextChars < 0 {
+		return fmt.Errorf("prompt_center.snapshots.max_rendered_text_chars must be >= 0")
+	}
+	if c.PromptCenter.Snapshots.RetentionDays < 0 {
+		return fmt.Errorf("prompt_center.snapshots.retention_days must be >= 0")
+	}
+	if c.PromptCenter.Snapshots.MaxRows < 0 {
+		return fmt.Errorf("prompt_center.snapshots.max_rows must be >= 0")
 	}
 	for i, provider := range c.LLMProviders {
 		if err := provider.Validate(); err != nil {

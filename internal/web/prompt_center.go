@@ -11,7 +11,7 @@ import (
 type PromptAdminApp interface {
 	ListPromptComponents(context.Context, string) (promptcenter.PromptComponentsResponse, error)
 	GetPromptComponent(context.Context, string, string) (promptcenter.PromptComponentDetail, error)
-	UpsertPromptOverride(context.Context, promptcenter.UpsertOverrideRequest) error
+	UpsertPromptOverride(context.Context, promptcenter.UpsertOverrideRequest) (promptcenter.UpsertOverrideResponse, error)
 	DeletePromptOverride(context.Context, promptcenter.DeleteOverrideRequest) error
 	PreviewPrompt(context.Context, promptcenter.PromptPreviewRequest) (promptcenter.PromptPreviewResponse, error)
 	ListPromptSnapshots(context.Context, promptcenter.PromptSnapshotListRequest) (promptcenter.PromptSnapshotListResponse, error)
@@ -63,11 +63,15 @@ func (h *APIHandler) HandleUpsertPromptOverride(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	if err := app.UpsertPromptOverride(r.Context(), req); err != nil {
+	resp, err := app.UpsertPromptOverride(r.Context(), req)
+	if err != nil {
 		h.writePromptCenterError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	if !resp.OK {
+		resp.OK = true
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *APIHandler) HandleDeletePromptOverride(w http.ResponseWriter, r *http.Request) {

@@ -11,3 +11,7 @@ type Store interface {
 	ListRenderSnapshots(ctx context.Context, filter SnapshotFilter) ([]RenderSnapshotSummary, error)
 	GetRenderSnapshot(ctx context.Context, id string) (*RenderSnapshot, error)
 }
+
+type SnapshotCleaner interface {
+	CleanupRenderSnapshots(ctx context.Context, retentionDays int, maxRows int) (CleanupResult, error)
+}

@@ -17,6 +17,7 @@ type promptAPIFakeApp struct {
 	fakeAdminApp
 	componentsResp  promptcenter.PromptComponentsResponse
 	componentDetail promptcenter.PromptComponentDetail
+	upsertResp      promptcenter.UpsertOverrideResponse
 	previewResp     promptcenter.PromptPreviewResponse
 	snapshotsResp   promptcenter.PromptSnapshotListResponse
 	snapshotDetail  promptcenter.PromptSnapshotDetail
@@ -39,9 +40,12 @@ func (f *promptAPIFakeApp) GetPromptComponent(_ context.Context, id, agentID str
 	return f.componentDetail, nil
 }
 
-func (f *promptAPIFakeApp) UpsertPromptOverride(_ context.Context, req promptcenter.UpsertOverrideRequest) error {
+func (f *promptAPIFakeApp) UpsertPromptOverride(_ context.Context, req promptcenter.UpsertOverrideRequest) (promptcenter.UpsertOverrideResponse, error) {
 	f.lastUpsert = req
-	return nil
+	if !f.upsertResp.OK {
+		f.upsertResp.OK = true
+	}
+	return f.upsertResp, nil
 }
 
 func (f *promptAPIFakeApp) DeletePromptOverride(_ context.Context, req promptcenter.DeleteOverrideRequest) error {
@@ -117,7 +121,10 @@ func TestPromptComponentsHandlers(t *testing.T) {
 }
 
 func TestPromptOverrideHandlers(t *testing.T) {
-	app := &promptAPIFakeApp{}
+	app := &promptAPIFakeApp{upsertResp: promptcenter.UpsertOverrideResponse{
+		OK:       true,
+		Warnings: []promptcenter.PromptLintWarning{{ComponentID: promptcenter.ComponentEmotionOperatingContract, Code: "missing_json_only", Severity: "warning", Message: "missing"}},
+	}}
 	handler := NewAPIHandler(app, slog.Default())
 
 	body := bytes.NewBufferString(`{
@@ -136,6 +143,9 @@ func TestPromptOverrideHandlers(t *testing.T) {
 	}
 	if app.lastUpsert.ComponentID != promptcenter.ComponentEmotionOperatingContract || app.lastUpsert.Mode != promptcenter.OverrideModeUseDefault || app.lastUpsert.ScopeID != "agent-a" {
 		t.Fatalf("lastUpsert = %#v", app.lastUpsert)
+	}
+	if !strings.Contains(upsertRR.Body.String(), `"warnings"`) {
+		t.Fatalf("upsert body missing warnings: %s", upsertRR.Body.String())
 	}
 
 	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/prompts/overrides?component_id=emotion.operating_contract&scope_type=agent&scope_id=agent-a", nil)
@@ -156,9 +166,10 @@ func TestPromptPreviewAndSnapshotHandlers(t *testing.T) {
 			Purpose:      "emotion_chat",
 			RenderedText: "rendered",
 			FinalHash:    "hash",
-			Components: []promptcenter.ResolvedPrompt{
+			Components: []promptcenter.RenderComponent{
 				{ComponentID: promptcenter.ComponentEmotionOperatingContract, Source: promptcenter.SourceGlobalOverride},
 			},
+			Warnings: []promptcenter.PromptPreviewWarning{{Code: "no_session", Severity: "info", Message: "no session"}},
 		},
 		snapshotsResp: promptcenter.PromptSnapshotListResponse{
 			Snapshots: []promptcenter.RenderSnapshotSummary{{ID: "snap-1", AgentID: "agent-a", Purpose: "emotion_chat"}},
@@ -172,15 +183,23 @@ func TestPromptPreviewAndSnapshotHandlers(t *testing.T) {
 	previewReq := httptest.NewRequest(http.MethodPost, "/api/prompts/preview", bytes.NewBufferString(`{
 		"agent_id":"agent-a",
 		"purpose":"emotion_chat",
-		"component_ids":["emotion.operating_contract"]
+		"mode":"full",
+		"session_id":"session-1",
+		"user_message":"hello",
+		"component_ids":["emotion.operating_contract"],
+		"include_memory":true,
+		"include_agent_affect":true
 	}`))
 	previewRR := httptest.NewRecorder()
 	handler.HandlePreviewPrompt(previewRR, previewReq)
 	if previewRR.Code != http.StatusOK {
 		t.Fatalf("preview status = %d body=%s", previewRR.Code, previewRR.Body.String())
 	}
-	if app.lastPreview.AgentID != "agent-a" || len(app.lastPreview.ComponentIDs) != 1 {
+	if app.lastPreview.AgentID != "agent-a" || app.lastPreview.Mode != "full" || app.lastPreview.SessionID != "session-1" || app.lastPreview.UserMessage != "hello" || !app.lastPreview.IncludeMemory || !app.lastPreview.IncludeAgentAffect || len(app.lastPreview.ComponentIDs) != 1 {
 		t.Fatalf("lastPreview = %#v", app.lastPreview)
+	}
+	if !strings.Contains(previewRR.Body.String(), `"warnings"`) {
+		t.Fatalf("preview body missing warnings: %s", previewRR.Body.String())
 	}
 
 	listReq := httptest.NewRequest(http.MethodGet, "/api/prompts/snapshots?agent_id=agent-a&purpose=emotion_chat&limit=5", nil)

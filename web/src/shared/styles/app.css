@@ -1427,6 +1427,17 @@ code {
   font-size: 12px;
 }
 
+button.timeline-item {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+
+.timeline-item.active {
+  border-color: rgba(113, 95, 164, 0.42);
+  background: var(--color-lavender-soft);
+}
+
 .timeline-item b {
   color: var(--color-tooltip-bg);
   font-weight: 700;
@@ -1450,6 +1461,49 @@ code {
   border: 1px solid var(--hair);
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.68);
+}
+
+.snapshot-detail {
+  margin-top: 12px;
+}
+
+.warning-list {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.component-table {
+  display: grid;
+  gap: 1px;
+  margin-top: 10px;
+  overflow: auto;
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+  background: var(--hair);
+}
+
+.component-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 1.6fr) minmax(120px, 0.9fr) minmax(110px, 0.8fr) minmax(150px, 1.3fr) minmax(70px, 0.5fr) minmax(120px, 0.9fr);
+  gap: 10px;
+  min-width: 760px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--color-ink-soft);
+  font-size: 12px;
+}
+
+.component-row.head {
+  color: var(--color-muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.component-row span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .slot-head {

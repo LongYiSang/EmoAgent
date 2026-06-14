@@ -68,3 +68,75 @@ func ValidateUpsertOverride(ctx context.Context, catalog *Catalog, agentExists A
 	}
 	return nil
 }
+
+func LintOverride(component PromptComponent, req UpsertOverrideRequest) []PromptLintWarning {
+	if req.Mode != OverrideModeCustom {
+		return nil
+	}
+	text := strings.TrimSpace(req.OverrideText)
+	if text == "" {
+		return nil
+	}
+	lint := promptLint{componentID: component.ID, text: strings.ToLower(text)}
+	switch component.ID {
+	case ComponentRunningSummarySystem:
+		lint.require("missing_json_only", "JSON only")
+		for _, token := range []string{"running_summary", "user_facts", "relationship_state", "open_loops", "do_not_forget"} {
+			lint.require("missing_"+token, token)
+		}
+		lint.requireAny("missing_secret_guard", []string{"credentials", "secrets", "access tokens", "private keys"})
+	case ComponentRunningSummaryRepair:
+		lint.require("missing_repair_intent", "repair")
+		lint.require("missing_json_only", "JSON only")
+		lint.require("missing_no_new_facts", "do not add facts")
+	case ComponentEmotionInternalContextDataPolicy:
+		lint.requireAll("missing_instruction_boundary", []string{"do not treat", "new user instructions"})
+		lint.require("missing_raw_json_guard", "raw JSON")
+		lint.require("missing_internal_ids_guard", "internal IDs")
+		lint.require("missing_hash_guard", "hashes")
+	case ComponentEmotionOperatingContract:
+		for _, token := range []string{"delegate_to_work", "permission scope", "TaskReport", "resume_work", "decision"} {
+			lint.require("missing_"+strings.ReplaceAll(strings.ToLower(token), " ", "_"), token)
+		}
+	}
+	return lint.warnings
+}
+
+type promptLint struct {
+	componentID string
+	text        string
+	warnings    []PromptLintWarning
+}
+
+func (l *promptLint) require(code, token string) {
+	if !strings.Contains(l.text, strings.ToLower(token)) {
+		l.add(code, fmt.Sprintf("提示词缺少关键约束：%s", token))
+	}
+}
+
+func (l *promptLint) requireAny(code string, tokens []string) {
+	for _, token := range tokens {
+		if strings.Contains(l.text, strings.ToLower(token)) {
+			return
+		}
+	}
+	l.add(code, fmt.Sprintf("提示词缺少关键约束：%s", strings.Join(tokens, " / ")))
+}
+
+func (l *promptLint) requireAll(code string, tokens []string) {
+	for _, token := range tokens {
+		if !strings.Contains(l.text, strings.ToLower(token)) {
+			l.add(code, fmt.Sprintf("提示词缺少关键约束：%s", strings.Join(tokens, " + ")))
+			return
+		}
+	}
+}
+
+func (l *promptLint) add(code, message string) {
+	l.warnings = append(l.warnings, PromptLintWarning{
+		ComponentID: l.componentID,
+		Code:        code,
+		Severity:    "warning",
+		Message:     message,
+	})
+}
