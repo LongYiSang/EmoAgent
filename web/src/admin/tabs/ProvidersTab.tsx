@@ -95,8 +95,6 @@ function modelCapabilityBadges(model: AnyRecord): string[] {
   const input = capabilityInputModalities(model);
   const transports = capabilityStringArray(model, 'image_transports');
   const formats = capabilityStringArray(model, 'image_formats').map(format => format.replace(/^image\//, ''));
-  const source = capabilityString(model, 'capability_source');
-  const confidence = Number(capabilityField(model, 'confidence', 0));
   const badges: string[] = [];
 
   if (input.includes('image') && transports.length) badges.push('vision');
@@ -105,8 +103,6 @@ function modelCapabilityBadges(model: AnyRecord): string[] {
   if (stringField(model, 'sub_type')) badges.push(stringField(model, 'sub_type'));
   if (transports.length) badges.push(transports.slice(0, 2).join('/'));
   if (formats.length) badges.push(formats.slice(0, 2).join('/'));
-  if (source) badges.push(capabilitySourceLabel(source));
-  if (confidence > 0) badges.push(`${Math.round(confidence * 100)}%`);
   return badges;
 }
 
@@ -118,36 +114,4 @@ function capabilityStringArray(model: AnyRecord, key: string): string[] {
   const cap = field<unknown>(model, 'capabilities', {});
   const source = isRecord(cap) ? cap : model;
   return arrayField<unknown>(source, key).map(value => String(value)).filter(Boolean);
-}
-
-function capabilityString(model: AnyRecord, key: string): string {
-  const value = capabilityField(model, key, '');
-  return typeof value === 'string' ? value : value == null ? '' : String(value);
-}
-
-function capabilityField<T>(model: AnyRecord, key: string, fallback: T): T | unknown {
-  const cap = field<unknown>(model, 'capabilities', {});
-  if (isRecord(cap)) {
-    return field<unknown>(cap, key, fallback);
-  }
-  return field<unknown>(model, key, fallback);
-}
-
-function capabilitySourceLabel(source: string): string {
-  switch (source) {
-    case 'manual_override':
-      return 'manual';
-    case 'provider_metadata':
-      return 'metadata';
-    case 'provider_docs_preset':
-      return 'preset';
-    case 'probe_passed':
-      return 'probe';
-    case 'probe_failed':
-      return 'probe failed';
-    case 'merged':
-      return 'merged';
-    default:
-      return source;
-  }
 }
