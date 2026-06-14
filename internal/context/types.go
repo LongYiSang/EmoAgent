@@ -1,6 +1,9 @@
 package context
 
-import "github.com/longyisang/emoagent/internal/llm"
+import (
+	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/promptcenter"
+)
 
 const CurrentContextVersion = 1
 
@@ -95,11 +98,12 @@ type ToolDigest struct {
 
 // AssembledContext is the final context sent to the model.
 type AssembledContext struct {
-	System        string
-	ToolDigests   []ToolDigest
-	Messages      []llm.Message
-	Budget        Budget
-	CompactReport CompactReport
+	System           string
+	PromptComponents []promptcenter.RenderComponent
+	ToolDigests      []ToolDigest
+	Messages         []llm.Message
+	Budget           Budget
+	CompactReport    CompactReport
 }
 
 // IsZero reports whether the running summary is empty and can be skipped during assembly.

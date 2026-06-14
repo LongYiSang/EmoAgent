@@ -12,6 +12,7 @@ import (
 	"github.com/longyisang/emoagent/internal/config"
 	ctxpkg "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/promptcenter"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/storage"
@@ -124,6 +125,101 @@ func TestBuildEmotionContextUsesPinnedContextAndRecentTurns(t *testing.T) {
 		if strings.Contains(msg.Content, "当前时间上下文：") {
 			t.Fatalf("time context should stay out of message slots, found in %#v", msg)
 		}
+	}
+}
+
+func TestBuildEmotionContextPromptCenterResolverPreservesDefaultsAndAppliesOverrides(t *testing.T) {
+	persona := &config.Persona{Name: "default", SystemPrompt: "You are warm."}
+	history := []storage.MessageRecord{{ID: "m1", Role: "user", Content: "hello"}}
+	cfg := testContextConfig()
+	legacy, err := ctxpkg.BuildEmotionContextWithState(persona, history, nil, cfg, runtimeenv.Facts{OS: "windows"})
+	if err != nil {
+		t.Fatalf("BuildEmotionContextWithState legacy: %v", err)
+	}
+	catalog, err := promptcenter.DefaultCatalog()
+	if err != nil {
+		t.Fatalf("DefaultCatalog: %v", err)
+	}
+	store := promptcenter.NewMemoryStore()
+	resolver := promptcenter.NewResolver(catalog, store)
+	scope := promptcenter.PromptScope{AgentID: "agent-a", PersonaKey: "default"}
+	resolved, err := ctxpkg.BuildEmotionContextWithStateAndPromptResolver(context.Background(), persona, history, nil, cfg, runtimeenv.Facts{OS: "windows"}, resolver, scope)
+	if err != nil {
+		t.Fatalf("BuildEmotionContextWithStateAndPromptResolver: %v", err)
+	}
+	if normalizeRuntimeContextForTest(resolved.System) != normalizeRuntimeContextForTest(legacy.System) {
+		t.Fatalf("no-override system changed\nlegacy:\n%s\nresolved:\n%s", legacy.System, resolved.System)
+	}
+	if len(resolved.PromptComponents) != 2 {
+		t.Fatalf("PromptComponents = %#v, want operating contract and policy", resolved.PromptComponents)
+	}
+	for _, component := range resolved.PromptComponents {
+		if component.Source != promptcenter.SourceEmbeddedDefault {
+			t.Fatalf("default prompt component = %#v, want embedded default", component)
+		}
+	}
+
+	if err := store.UpsertOverride(context.Background(), promptcenter.UpsertOverrideRequest{
+		ComponentID:  promptcenter.ComponentEmotionOperatingContract,
+		ScopeType:    promptcenter.ScopeGlobal,
+		Mode:         promptcenter.OverrideModeCustom,
+		OverrideText: "global operating contract",
+	}); err != nil {
+		t.Fatalf("UpsertOverride global: %v", err)
+	}
+	resolved, err = ctxpkg.BuildEmotionContextWithStateAndPromptResolver(context.Background(), persona, history, nil, cfg, runtimeenv.Facts{}, resolver, scope)
+	if err != nil {
+		t.Fatalf("BuildEmotionContextWithStateAndPromptResolver global: %v", err)
+	}
+	if !strings.Contains(resolved.System, "<operating_contract>\nglobal operating contract\n</operating_contract>") || resolved.PromptComponents[0].Source != promptcenter.SourceGlobalOverride {
+		t.Fatalf("global override not applied: system=%s components=%#v", resolved.System, resolved.PromptComponents)
+	}
+
+	if err := store.UpsertOverride(context.Background(), promptcenter.UpsertOverrideRequest{
+		ComponentID:  promptcenter.ComponentEmotionOperatingContract,
+		ScopeType:    promptcenter.ScopeAgent,
+		ScopeID:      "agent-a",
+		Mode:         promptcenter.OverrideModeCustom,
+		OverrideText: "agent operating contract",
+	}); err != nil {
+		t.Fatalf("UpsertOverride agent custom: %v", err)
+	}
+	resolved, err = ctxpkg.BuildEmotionContextWithStateAndPromptResolver(context.Background(), persona, history, nil, cfg, runtimeenv.Facts{}, resolver, scope)
+	if err != nil {
+		t.Fatalf("BuildEmotionContextWithStateAndPromptResolver agent: %v", err)
+	}
+	if !strings.Contains(resolved.System, "<operating_contract>\nagent operating contract\n</operating_contract>") || resolved.PromptComponents[0].Source != promptcenter.SourceAgentOverride {
+		t.Fatalf("agent override not applied: system=%s components=%#v", resolved.System, resolved.PromptComponents)
+	}
+
+	if err := store.UpsertOverride(context.Background(), promptcenter.UpsertOverrideRequest{
+		ComponentID: promptcenter.ComponentEmotionOperatingContract,
+		ScopeType:   promptcenter.ScopeAgent,
+		ScopeID:     "agent-a",
+		Mode:        promptcenter.OverrideModeUseDefault,
+	}); err != nil {
+		t.Fatalf("UpsertOverride agent use_default: %v", err)
+	}
+	resolved, err = ctxpkg.BuildEmotionContextWithStateAndPromptResolver(context.Background(), persona, history, nil, cfg, runtimeenv.Facts{}, resolver, scope)
+	if err != nil {
+		t.Fatalf("BuildEmotionContextWithStateAndPromptResolver use_default: %v", err)
+	}
+	if strings.Contains(resolved.System, "global operating contract") || resolved.PromptComponents[0].Source != promptcenter.SourceAgentDefault {
+		t.Fatalf("agent use_default should bypass global: system=%s components=%#v", resolved.System, resolved.PromptComponents)
+	}
+	if !strings.Contains(resolved.System, "Emotion Work Delegation Contract") {
+		t.Fatalf("agent use_default did not restore embedded default: %s", resolved.System)
+	}
+
+	if err := store.DeleteOverride(context.Background(), promptcenter.ComponentEmotionOperatingContract, promptcenter.ScopeAgent, "agent-a"); err != nil {
+		t.Fatalf("DeleteOverride agent: %v", err)
+	}
+	resolved, err = ctxpkg.BuildEmotionContextWithStateAndPromptResolver(context.Background(), persona, history, nil, cfg, runtimeenv.Facts{}, resolver, scope)
+	if err != nil {
+		t.Fatalf("BuildEmotionContextWithStateAndPromptResolver delete: %v", err)
+	}
+	if !strings.Contains(resolved.System, "global operating contract") || resolved.PromptComponents[0].Source != promptcenter.SourceGlobalOverride {
+		t.Fatalf("agent delete should inherit global: system=%s components=%#v", resolved.System, resolved.PromptComponents)
 	}
 }
 
@@ -661,6 +757,94 @@ func TestRunningSummaryPromptIncludesSchemaAndSafetyRules(t *testing.T) {
 	}
 }
 
+func TestRunningSummaryUsesPromptCenterResolver(t *testing.T) {
+	catalog, err := promptcenter.DefaultCatalog()
+	if err != nil {
+		t.Fatalf("DefaultCatalog: %v", err)
+	}
+	store := promptcenter.NewMemoryStore()
+	if err := store.UpsertOverride(context.Background(), promptcenter.UpsertOverrideRequest{
+		ComponentID:  promptcenter.ComponentRunningSummarySystem,
+		ScopeType:    promptcenter.ScopeGlobal,
+		Mode:         promptcenter.OverrideModeCustom,
+		OverrideText: "custom summary system",
+	}); err != nil {
+		t.Fatalf("UpsertOverride summary system: %v", err)
+	}
+	resolver := promptcenter.NewResolver(catalog, store)
+	client := &summaryUpdateClient{
+		response: &llm.ChatResponse{
+			ID:      "summary-1",
+			Model:   "summary-model",
+			Content: summaryContent("custom prompt"),
+		},
+	}
+
+	_, _, err = ctxpkg.UpdateRunningSummaryWithParamsAndPromptResolver(
+		context.Background(),
+		client,
+		"summary-model",
+		llm.RequestParams{},
+		&config.Persona{Name: "default", SystemPrompt: "system"},
+		summaryParsingHistory(),
+		nil,
+		testContextConfig(),
+		resolver,
+		promptcenter.PromptScope{AgentID: "agent-a", PersonaKey: "default"},
+	)
+	if err != nil {
+		t.Fatalf("UpdateRunningSummaryWithParamsAndPromptResolver: %v", err)
+	}
+	if client.lastReq.System != "custom summary system" {
+		t.Fatalf("summary system prompt = %q, want custom override", client.lastReq.System)
+	}
+}
+
+func TestRunningSummaryRepairUsesPromptCenterResolver(t *testing.T) {
+	catalog, err := promptcenter.DefaultCatalog()
+	if err != nil {
+		t.Fatalf("DefaultCatalog: %v", err)
+	}
+	store := promptcenter.NewMemoryStore()
+	if err := store.UpsertOverride(context.Background(), promptcenter.UpsertOverrideRequest{
+		ComponentID:  promptcenter.ComponentRunningSummaryRepair,
+		ScopeType:    promptcenter.ScopeAgent,
+		ScopeID:      "agent-a",
+		Mode:         promptcenter.OverrideModeCustom,
+		OverrideText: "custom repair system",
+	}); err != nil {
+		t.Fatalf("UpsertOverride summary repair: %v", err)
+	}
+	client := &summaryUpdateClient{
+		responses: []*llm.ChatResponse{
+			{ID: "summary-1", Model: "summary-model", Content: "not json"},
+			{ID: "summary-2", Model: "summary-model", Content: summaryContent("repaired")},
+		},
+	}
+
+	_, _, err = ctxpkg.UpdateRunningSummaryWithParamsAndPromptResolver(
+		context.Background(),
+		client,
+		"summary-model",
+		llm.RequestParams{},
+		&config.Persona{Name: "default", SystemPrompt: "system"},
+		summaryParsingHistory(),
+		nil,
+		testContextConfig(),
+		promptcenter.NewResolver(catalog, store),
+		promptcenter.PromptScope{AgentID: "agent-a", PersonaKey: "default"},
+	)
+	if err != nil {
+		t.Fatalf("UpdateRunningSummaryWithParamsAndPromptResolver repair: %v", err)
+	}
+	if got := len(client.chatRequests); got != 2 {
+		t.Fatalf("summary calls = %d, want initial + repair", got)
+	}
+	if client.chatRequests[1].System != "custom repair system" {
+		t.Fatalf("repair system prompt = %q, want custom override", client.chatRequests[1].System)
+	}
+}
+
 func TestRunningSummaryIterativeUpdateUsesConfiguredSummaryTemperature(t *testing.T) {
 	summaryTemperature := 0.35
 	client := &summaryUpdateClient{
@@ -935,6 +1119,16 @@ func testContextConfig() config.ContextConfig {
 		ToolResultSoftTokens: 1000,
 		ToolResultHardTokens: 3000,
 	}
+}
+
+func normalizeRuntimeContextForTest(system string) string {
+	start := strings.Index(system, "<runtime_context>")
+	end := strings.Index(system, "</runtime_context>")
+	if start < 0 || end < 0 || end < start {
+		return system
+	}
+	end += len("</runtime_context>")
+	return system[:start] + "<runtime_context>\n(normalized)\n</runtime_context>" + system[end:]
 }
 
 func openContextTestDB(t *testing.T) *storage.DB {

@@ -97,6 +97,63 @@ CREATE INDEX IF NOT EXISTS idx_plugin_provider_usage_plugin_time
     ON plugin_provider_usage(plugin_id, created_at DESC);
 `
 
+const promptCenterSchemaSQL = `
+CREATE TABLE IF NOT EXISTS prompt_overrides (
+    id                    TEXT PRIMARY KEY,
+    component_id          TEXT NOT NULL,
+    scope_type            TEXT NOT NULL CHECK (scope_type IN ('global', 'agent')),
+    scope_id              TEXT NOT NULL DEFAULT '',
+    mode                  TEXT NOT NULL CHECK (mode IN ('custom', 'use_default')),
+    override_text         TEXT NOT NULL DEFAULT '',
+    enabled               INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    default_hash_at_edit  TEXT NOT NULL DEFAULT '',
+    note                  TEXT NOT NULL DEFAULT '',
+    created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at            TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(component_id, scope_type, scope_id),
+    CHECK (
+      (scope_type = 'global' AND scope_id = '') OR
+      (scope_type = 'agent' AND scope_id <> '')
+    ),
+    CHECK (
+      (mode = 'custom' AND length(override_text) > 0) OR
+      (mode = 'use_default' AND override_text = '')
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_prompt_overrides_component
+    ON prompt_overrides(component_id, scope_type, scope_id);
+
+CREATE INDEX IF NOT EXISTS idx_prompt_overrides_agent
+    ON prompt_overrides(scope_id, component_id)
+    WHERE scope_type = 'agent';
+
+CREATE TABLE IF NOT EXISTS prompt_render_snapshots (
+    id                TEXT PRIMARY KEY,
+    request_id        TEXT NOT NULL DEFAULT '',
+    turn_id           TEXT NOT NULL DEFAULT '',
+    session_id        TEXT NOT NULL DEFAULT '',
+    agent_id          TEXT NOT NULL DEFAULT '',
+    persona_key       TEXT NOT NULL DEFAULT '',
+    purpose           TEXT NOT NULL,
+    model             TEXT NOT NULL DEFAULT '',
+    final_hash        TEXT NOT NULL,
+    components_json   TEXT NOT NULL DEFAULT '[]',
+    rendered_text     TEXT NOT NULL DEFAULT '',
+    truncated         INTEGER NOT NULL DEFAULT 0 CHECK (truncated IN (0, 1)),
+    created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_prompt_render_snapshots_session_time
+    ON prompt_render_snapshots(session_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_prompt_render_snapshots_agent_time
+    ON prompt_render_snapshots(agent_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_prompt_render_snapshots_purpose_time
+    ON prompt_render_snapshots(purpose, created_at DESC);
+`
+
 var migrations = []Migration{
 	{
 		Version: 1,
@@ -1021,6 +1078,10 @@ CREATE TABLE IF NOT EXISTS llm_model_capabilities (
 		Version: 26,
 		SQL:     `SELECT 1;`,
 	},
+	{
+		Version: 27,
+		SQL:     promptCenterSchemaSQL,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.
@@ -1086,8 +1147,18 @@ func ApplySchemaRepairs(db *sql.DB) error {
 	if err := ensurePluginRuntimeSchema(db); err != nil {
 		return err
 	}
+	if err := ensurePromptCenterSchema(db); err != nil {
+		return err
+	}
 	if err := ensureNoImageBase64Guards(db); err != nil {
 		return err
+	}
+	return nil
+}
+
+func ensurePromptCenterSchema(db *sql.DB) error {
+	if _, err := db.Exec(promptCenterSchemaSQL); err != nil {
+		return fmt.Errorf("ensure prompt center schema: %w", err)
 	}
 	return nil
 }

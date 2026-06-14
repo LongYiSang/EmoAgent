@@ -17,6 +17,7 @@ import (
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/media"
 	"github.com/longyisang/emoagent/internal/progress"
+	"github.com/longyisang/emoagent/internal/promptcenter"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/storage"
@@ -87,10 +88,16 @@ type EngineConfig struct {
 	AgentAffect        AgentAffectRuntime
 	MediaStore         media.Store
 	MediaResolver      media.CapabilityResolver
+	AgentID            string
+	PersonaKey         string
+	PromptResolver     *promptcenter.Resolver
+	PromptStore        promptcenter.Store
 }
 
 // RuntimeConfig is the hot-swappable subset of EngineConfig used for new requests.
 type RuntimeConfig struct {
+	AgentID            string
+	PersonaKey         string
 	Provider           string
 	ProviderName       string
 	Model              string
@@ -135,6 +142,10 @@ type Engine struct {
 	agentAffect        AgentAffectRuntime
 	mediaStore         media.Store
 	mediaPlanner       *media.Planner
+	agentID            string
+	personaKey         string
+	promptResolver     *promptcenter.Resolver
+	promptStore        promptcenter.Store
 }
 
 // UpdateConfig hot-swaps the active LLM client and request parameters for new sends.
@@ -161,10 +172,12 @@ func (e *Engine) UpdateConfig(client llm.Client, provider, model, summaryModel s
 	}
 }
 
-func (e *Engine) UpdateAgentRuntime(mainClient, summaryClient llm.Client, provider, providerID, providerName, model string, params llm.RequestParams, summaryModel string, summaryParams llm.RequestParams, contextCfg config.ContextConfig) {
+func (e *Engine) UpdateAgentRuntime(agentID, personaKey string, mainClient, summaryClient llm.Client, provider, providerID, providerName, model string, params llm.RequestParams, summaryModel string, summaryParams llm.RequestParams, contextCfg config.ContextConfig) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	e.agentID = strings.TrimSpace(agentID)
+	e.personaKey = strings.TrimSpace(personaKey)
 	if mainClient != nil {
 		e.llm = mainClient
 	}
@@ -202,6 +215,14 @@ func NewEngine(cfg EngineConfig) *Engine {
 	if err := contextCfg.Validate(); err != nil {
 		contextCfg = config.DefaultConfig().Context
 	}
+	promptStore := cfg.PromptStore
+	if promptStore == nil {
+		promptStore = cfg.DB
+	}
+	promptResolver := cfg.PromptResolver
+	if promptResolver == nil {
+		promptResolver = newPromptResolver(promptStore)
+	}
 
 	return &Engine{
 		llm:                cfg.LLM,
@@ -231,6 +252,34 @@ func NewEngine(cfg EngineConfig) *Engine {
 		agentAffect:        cfg.AgentAffect,
 		mediaStore:         cfg.MediaStore,
 		mediaPlanner:       media.NewPlanner(cfg.MediaStore, cfg.MediaResolver),
+		agentID:            strings.TrimSpace(cfg.AgentID),
+		personaKey:         strings.TrimSpace(cfg.PersonaKey),
+		promptResolver:     promptResolver,
+		promptStore:        promptStore,
+	}
+}
+
+func newPromptResolver(store promptcenter.Store) *promptcenter.Resolver {
+	catalog, err := promptcenter.DefaultCatalog()
+	if err != nil {
+		return nil
+	}
+	return promptcenter.NewResolver(catalog, store)
+}
+
+func (e *Engine) savePromptRenderSnapshot(ctx context.Context, store promptcenter.Store, input promptcenter.RenderSnapshot) {
+	if store == nil {
+		return
+	}
+	snapshot, err := promptcenter.BuildRenderSnapshot(input)
+	if err != nil {
+		if e.logger != nil {
+			e.logger.Warn("failed to build prompt render snapshot", "purpose", input.Purpose, "error", err)
+		}
+		return
+	}
+	if err := store.SaveRenderSnapshot(context.WithoutCancel(ctx), snapshot); err != nil && e.logger != nil {
+		e.logger.Warn("failed to save prompt render snapshot", "purpose", snapshot.Purpose, "session", snapshot.SessionID, "agent_id", snapshot.AgentID, "error", err)
 	}
 }
 
@@ -240,6 +289,8 @@ func (e *Engine) RuntimeConfig() RuntimeConfig {
 	defer e.mu.RUnlock()
 
 	return RuntimeConfig{
+		AgentID:            e.agentID,
+		PersonaKey:         e.personaKey,
 		Provider:           e.provider,
 		ProviderName:       e.providerName,
 		Model:              e.model,
@@ -525,6 +576,10 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	realtimeStreaming := e.realtimeStreaming
 	memoryRetrieval := e.memoryRetrieval
 	mediaPlanner := e.mediaPlanner
+	agentID := e.agentID
+	personaKey := e.personaKey
+	promptResolver := e.promptResolver
+	promptStore := e.promptStore
 	e.mu.RUnlock()
 
 	var mediaDeliveries []media.DeliveryRecord
@@ -559,6 +614,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	if persona == nil {
 		return "", errors.New("persona is required")
 	}
+	personaKey = firstNonEmptyString(personaKey, persona.Name)
 
 	memoryAnchor, err := e.prepareInputAndMemoryAnchor(ctx, sessionID, opts)
 	if err != nil {
@@ -612,7 +668,8 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 		summaryParams = summaryParamsFromLegacy(summaryMaxTokens, summaryTemperature)
 	}
 	summaryCtx, cancelSummary := context.WithTimeout(ctx, 8*time.Second)
-	if nextState, report, updateErr := contextutil.UpdateRunningSummaryWithParams(summaryCtx, summaryClient, effectiveSummaryModel(model, summaryModel), summaryParams, persona, history, state, contextCfg); updateErr != nil {
+	promptScope := promptcenter.PromptScope{AgentID: agentID, PersonaKey: personaKey}
+	if nextState, report, updateErr := contextutil.UpdateRunningSummaryWithParamsAndPromptResolver(summaryCtx, summaryClient, effectiveSummaryModel(model, summaryModel), summaryParams, persona, history, state, contextCfg, promptResolver, promptScope); updateErr != nil {
 		cancelSummary()
 		if nextState != nil {
 			state = nextState
@@ -635,9 +692,9 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 
 	var assembled contextutil.AssembledContext
 	if len(pendingDecisions) > 0 {
-		assembled, err = contextutil.BuildEmotionContextWithPendingSummaries(persona, history, state, pendingDecisions, contextCfg, env)
+		assembled, err = contextutil.BuildEmotionContextWithPendingSummariesAndPromptResolver(ctx, persona, history, state, pendingDecisions, contextCfg, env, promptResolver, promptScope)
 	} else {
-		assembled, err = contextutil.BuildEmotionContextWithState(persona, history, state, contextCfg, env)
+		assembled, err = contextutil.BuildEmotionContextWithStateAndPromptResolver(ctx, persona, history, state, contextCfg, env, promptResolver, promptScope)
 	}
 	if err != nil {
 		e.logger.Error("failed to assemble llm context", "session", sessionID, "error", err)
@@ -715,6 +772,18 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	if req.Params.Temperature != nil {
 		req.Temperature = *req.Params.Temperature
 	}
+	e.savePromptRenderSnapshot(ctx, promptStore, promptcenter.RenderSnapshot{
+		ID:           uuid.NewString(),
+		RequestID:    uuid.NewString(),
+		TurnID:       memoryAnchor.turnID,
+		SessionID:    sessionID,
+		AgentID:      agentID,
+		PersonaKey:   personaKey,
+		Purpose:      "emotion_chat",
+		Model:        model,
+		Components:   assembled.PromptComponents,
+		RenderedText: req.System,
+	})
 	e.logger.Info("llm request",
 		"session", sessionID,
 		"persona", persona.Name,

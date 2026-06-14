@@ -46,6 +46,7 @@ type Services struct {
 	Work         *WorkService
 	Chat         *ChatService
 	Sessions     *SessionService
+	PromptCenter *PromptCenterService
 }
 
 func NewKernel(infra *Infra) *Kernel {
@@ -87,6 +88,7 @@ func newServices(infra *Infra) *Services {
 		agentAffect:  services.AgentAffect,
 	}
 	services.Sessions = &SessionService{infra: infra, work: services.Work}
+	services.PromptCenter = &PromptCenterService{infra: infra, agentRuntime: services.AgentRuntime}
 	services.AgentRuntime.chat = services.Chat
 	return services
 }

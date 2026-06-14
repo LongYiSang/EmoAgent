@@ -15,6 +15,7 @@ import (
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/progress"
+	"github.com/longyisang/emoagent/internal/promptcenter"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/storage"
 	"github.com/longyisang/emoagent/internal/tool"
@@ -505,6 +506,62 @@ func TestEngineSendMessageStreamsAndPersistsConversation(t *testing.T) {
 	}
 	if messages[3].Role != "assistant" || messages[3].Content != "Hi there" {
 		t.Fatalf("messages[3] = %#v, want persisted assistant message", messages[3])
+	}
+}
+
+func TestEngineRecordsEmotionPromptRenderSnapshot(t *testing.T) {
+	fakeLLM := &fakeLLMClient{
+		deltas: []string{"ok"},
+		response: &llm.ChatResponse{
+			ID:      "resp-1",
+			Content: "ok",
+			Model:   "test-model",
+		},
+	}
+	engine, db, _ := newTestEngine(t, fakeLLM)
+	engine.agentID = "agent-a"
+	engine.personaKey = "default"
+
+	ctx := context.Background()
+	sessionID, err := engine.StartSession(ctx, "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if _, err := engine.SendMessage(ctx, sessionID, &config.Persona{Name: "default", SystemPrompt: "system"}, "hello", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	items, err := db.ListRenderSnapshots(ctx, promptcenter.SnapshotFilter{AgentID: "agent-a", Purpose: "emotion_chat", Limit: 5})
+	if err != nil {
+		t.Fatalf("ListRenderSnapshots: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("snapshots = %#v, want one emotion_chat snapshot", items)
+	}
+	snapshot, err := db.GetRenderSnapshot(ctx, items[0].ID)
+	if err != nil {
+		t.Fatalf("GetRenderSnapshot: %v", err)
+	}
+	if snapshot == nil {
+		t.Fatal("snapshot is nil")
+	}
+	if snapshot.AgentID != "agent-a" || snapshot.PersonaKey != "default" || snapshot.SessionID != sessionID || snapshot.Purpose != "emotion_chat" {
+		t.Fatalf("snapshot scope = %#v", snapshot)
+	}
+	if snapshot.RenderedText != fakeLLM.lastRequest.System {
+		t.Fatalf("snapshot.RenderedText != request system\nsnapshot=%s\nrequest=%s", snapshot.RenderedText, fakeLLM.lastRequest.System)
+	}
+	if snapshot.FinalHash != promptcenter.HashText(fakeLLM.lastRequest.System) {
+		t.Fatalf("snapshot.FinalHash = %q, want hash of rendered system", snapshot.FinalHash)
+	}
+	if len(snapshot.Components) != 2 {
+		t.Fatalf("snapshot.Components = %#v, want two prompt components", snapshot.Components)
+	}
+	if snapshot.Components[0].ComponentID != promptcenter.ComponentEmotionOperatingContract || snapshot.Components[1].ComponentID != promptcenter.ComponentEmotionInternalContextDataPolicy {
+		t.Fatalf("snapshot.Components = %#v, want emotion prompt components", snapshot.Components)
+	}
+	if !strings.Contains(snapshot.ComponentsJSON, promptcenter.ComponentEmotionOperatingContract) {
+		t.Fatalf("ComponentsJSON = %q, want serialized component IDs", snapshot.ComponentsJSON)
 	}
 }
 

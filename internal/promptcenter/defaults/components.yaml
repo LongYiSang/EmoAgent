@@ -1,0 +1,121 @@
+- id: emotion.operating_contract
+  group: emotion
+  name: Emotion / Work 委派契约
+  description: 控制 Emotion 何时委派 Work、如何选择权限、如何处理 Work 结果和暂停决策。
+  kind: system_section
+  editable: true
+  risk_level: advanced
+  scope_support: [global, agent]
+  max_chars: 20000
+  order: 100
+  default_file: emotion.operating_contract.md
+- id: emotion.internal_context_data_policy
+  group: emotion
+  name: Emotion 内部上下文数据策略
+  description: 约束 running_summary、tool_digests 和暂停决策摘要等内部上下文的使用方式。
+  kind: system_section
+  editable: true
+  risk_level: protocol_sensitive
+  scope_support: [global, agent]
+  max_chars: 8000
+  order: 110
+  default_file: emotion.internal_context_data_policy.md
+- id: context.running_summary.system
+  group: context
+  name: Running Summary 更新提示词
+  description: 控制会话 running_summary 增量更新的系统提示词。
+  kind: system_prompt
+  editable: true
+  risk_level: advanced
+  scope_support: [global, agent]
+  max_chars: 20000
+  order: 200
+  default_file: context.running_summary.system.md
+- id: context.running_summary.repair
+  group: context
+  name: Running Summary 修复提示词
+  description: 控制 running_summary 非法响应修复请求的系统提示词。
+  kind: system_prompt
+  editable: true
+  risk_level: advanced
+  scope_support: [global, agent]
+  max_chars: 12000
+  order: 210
+  default_file: context.running_summary.repair.md
+- id: work.runtime_decider.system
+  group: work
+  name: Work RuntimeDecider 系统提示词
+  description: TODO：已登记默认文本，Work runtime 动态接入后再开放覆盖。
+  kind: system_prompt
+  editable: false
+  risk_level: protocol_sensitive
+  scope_support: [global, agent]
+  max_chars: 16000
+  order: 300
+  default_file: work.runtime_decider.system.md
+- id: work.progress_summary.system
+  group: work
+  name: Work Progress 更新提示词
+  description: TODO：已登记默认文本，Work runtime 动态接入后再开放覆盖。
+  kind: system_prompt
+  editable: false
+  risk_level: advanced
+  scope_support: [global, agent]
+  max_chars: 20000
+  order: 310
+  default_file: work.progress_summary.system.md
+- id: work.progress_summary.repair
+  group: work
+  name: Work Progress 修复提示词
+  description: TODO：已登记默认文本，Work runtime 动态接入后再开放覆盖。
+  kind: system_prompt
+  editable: false
+  risk_level: advanced
+  scope_support: [global, agent]
+  max_chars: 12000
+  order: 320
+  default_file: work.progress_summary.repair.md
+- id: tool.delegate_to_work.description
+  group: tool
+  name: delegate_to_work 工具描述
+  description: TODO：已登记默认文本，工具描述动态接入后再开放覆盖；不开放工具 JSON schema、权限或审批边界。
+  kind: tool_description
+  editable: false
+  risk_level: protocol_sensitive
+  scope_support: [global, agent]
+  max_chars: 16000
+  order: 400
+  default_file: tool.delegate_to_work.description.md
+- id: tool.resume_work.description
+  group: tool
+  name: resume_work 工具描述
+  description: TODO：已登记默认文本，工具描述动态接入后再开放覆盖；不开放工具 JSON schema、权限或审批边界。
+  kind: tool_description
+  editable: false
+  risk_level: protocol_sensitive
+  scope_support: [global, agent]
+  max_chars: 12000
+  order: 410
+  default_file: tool.resume_work.description.md
+- id: tool.finish_task.description
+  group: tool
+  name: finish_task 工具描述
+  description: TODO：已登记默认文本，工具描述动态接入后再开放覆盖；不开放工具 JSON schema、权限或审批边界。
+  kind: tool_description
+  editable: false
+  risk_level: protocol_sensitive
+  scope_support: [global, agent]
+  max_chars: 12000
+  order: 420
+  default_file: tool.finish_task.description.md
+- id: tool.request_decision.description
+  group: tool
+  name: request_decision 工具描述
+  description: TODO：已登记默认文本，工具描述动态接入后再开放覆盖；不开放工具 JSON schema、权限或审批边界。
+  kind: tool_description
+  editable: false
+  risk_level: protocol_sensitive
+  scope_support: [global, agent]
+  max_chars: 16000
+  order: 430
+  default_file: tool.request_decision.description.md

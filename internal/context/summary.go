@@ -11,6 +11,7 @@ import (
 
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/promptcenter"
 	"github.com/longyisang/emoagent/internal/storage"
 )
 
@@ -143,6 +144,21 @@ func UpdateRunningSummaryWithParams(
 	state *ContextState,
 	cfg config.ContextConfig,
 ) (*ContextState, SummaryUpdateReport, error) {
+	return UpdateRunningSummaryWithParamsAndPromptResolver(ctx, client, model, params, persona, history, state, cfg, nil, promptcenter.PromptScope{})
+}
+
+func UpdateRunningSummaryWithParamsAndPromptResolver(
+	ctx context.Context,
+	client llm.Client,
+	model string,
+	params llm.RequestParams,
+	persona *config.Persona,
+	history []storage.MessageRecord,
+	state *ContextState,
+	cfg config.ContextConfig,
+	resolver *promptcenter.Resolver,
+	scope promptcenter.PromptScope,
+) (*ContextState, SummaryUpdateReport, error) {
 	report := SummaryUpdateReport{SummaryModel: model}
 	if client == nil {
 		return nil, report, fmt.Errorf("summary client is required")
@@ -179,7 +195,8 @@ func UpdateRunningSummaryWithParams(
 	report.Attempted = true
 	report.DeltaCount = len(delta)
 
-	req, err := buildSummaryRequestWithParams(model, params, persona, current.RunningSummary, delta)
+	systemPrompt, _ := resolvePromptComponent(ctx, resolver, promptcenter.ComponentRunningSummarySystem, scope, summarySystemPrompt)
+	req, err := buildSummaryRequestWithParamsAndSystemPrompt(model, params, persona, current.RunningSummary, delta, systemPrompt)
 	if err != nil {
 		markSummaryFailure(&current, err, now, defaultSummaryFailureCooldown)
 		copyFailureStateToReport(&report, current)
@@ -197,7 +214,8 @@ func UpdateRunningSummaryWithParams(
 
 	nextSummary, err := parseRunningSummaryResponse(resp)
 	if err != nil {
-		repairReq, repairBuildErr := buildSummaryRepairRequest(req, resp, err)
+		repairPrompt, _ := resolvePromptComponent(ctx, resolver, promptcenter.ComponentRunningSummaryRepair, scope, summaryRepairSystemPrompt)
+		repairReq, repairBuildErr := buildSummaryRepairRequestWithSystemPrompt(req, resp, err, repairPrompt)
 		if repairBuildErr == nil {
 			repairResp, repairErr := client.Chat(ctx, repairReq)
 			copyResponseStatsToReport(&report, repairResp)
@@ -300,6 +318,10 @@ func buildSummaryRequest(model string, summaryMaxTokens int, summaryTemperature 
 }
 
 func buildSummaryRequestWithParams(model string, params llm.RequestParams, persona *config.Persona, current RunningSummary, delta []storage.MessageRecord) (llm.ChatRequest, error) {
+	return buildSummaryRequestWithParamsAndSystemPrompt(model, params, persona, current, delta, summarySystemPrompt)
+}
+
+func buildSummaryRequestWithParamsAndSystemPrompt(model string, params llm.RequestParams, persona *config.Persona, current RunningSummary, delta []storage.MessageRecord, systemPrompt string) (llm.ChatRequest, error) {
 	currentPayload, err := json.Marshal(struct {
 		RunningSummary RunningSummary `json:"running_summary"`
 	}{
@@ -344,7 +366,7 @@ func buildSummaryRequestWithParams(model string, params llm.RequestParams, perso
 	params.Stream = &stream
 	return llm.ChatRequest{
 		Model:       model,
-		System:      summarySystemPrompt,
+		System:      strings.TrimSpace(systemPrompt),
 		Params:      params,
 		MaxTokens:   params.MaxTokens,
 		Temperature: *params.Temperature,
@@ -414,6 +436,10 @@ func parseRunningSummaryResponse(resp *llm.ChatResponse) (RunningSummary, error)
 }
 
 func buildSummaryRepairRequest(req llm.ChatRequest, resp *llm.ChatResponse, parseErr error) (llm.ChatRequest, error) {
+	return buildSummaryRepairRequestWithSystemPrompt(req, resp, parseErr, summaryRepairSystemPrompt)
+}
+
+func buildSummaryRepairRequestWithSystemPrompt(req llm.ChatRequest, resp *llm.ChatResponse, parseErr error, systemPrompt string) (llm.ChatRequest, error) {
 	payload, err := json.Marshal(struct {
 		Error           string `json:"error"`
 		InvalidResponse string `json:"invalid_response"`
@@ -426,7 +452,7 @@ func buildSummaryRepairRequest(req llm.ChatRequest, resp *llm.ChatResponse, pars
 	}
 
 	repairReq := req
-	repairReq.System = summaryRepairSystemPrompt
+	repairReq.System = strings.TrimSpace(systemPrompt)
 	repairReq.Messages = append(append([]llm.Message(nil), req.Messages...), llm.Message{
 		Role:    llm.RoleUser,
 		Content: string(payload),

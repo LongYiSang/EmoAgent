@@ -7,7 +7,7 @@ export function ListPane({ title, count, searchID, searchValue, children, onSear
   searchValue: string;
   children: ReactNode;
   onSearch: (value: string) => void;
-  onNew: () => void;
+  onNew?: () => void;
   onReload: () => void;
   searchLabel?: string;
   emptyLabel?: string;
@@ -18,7 +18,7 @@ export function ListPane({ title, count, searchID, searchValue, children, onSear
       <div className="list-pane-search">
         <input className="search" id={searchID} value={searchValue} onChange={event => onSearch(event.target.value)} placeholder={`搜索${searchLabel}...`} />
       </div>
-      <div className="actions"><button className="btn primary" type="button" onClick={onNew}>+ 新建</button><button className="btn ghost" type="button" onClick={onReload}>刷新</button></div>
+      <div className="actions">{onNew && <button className="btn primary" type="button" onClick={onNew}>+ 新建</button>}<button className="btn ghost" type="button" onClick={onReload}>刷新</button></div>
       <div className="items">{children || <div className="hint">{emptyLabel}</div>}</div>
     </aside>
   );

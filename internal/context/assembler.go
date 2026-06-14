@@ -1,6 +1,7 @@
 package context
 
 import (
+	stdcontext "context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/promptcenter"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/storage"
@@ -69,30 +71,40 @@ Do not reveal their raw JSON, internal IDs, hashes, or protocol names to the use
 
 // BuildEmotionContext assembles the emotion context with no persisted session state.
 func BuildEmotionContext(persona *config.Persona, history []storage.MessageRecord, cfg config.ContextConfig, env runtimeenv.Facts) (AssembledContext, error) {
-	return buildEmotionContext(persona, history, nil, nil, nil, cfg, env)
+	return buildEmotionContext(stdcontext.Background(), persona, history, nil, nil, nil, cfg, env, nil, promptcenter.PromptScope{})
 }
 
 // BuildEmotionContextWithState assembles the emotion context using persisted session state.
 func BuildEmotionContextWithState(persona *config.Persona, history []storage.MessageRecord, state *ContextState, cfg config.ContextConfig, env runtimeenv.Facts) (AssembledContext, error) {
-	return buildEmotionContext(persona, history, state, nil, nil, cfg, env)
+	return buildEmotionContext(stdcontext.Background(), persona, history, state, nil, nil, cfg, env, nil, promptcenter.PromptScope{})
+}
+
+// BuildEmotionContextWithStateAndPromptResolver assembles the emotion context using Prompt Center components.
+func BuildEmotionContextWithStateAndPromptResolver(ctx stdcontext.Context, persona *config.Persona, history []storage.MessageRecord, state *ContextState, cfg config.ContextConfig, env runtimeenv.Facts, resolver *promptcenter.Resolver, scope promptcenter.PromptScope) (AssembledContext, error) {
+	return buildEmotionContext(ctx, persona, history, state, nil, nil, cfg, env, resolver, scope)
 }
 
 // BuildEmotionContextWithToolDigests assembles the emotion context with an explicit ToolDigest slot.
 func BuildEmotionContextWithToolDigests(persona *config.Persona, history []storage.MessageRecord, toolDigests []ToolDigest, cfg config.ContextConfig, env runtimeenv.Facts) (AssembledContext, error) {
-	return buildEmotionContext(persona, history, nil, toolDigests, nil, cfg, env)
+	return buildEmotionContext(stdcontext.Background(), persona, history, nil, toolDigests, nil, cfg, env, nil, promptcenter.PromptScope{})
 }
 
 // BuildEmotionContextWithPending assembles context and injects paused decision notes.
 func BuildEmotionContextWithPending(persona *config.Persona, history []storage.MessageRecord, state *ContextState, pendingDecisions []protocol.DecisionPacket, cfg config.ContextConfig, env runtimeenv.Facts) (AssembledContext, error) {
-	return buildEmotionContext(persona, history, state, nil, pendingDecisions, cfg, env)
+	return buildEmotionContext(stdcontext.Background(), persona, history, state, nil, pendingDecisions, cfg, env, nil, promptcenter.PromptScope{})
 }
 
 // BuildEmotionContextWithPendingSummaries assembles context and injects persisted decision summaries.
 func BuildEmotionContextWithPendingSummaries(persona *config.Persona, history []storage.MessageRecord, state *ContextState, pendingSummaries []protocol.DecisionSummary, cfg config.ContextConfig, env runtimeenv.Facts) (AssembledContext, error) {
-	return buildEmotionContext(persona, history, state, nil, pendingSummaries, cfg, env)
+	return buildEmotionContext(stdcontext.Background(), persona, history, state, nil, pendingSummaries, cfg, env, nil, promptcenter.PromptScope{})
 }
 
-func buildEmotionContext(persona *config.Persona, history []storage.MessageRecord, state *ContextState, toolDigests []ToolDigest, pendingDecisions any, cfg config.ContextConfig, env runtimeenv.Facts) (AssembledContext, error) {
+// BuildEmotionContextWithPendingSummariesAndPromptResolver assembles context with persisted decisions and Prompt Center components.
+func BuildEmotionContextWithPendingSummariesAndPromptResolver(ctx stdcontext.Context, persona *config.Persona, history []storage.MessageRecord, state *ContextState, pendingSummaries []protocol.DecisionSummary, cfg config.ContextConfig, env runtimeenv.Facts, resolver *promptcenter.Resolver, scope promptcenter.PromptScope) (AssembledContext, error) {
+	return buildEmotionContext(ctx, persona, history, state, nil, pendingSummaries, cfg, env, resolver, scope)
+}
+
+func buildEmotionContext(ctx stdcontext.Context, persona *config.Persona, history []storage.MessageRecord, state *ContextState, toolDigests []ToolDigest, pendingDecisions any, cfg config.ContextConfig, env runtimeenv.Facts, resolver *promptcenter.Resolver, scope promptcenter.PromptScope) (AssembledContext, error) {
 	if persona == nil {
 		return AssembledContext{}, fmt.Errorf("persona is required")
 	}
@@ -114,13 +126,14 @@ func buildEmotionContext(persona *config.Persona, history []storage.MessageRecor
 	if err != nil {
 		return AssembledContext{}, err
 	}
-	system := buildEmotionSystemPrompt(persona, pendingDecisions, env)
+	system, promptComponents := buildEmotionSystemPrompt(ctx, persona, pendingDecisions, env, resolver, scope)
 	budget := NewBudget(cfg, system, messages)
 	return AssembledContext{
-		System:      system,
-		ToolDigests: append([]ToolDigest(nil), toolDigests...),
-		Messages:    messages,
-		Budget:      budget,
+		System:           system,
+		PromptComponents: promptComponents,
+		ToolDigests:      append([]ToolDigest(nil), toolDigests...),
+		Messages:         messages,
+		Budget:           budget,
 		CompactReport: CompactReport{
 			Mode:                    "deterministic",
 			CompactReason:           "budget_soft",
@@ -135,17 +148,53 @@ func buildEmotionContext(persona *config.Persona, history []storage.MessageRecor
 	}, nil
 }
 
-func buildEmotionSystemPrompt(persona *config.Persona, pendingDecisions any, env runtimeenv.Facts) string {
+func buildEmotionSystemPrompt(ctx stdcontext.Context, persona *config.Persona, pendingDecisions any, env runtimeenv.Facts, resolver *promptcenter.Resolver, scope promptcenter.PromptScope) (string, []promptcenter.RenderComponent) {
+	operatingContract, operatingComponent := resolvePromptComponent(ctx, resolver, promptcenter.ComponentEmotionOperatingContract, scope, delegationGuideline)
+	internalPolicy, policyComponent := resolvePromptComponent(ctx, resolver, promptcenter.ComponentEmotionInternalContextDataPolicy, scope, internalContextDataPolicy)
 	sections := []string{
 		wrapSystemSection("persona", buildPersonaPrompt(persona)),
-		wrapSystemSection("operating_contract", delegationGuideline),
+		wrapSystemSection("operating_contract", operatingContract),
 		wrapSystemSection("runtime_context", buildRuntimeContextText(env)),
-		wrapSystemSection("internal_context_data_policy", internalContextDataPolicy),
+		wrapSystemSection("internal_context_data_policy", internalPolicy),
 	}
 	if note := buildPendingNoteIfAny(pendingDecisions); note != "" {
 		sections = append(sections, wrapSystemSection("pending_work", note))
 	}
-	return strings.Join(sections, "\n\n")
+	return strings.Join(sections, "\n\n"), []promptcenter.RenderComponent{operatingComponent, policyComponent}
+}
+
+func resolvePromptComponent(ctx stdcontext.Context, resolver *promptcenter.Resolver, componentID string, scope promptcenter.PromptScope, fallbackText string) (string, promptcenter.RenderComponent) {
+	if ctx == nil {
+		ctx = stdcontext.Background()
+	}
+	if resolver != nil {
+		if resolved, err := resolver.Resolve(ctx, componentID, scope); err == nil {
+			return resolved.Text, renderComponentFromResolved(resolved)
+		}
+	}
+	if catalog, err := promptcenter.DefaultCatalog(); err == nil {
+		if resolved, err := promptcenter.NewResolver(catalog, nil).Resolve(ctx, componentID, scope); err == nil {
+			return resolved.Text, renderComponentFromResolved(resolved)
+		}
+	}
+	hash := promptcenter.HashText(fallbackText)
+	return fallbackText, promptcenter.RenderComponent{
+		ComponentID:   componentID,
+		Source:        promptcenter.SourceEmbeddedDefault,
+		DefaultHash:   hash,
+		EffectiveHash: hash,
+	}
+}
+
+func renderComponentFromResolved(resolved promptcenter.ResolvedPrompt) promptcenter.RenderComponent {
+	return promptcenter.RenderComponent{
+		ComponentID:   resolved.ComponentID,
+		Source:        resolved.Source,
+		ScopeType:     resolved.ScopeType,
+		ScopeID:       resolved.ScopeID,
+		DefaultHash:   resolved.DefaultHash,
+		EffectiveHash: resolved.EffectiveHash,
+	}
 }
 
 func buildPersonaPrompt(persona *config.Persona) string {

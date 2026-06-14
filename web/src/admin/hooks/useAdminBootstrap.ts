@@ -6,6 +6,7 @@ import type { ChatSettingsAdmin } from './useChatSettingsAdmin';
 import type { MemoryAdmin } from './useMemoryAdmin';
 import type { SidecarAdmin } from './useSidecarAdmin';
 import type { AgentAffectAdmin } from './useAgentAffectAdmin';
+import type { PromptCenterAdmin } from './usePromptCenterAdmin';
 import type { AdminStatusControls } from './useAdminStatus';
 import type { TabID } from '../lib/adminData';
 
@@ -16,15 +17,16 @@ type BootstrapOptions = {
   chatSettings: Pick<ChatSettingsAdmin, 'reloadChatSettings'>;
   memory: Pick<MemoryAdmin, 'reloadEffectiveConfig' | 'reloadMemorySurfaces' | 'reloadConfigIssues' | 'reloadNaturalLatest'>;
   agentAffect: Pick<AgentAffectAdmin, 'reloadAgentAffect'>;
+  promptCenter: Pick<PromptCenterAdmin, 'reloadPromptCenter'>;
   sidecar: Pick<SidecarAdmin, 'reloadSidecar'>;
   status: Pick<AdminStatusControls, 'showError'>;
 };
 
-export function useAdminBootstrap(activeTab: TabID, { providers, agents, personas, chatSettings, memory, agentAffect, sidecar, status }: BootstrapOptions) {
+export function useAdminBootstrap(activeTab: TabID, { providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, sidecar, status }: BootstrapOptions) {
   const loadedResourcesRef = useRef(new Set<string>());
   const resourceRequestsRef = useRef(new Map<string, Promise<void>>());
-  const loadersRef = useRef({ providers, agents, personas, chatSettings, memory, agentAffect, sidecar, status });
-  loadersRef.current = { providers, agents, personas, chatSettings, memory, agentAffect, sidecar, status };
+  const loadersRef = useRef({ providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, sidecar, status });
+  loadersRef.current = { providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, sidecar, status };
 
   useEffect(() => {
     let cancelled = false;
@@ -85,6 +87,12 @@ export function useAdminBootstrap(activeTab: TabID, { providers, agents, persona
             break;
           case 'agent-affect':
             await Promise.all([loadOnce('agent-affect', loaders.agentAffect.reloadAgentAffect), loadProviderBasics()]);
+            break;
+          case 'prompt-center':
+            await Promise.all([
+              loadAgentBasics(),
+              loadOnce('prompt-center', () => loaders.promptCenter.reloadPromptCenter()),
+            ]);
             break;
           case 'pipelines':
             await Promise.all([loadEffectiveConfig(), loadProviderBasics()]);
