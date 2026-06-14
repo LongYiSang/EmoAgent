@@ -214,6 +214,59 @@ func TestOpenAIPayloadMapsDeepSeekThinkingParams(t *testing.T) {
 	}
 }
 
+func TestOpenAIPayloadMapsSiliconFlowThinkingParams(t *testing.T) {
+	budget := 2048
+	client := &openaiClient{
+		providerID:             "siliconflow",
+		baseURL:                "https://api.siliconflow.cn/v1",
+		reasoningRequestStyle:  ReasoningRequestSiliconFlowThinking,
+		reasoningResponseStyle: ReasoningResponseReasoningContent,
+		chatCompletionsPath:    "/chat/completions",
+		modelsPath:             "/models",
+		logger:                 slog.Default(),
+	}
+
+	payload := client.openaiPayload(ChatRequest{
+		Model:    "Qwen/Qwen3-235B-A22B-Instruct-2507",
+		Messages: []Message{{Role: RoleUser, Content: "Hi"}},
+		Params: RequestParams{
+			Thinking: &ThinkingConfig{Mode: "enabled", BudgetTokens: &budget},
+			Extra: map[string]any{
+				"enable_thinking": false,
+				"thinking_budget": 128,
+				"custom":          "kept",
+			},
+		},
+	}, false)
+
+	if _, exists := payload["thinking"]; exists {
+		t.Fatalf("thinking object should not be sent for SiliconFlow: %#v", payload["thinking"])
+	}
+	if got := payload["enable_thinking"]; got != true {
+		t.Fatalf("enable_thinking = %#v, want true", got)
+	}
+	if got := payload["thinking_budget"]; got != float64(budget) && got != budget {
+		t.Fatalf("thinking_budget = %#v, want %d", got, budget)
+	}
+	if got := payload["custom"]; got != "kept" {
+		t.Fatalf("custom extra = %#v, want kept", got)
+	}
+
+	payload = client.openaiPayload(ChatRequest{
+		Model:    "Qwen/Qwen3-235B-A22B-Instruct-2507",
+		Messages: []Message{{Role: RoleUser, Content: "Hi"}},
+		Params: RequestParams{
+			Thinking: &ThinkingConfig{Mode: "disabled", BudgetTokens: &budget},
+		},
+	}, false)
+	if got := payload["enable_thinking"]; got != false {
+		t.Fatalf("enable_thinking = %#v, want false", got)
+	}
+	if _, exists := payload["thinking_budget"]; exists {
+		t.Fatalf("thinking_budget should be omitted when thinking is disabled: %#v", payload["thinking_budget"])
+	}
+}
+
 func TestOpenAIPayloadPreservesUnknownProviderExtraThinking(t *testing.T) {
 	client := &openaiClient{
 		providerID: "custom",
@@ -238,6 +291,32 @@ func TestOpenAIPayloadPreservesUnknownProviderExtraThinking(t *testing.T) {
 	}
 	if got := thinking["custom"]; got != "kept" {
 		t.Fatalf("thinking.custom = %#v, want kept", got)
+	}
+}
+
+func TestOpenAIPayloadPreservesCustomExtraSiliconFlowFields(t *testing.T) {
+	client := &openaiClient{
+		providerID: "custom",
+		baseURL:    "https://llm.example.test",
+		logger:     slog.Default(),
+	}
+
+	payload := client.openaiPayload(ChatRequest{
+		Model:    "custom-thinking-model",
+		Messages: []Message{{Role: RoleUser, Content: "Hi"}},
+		Params: RequestParams{
+			Extra: map[string]any{
+				"enable_thinking": true,
+				"thinking_budget": 2048,
+			},
+		},
+	}, false)
+
+	if got := payload["enable_thinking"]; got != true {
+		t.Fatalf("enable_thinking = %#v, want true", got)
+	}
+	if got := payload["thinking_budget"]; got != 2048 {
+		t.Fatalf("thinking_budget = %#v, want 2048", got)
 	}
 }
 

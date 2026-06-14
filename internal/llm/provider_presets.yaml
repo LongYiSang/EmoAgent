@@ -241,6 +241,35 @@ presets:
         max_tokens: 2048
         temperature: 0.1
         stream: false
+  - id: siliconflow
+    name: SiliconFlow
+    protocol: openai_compatible
+    base_url: https://api.siliconflow.cn/v1
+    api_key_env: SILICONFLOW_API_KEY
+    model_discovery: siliconflow_models
+    chat_completions_path: /chat/completions
+    models_path: /models
+    rerank_path: /rerank
+    documentation_url: https://api-docs.siliconflow.cn/
+    provider_capabilities: [chat, query_analysis, embedding, rerank]
+    capabilities:
+      reasoning_request_style: siliconflow_enable_thinking
+      reasoning_response_style: reasoning_content
+      tool_reasoning_continuation: preserve_during_tool_loop
+    admin:
+      visible_params: [max_tokens, temperature, stream, top_p, reasoning_effort, thinking_mode, thinking_budget, extra]
+      main_defaults:
+        max_tokens: 8192
+        temperature: 0.7
+        stream: true
+        thinking:
+          mode: disabled
+      summary_defaults:
+        max_tokens: 2048
+        temperature: 0.1
+        stream: false
+        thinking:
+          mode: disabled
   - id: custom_openai_compatible
     name: Custom OpenAI Compatible
     protocol: openai_compatible

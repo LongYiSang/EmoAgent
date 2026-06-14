@@ -109,7 +109,7 @@ export function useProviderAdmin({ setStatus, showError }: ProviderAdminOptions)
       model_discovery: preset.model_discovery || 'manual',
       base_url: preset.base_url || '',
       api_key_env: preset.api_key_env || '',
-      capabilities: Array.isArray(preset.capabilities) ? preset.capabilities : ['chat'],
+      capabilities: Array.isArray(preset.provider_capabilities) ? preset.provider_capabilities : ['chat'],
     }));
   }, [providerPresets, selectedProvider]);
 

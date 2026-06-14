@@ -1776,7 +1776,7 @@ func (p LLMProvider) Validate() error {
 		return fmt.Errorf("api_key_env is required")
 	}
 	switch p.ModelDiscovery {
-	case "", "manual", "openai_models", "anthropic_models":
+	case "", "manual", "openai_models", "anthropic_models", "siliconflow_models":
 	default:
 		return fmt.Errorf("unsupported model_discovery: %s", p.ModelDiscovery)
 	}
@@ -1798,6 +1798,7 @@ func (p LLMProvider) WithPresetDefaults() (LLMProvider, error) {
 	p.BaseURL = strings.TrimRight(strings.TrimSpace(p.BaseURL), "/")
 	p.APIKeyEnv = strings.TrimSpace(p.APIKeyEnv)
 	p.ModelDiscovery = strings.TrimSpace(p.ModelDiscovery)
+	hasExplicitCapabilities := hasProviderCapabilities(p.Capabilities)
 	p.Capabilities = NormalizeProviderCapabilities(p.Capabilities)
 	if p.PresetID == "" {
 		return p, nil
@@ -1824,6 +1825,9 @@ func (p LLMProvider) WithPresetDefaults() (LLMProvider, error) {
 	if p.ModelDiscovery == "" {
 		p.ModelDiscovery = preset.ModelDiscovery
 	}
+	if !hasExplicitCapabilities && len(preset.ProviderCapabilities) > 0 {
+		p.Capabilities = NormalizeProviderCapabilities(preset.ProviderCapabilities)
+	}
 	return p, nil
 }
 
@@ -1848,6 +1852,15 @@ func NormalizeProviderCapabilities(capabilities []string) []string {
 		return []string{"chat"}
 	}
 	return out
+}
+
+func hasProviderCapabilities(capabilities []string) bool {
+	for _, capability := range capabilities {
+		if strings.TrimSpace(capability) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (a AgentConfig) Validate() error {

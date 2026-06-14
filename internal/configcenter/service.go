@@ -11,6 +11,7 @@ import (
 
 	memconfig "github.com/longyisang/emoagent-memorycore/config"
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/memoryhost"
 	sidecarruntime "github.com/longyisang/emoagent/internal/sidecar"
 	"github.com/longyisang/emoagent/internal/storage"
@@ -894,7 +895,7 @@ func sidecarProviderBinding(path string, binding config.MemoryProviderBindingCon
 			Message:  fmt.Sprintf("provider %q does not advertise %s capability", providerID, capability),
 		}}
 	}
-	sidecarProvider, err := sidecarProviderName(capability, provider.Protocol)
+	sidecarProvider, err := sidecarProviderName(capability, provider)
 	if err != nil {
 		return sidecarruntime.ProviderBinding{}, []ConfigIssue{{
 			Path:     path + ".provider_id",
@@ -905,7 +906,7 @@ func sidecarProviderBinding(path string, binding config.MemoryProviderBindingCon
 	return sidecarruntime.ProviderBinding{
 		Provider:    sidecarProvider,
 		BaseURL:     strings.TrimSpace(provider.BaseURL),
-		EndpointURL: strings.TrimSpace(provider.BaseURL),
+		EndpointURL: sidecarEndpointURL(provider, capability),
 		APIKeyEnv:   strings.TrimSpace(provider.APIKeyEnv),
 		Model:       strings.TrimSpace(binding.Model),
 		MaxTokens:   binding.MaxTokens,
@@ -936,8 +937,8 @@ func providerSupportsCapability(provider config.LLMProvider, capability string) 
 	return false
 }
 
-func sidecarProviderName(capability string, protocol string) (string, error) {
-	protocol = normalizeProtocol(protocol)
+func sidecarProviderName(capability string, provider config.LLMProvider) (string, error) {
+	protocol := normalizeProtocol(provider.Protocol)
 	switch capability {
 	case "embedding", "query_analysis":
 		if protocol != "openai_compatible" {
@@ -948,10 +949,30 @@ func sidecarProviderName(capability string, protocol string) (string, error) {
 		if protocol == "dashscope_vl" || protocol == "dashscope-vl" {
 			return "dashscope-vl", nil
 		}
-		return "", fmt.Errorf("rerank provider requires dashscope-vl protocol, got %q", protocol)
+		if protocol == "openai_compatible" && isSiliconFlowRerankProvider(provider) {
+			return "siliconflow-rerank", nil
+		}
+		return "", fmt.Errorf("rerank provider requires dashscope-vl protocol or siliconflow preset, got %q", protocol)
 	default:
 		return "", fmt.Errorf("unsupported sidecar capability %q", capability)
 	}
+}
+
+func isSiliconFlowRerankProvider(provider config.LLMProvider) bool {
+	preset, ok := llm.ProviderPresetByID(provider.PresetID)
+	return ok && preset.ID == "siliconflow" && strings.TrimSpace(preset.RerankPath) != ""
+}
+
+func sidecarEndpointURL(provider config.LLMProvider, capability string) string {
+	baseURL := strings.TrimRight(strings.TrimSpace(provider.BaseURL), "/")
+	if capability != "rerank" {
+		return baseURL
+	}
+	preset, ok := llm.ProviderPresetByID(provider.PresetID)
+	if !ok || strings.TrimSpace(preset.RerankPath) == "" {
+		return baseURL
+	}
+	return baseURL + "/" + strings.Trim(strings.TrimSpace(preset.RerankPath), "/")
 }
 
 func normalizeProtocol(protocol string) string {

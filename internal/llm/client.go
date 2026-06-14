@@ -581,10 +581,15 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 
 func (c *openaiClient) openaiPayload(req ChatRequest, stream bool) map[string]any {
 	params := effectiveRequestParams(req)
-	payload := sanitizedExtra(params.Extra, map[string]struct{}{
+	blockedExtra := map[string]struct{}{
 		"model": {}, "messages": {}, "max_tokens": {}, "temperature": {}, "top_p": {},
 		"presence_penalty": {}, "frequency_penalty": {}, "reasoning_effort": {}, "stream": {}, "tools": {},
-	})
+	}
+	if c.reasoningRequestStyle == ReasoningRequestSiliconFlowThinking {
+		blockedExtra["enable_thinking"] = struct{}{}
+		blockedExtra["thinking_budget"] = struct{}{}
+	}
+	payload := sanitizedExtra(params.Extra, blockedExtra)
 	payload["model"] = req.Model
 	payload["messages"] = c.toMessages(req)
 	if params.MaxTokens > 0 {
@@ -609,9 +614,7 @@ func (c *openaiClient) openaiPayload(req ChatRequest, stream bool) map[string]an
 	if reasoningEffort != "" {
 		payload["reasoning_effort"] = reasoningEffort
 	}
-	if thinking := providerThinkingPayload(c.reasoningRequestStyle, params.Thinking); thinking != nil {
-		payload["thinking"] = thinking
-	}
+	applyProviderThinkingPayload(payload, c.reasoningRequestStyle, params.Thinking)
 	if stream {
 		payload["stream"] = true
 	}
@@ -619,6 +622,27 @@ func (c *openaiClient) openaiPayload(req ChatRequest, stream bool) map[string]an
 		payload["tools"] = tools
 	}
 	return payload
+}
+
+func applyProviderThinkingPayload(payload map[string]any, requestStyle string, thinking *ThinkingConfig) {
+	if thinking == nil {
+		return
+	}
+	if requestStyle == ReasoningRequestSiliconFlowThinking {
+		switch strings.ToLower(strings.TrimSpace(thinking.Mode)) {
+		case "enabled", "manual":
+			payload["enable_thinking"] = true
+			if thinking.BudgetTokens != nil {
+				payload["thinking_budget"] = *thinking.BudgetTokens
+			}
+		case "disabled":
+			payload["enable_thinking"] = false
+		}
+		return
+	}
+	if thinkingPayload := providerThinkingPayload(requestStyle, thinking); thinkingPayload != nil {
+		payload["thinking"] = thinkingPayload
+	}
 }
 
 func providerThinkingPayload(requestStyle string, thinking *ThinkingConfig) map[string]any {

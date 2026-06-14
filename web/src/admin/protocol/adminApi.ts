@@ -1,6 +1,6 @@
 import { requestJSON, type AnyRecord } from '../../shared/lib/api';
 
-export type ProviderPreset = AnyRecord & { id?: string; name?: string };
+export type ProviderPreset = AnyRecord & { id?: string; name?: string; provider_capabilities?: string[] };
 export type Provider = AnyRecord & { id?: string; name?: string; capabilities?: string[] };
 export type AgentConfig = AnyRecord & { id?: string; name?: string; persona_key?: string };
 export type Persona = AnyRecord & { key?: string; name?: string };

@@ -239,6 +239,51 @@ func TestBuildEffectiveMergesRuntimeSettingsIntoMemoryCoreAndSidecar(t *testing.
 	}
 }
 
+func TestBuildEffectiveRendersSiliconFlowRerankSidecarProvider(t *testing.T) {
+	db := openConfigCenterDB(t)
+	if err := db.UpsertLLMProvider(config.LLMProvider{
+		ID:             "siliconflow",
+		Name:           "SiliconFlow",
+		PresetID:       "siliconflow",
+		Protocol:       "openai_compatible",
+		BaseURL:        "https://api.siliconflow.cn/v1",
+		APIKeyEnv:      "SILICONFLOW_API_KEY",
+		ModelDiscovery: "siliconflow_models",
+		Enabled:        true,
+		Capabilities:   []string{"chat", "embedding", "rerank"},
+	}); err != nil {
+		t.Fatalf("UpsertLLMProvider: %v", err)
+	}
+	if err := db.UpsertRuntimeSetting("memory.sidecar", "config", `{"enabled":true,"managed":true,"adapter":"trivium","config_path":"./data/runtime/sidecar.generated.toml"}`, "ui"); err != nil {
+		t.Fatalf("UpsertRuntimeSetting sidecar: %v", err)
+	}
+	if err := db.UpsertRuntimeSetting("memory.provider_bindings", "config", `{"rerank":{"enabled":true,"provider_id":"siliconflow","model":"Qwen/Qwen3-Reranker-8B","top_k":12}}`, "ui"); err != nil {
+		t.Fatalf("UpsertRuntimeSetting bindings: %v", err)
+	}
+
+	seed := config.DefaultConfig()
+	seed.Memory.Enabled = true
+	seed.Memory.ConfigPath = writeConfigCenterMemoryCoreConfig(t)
+	svc := NewService(seed, db)
+	svc.EnvLookup = func(string) (string, bool) { return "present", true }
+
+	effective, err := svc.BuildEffective(context.Background())
+	if err != nil {
+		t.Fatalf("BuildEffective: %v", err)
+	}
+	for _, want := range []string{
+		`provider = "siliconflow-rerank"`,
+		`endpoint_url = "https://api.siliconflow.cn/v1/rerank"`,
+		`api_key_env = "SILICONFLOW_API_KEY"`,
+		`model = "Qwen/Qwen3-Reranker-8B"`,
+		`top_n = 12`,
+	} {
+		if !strings.Contains(effective.SidecarGeneratedConfig, want) {
+			t.Fatalf("generated sidecar TOML missing %q:\n%s", want, effective.SidecarGeneratedConfig)
+		}
+	}
+}
+
 func TestBuildMemoryCoreOpenConfigDegradedSidecarOnlyDisablesMirror(t *testing.T) {
 	db := openConfigCenterDB(t)
 	if err := db.UpsertLLMProvider(config.LLMProvider{

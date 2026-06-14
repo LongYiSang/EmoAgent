@@ -893,7 +893,7 @@ func TestHandleCreateLLMProviderNormalizesPayload(t *testing.T) {
 	app := &fakeAdminApp{}
 	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
-	body := bytes.NewBufferString(`{"id":" moonshot ","name":" Moonshot ","preset_id":" moonshot ","protocol":"openai_compatible","base_url":"https://api.moonshot.cn/","api_key_env":" MOONSHOT_API_KEY ","enabled":true}`)
+	body := bytes.NewBufferString(`{"id":" moonshot ","name":" Moonshot ","preset_id":" moonshot ","protocol":"openai_compatible","base_url":"https://api.moonshot.cn/","api_key_env":" MOONSHOT_API_KEY ","model_discovery":" manual ","enabled":true}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/llm-providers", body)
 	rec := httptest.NewRecorder()
 	handler.HandleCreateLLMProvider(rec, req)
@@ -909,6 +909,47 @@ func TestHandleCreateLLMProviderNormalizesPayload(t *testing.T) {
 	}
 	if app.lastProvider.PresetID != "moonshot" {
 		t.Fatalf("PresetID = %q, want moonshot", app.lastProvider.PresetID)
+	}
+}
+
+func TestHandleCreateLLMProviderLetsPresetDefaultsApply(t *testing.T) {
+	app := &fakeAdminApp{}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/llm-providers", bytes.NewBufferString(`{"preset_id":" siliconflow ","enabled":true}`))
+	rec := httptest.NewRecorder()
+	handler.HandleCreateLLMProvider(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 body=%s", rec.Code, rec.Body.String())
+	}
+	if app.lastProvider.PresetID != "siliconflow" {
+		t.Fatalf("PresetID = %q, want siliconflow", app.lastProvider.PresetID)
+	}
+	if app.lastProvider.ModelDiscovery != "" {
+		t.Fatalf("ModelDiscovery = %q, want empty for service preset defaults", app.lastProvider.ModelDiscovery)
+	}
+	if len(app.lastProvider.Capabilities) != 0 {
+		t.Fatalf("Capabilities = %#v, want empty for service preset defaults", app.lastProvider.Capabilities)
+	}
+}
+
+func TestHandleCreateLLMProviderDefaultsManualProvider(t *testing.T) {
+	app := &fakeAdminApp{}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/llm-providers", bytes.NewBufferString(`{"id":"custom","name":"Custom","protocol":"openai_compatible","base_url":"https://api.example.test","api_key_env":"CUSTOM_API_KEY","enabled":true}`))
+	rec := httptest.NewRecorder()
+	handler.HandleCreateLLMProvider(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 body=%s", rec.Code, rec.Body.String())
+	}
+	if app.lastProvider.ModelDiscovery != "manual" {
+		t.Fatalf("ModelDiscovery = %q, want manual", app.lastProvider.ModelDiscovery)
+	}
+	if len(app.lastProvider.Capabilities) != 1 || app.lastProvider.Capabilities[0] != "chat" {
+		t.Fatalf("Capabilities = %#v, want [chat]", app.lastProvider.Capabilities)
 	}
 }
 

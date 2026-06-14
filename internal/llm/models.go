@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 )
@@ -16,6 +17,7 @@ type ModelInfo struct {
 	OutputModalities []string           `json:"output_modalities,omitempty"`
 	ImageTransports  []string           `json:"image_transports,omitempty"`
 	ImageFormats     []string           `json:"image_formats,omitempty"`
+	SubType          string             `json:"sub_type,omitempty"`
 	Capabilities     *ModelCapabilities `json:"capabilities,omitempty"`
 	RawJSON          string             `json:"-"`
 }
@@ -88,7 +90,53 @@ func DiscoverModels(ctx context.Context, cfg ProviderConfig) ([]ModelInfo, error
 		return nil, fmt.Errorf("%s environment variable not set", apiKeyEnv)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpointURL(cfg.BaseURL, cfg.ModelsPath), nil)
+	if cfg.ModelDiscovery == "siliconflow_models" {
+		return discoverSiliconFlowModels(ctx, cfg, apiKey)
+	}
+	return discoverModelsEndpoint(ctx, cfg, apiKey, nil, "")
+}
+
+func discoverSiliconFlowModels(ctx context.Context, cfg ProviderConfig, apiKey string) ([]ModelInfo, error) {
+	subtypes := []string{"chat", "embedding", "reranker"}
+	seen := map[string]struct{}{}
+	out := make([]ModelInfo, 0)
+	for _, subtype := range subtypes {
+		models, err := discoverModelsEndpoint(ctx, cfg, apiKey, map[string]string{
+			"type":     "text",
+			"sub_type": subtype,
+		}, subtype)
+		if err != nil {
+			return nil, err
+		}
+		for _, model := range models {
+			if model.ID == "" {
+				continue
+			}
+			if _, ok := seen[model.ID]; ok {
+				continue
+			}
+			seen[model.ID] = struct{}{}
+			out = append(out, model)
+		}
+	}
+	return out, nil
+}
+
+func discoverModelsEndpoint(ctx context.Context, cfg ProviderConfig, apiKey string, query map[string]string, subtype string) ([]ModelInfo, error) {
+	rawURL := endpointURL(cfg.BaseURL, cfg.ModelsPath)
+	if len(query) > 0 {
+		parsed, err := url.Parse(rawURL)
+		if err != nil {
+			return nil, fmt.Errorf("create models request: %w", err)
+		}
+		values := parsed.Query()
+		for key, value := range query {
+			values.Set(key, value)
+		}
+		parsed.RawQuery = values.Encode()
+		rawURL = parsed.String()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create models request: %w", err)
 	}
@@ -117,6 +165,11 @@ func DiscoverModels(ctx context.Context, cfg ProviderConfig) ([]ModelInfo, error
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
 		return nil, wrapDecodeError(cfg.Protocol, "models", err)
+	}
+	for i := range envelope.Data {
+		if envelope.Data[i].SubType == "" {
+			envelope.Data[i].SubType = subtype
+		}
 	}
 	return envelope.Data, nil
 }

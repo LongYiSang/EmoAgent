@@ -1255,6 +1255,39 @@ agent:
 	}
 }
 
+func TestLLMProviderWithPresetDefaultsAppliesSiliconFlowProviderCapabilities(t *testing.T) {
+	provider, err := (LLMProvider{PresetID: "siliconflow"}).WithPresetDefaults()
+	if err != nil {
+		t.Fatalf("WithPresetDefaults: %v", err)
+	}
+	if provider.ID != "siliconflow" || provider.Name != "SiliconFlow" {
+		t.Fatalf("provider identity = %#v", provider)
+	}
+	if provider.Protocol != "openai_compatible" {
+		t.Fatalf("Protocol = %q, want openai_compatible", provider.Protocol)
+	}
+	if provider.ModelDiscovery != "siliconflow_models" {
+		t.Fatalf("ModelDiscovery = %q, want siliconflow_models", provider.ModelDiscovery)
+	}
+	for _, capability := range []string{"chat", "query_analysis", "embedding", "rerank"} {
+		if !testContainsString(provider.Capabilities, capability) {
+			t.Fatalf("Capabilities = %#v, want %q", provider.Capabilities, capability)
+		}
+	}
+	if err := provider.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
+func testContainsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestWorkConfigApplyDefaults_PausedPersistence(t *testing.T) {
 	cfg := DefaultConfig()
 	if cfg.Work.SoftTTL != 30*time.Minute {

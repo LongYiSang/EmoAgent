@@ -68,8 +68,10 @@ type ProviderConfig struct {
 	Protocol            string
 	BaseURL             string
 	APIKeyEnv           string
+	ModelDiscovery      string
 	ChatCompletionsPath string
 	ModelsPath          string
+	RerankPath          string
 
 	ReasoningRequestStyle          string
 	ReasoningResponseStyle         string

@@ -98,11 +98,12 @@ func (s *LLMProviderService) RefreshModels(id string) ([]llm.ModelInfo, error) {
 		return []llm.ModelInfo{}, nil
 	}
 	models, err := llm.DiscoverModels(context.Background(), llm.ProviderConfig{
-		ID:        provider.ID,
-		PresetID:  provider.PresetID,
-		Protocol:  provider.Protocol,
-		BaseURL:   provider.BaseURL,
-		APIKeyEnv: provider.APIKeyEnv,
+		ID:             provider.ID,
+		PresetID:       provider.PresetID,
+		Protocol:       provider.Protocol,
+		BaseURL:        provider.BaseURL,
+		APIKeyEnv:      provider.APIKeyEnv,
+		ModelDiscovery: provider.ModelDiscovery,
 	})
 	if err != nil {
 		return nil, err

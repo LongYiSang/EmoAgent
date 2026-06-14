@@ -62,7 +62,7 @@ export default memo(function ProvidersTab({
             <Field id="p-name" label="名称" value={String(providerDraft.name || '')} onChange={value => patchProviderDraft('name', value)} />
             <div className="field"><label htmlFor="p-preset">预设</label><select id="p-preset" value={String(providerDraft.preset_id || '')} onChange={event => applyProviderPreset(event.target.value)}><option value="">manual</option>{providerPresets.map(preset => <option key={preset.id} value={preset.id}>{preset.name || preset.id}</option>)}</select></div>
             <div className="field"><label htmlFor="p-protocol">协议</label><select id="p-protocol" value={String(providerDraft.protocol || 'openai_compatible')} onChange={event => patchProviderDraft('protocol', event.target.value)}><option value="openai_compatible">openai_compatible</option><option value="anthropic">anthropic</option></select></div>
-            <div className="field"><label htmlFor="p-discovery">模型发现</label><select id="p-discovery" value={String(providerDraft.model_discovery || 'manual')} onChange={event => patchProviderDraft('model_discovery', event.target.value)}><option value="manual">manual</option><option value="openai_models">openai_models</option><option value="anthropic_models">anthropic_models</option></select></div>
+            <div className="field"><label htmlFor="p-discovery">模型发现</label><select id="p-discovery" value={String(providerDraft.model_discovery || 'manual')} onChange={event => patchProviderDraft('model_discovery', event.target.value)}><option value="manual">manual</option><option value="openai_models">openai_models</option><option value="anthropic_models">anthropic_models</option><option value="siliconflow_models">siliconflow_models</option></select></div>
             <Field id="p-base-url" label="Base URL" value={String(providerDraft.base_url || '')} onChange={value => patchProviderDraft('base_url', value)} mono />
             <Field id="p-api-key-env" label="API Key 环境变量" value={String(providerDraft.api_key_env || '')} onChange={value => patchProviderDraft('api_key_env', value)} mono />
             <label className="check"><input id="p-enabled" type="checkbox" checked={boolField(providerDraft, 'enabled')} onChange={event => patchProviderDraft('enabled', event.target.checked)} /> 启用</label>
@@ -102,6 +102,7 @@ function modelCapabilityBadges(model: AnyRecord): string[] {
   if (input.includes('image') && transports.length) badges.push('vision');
   else if (input.includes('image')) badges.push('image/no transport');
   else if (input.includes('text')) badges.push('text');
+  if (stringField(model, 'sub_type')) badges.push(stringField(model, 'sub_type'));
   if (transports.length) badges.push(transports.slice(0, 2).join('/'));
   if (formats.length) badges.push(formats.slice(0, 2).join('/'));
   if (source) badges.push(capabilitySourceLabel(source));

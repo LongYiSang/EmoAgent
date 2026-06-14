@@ -1266,10 +1266,21 @@ func normalizeProvider(provider *config.LLMProvider) {
 	provider.BaseURL = strings.TrimRight(strings.TrimSpace(provider.BaseURL), "/")
 	provider.APIKeyEnv = strings.TrimSpace(provider.APIKeyEnv)
 	provider.ModelDiscovery = strings.TrimSpace(provider.ModelDiscovery)
-	if provider.ModelDiscovery == "" {
+	if provider.ModelDiscovery == "" && provider.PresetID == "" {
 		provider.ModelDiscovery = "manual"
 	}
-	provider.Capabilities = config.NormalizeProviderCapabilities(provider.Capabilities)
+	if hasExplicitProviderCapabilities(provider.Capabilities) || provider.PresetID == "" {
+		provider.Capabilities = config.NormalizeProviderCapabilities(provider.Capabilities)
+	}
+}
+
+func hasExplicitProviderCapabilities(capabilities []string) bool {
+	for _, capability := range capabilities {
+		if strings.TrimSpace(capability) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func cloneProgressPhrases(src map[string][]string) map[string][]string {

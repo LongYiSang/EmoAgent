@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	ReasoningRequestReasoningEffort = "reasoning_effort"
-	ReasoningRequestThinkingType    = "thinking_type"
-	ReasoningRequestAnthropic       = "anthropic_thinking"
+	ReasoningRequestReasoningEffort     = "reasoning_effort"
+	ReasoningRequestThinkingType        = "thinking_type"
+	ReasoningRequestSiliconFlowThinking = "siliconflow_enable_thinking"
+	ReasoningRequestAnthropic           = "anthropic_thinking"
 
 	ReasoningResponseReasoningContent = "reasoning_content"
 	ReasoningResponseMessageReasoning = "message_reasoning"
@@ -23,17 +24,19 @@ const (
 )
 
 type ProviderPreset struct {
-	ID                  string               `yaml:"id" json:"id"`
-	Name                string               `yaml:"name" json:"name"`
-	Protocol            string               `yaml:"protocol" json:"protocol"`
-	BaseURL             string               `yaml:"base_url" json:"base_url"`
-	APIKeyEnv           string               `yaml:"api_key_env" json:"api_key_env"`
-	ModelDiscovery      string               `yaml:"model_discovery" json:"model_discovery"`
-	ChatCompletionsPath string               `yaml:"chat_completions_path" json:"chat_completions_path"`
-	ModelsPath          string               `yaml:"models_path" json:"models_path"`
-	DocumentationURL    string               `yaml:"documentation_url" json:"documentation_url,omitempty"`
-	Capabilities        ProviderCapabilities `yaml:"capabilities" json:"capabilities"`
-	Admin               ProviderAdmin        `yaml:"admin" json:"admin"`
+	ID                   string               `yaml:"id" json:"id"`
+	Name                 string               `yaml:"name" json:"name"`
+	Protocol             string               `yaml:"protocol" json:"protocol"`
+	BaseURL              string               `yaml:"base_url" json:"base_url"`
+	APIKeyEnv            string               `yaml:"api_key_env" json:"api_key_env"`
+	ModelDiscovery       string               `yaml:"model_discovery" json:"model_discovery"`
+	ChatCompletionsPath  string               `yaml:"chat_completions_path" json:"chat_completions_path"`
+	ModelsPath           string               `yaml:"models_path" json:"models_path"`
+	RerankPath           string               `yaml:"rerank_path" json:"rerank_path,omitempty"`
+	DocumentationURL     string               `yaml:"documentation_url" json:"documentation_url,omitempty"`
+	ProviderCapabilities []string             `yaml:"provider_capabilities" json:"provider_capabilities,omitempty"`
+	Capabilities         ProviderCapabilities `yaml:"capabilities" json:"capabilities"`
+	Admin                ProviderAdmin        `yaml:"admin" json:"admin"`
 }
 
 type ProviderCapabilities struct {
@@ -97,6 +100,8 @@ func ResolveProviderConfig(cfg ProviderConfig) (ProviderConfig, error) {
 	cfg.APIKeyEnv = strings.TrimSpace(cfg.APIKeyEnv)
 	cfg.ChatCompletionsPath = normalizePath(cfg.ChatCompletionsPath)
 	cfg.ModelsPath = normalizePath(cfg.ModelsPath)
+	cfg.RerankPath = normalizePath(cfg.RerankPath)
+	cfg.ModelDiscovery = strings.TrimSpace(cfg.ModelDiscovery)
 
 	if cfg.PresetID != "" {
 		preset, ok := ProviderPresetByID(cfg.PresetID)
@@ -127,6 +132,8 @@ func loadProviderPresets() ([]ProviderPreset, error) {
 			preset.ModelDiscovery = strings.TrimSpace(preset.ModelDiscovery)
 			preset.ChatCompletionsPath = normalizePath(preset.ChatCompletionsPath)
 			preset.ModelsPath = normalizePath(preset.ModelsPath)
+			preset.RerankPath = normalizePath(preset.RerankPath)
+			preset.ProviderCapabilities = normalizeStringList(preset.ProviderCapabilities)
 			if preset.ID == "" {
 				providerPresetErr = fmt.Errorf("provider preset at index %d has empty id", i)
 				return
@@ -166,6 +173,12 @@ func applyPresetToProviderConfig(cfg ProviderConfig, preset ProviderPreset) Prov
 	if cfg.ModelsPath == "" {
 		cfg.ModelsPath = preset.ModelsPath
 	}
+	if cfg.RerankPath == "" {
+		cfg.RerankPath = preset.RerankPath
+	}
+	if cfg.ModelDiscovery == "" {
+		cfg.ModelDiscovery = preset.ModelDiscovery
+	}
 	if cfg.ReasoningRequestStyle == "" {
 		cfg.ReasoningRequestStyle = preset.Capabilities.ReasoningRequestStyle
 	}
@@ -190,6 +203,7 @@ func applyProtocolDefaultsToPreset(preset *ProviderPreset) {
 	applyProtocolDefaults(&cfg)
 	preset.ChatCompletionsPath = cfg.ChatCompletionsPath
 	preset.ModelsPath = cfg.ModelsPath
+	preset.RerankPath = normalizePath(preset.RerankPath)
 	if preset.ModelDiscovery == "" {
 		preset.ModelDiscovery = "manual"
 	}
@@ -224,4 +238,21 @@ func endpointURL(baseURL, path string) string {
 		return baseURL
 	}
 	return baseURL + path
+}
+
+func normalizeStringList(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
