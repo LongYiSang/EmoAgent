@@ -906,13 +906,13 @@ type PersonasConfig struct {
 }
 
 type WebSearchConfig struct {
-	Enabled       bool                    `yaml:"enabled"`
-	Provider      string                  `yaml:"provider"`       // "tavily" | "pipeline"
-	APIKeyEnv     string                  `yaml:"api_key_env"`    // "TAVILY_API_KEY"
-	BaseURL       string                  `yaml:"base_url"`       // Tavily API base URL
-	MaxResults    int                     `yaml:"max_results"`    // handler default cap, default 5
-	TimeoutSec    int                     `yaml:"timeout_sec"`    // HTTP timeout seconds, default 30
-	IncludeAnswer bool                    `yaml:"include_answer"` // default false
+	Enabled       bool                    `yaml:"enabled" json:"enabled"`
+	Provider      string                  `yaml:"provider" json:"provider"`             // "tavily" | "pipeline"
+	APIKeyEnv     string                  `yaml:"api_key_env" json:"api_key_env"`       // "TAVILY_API_KEY"
+	BaseURL       string                  `yaml:"base_url" json:"base_url"`             // Tavily API base URL
+	MaxResults    int                     `yaml:"max_results" json:"max_results"`       // handler default cap, default 5
+	TimeoutSec    int                     `yaml:"timeout_sec" json:"timeout_sec"`       // HTTP timeout seconds, default 30
+	IncludeAnswer bool                    `yaml:"include_answer" json:"include_answer"` // default false
 	Pipeline      WebSearchPipelineConfig `yaml:"pipeline" json:"pipeline"`
 }
 
@@ -1542,48 +1542,50 @@ func (c *Config) Validate() error {
 		if c.WebSearch.APIKeyEnv == "" {
 			return fmt.Errorf("websearch.api_key_env is required when websearch is enabled")
 		}
-		reader := c.WebSearch.Pipeline.Reader
-		switch reader.ExtractDepth {
-		case "basic", "advanced":
-		default:
-			return fmt.Errorf("websearch.pipeline.reader.extract_depth must be basic or advanced, got %q", reader.ExtractDepth)
-		}
-		switch reader.Format {
-		case "markdown", "text":
-		default:
-			return fmt.Errorf("websearch.pipeline.reader.format must be markdown or text, got %q", reader.Format)
-		}
-		if reader.TopN < 0 {
-			return fmt.Errorf("websearch.pipeline.reader.top_n must be >= 0")
-		}
-		if reader.MaxCharsPerDoc < 0 {
-			return fmt.Errorf("websearch.pipeline.reader.max_chars_per_doc must be >= 0")
-		}
-		if reader.MaxChunkChars < 0 {
-			return fmt.Errorf("websearch.pipeline.reader.max_chunk_chars must be >= 0")
-		}
-		rerank := c.WebSearch.Pipeline.Rerank
-		switch rerank.Provider {
-		case "disabled", "heuristic", "siliconflow":
-		default:
-			return fmt.Errorf("websearch.pipeline.rerank.provider must be disabled, heuristic, or siliconflow, got %q", rerank.Provider)
-		}
-		switch rerank.Fallback {
-		case "disabled", "heuristic":
-		default:
-			return fmt.Errorf("websearch.pipeline.rerank.fallback must be disabled or heuristic, got %q", rerank.Fallback)
-		}
-		if rerank.TimeoutSec < 0 {
-			return fmt.Errorf("websearch.pipeline.rerank.timeout_sec must be >= 0")
-		}
-		if rerank.InputTopN < 0 {
-			return fmt.Errorf("websearch.pipeline.rerank.input_top_n must be >= 0")
-		}
-		if rerank.TopK < 0 {
-			return fmt.Errorf("websearch.pipeline.rerank.top_k must be >= 0")
-		}
-		if rerank.MaxDocChars < 0 {
-			return fmt.Errorf("websearch.pipeline.rerank.max_doc_chars must be >= 0")
+		if c.WebSearch.Provider == "pipeline" && c.WebSearch.Pipeline.Enabled {
+			reader := c.WebSearch.Pipeline.Reader
+			switch reader.ExtractDepth {
+			case "basic", "advanced":
+			default:
+				return fmt.Errorf("websearch.pipeline.reader.extract_depth must be basic or advanced, got %q", reader.ExtractDepth)
+			}
+			switch reader.Format {
+			case "markdown", "text":
+			default:
+				return fmt.Errorf("websearch.pipeline.reader.format must be markdown or text, got %q", reader.Format)
+			}
+			if reader.TopN < 0 {
+				return fmt.Errorf("websearch.pipeline.reader.top_n must be >= 0")
+			}
+			if reader.MaxCharsPerDoc < 0 {
+				return fmt.Errorf("websearch.pipeline.reader.max_chars_per_doc must be >= 0")
+			}
+			if reader.MaxChunkChars < 0 {
+				return fmt.Errorf("websearch.pipeline.reader.max_chunk_chars must be >= 0")
+			}
+			rerank := c.WebSearch.Pipeline.Rerank
+			switch rerank.Provider {
+			case "disabled", "heuristic", "siliconflow":
+			default:
+				return fmt.Errorf("websearch.pipeline.rerank.provider must be disabled, heuristic, or siliconflow, got %q", rerank.Provider)
+			}
+			switch rerank.Fallback {
+			case "disabled", "heuristic":
+			default:
+				return fmt.Errorf("websearch.pipeline.rerank.fallback must be disabled or heuristic, got %q", rerank.Fallback)
+			}
+			if rerank.TimeoutSec < 0 {
+				return fmt.Errorf("websearch.pipeline.rerank.timeout_sec must be >= 0")
+			}
+			if rerank.InputTopN < 0 {
+				return fmt.Errorf("websearch.pipeline.rerank.input_top_n must be >= 0")
+			}
+			if rerank.TopK < 0 {
+				return fmt.Errorf("websearch.pipeline.rerank.top_k must be >= 0")
+			}
+			if rerank.MaxDocChars < 0 {
+				return fmt.Errorf("websearch.pipeline.rerank.max_doc_chars must be >= 0")
+			}
 		}
 	}
 	if c.WebFetch.Enabled {

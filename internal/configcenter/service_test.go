@@ -98,6 +98,30 @@ func TestBuildEffectiveIncludesRootAgentAffect(t *testing.T) {
 	}
 }
 
+func TestBuildEffectiveIncludesRootWebSearch(t *testing.T) {
+	db := openConfigCenterDB(t)
+	if err := db.UpsertRuntimeSetting("websearch", "config", `{"enabled":true,"provider":"pipeline","api_key_env":"TAVILY_API_KEY","pipeline":{"enabled":true,"rerank":{"provider":"heuristic","fallback":"heuristic"}}}`, "ui"); err != nil {
+		t.Fatalf("UpsertRuntimeSetting: %v", err)
+	}
+
+	svc := NewService(config.DefaultConfig(), db)
+	effective, err := svc.BuildEffective(context.Background())
+	if err != nil {
+		t.Fatalf("BuildEffective: %v", err)
+	}
+
+	if !effective.WebSearch.Enabled || effective.WebSearch.Provider != "pipeline" || !effective.WebSearch.Pipeline.Enabled {
+		t.Fatalf("effective websearch = %#v", effective.WebSearch)
+	}
+	payload, err := json.Marshal(effective)
+	if err != nil {
+		t.Fatalf("Marshal effective: %v", err)
+	}
+	if !strings.Contains(string(payload), `"websearch"`) {
+		t.Fatalf("effective config missing websearch: %s", payload)
+	}
+}
+
 func TestBuildEffectiveReportsMissingProviderEnv(t *testing.T) {
 	db := openConfigCenterDB(t)
 	if err := db.UpsertLLMProvider(config.LLMProvider{
@@ -437,6 +461,140 @@ func TestUpdateAgentAffectConfigRejectsInvalidConfig(t *testing.T) {
 		t.Fatalf("error = %T %v, want ValidationError", err, err)
 	}
 	requireConfigIssue(t, validation.Issues, "agent_affect.storage_enabled")
+}
+
+func TestUpdateWebSearchConfigPersistsRuntimeSetting(t *testing.T) {
+	db := openConfigCenterDB(t)
+	svc := NewService(config.DefaultConfig(), db)
+	next := config.DefaultConfig().WebSearch
+	next.Enabled = true
+	next.Provider = "pipeline"
+	next.Pipeline.Enabled = true
+	next.Pipeline.Reader.TopN = 3
+	next.Pipeline.Rerank.Provider = "heuristic"
+	next.Pipeline.Rerank.TopK = 4
+
+	effective, err := svc.UpdateWebSearchConfig(context.Background(), next)
+	if err != nil {
+		t.Fatalf("UpdateWebSearchConfig: %v", err)
+	}
+	if !effective.WebSearch.Enabled || effective.WebSearch.Provider != "pipeline" || effective.WebSearch.Pipeline.Reader.TopN != 3 || effective.WebSearch.Pipeline.Rerank.TopK != 4 {
+		t.Fatalf("effective websearch = %#v", effective.WebSearch)
+	}
+	settings, err := db.ListRuntimeSettings()
+	if err != nil {
+		t.Fatalf("ListRuntimeSettings: %v", err)
+	}
+	if len(settings) != 1 || settings[0].Namespace != "websearch" || settings[0].Key != "config" {
+		t.Fatalf("runtime settings = %#v", settings)
+	}
+}
+
+func TestUpdateWebSearchConfigRejectsInvalidConfig(t *testing.T) {
+	db := openConfigCenterDB(t)
+	svc := NewService(config.DefaultConfig(), db)
+	next := config.DefaultConfig().WebSearch
+	next.Enabled = true
+	next.Provider = "invalid"
+
+	_, err := svc.UpdateWebSearchConfig(context.Background(), next)
+	if err == nil {
+		t.Fatal("UpdateWebSearchConfig succeeded, want validation error")
+	}
+	var validation *ValidationError
+	if !errors.As(err, &validation) {
+		t.Fatalf("error = %T %v, want ValidationError", err, err)
+	}
+	requireConfigIssue(t, validation.Issues, "websearch.provider")
+}
+
+func TestUpdateWebSearchConfigDoesNotRejectMissingRuntimeEnv(t *testing.T) {
+	db := openConfigCenterDB(t)
+	svc := NewService(config.DefaultConfig(), db)
+	svc.EnvLookup = func(string) (string, bool) { return "", false }
+	next := config.DefaultConfig().WebSearch
+	next.Enabled = true
+	next.Provider = "pipeline"
+	next.APIKeyEnv = "MISSING_TAVILY_FOR_CONFIGCENTER"
+	next.Pipeline.Enabled = true
+	next.Pipeline.Rerank.Provider = "heuristic"
+
+	effective, err := svc.UpdateWebSearchConfig(context.Background(), next)
+	if err != nil {
+		t.Fatalf("UpdateWebSearchConfig: %v", err)
+	}
+	if !effective.WebSearch.Enabled || effective.WebSearch.APIKeyEnv != "MISSING_TAVILY_FOR_CONFIGCENTER" {
+		t.Fatalf("effective websearch = %#v", effective.WebSearch)
+	}
+	for _, issue := range effective.Issues {
+		if issue.Path == "websearch.api_key_env" {
+			t.Fatalf("missing runtime env should not be a config issue: %#v", effective.Issues)
+		}
+	}
+}
+
+func TestBuildWebSearchRuntimeStatusReportsInactivePipeline(t *testing.T) {
+	cfg := config.DefaultConfig().WebSearch
+	cfg.Enabled = true
+	cfg.Provider = "tavily"
+	cfg.APIKeyEnv = "TEST_TAVILY_KEY"
+	cfg.Pipeline.Enabled = true
+
+	status := BuildWebSearchRuntimeStatus(cfg, true, "", func(name string) (string, bool) {
+		if name == "TEST_TAVILY_KEY" {
+			return "secret", true
+		}
+		return "", false
+	})
+
+	if !status.Registered || status.EffectiveMode != "tavily" || status.PipelineActive {
+		t.Fatalf("status = %#v", status)
+	}
+	if !status.TavilyEnv.Present || status.TavilyEnv.APIKeyEnv != "TEST_TAVILY_KEY" {
+		t.Fatalf("tavily env = %#v", status.TavilyEnv)
+	}
+	if len(status.Warnings) == 0 {
+		t.Fatalf("warnings empty for inactive pipeline: %#v", status)
+	}
+}
+
+func TestBuildWebSearchRuntimeStatusDoesNotMarkUnavailablePipelineActive(t *testing.T) {
+	cfg := config.DefaultConfig().WebSearch
+	cfg.Enabled = true
+	cfg.Provider = "pipeline"
+	cfg.APIKeyEnv = "MISSING_TAVILY_KEY"
+	cfg.Pipeline.Enabled = true
+
+	status := BuildWebSearchRuntimeStatus(cfg, false, "MISSING_TAVILY_KEY not set", func(string) (string, bool) {
+		return "", false
+	})
+
+	if status.Registered || status.PipelineActive || status.EffectiveMode != "unavailable" {
+		t.Fatalf("status = %#v", status)
+	}
+	if status.LastError == "" {
+		t.Fatalf("last error empty: %#v", status)
+	}
+}
+
+func TestUpdateWebSearchConfigAllowsLegacyTavilyRollbackWithInvalidPipelineFields(t *testing.T) {
+	db := openConfigCenterDB(t)
+	svc := NewService(config.DefaultConfig(), db)
+	next := config.DefaultConfig().WebSearch
+	next.Enabled = true
+	next.Provider = "tavily"
+	next.Pipeline.Enabled = false
+	next.Pipeline.Reader.ExtractDepth = "invalid"
+	next.Pipeline.Reader.Format = "invalid"
+	next.Pipeline.Rerank.Provider = "invalid"
+
+	effective, err := svc.UpdateWebSearchConfig(context.Background(), next)
+	if err != nil {
+		t.Fatalf("UpdateWebSearchConfig: %v", err)
+	}
+	if effective.WebSearch.Provider != "tavily" || effective.WebSearch.Pipeline.Enabled {
+		t.Fatalf("effective websearch = %#v", effective.WebSearch)
+	}
 }
 
 func requireConfigIssue(t *testing.T, issues []ConfigIssue, path string) {

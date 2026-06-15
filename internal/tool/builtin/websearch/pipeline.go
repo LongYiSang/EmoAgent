@@ -26,6 +26,7 @@ func (p *pipelineProvider) Name() string { return "pipeline" }
 
 func (p *pipelineProvider) Search(ctx context.Context, query string, opts Options) (*Response, error) {
 	planned := p.planner.Plan(query, opts)
+	planned.MaxResults = p.candidateMaxResults(planned.MaxResults)
 	if p.logger != nil {
 		p.logger.DebugContext(ctx, "websearch pipeline executing", "provider", p.search.Name(), "depth", planned.SearchDepth, "profile", planned.Profile)
 	}
@@ -38,4 +39,28 @@ func (p *pipelineProvider) Search(ctx context.Context, query string, opts Option
 	resp.Provider = p.Name()
 	resp.SearchMode = planned.SearchDepth
 	return resp, nil
+}
+
+func (p *pipelineProvider) candidateMaxResults(requested int) int {
+	target := requested
+	if target < 0 {
+		target = 0
+	}
+	if p.planner == nil {
+		return target
+	}
+	cfg := p.planner.cfg
+	if cfg.Search.CandidateCap > target {
+		target = cfg.Search.CandidateCap
+	}
+	if cfg.Reader.Enabled && cfg.Reader.TopN > target {
+		target = cfg.Reader.TopN
+	}
+	if cfg.Rerank.Enabled && cfg.Rerank.InputTopN > target {
+		target = cfg.Rerank.InputTopN
+	}
+	if cfg.Rerank.Enabled && cfg.Rerank.TopK > target {
+		target = cfg.Rerank.TopK
+	}
+	return target
 }

@@ -665,6 +665,22 @@ func (a *App) UpdateMemoryConfig(ctx context.Context, memory config.MemoryConfig
 	return services.Config.UpdateMemoryConfig(ctx, memory)
 }
 
+func (a *App) GetWebSearchConfig(ctx context.Context) (configcenter.WebSearchConfigResponse, error) {
+	services, err := a.services()
+	if err != nil {
+		return configcenter.WebSearchConfigResponse{}, err
+	}
+	return services.Config.GetWebSearchConfig(ctx)
+}
+
+func (a *App) UpdateWebSearchConfig(ctx context.Context, cfg config.WebSearchConfig) (configcenter.EffectiveConfig, error) {
+	services, err := a.services()
+	if err != nil {
+		return configcenter.EffectiveConfig{}, err
+	}
+	return services.Config.UpdateWebSearchConfig(ctx, cfg)
+}
+
 func (a *App) GetMemoryFeatures(ctx context.Context) (configcenter.MemoryConfigResponse, error) {
 	services, err := a.services()
 	if err != nil {

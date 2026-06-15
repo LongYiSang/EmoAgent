@@ -2,17 +2,24 @@ package app
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"runtime"
+	"sync"
 
+	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/configcenter"
 	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/tool"
 	"github.com/longyisang/emoagent/internal/tool/builtin"
+	"github.com/longyisang/emoagent/internal/tool/builtin/websearch"
 )
 
 type ToolService struct {
-	infra    *Infra
-	registry *tool.Registry
+	infra              *Infra
+	registry           *tool.Registry
+	webSearchMu        sync.RWMutex
+	webSearchLastError string
 }
 
 func (s *ToolService) Registry() *tool.Registry {
@@ -51,4 +58,75 @@ func (s *ToolService) EnsureRegistry() error {
 		s.infra.Environment = runtimeenv.BuildEnvironmentFacts(runtime.GOOS, projectRoot, cfg.Bash)
 	}
 	return nil
+}
+
+func (s *ToolService) ReconfigureWebSearch(cfg config.WebSearchConfig) configcenter.WebSearchRuntimeStatus {
+	if s == nil {
+		return configcenter.BuildWebSearchRuntimeStatus(cfg, false, "tool service is unavailable", os.LookupEnv)
+	}
+	if s.registry == nil {
+		if err := s.EnsureRegistry(); err != nil {
+			s.setWebSearchLastError(err.Error())
+			return configcenter.BuildWebSearchRuntimeStatus(cfg, false, err.Error(), os.LookupEnv)
+		}
+	}
+	if !cfg.Enabled {
+		s.registry.Unregister(builtin.WebSearchSpec.Name)
+		s.setWebSearchLastError("")
+		if s.infra != nil && s.infra.Logger != nil {
+			s.infra.Logger.Info("web_search unregistered")
+		}
+		return s.WebSearchRuntimeStatus(cfg)
+	}
+
+	var logger *slog.Logger
+	if s.infra != nil {
+		logger = s.infra.Logger
+	}
+	provider, err := websearch.NewProvider(cfg, logger)
+	if err != nil {
+		s.registry.Unregister(builtin.WebSearchSpec.Name)
+		s.setWebSearchLastError(err.Error())
+		if logger != nil {
+			logger.Warn("web_search disabled", "error", err)
+		}
+		return s.WebSearchRuntimeStatus(cfg)
+	}
+	handler := builtin.NewWebSearchHandler(provider, cfg.MaxResults, logger)
+	if err := s.registry.Upsert(builtin.WebSearchSpec, handler); err != nil {
+		s.registry.Unregister(builtin.WebSearchSpec.Name)
+		s.setWebSearchLastError(err.Error())
+		if logger != nil {
+			logger.Warn("web_search reconfigure failed", "error", err)
+		}
+		return s.WebSearchRuntimeStatus(cfg)
+	}
+	s.setWebSearchLastError("")
+	if logger != nil {
+		logger.Info("web_search reconfigured", "provider", provider.Name())
+	}
+	return s.WebSearchRuntimeStatus(cfg)
+}
+
+func (s *ToolService) WebSearchRuntimeStatus(cfg config.WebSearchConfig) configcenter.WebSearchRuntimeStatus {
+	if s == nil {
+		return configcenter.BuildWebSearchRuntimeStatus(cfg, false, "tool service is unavailable", os.LookupEnv)
+	}
+	registered := false
+	if s.registry != nil {
+		_, registered = s.registry.GetSpec(builtin.WebSearchSpec.Name)
+	}
+	return configcenter.BuildWebSearchRuntimeStatus(cfg, registered, s.webSearchError(), os.LookupEnv)
+}
+
+func (s *ToolService) setWebSearchLastError(message string) {
+	s.webSearchMu.Lock()
+	defer s.webSearchMu.Unlock()
+	s.webSearchLastError = message
+}
+
+func (s *ToolService) webSearchError() string {
+	s.webSearchMu.RLock()
+	defer s.webSearchMu.RUnlock()
+	return s.webSearchLastError
 }

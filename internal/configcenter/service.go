@@ -28,6 +28,8 @@ type Service struct {
 type EffectiveConfig struct {
 	AgentAffect            config.AgentAffectConfig `json:"agent_affect"`
 	Memory                 config.MemoryConfig      `json:"memory"`
+	WebSearch              config.WebSearchConfig   `json:"websearch"`
+	WebSearchRuntime       WebSearchRuntimeStatus   `json:"websearch_runtime"`
 	Providers              []ProviderEffective      `json:"providers"`
 	RuntimeSettings        []storage.RuntimeSetting `json:"runtime_settings"`
 	MemoryCore             *MemoryCoreEffective     `json:"memory_core,omitempty"`
@@ -55,6 +57,12 @@ type MemoryConfigResponse struct {
 type AgentAffectConfigResponse struct {
 	AgentAffect config.AgentAffectConfig `json:"agent_affect"`
 	Issues      []ConfigIssue            `json:"issues"`
+}
+
+type WebSearchConfigResponse struct {
+	WebSearch config.WebSearchConfig `json:"websearch"`
+	Runtime   WebSearchRuntimeStatus `json:"websearch_runtime"`
+	Issues    []ConfigIssue          `json:"issues"`
 }
 
 type ValidationError struct {
@@ -169,6 +177,7 @@ func (s *Service) BuildEffective(ctx context.Context) (EffectiveConfig, error) {
 	effective := EffectiveConfig{
 		AgentAffect:     runtimeCfg.AgentAffect,
 		Memory:          runtimeCfg.Memory,
+		WebSearch:       runtimeCfg.WebSearch,
 		Providers:       s.providerEffective(providers),
 		RuntimeSettings: runtimeSettings,
 	}
@@ -255,6 +264,64 @@ func (s *Service) validateAgentAffectConfigUpdate(ctx context.Context, next stor
 	allIssues := append([]ConfigIssue{}, runtimeIssues...)
 	allIssues = append(allIssues, BuildIssues(&runtimeCfg, s.providerEffective(providers), nil)...)
 	issues := filterIssuesByPathPrefix(allIssues, "agent_affect")
+	issues = dedupeIssues(issues)
+	if hasBlockingIssues(issues) {
+		return &ValidationError{Issues: issues}
+	}
+	return nil
+}
+
+func (s *Service) WebSearchConfig(ctx context.Context) (WebSearchConfigResponse, error) {
+	effective, err := s.BuildEffective(ctx)
+	if err != nil {
+		return WebSearchConfigResponse{}, err
+	}
+	return WebSearchConfigResponse{
+		WebSearch: effective.WebSearch,
+		Issues:    effective.Issues,
+	}, nil
+}
+
+func (s *Service) UpdateWebSearchConfig(ctx context.Context, cfg config.WebSearchConfig) (EffectiveConfig, error) {
+	if s.DB == nil {
+		return EffectiveConfig{}, fmt.Errorf("runtime settings database is not configured")
+	}
+	payload, err := json.Marshal(cfg)
+	if err != nil {
+		return EffectiveConfig{}, err
+	}
+	if err := s.validateWebSearchConfigUpdate(ctx, storage.RuntimeSetting{
+		Namespace: "websearch",
+		Key:       "config",
+		ValueJSON: string(payload),
+		Source:    "ui",
+	}); err != nil {
+		return EffectiveConfig{}, err
+	}
+	if err := s.DB.UpsertRuntimeSetting("websearch", "config", string(payload), "ui"); err != nil {
+		return EffectiveConfig{}, err
+	}
+	return s.BuildEffective(ctx)
+}
+
+func (s *Service) validateWebSearchConfigUpdate(ctx context.Context, next storage.RuntimeSetting) error {
+	seed := s.Seed
+	if seed == nil {
+		seed = config.DefaultConfig()
+	}
+	current, err := s.runtimeSettings()
+	if err != nil {
+		return err
+	}
+	settings := replaceRuntimeSetting(current, next)
+	runtimeCfg, runtimeIssues := ApplyRuntimeSettings(seed, settings)
+	providers, err := s.providers(ctx, &runtimeCfg)
+	if err != nil {
+		return err
+	}
+	allIssues := append([]ConfigIssue{}, runtimeIssues...)
+	allIssues = append(allIssues, BuildIssues(&runtimeCfg, s.providerEffective(providers), nil)...)
+	issues := filterIssuesByPathPrefix(allIssues, "websearch")
 	issues = dedupeIssues(issues)
 	if hasBlockingIssues(issues) {
 		return &ValidationError{Issues: issues}

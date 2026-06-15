@@ -92,6 +92,57 @@ func TestRegistryTryRegisterValidatesNameAndHandler(t *testing.T) {
 	}
 }
 
+func TestRegistryUpsertReplacesExistingTool(t *testing.T) {
+	r := NewRegistry()
+	spec := Spec{Name: "search", Parameters: json.RawMessage(`{}`), Scope: ScopeBoth, Permission: PermReadOnly}
+	r.Register(spec, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{"version":1}`), nil
+	})
+
+	replacement := spec
+	replacement.Scope = ScopeWork
+	if err := r.Upsert(replacement, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{"version":2}`), nil
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	gotSpec, ok := r.GetSpec("search")
+	if !ok {
+		t.Fatal("search spec missing after Upsert")
+	}
+	if gotSpec.Scope != ScopeWork {
+		t.Fatalf("search scope = %q, want %q", gotSpec.Scope, ScopeWork)
+	}
+	handler, ok := r.Get("search")
+	if !ok {
+		t.Fatal("search handler missing after Upsert")
+	}
+	raw, err := handler(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if string(raw) != `{"version":2}` {
+		t.Fatalf("handler output = %s, want replacement", raw)
+	}
+}
+
+func TestRegistryUnregisterRemovesTool(t *testing.T) {
+	r := NewRegistry()
+	spec := Spec{Name: "search", Parameters: json.RawMessage(`{}`), Scope: ScopeBoth, Permission: PermReadOnly}
+	r.Register(spec, noopHandler)
+
+	r.Unregister("search")
+
+	if _, ok := r.GetSpec("search"); ok {
+		t.Fatal("search spec still present after Unregister")
+	}
+	if _, ok := r.Get("search"); ok {
+		t.Fatal("search handler still present after Unregister")
+	}
+	r.Unregister("missing")
+}
+
 func TestRegistryForScope(t *testing.T) {
 	r := NewRegistry()
 

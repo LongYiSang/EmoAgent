@@ -26,6 +26,18 @@ func TestNewProviderRejectsUnsupportedProvider(t *testing.T) {
 	}
 }
 
+func TestNewProviderRejectsBlankAPIKey(t *testing.T) {
+	t.Setenv("BLANK_TAVILY_KEY", "   ")
+	_, err := NewProvider(config.WebSearchConfig{
+		Enabled:   true,
+		Provider:  "tavily",
+		APIKeyEnv: "BLANK_TAVILY_KEY",
+	}, slog.Default())
+	if err == nil || !strings.Contains(err.Error(), "BLANK_TAVILY_KEY not set") {
+		t.Fatalf("NewProvider error = %v, want missing key", err)
+	}
+}
+
 func TestNewProviderSupportsTavilyAndPipeline(t *testing.T) {
 	t.Setenv("TAVILY_API_KEY", "test-key")
 
@@ -109,6 +121,102 @@ func TestNewProviderPipelineAssemblesReaderWithTavilyExtract(t *testing.T) {
 	}
 	if len(resp.Results) != 1 || len(resp.Results[0].Evidence) == 0 {
 		t.Fatalf("results = %#v, want evidence from /extract", resp.Results)
+	}
+}
+
+func TestNewProviderPipelineExpandsCandidateSetBeforeFinalLimit(t *testing.T) {
+	t.Setenv("TAVILY_API_KEY", "test-key")
+
+	var searchMaxResults int
+	var extractURLs []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/search":
+			searchMaxResults = int(body["max_results"].(float64))
+			results := make([]string, 0, searchMaxResults)
+			for i := range searchMaxResults {
+				content := "generic candidate"
+				if i == 9 {
+					content = "needle personal model answer"
+				}
+				results = append(results, fmt.Sprintf(`{"title":"Candidate %d","url":"https://example.com/%d","content":%q,"score":0.01}`, i, i, content))
+			}
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"query":"needle personal model answer","results":[%s]}`, strings.Join(results, ","))))
+		case "/extract":
+			rawURLs, ok := body["urls"].([]any)
+			if !ok {
+				t.Fatalf("/extract urls = %#v, want array", body["urls"])
+			}
+			extractURLs = extractURLs[:0]
+			results := make([]string, 0, len(rawURLs))
+			for _, rawURL := range rawURLs {
+				u := rawURL.(string)
+				extractURLs = append(extractURLs, u)
+				content := "generic extracted evidence"
+				if strings.HasSuffix(u, "/9") {
+					content = "needle personal model answer from extracted evidence"
+				}
+				results = append(results, fmt.Sprintf(`{"url":%q,"raw_content":%q}`, u, content))
+			}
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"results":[%s]}`, strings.Join(results, ","))))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	provider, err := NewProvider(config.WebSearchConfig{
+		Enabled:    true,
+		Provider:   "pipeline",
+		APIKeyEnv:  "TAVILY_API_KEY",
+		BaseURL:    srv.URL,
+		TimeoutSec: 5,
+		Pipeline: config.WebSearchPipelineConfig{
+			Enabled: true,
+			Search: config.WebSearchPipelineSearch{
+				CandidateCap: 10,
+			},
+			Reader: config.WebSearchPipelineReaderConfig{
+				Enabled: true,
+				TopN:    10,
+			},
+			Rerank: config.WebSearchPipelineRerankConfig{
+				Enabled:   true,
+				Provider:  "heuristic",
+				InputTopN: 10,
+				TopK:      5,
+			},
+		},
+	}, slog.Default())
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+
+	resp, err := provider.Search(context.Background(), "needle personal model answer", Options{MaxResults: 5})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+
+	if searchMaxResults != 10 {
+		t.Fatalf("/search max_results = %d, want candidate cap 10", searchMaxResults)
+	}
+	if len(extractURLs) != 10 {
+		t.Fatalf("/extract urls = %#v, want 10 expanded candidates", extractURLs)
+	}
+	if len(resp.Results) != 5 {
+		t.Fatalf("len(results) = %d, want final max_results limit 5", len(resp.Results))
+	}
+	if got := resp.Results[0].URL; got != "https://example.com/9" {
+		t.Fatalf("top result URL = %q, want reranked candidate outside initial 5", got)
+	}
+	if resp.Usage == nil || resp.Usage.ExtractURLs != 10 || resp.Usage.RerankDocuments != 10 {
+		t.Fatalf("usage = %#v, want expanded extract/rerank counts", resp.Usage)
 	}
 }
 
@@ -566,10 +674,13 @@ func TestPipelineProviderLogsStageUsageWithoutQuery(t *testing.T) {
 	if !ok {
 		t.Fatalf("logs = %#v, want websearch pipeline completed", handler.records)
 	}
-	for _, key := range []string{"results", "search_queries", "extract_urls", "rerank_documents", "duration_ms"} {
+	for _, key := range []string{"results", "search_queries", "extract_urls", "rerank_documents", "evidence_results", "needs_fetch_results", "result_warnings", "duration_ms"} {
 		if !slices.Contains(attrs.keys(), key) {
 			t.Fatalf("log attrs = %#v, missing %s", attrs, key)
 		}
+	}
+	if attrs["evidence_results"] != int64(1) || attrs["needs_fetch_results"] != int64(0) || attrs["result_warnings"] != int64(0) {
+		t.Fatalf("log attrs = %#v, want evidence/needs_fetch/result_warnings counts", attrs)
 	}
 	if handler.containsValue("private query text") || handler.containsKey("query") {
 		t.Fatalf("logs leaked query: %#v", handler.records)

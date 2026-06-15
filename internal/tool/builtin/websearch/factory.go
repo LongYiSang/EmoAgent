@@ -15,7 +15,7 @@ import (
 // NewProvider constructs the appropriate Provider based on the given config.
 // It reads the API key from the environment variable named by cfg.APIKeyEnv.
 func NewProvider(cfg config.WebSearchConfig, logger *slog.Logger) (Provider, error) {
-	apiKey := os.Getenv(cfg.APIKeyEnv)
+	apiKey := strings.TrimSpace(os.Getenv(cfg.APIKeyEnv))
 	if apiKey == "" {
 		return nil, fmt.Errorf("%s not set", cfg.APIKeyEnv)
 	}
@@ -65,6 +65,7 @@ func assemblePipelineProvider(tavily Provider, cfg config.WebSearchConfig, apiKe
 		provider = &warningProvider{provider: provider, warning: warning}
 	}
 	provider = &fetchGuidanceProvider{provider: provider}
+	provider = &resultLimitProvider{provider: provider}
 	if logger != nil {
 		provider = &observedProvider{provider: provider, logger: logger}
 	}
@@ -104,7 +105,7 @@ func rerankerFromConfig(cfg config.WebSearchPipelineRerankConfig) (rerank.Provid
 	}
 	switch strings.ToLower(cfg.Provider) {
 	case "siliconflow":
-		apiKey := os.Getenv(cfg.APIKeyEnv)
+		apiKey := strings.TrimSpace(os.Getenv(cfg.APIKeyEnv))
 		if strings.TrimSpace(apiKey) == "" {
 			if strings.EqualFold(cfg.Fallback, "heuristic") {
 				return rerank.NewHeuristicProvider(), "rerank fallback: heuristic used because siliconflow api key is unavailable"
@@ -173,8 +174,48 @@ func (p *observedProvider) Search(ctx context.Context, query string, opts Option
 		"search_queries", usage.SearchQueries,
 		"extract_urls", usage.ExtractURLs,
 		"rerank_documents", usage.RerankDocuments,
+		"evidence_results", countEvidenceResults(resp),
+		"needs_fetch_results", countNeedsFetchResults(resp),
+		"result_warnings", countResultWarnings(resp),
 		"duration_ms", time.Since(start).Milliseconds(),
 		"error", err != nil,
 	)
 	return resp, err
+}
+
+func countEvidenceResults(resp *Response) int {
+	if resp == nil {
+		return 0
+	}
+	count := 0
+	for _, result := range resp.Results {
+		if len(result.Evidence) > 0 {
+			count++
+		}
+	}
+	return count
+}
+
+func countNeedsFetchResults(resp *Response) int {
+	if resp == nil {
+		return 0
+	}
+	count := 0
+	for _, result := range resp.Results {
+		if result.NeedsFetch {
+			count++
+		}
+	}
+	return count
+}
+
+func countResultWarnings(resp *Response) int {
+	if resp == nil {
+		return 0
+	}
+	count := 0
+	for _, result := range resp.Results {
+		count += len(result.Warnings)
+	}
+	return count
 }

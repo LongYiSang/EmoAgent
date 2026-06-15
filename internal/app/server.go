@@ -106,6 +106,8 @@ func registerRoutes(mux *http.ServeMux, api *web.APIHandler, chatHandler http.Ha
 	mux.HandleFunc("GET /api/config/issues", api.HandleListConfigIssues)
 	mux.HandleFunc("GET /api/memory/config", api.HandleGetMemoryConfig)
 	mux.HandleFunc("PUT /api/memory/config", api.HandleUpdateMemoryConfig)
+	mux.HandleFunc("GET /api/websearch/config", api.HandleGetWebSearchConfig)
+	mux.HandleFunc("PUT /api/websearch/config", api.HandleUpdateWebSearchConfig)
 	mux.HandleFunc("GET /api/memory/features", api.HandleGetMemoryFeatures)
 	mux.HandleFunc("PUT /api/memory/features", api.HandleUpdateMemoryFeatures)
 	mux.HandleFunc("GET /api/sidecar/status", api.HandleGetSidecarStatus)

@@ -34,6 +34,7 @@ func BuildIssues(seed *config.Config, providers []ProviderEffective, memoryCore 
 		}
 	}
 	issues = append(issues, buildAgentAffectIssues(seed.AgentAffect)...)
+	issues = append(issues, buildWebSearchIssues(seed.WebSearch)...)
 
 	if !seed.Memory.Enabled {
 		if seed.Memory.Retrieval.Enabled {
@@ -359,6 +360,75 @@ func buildAgentAffectIssues(cfg config.AgentAffectConfig) []ConfigIssue {
 	}
 	if cfg.Prompt.MaxPromptChars < 0 {
 		issues = append(issues, ConfigIssue{Path: "agent_affect.prompt.max_prompt_chars", Severity: "error", Message: "max_prompt_chars must be >= 0"})
+	}
+	return issues
+}
+
+func buildWebSearchIssues(cfg config.WebSearchConfig) []ConfigIssue {
+	if !cfg.Enabled {
+		return nil
+	}
+	issues := make([]ConfigIssue, 0)
+	add := func(path, message string) {
+		issues = append(issues, ConfigIssue{Path: path, Severity: "error", Message: message})
+	}
+	if strings.TrimSpace(cfg.Provider) == "" {
+		add("websearch.provider", "websearch.provider is required when websearch is enabled")
+	} else {
+		switch cfg.Provider {
+		case "tavily", "pipeline":
+		default:
+			add("websearch.provider", fmt.Sprintf("websearch.provider must be tavily or pipeline, got %q", cfg.Provider))
+		}
+	}
+	if strings.TrimSpace(cfg.APIKeyEnv) == "" {
+		add("websearch.api_key_env", "websearch.api_key_env is required when websearch is enabled")
+	}
+	if cfg.Provider != "pipeline" || !cfg.Pipeline.Enabled {
+		return issues
+	}
+	reader := cfg.Pipeline.Reader
+	switch reader.ExtractDepth {
+	case "basic", "advanced":
+	default:
+		add("websearch.pipeline.reader.extract_depth", fmt.Sprintf("websearch.pipeline.reader.extract_depth must be basic or advanced, got %q", reader.ExtractDepth))
+	}
+	switch reader.Format {
+	case "markdown", "text":
+	default:
+		add("websearch.pipeline.reader.format", fmt.Sprintf("websearch.pipeline.reader.format must be markdown or text, got %q", reader.Format))
+	}
+	if reader.TopN < 0 {
+		add("websearch.pipeline.reader.top_n", "websearch.pipeline.reader.top_n must be >= 0")
+	}
+	if reader.MaxCharsPerDoc < 0 {
+		add("websearch.pipeline.reader.max_chars_per_doc", "websearch.pipeline.reader.max_chars_per_doc must be >= 0")
+	}
+	if reader.MaxChunkChars < 0 {
+		add("websearch.pipeline.reader.max_chunk_chars", "websearch.pipeline.reader.max_chunk_chars must be >= 0")
+	}
+	rerank := cfg.Pipeline.Rerank
+	switch rerank.Provider {
+	case "disabled", "heuristic", "siliconflow":
+	default:
+		add("websearch.pipeline.rerank.provider", fmt.Sprintf("websearch.pipeline.rerank.provider must be disabled, heuristic, or siliconflow, got %q", rerank.Provider))
+	}
+	switch rerank.Fallback {
+	case "disabled", "heuristic":
+	default:
+		add("websearch.pipeline.rerank.fallback", fmt.Sprintf("websearch.pipeline.rerank.fallback must be disabled or heuristic, got %q", rerank.Fallback))
+	}
+	if rerank.TimeoutSec < 0 {
+		add("websearch.pipeline.rerank.timeout_sec", "websearch.pipeline.rerank.timeout_sec must be >= 0")
+	}
+	if rerank.InputTopN < 0 {
+		add("websearch.pipeline.rerank.input_top_n", "websearch.pipeline.rerank.input_top_n must be >= 0")
+	}
+	if rerank.TopK < 0 {
+		add("websearch.pipeline.rerank.top_k", "websearch.pipeline.rerank.top_k must be >= 0")
+	}
+	if rerank.MaxDocChars < 0 {
+		add("websearch.pipeline.rerank.max_doc_chars", "websearch.pipeline.rerank.max_doc_chars must be >= 0")
 	}
 	return issues
 }

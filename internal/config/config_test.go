@@ -1792,6 +1792,20 @@ func TestWebSearchValidateProviderEnum(t *testing.T) {
 	}
 }
 
+func TestWebSearchValidateLegacyTavilyIgnoresDisabledPipelineFields(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.WebSearch.Enabled = true
+	cfg.WebSearch.Provider = "tavily"
+	cfg.WebSearch.Pipeline.Enabled = false
+	cfg.WebSearch.Pipeline.Reader.ExtractDepth = "invalid"
+	cfg.WebSearch.Pipeline.Reader.Format = "invalid"
+	cfg.WebSearch.Pipeline.Rerank.Provider = "invalid"
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate error = %v, want nil for legacy tavily rollback", err)
+	}
+}
+
 func TestWebSearchValidateRerankProviderEnum(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1808,6 +1822,7 @@ func TestWebSearchValidateRerankProviderEnum(t *testing.T) {
 			cfg := DefaultConfig()
 			cfg.WebSearch.Enabled = true
 			cfg.WebSearch.Provider = "pipeline"
+			cfg.WebSearch.Pipeline.Enabled = true
 			rerank := reflect.ValueOf(&cfg.WebSearch.Pipeline).Elem().FieldByName("Rerank")
 			if !rerank.IsValid() {
 				t.Fatalf("websearch.pipeline missing Rerank")

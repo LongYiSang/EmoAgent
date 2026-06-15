@@ -12,6 +12,7 @@ import (
 
 type ConfigService struct {
 	infra *Infra
+	tools *ToolService
 }
 
 func (s *ConfigService) service() *configcenter.Service {
@@ -86,7 +87,11 @@ func (s *ConfigService) UpdateChatSettings(settings config.ChatConfig, chat *Cha
 }
 
 func (s *ConfigService) GetEffective(ctx context.Context) (configcenter.EffectiveConfig, error) {
-	return s.service().BuildEffective(ctx)
+	effective, err := s.service().BuildEffective(ctx)
+	if err == nil {
+		s.attachWebSearchRuntime(&effective)
+	}
+	return effective, err
 }
 
 func (s *ConfigService) Validate(ctx context.Context, req configcenter.ValidateRequest) (configcenter.ValidateResponse, error) {
@@ -105,12 +110,49 @@ func (s *ConfigService) GetAgentAffectConfig(ctx context.Context) (configcenter.
 	return s.service().AgentAffectConfig(ctx)
 }
 
+func (s *ConfigService) GetWebSearchConfig(ctx context.Context) (configcenter.WebSearchConfigResponse, error) {
+	resp, err := s.service().WebSearchConfig(ctx)
+	if err == nil {
+		resp.Runtime = s.webSearchRuntimeStatus(resp.WebSearch)
+	}
+	return resp, err
+}
+
 func (s *ConfigService) UpdateAgentAffectConfig(ctx context.Context, cfg config.AgentAffectConfig) (configcenter.EffectiveConfig, error) {
 	effective, err := s.service().UpdateAgentAffectConfig(ctx, cfg)
 	if err == nil && s.infra.Config != nil {
 		s.infra.Config.AgentAffect = effective.AgentAffect
 	}
 	return effective, err
+}
+
+func (s *ConfigService) UpdateWebSearchConfig(ctx context.Context, cfg config.WebSearchConfig) (configcenter.EffectiveConfig, error) {
+	effective, err := s.service().UpdateWebSearchConfig(ctx, cfg)
+	if err == nil && s.infra.Config != nil {
+		s.infra.Config.WebSearch = effective.WebSearch
+	}
+	if err == nil {
+		if s.tools != nil {
+			effective.WebSearchRuntime = s.tools.ReconfigureWebSearch(effective.WebSearch)
+		} else {
+			s.attachWebSearchRuntime(&effective)
+		}
+	}
+	return effective, err
+}
+
+func (s *ConfigService) attachWebSearchRuntime(effective *configcenter.EffectiveConfig) {
+	if effective == nil {
+		return
+	}
+	effective.WebSearchRuntime = s.webSearchRuntimeStatus(effective.WebSearch)
+}
+
+func (s *ConfigService) webSearchRuntimeStatus(cfg config.WebSearchConfig) configcenter.WebSearchRuntimeStatus {
+	if s.tools != nil {
+		return s.tools.WebSearchRuntimeStatus(cfg)
+	}
+	return configcenter.BuildWebSearchRuntimeStatus(cfg, false, "", nil)
 }
 
 func (s *ConfigService) UpdateMemoryConfig(ctx context.Context, memory config.MemoryConfig) (configcenter.EffectiveConfig, error) {

@@ -62,6 +62,45 @@ func (r *Registry) TryRegister(spec Spec, handler Handler) error {
 	return nil
 }
 
+// Upsert adds or replaces a tool registration. It is intended for host-owned
+// runtime reconfiguration paths, not plugin registration.
+func (r *Registry) Upsert(spec Spec, handler Handler) error {
+	if r == nil {
+		return fmt.Errorf("tool registry is nil")
+	}
+	spec.Name = strings.TrimSpace(spec.Name)
+	if spec.Name == "" {
+		return fmt.Errorf("tool name is required")
+	}
+	if handler == nil {
+		return fmt.Errorf("tool %q handler is required", spec.Name)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.specs[spec.Name] = spec
+	r.funcs[spec.Name] = handler
+	return nil
+}
+
+// Unregister removes a tool registration if present.
+func (r *Registry) Unregister(name string) {
+	if r == nil {
+		return
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	delete(r.specs, name)
+	delete(r.funcs, name)
+}
+
 // Get returns the handler for a tool name.
 func (r *Registry) Get(name string) (Handler, bool) {
 	r.mu.RLock()

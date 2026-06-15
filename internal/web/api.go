@@ -72,6 +72,8 @@ type AdminApp interface {
 	UpdateMemoryConfig(ctx context.Context, memory config.MemoryConfig) (configcenter.EffectiveConfig, error)
 	GetAgentAffectConfig(ctx context.Context) (configcenter.AgentAffectConfigResponse, error)
 	UpdateAgentAffectConfig(ctx context.Context, cfg config.AgentAffectConfig) (configcenter.EffectiveConfig, error)
+	GetWebSearchConfig(ctx context.Context) (configcenter.WebSearchConfigResponse, error)
+	UpdateWebSearchConfig(ctx context.Context, cfg config.WebSearchConfig) (configcenter.EffectiveConfig, error)
 	GetMemoryFeatures(ctx context.Context) (configcenter.MemoryConfigResponse, error)
 	UpdateMemoryFeatures(ctx context.Context, memory config.MemoryConfig) (configcenter.EffectiveConfig, error)
 	GetSidecarStatus(ctx context.Context) (sidecarruntime.Status, error)

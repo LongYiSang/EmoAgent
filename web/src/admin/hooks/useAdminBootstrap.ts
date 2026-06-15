@@ -7,6 +7,7 @@ import type { MemoryAdmin } from './useMemoryAdmin';
 import type { SidecarAdmin } from './useSidecarAdmin';
 import type { AgentAffectAdmin } from './useAgentAffectAdmin';
 import type { PromptCenterAdmin } from './usePromptCenterAdmin';
+import type { WebSearchAdmin } from './useWebSearchAdmin';
 import type { AdminStatusControls } from './useAdminStatus';
 import type { TabID } from '../lib/adminData';
 
@@ -18,15 +19,16 @@ type BootstrapOptions = {
   memory: Pick<MemoryAdmin, 'reloadEffectiveConfig' | 'reloadMemorySurfaces' | 'reloadConfigIssues' | 'reloadNaturalLatest'>;
   agentAffect: Pick<AgentAffectAdmin, 'reloadAgentAffect'>;
   promptCenter: Pick<PromptCenterAdmin, 'reloadPromptCenter'>;
+  webSearch: Pick<WebSearchAdmin, 'reloadWebSearchConfig'>;
   sidecar: Pick<SidecarAdmin, 'reloadSidecar'>;
   status: Pick<AdminStatusControls, 'showError'>;
 };
 
-export function useAdminBootstrap(activeTab: TabID, { providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, sidecar, status }: BootstrapOptions) {
+export function useAdminBootstrap(activeTab: TabID, { providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, webSearch, sidecar, status }: BootstrapOptions) {
   const loadedResourcesRef = useRef(new Set<string>());
   const resourceRequestsRef = useRef(new Map<string, Promise<void>>());
-  const loadersRef = useRef({ providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, sidecar, status });
-  loadersRef.current = { providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, sidecar, status };
+  const loadersRef = useRef({ providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, webSearch, sidecar, status });
+  loadersRef.current = { providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, webSearch, sidecar, status };
 
   useEffect(() => {
     let cancelled = false;
@@ -93,6 +95,9 @@ export function useAdminBootstrap(activeTab: TabID, { providers, agents, persona
               loadAgentBasics(),
               loadOnce('prompt-center', () => loaders.promptCenter.reloadPromptCenter()),
             ]);
+            break;
+          case 'websearch-pipeline':
+            await loadOnce('websearch-config', loaders.webSearch.reloadWebSearchConfig);
             break;
           case 'pipelines':
             await Promise.all([loadEffectiveConfig(), loadProviderBasics()]);

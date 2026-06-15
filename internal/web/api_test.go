@@ -72,6 +72,9 @@ type fakeAdminApp struct {
 	providerEnvStatus      configcenter.ProviderEnvStatus
 	memoryConfig           configcenter.MemoryConfigResponse
 	lastMemoryConfig       config.MemoryConfig
+	webSearchConfig        configcenter.WebSearchConfigResponse
+	lastWebSearchConfig    config.WebSearchConfig
+	updateWebSearchErr     error
 	sidecarStatus          sidecarruntime.Status
 	sidecarConfig          string
 	sidecarLogs            string
@@ -504,6 +507,13 @@ func (f *fakeAdminApp) UpdateMemoryFeatures(ctx context.Context, memory config.M
 	f.lastMemoryConfig = memory
 	return f.effectiveConfig, nil
 }
+func (f *fakeAdminApp) GetWebSearchConfig(ctx context.Context) (configcenter.WebSearchConfigResponse, error) {
+	return f.webSearchConfig, nil
+}
+func (f *fakeAdminApp) UpdateWebSearchConfig(ctx context.Context, websearch config.WebSearchConfig) (configcenter.EffectiveConfig, error) {
+	f.lastWebSearchConfig = websearch
+	return f.effectiveConfig, f.updateWebSearchErr
+}
 func (f *fakeAdminApp) GetSidecarStatus(ctx context.Context) (sidecarruntime.Status, error) {
 	return f.sidecarStatus, nil
 }
@@ -674,6 +684,129 @@ func TestHandleAgentAffectConfigValidationError(t *testing.T) {
 	}
 	if len(resp.Issues) != 1 || resp.Issues[0].Path != "agent_affect.storage_enabled" {
 		t.Fatalf("issues = %#v", resp.Issues)
+	}
+}
+
+func TestHandleWebSearchConfig(t *testing.T) {
+	cfg := config.DefaultConfig().WebSearch
+	cfg.Enabled = true
+	cfg.Provider = "pipeline"
+	cfg.Pipeline.Enabled = true
+	cfg.Pipeline.Rerank.Provider = "heuristic"
+	app := &fakeAdminApp{
+		webSearchConfig: configcenter.WebSearchConfigResponse{
+			WebSearch: cfg,
+			Runtime: configcenter.WebSearchRuntimeStatus{
+				Registered:     true,
+				EffectiveMode:  "pipeline",
+				PipelineActive: true,
+				Provider:       "pipeline",
+				ActiveProvider: "pipeline",
+			},
+		},
+		effectiveConfig: configcenter.EffectiveConfig{
+			WebSearch: cfg,
+			WebSearchRuntime: configcenter.WebSearchRuntimeStatus{
+				Registered:     true,
+				EffectiveMode:  "pipeline",
+				PipelineActive: true,
+				Provider:       "pipeline",
+				ActiveProvider: "pipeline",
+			},
+		},
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/websearch/config", nil)
+	getRec := httptest.NewRecorder()
+	handler.HandleGetWebSearchConfig(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get status = %d body=%s", getRec.Code, getRec.Body.String())
+	}
+	var getResp configcenter.WebSearchConfigResponse
+	if err := json.Unmarshal(getRec.Body.Bytes(), &getResp); err != nil {
+		t.Fatalf("decode get: %v", err)
+	}
+	if !getResp.WebSearch.Enabled || getResp.WebSearch.Provider != "pipeline" {
+		t.Fatalf("get response = %#v", getResp.WebSearch)
+	}
+	if !getResp.Runtime.Registered || !getResp.Runtime.PipelineActive {
+		t.Fatalf("get runtime = %#v", getResp.Runtime)
+	}
+
+	putReq := httptest.NewRequest(http.MethodPut, "/api/websearch/config", bytes.NewBufferString(`{
+		"websearch": {
+			"enabled": true,
+			"provider": "pipeline",
+			"api_key_env": "TAVILY_API_KEY",
+			"base_url": "https://api.tavily.com",
+			"max_results": 6,
+			"timeout_sec": 30,
+			"pipeline": {
+				"enabled": true,
+				"reader": {"enabled": true, "top_n": 4, "extract_depth": "basic", "format": "markdown"},
+				"rerank": {"enabled": true, "provider": "heuristic", "fallback": "heuristic", "top_k": 4}
+			}
+		}
+	}`))
+	putRec := httptest.NewRecorder()
+	handler.HandleUpdateWebSearchConfig(putRec, putReq)
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("put status = %d body=%s", putRec.Code, putRec.Body.String())
+	}
+	if !app.lastWebSearchConfig.Enabled || app.lastWebSearchConfig.Provider != "pipeline" || app.lastWebSearchConfig.MaxResults != 6 || app.lastWebSearchConfig.Pipeline.Rerank.TopK != 4 {
+		t.Fatalf("last websearch config = %#v", app.lastWebSearchConfig)
+	}
+	var putResp configcenter.EffectiveConfig
+	if err := json.Unmarshal(putRec.Body.Bytes(), &putResp); err != nil {
+		t.Fatalf("decode put: %v", err)
+	}
+	if !putResp.WebSearch.Enabled {
+		t.Fatalf("put response = %#v", putResp.WebSearch)
+	}
+	if !putResp.WebSearchRuntime.Registered || !putResp.WebSearchRuntime.PipelineActive {
+		t.Fatalf("put runtime = %#v", putResp.WebSearchRuntime)
+	}
+}
+
+func TestHandleWebSearchConfigValidationError(t *testing.T) {
+	app := &fakeAdminApp{
+		updateWebSearchErr: &configcenter.ValidationError{Issues: []configcenter.ConfigIssue{{
+			Path:     "websearch.provider",
+			Severity: "error",
+			Message:  "websearch.provider must be tavily or pipeline",
+		}}},
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodPut, "/api/websearch/config", bytes.NewBufferString(`{
+		"websearch": {"enabled": true, "provider": "invalid"}
+	}`))
+	rec := httptest.NewRecorder()
+	handler.HandleUpdateWebSearchConfig(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Issues []configcenter.ConfigIssue `json:"issues"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode validation response: %v", err)
+	}
+	if len(resp.Issues) != 1 || resp.Issues[0].Path != "websearch.provider" {
+		t.Fatalf("issues = %#v", resp.Issues)
+	}
+}
+
+func TestHandleWebSearchConfigRejectsInvalidJSON(t *testing.T) {
+	handler := NewAPIHandler(&fakeAdminApp{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	req := httptest.NewRequest(http.MethodPut, "/api/websearch/config", bytes.NewBufferString(`{"websearch":`))
+	rec := httptest.NewRecorder()
+
+	handler.HandleUpdateWebSearchConfig(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s, want 400", rec.Code, rec.Body.String())
 	}
 }
 

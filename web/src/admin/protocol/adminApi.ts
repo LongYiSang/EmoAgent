@@ -123,6 +123,14 @@ export async function saveMemoryConfig(memory: AnyRecord): Promise<AnyRecord> {
   return requestJSON<AnyRecord>('/api/memory/config', { method: 'PUT', body: { memory } });
 }
 
+export async function loadWebSearchConfig(): Promise<AnyRecord> {
+  return requestJSON<AnyRecord>('/api/websearch/config');
+}
+
+export async function saveWebSearchConfig(websearch: AnyRecord): Promise<AnyRecord> {
+  return requestJSON<AnyRecord>('/api/websearch/config', { method: 'PUT', body: { websearch } });
+}
+
 export async function loadMemoryFeatures(): Promise<AnyRecord> {
   return requestJSON<AnyRecord>('/api/memory/features');
 }

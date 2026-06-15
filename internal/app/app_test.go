@@ -179,6 +179,12 @@ func (a *routeTestAdminApp) GetAgentAffectConfig(ctx context.Context) (configcen
 func (a *routeTestAdminApp) UpdateAgentAffectConfig(ctx context.Context, cfg config.AgentAffectConfig) (configcenter.EffectiveConfig, error) {
 	return configcenter.EffectiveConfig{}, nil
 }
+func (a *routeTestAdminApp) GetWebSearchConfig(ctx context.Context) (configcenter.WebSearchConfigResponse, error) {
+	return configcenter.WebSearchConfigResponse{}, nil
+}
+func (a *routeTestAdminApp) UpdateWebSearchConfig(ctx context.Context, cfg config.WebSearchConfig) (configcenter.EffectiveConfig, error) {
+	return configcenter.EffectiveConfig{WebSearch: cfg}, nil
+}
 func (a *routeTestAdminApp) GetMemoryFeatures(ctx context.Context) (configcenter.MemoryConfigResponse, error) {
 	return configcenter.MemoryConfigResponse{}, nil
 }
@@ -753,6 +759,27 @@ func TestRegisterRoutesAgentConfigDispatch(t *testing.T) {
 		}
 	})
 
+	t.Run("websearch config route dispatches", func(t *testing.T) {
+		cases := []struct {
+			method string
+			path   string
+			body   string
+		}{
+			{http.MethodGet, "/api/websearch/config", ""},
+			{http.MethodPut, "/api/websearch/config", `{"websearch":{"enabled":true,"provider":"pipeline","api_key_env":"TAVILY_API_KEY","pipeline":{"reader":{"extract_depth":"basic","format":"markdown"},"rerank":{"provider":"heuristic","fallback":"heuristic"}}}}`},
+		}
+		for _, tc := range cases {
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+			rec := httptest.NewRecorder()
+
+			mux.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s %s status = %d body=%s", tc.method, tc.path, rec.Code, rec.Body.String())
+			}
+		}
+	})
+
 	t.Run("natural memory route dispatches", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/api/memory/natural-runs", strings.NewReader(`{"mode":"manual","dry_run":true}`))
 		rec := httptest.NewRecorder()
@@ -980,6 +1007,135 @@ func TestUpdateAgentAffectConfigPersistsRuntimeSettingAndHotUpdatesEngine(t *tes
 	}
 	if !engineHasAgentAffectRuntime(engine) {
 		t.Fatal("engine agent affect runtime was not hot-updated")
+	}
+}
+
+func TestUpdateWebSearchConfigPersistsRuntimeSettingAndHotUpdatesRegistry(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	t.Setenv("TEST_TAVILY_KEY", "fake-key")
+
+	cfg := config.DefaultConfig()
+	cfg.WebSearch.Enabled = false
+	a := newTestApp(cfg, db, logger)
+	if err := a.kernel.Services.Tools.EnsureRegistry(); err != nil {
+		t.Fatalf("EnsureRegistry: %v", err)
+	}
+
+	next := cfg.WebSearch
+	next.Enabled = true
+	next.Provider = "pipeline"
+	next.APIKeyEnv = "TEST_TAVILY_KEY"
+	next.Pipeline.Enabled = true
+	next.Pipeline.Reader.TopN = 3
+	next.Pipeline.Rerank.Provider = "heuristic"
+	next.Pipeline.Rerank.TopK = 4
+	effective, err := a.UpdateWebSearchConfig(context.Background(), next)
+	if err != nil {
+		t.Fatalf("UpdateWebSearchConfig: %v", err)
+	}
+
+	if !effective.WebSearch.Enabled || effective.WebSearch.Provider != "pipeline" || effective.WebSearch.Pipeline.Rerank.TopK != 4 {
+		t.Fatalf("effective websearch = %#v", effective.WebSearch)
+	}
+	if !effective.WebSearchRuntime.Registered || effective.WebSearchRuntime.EffectiveMode != "pipeline" || !effective.WebSearchRuntime.PipelineActive {
+		t.Fatalf("websearch runtime = %#v", effective.WebSearchRuntime)
+	}
+	settings, err := db.ListRuntimeSettings()
+	if err != nil {
+		t.Fatalf("ListRuntimeSettings: %v", err)
+	}
+	if len(settings) != 1 || settings[0].Namespace != "websearch" || settings[0].Key != "config" {
+		t.Fatalf("runtime settings = %#v", settings)
+	}
+	if !testConfig(a).WebSearch.Enabled || testConfig(a).WebSearch.Provider != "pipeline" || testConfig(a).WebSearch.Pipeline.Reader.TopN != 3 {
+		t.Fatalf("app config websearch = %#v", testConfig(a).WebSearch)
+	}
+	if _, ok := a.kernel.Services.Tools.Registry().GetSpec("web_search"); !ok {
+		t.Fatal("web_search was not registered after hot update")
+	}
+}
+
+func TestUpdateWebSearchConfigUnregistersToolWhenDisabledOrProviderUnavailable(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	t.Setenv("TEST_TAVILY_PRESENT", "fake-key")
+	t.Setenv("TEST_TAVILY_MISSING", "")
+
+	cfg := config.DefaultConfig()
+	cfg.WebSearch.Enabled = true
+	cfg.WebSearch.Provider = "tavily"
+	cfg.WebSearch.APIKeyEnv = "TEST_TAVILY_PRESENT"
+	a := newTestApp(cfg, db, logger)
+	if err := a.kernel.Services.Tools.EnsureRegistry(); err != nil {
+		t.Fatalf("EnsureRegistry: %v", err)
+	}
+	if _, ok := a.kernel.Services.Tools.Registry().GetSpec("web_search"); !ok {
+		t.Fatal("web_search was not registered before update")
+	}
+
+	missingKey := cfg.WebSearch
+	missingKey.APIKeyEnv = "TEST_TAVILY_MISSING"
+	effective, err := a.UpdateWebSearchConfig(context.Background(), missingKey)
+	if err != nil {
+		t.Fatalf("UpdateWebSearchConfig missing env: %v", err)
+	}
+	if effective.WebSearchRuntime.Registered || effective.WebSearchRuntime.LastError == "" {
+		t.Fatalf("runtime after missing env = %#v", effective.WebSearchRuntime)
+	}
+	if _, ok := a.kernel.Services.Tools.Registry().GetSpec("web_search"); ok {
+		t.Fatal("web_search still registered after provider became unavailable")
+	}
+
+	disabled := missingKey
+	disabled.Enabled = false
+	effective, err = a.UpdateWebSearchConfig(context.Background(), disabled)
+	if err != nil {
+		t.Fatalf("UpdateWebSearchConfig disabled: %v", err)
+	}
+	if effective.WebSearchRuntime.Registered || effective.WebSearchRuntime.EffectiveMode != "disabled" {
+		t.Fatalf("runtime after disabled = %#v", effective.WebSearchRuntime)
+	}
+}
+
+func TestUpdateWebSearchConfigReportsInactivePipelineInTavilyMode(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	t.Setenv("TEST_TAVILY_KEY", "fake-key")
+
+	cfg := config.DefaultConfig()
+	cfg.WebSearch.Enabled = false
+	a := newTestApp(cfg, db, logger)
+	if err := a.kernel.Services.Tools.EnsureRegistry(); err != nil {
+		t.Fatalf("EnsureRegistry: %v", err)
+	}
+
+	next := cfg.WebSearch
+	next.Enabled = true
+	next.Provider = "tavily"
+	next.APIKeyEnv = "TEST_TAVILY_KEY"
+	next.Pipeline.Enabled = true
+	effective, err := a.UpdateWebSearchConfig(context.Background(), next)
+	if err != nil {
+		t.Fatalf("UpdateWebSearchConfig: %v", err)
+	}
+	if !effective.WebSearchRuntime.Registered || effective.WebSearchRuntime.EffectiveMode != "tavily" || effective.WebSearchRuntime.PipelineActive {
+		t.Fatalf("runtime = %#v", effective.WebSearchRuntime)
+	}
+	if len(effective.WebSearchRuntime.Warnings) == 0 {
+		t.Fatalf("runtime warnings empty for inactive pipeline: %#v", effective.WebSearchRuntime)
 	}
 }
 
