@@ -367,11 +367,41 @@ personas:
 
 websearch:
   enabled: true
-  provider: tavily
+  provider: pipeline
   api_key_env: TAVILY_API_KEY
+  base_url: "https://api.tavily.com"
   max_results: 5
   timeout_sec: 30
   include_answer: false
+  pipeline:
+    enabled: true
+    search:
+      default_profile: auto
+      default_depth: advanced
+      fast_depth: basic
+      max_subqueries: 1
+      candidate_cap: 10
+      per_query_max_results: 5
+    reader:
+      enabled: true
+      top_n: 4
+      extract_depth: basic
+      format: markdown
+      timeout_sec: 20
+      max_chars_per_doc: 12000
+      max_chunk_chars: 2000
+    rerank:
+      enabled: true
+      provider: siliconflow
+      base_url: "https://api.siliconflow.cn"
+      path: "/v1/rerank"
+      api_key_env: SILICONFLOW_API_KEY
+      model: "BAAI/bge-reranker-v2-m3"
+      fallback: heuristic
+      timeout_sec: 10
+      input_top_n: 8
+      top_k: 5
+      max_doc_chars: 4000
 
 bash:
   enabled: true

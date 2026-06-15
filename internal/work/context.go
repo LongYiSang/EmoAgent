@@ -101,6 +101,9 @@ func BuildWorkSystem(brief protocol.TaskBrief, env runtimeenv.Facts) string {
 	b.WriteString("- When creating or overwriting a file in a missing directory, prefer write_file with create_dirs=true instead of shell mkdir.\n")
 	b.WriteString("- Use shell only for tests, builds, command-based verification, or operations not covered by dedicated tools.\n")
 	b.WriteString("- Use web_search to discover sources and web_fetch to read a specific source URL.\n")
+	b.WriteString("- Use web_search first to obtain already-read and reranked evidence.\n")
+	b.WriteString("- Use web_fetch only when a web_search result has needs_fetch=true, or when you need tables, code blocks, or exact source quotes.\n")
+	b.WriteString("- Limit web_fetch to the top 1-2 result URLs before broadening.\n")
 	b.WriteString("- Treat truncated tool results as incomplete; narrow the path/query/range or fetch a more specific source before drawing conclusions.\n")
 	b.WriteString("- Never rely on raw tool dumps as final output; summarize only user-relevant facts in `finish_task`.\n\n")
 

@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
 
 // Config holds shared Tavily HTTP client settings.
@@ -87,7 +86,7 @@ func (c *Client) PostJSON(ctx context.Context, endpoint string, request any, res
 		return fmt.Errorf("tavily %s: read response: %w", operation, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("tavily %s: status %d: %s", operation, resp.StatusCode, truncateForError(string(respBody), 512))
+		return fmt.Errorf("tavily %s: status %d", operation, resp.StatusCode)
 	}
 	if response == nil {
 		return nil
@@ -96,18 +95,4 @@ func (c *Client) PostJSON(ctx context.Context, endpoint string, request any, res
 		return fmt.Errorf("tavily %s: decode response: %w", operation, err)
 	}
 	return nil
-}
-
-func truncateForError(text string, maxBytes int) string {
-	if maxBytes <= 0 || len(text) <= maxBytes {
-		return text
-	}
-	var b strings.Builder
-	for _, r := range text {
-		if b.Len()+utf8.RuneLen(r) > maxBytes {
-			return b.String()
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
 }

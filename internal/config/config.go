@@ -906,12 +906,54 @@ type PersonasConfig struct {
 }
 
 type WebSearchConfig struct {
-	Enabled       bool   `yaml:"enabled"`
-	Provider      string `yaml:"provider"`       // "tavily"
-	APIKeyEnv     string `yaml:"api_key_env"`    // "TAVILY_API_KEY"
-	MaxResults    int    `yaml:"max_results"`    // handler default cap, default 5
-	TimeoutSec    int    `yaml:"timeout_sec"`    // HTTP timeout seconds, default 30
-	IncludeAnswer bool   `yaml:"include_answer"` // default false
+	Enabled       bool                    `yaml:"enabled"`
+	Provider      string                  `yaml:"provider"`       // "tavily" | "pipeline"
+	APIKeyEnv     string                  `yaml:"api_key_env"`    // "TAVILY_API_KEY"
+	BaseURL       string                  `yaml:"base_url"`       // Tavily API base URL
+	MaxResults    int                     `yaml:"max_results"`    // handler default cap, default 5
+	TimeoutSec    int                     `yaml:"timeout_sec"`    // HTTP timeout seconds, default 30
+	IncludeAnswer bool                    `yaml:"include_answer"` // default false
+	Pipeline      WebSearchPipelineConfig `yaml:"pipeline" json:"pipeline"`
+}
+
+type WebSearchPipelineConfig struct {
+	Enabled bool                          `yaml:"enabled" json:"enabled"`
+	Search  WebSearchPipelineSearch       `yaml:"search" json:"search"`
+	Reader  WebSearchPipelineReaderConfig `yaml:"reader" json:"reader"`
+	Rerank  WebSearchPipelineRerankConfig `yaml:"rerank" json:"rerank"`
+}
+
+type WebSearchPipelineSearch struct {
+	DefaultProfile     string `yaml:"default_profile" json:"default_profile"`
+	DefaultDepth       string `yaml:"default_depth" json:"default_depth"`
+	FastDepth          string `yaml:"fast_depth" json:"fast_depth"`
+	MaxSubqueries      int    `yaml:"max_subqueries" json:"max_subqueries"`
+	CandidateCap       int    `yaml:"candidate_cap" json:"candidate_cap"`
+	PerQueryMaxResults int    `yaml:"per_query_max_results" json:"per_query_max_results"`
+}
+
+type WebSearchPipelineReaderConfig struct {
+	Enabled        bool   `yaml:"enabled" json:"enabled"`
+	TopN           int    `yaml:"top_n" json:"top_n"`
+	ExtractDepth   string `yaml:"extract_depth" json:"extract_depth"`
+	Format         string `yaml:"format" json:"format"`
+	TimeoutSec     int    `yaml:"timeout_sec" json:"timeout_sec"`
+	MaxCharsPerDoc int    `yaml:"max_chars_per_doc" json:"max_chars_per_doc"`
+	MaxChunkChars  int    `yaml:"max_chunk_chars" json:"max_chunk_chars"`
+}
+
+type WebSearchPipelineRerankConfig struct {
+	Enabled     bool   `yaml:"enabled" json:"enabled"`
+	Provider    string `yaml:"provider" json:"provider"`
+	BaseURL     string `yaml:"base_url" json:"base_url"`
+	Path        string `yaml:"path" json:"path"`
+	APIKeyEnv   string `yaml:"api_key_env" json:"api_key_env"`
+	Model       string `yaml:"model" json:"model"`
+	Fallback    string `yaml:"fallback" json:"fallback"`
+	TimeoutSec  int    `yaml:"timeout_sec" json:"timeout_sec"`
+	InputTopN   int    `yaml:"input_top_n" json:"input_top_n"`
+	TopK        int    `yaml:"top_k" json:"top_k"`
+	MaxDocChars int    `yaml:"max_doc_chars" json:"max_doc_chars"`
 }
 
 type ContextConfig struct {
@@ -1240,8 +1282,41 @@ func DefaultConfig() *Config {
 			Enabled:    false,
 			Provider:   "tavily",
 			APIKeyEnv:  "TAVILY_API_KEY",
+			BaseURL:    "https://api.tavily.com",
 			MaxResults: 5,
 			TimeoutSec: 30,
+			Pipeline: WebSearchPipelineConfig{
+				Search: WebSearchPipelineSearch{
+					DefaultProfile:     "auto",
+					DefaultDepth:       "advanced",
+					FastDepth:          "basic",
+					MaxSubqueries:      1,
+					CandidateCap:       10,
+					PerQueryMaxResults: 5,
+				},
+				Reader: WebSearchPipelineReaderConfig{
+					Enabled:        true,
+					TopN:           4,
+					ExtractDepth:   "basic",
+					Format:         "markdown",
+					TimeoutSec:     20,
+					MaxCharsPerDoc: 12000,
+					MaxChunkChars:  2000,
+				},
+				Rerank: WebSearchPipelineRerankConfig{
+					Enabled:     true,
+					Provider:    "siliconflow",
+					BaseURL:     "https://api.siliconflow.cn",
+					Path:        "/v1/rerank",
+					APIKeyEnv:   "SILICONFLOW_API_KEY",
+					Model:       "BAAI/bge-reranker-v2-m3",
+					Fallback:    "heuristic",
+					TimeoutSec:  10,
+					InputTopN:   8,
+					TopK:        5,
+					MaxDocChars: 4000,
+				},
+			},
 		},
 		WebFetch: WebFetchConfig{
 			Enabled:      true,
@@ -1304,8 +1379,13 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 	explicitMemoryExtractionTimezone, memoryExtractionTimezone := memoryExtractionTimezoneValue(data)
+	explicitWebSearchReaderTopN, webSearchReaderTopN := webSearchReaderTopNValue(data)
 	cfg.Chat.TurnPipeline.applyDefaults()
 	cfg.Work.ApplyDefaults()
+	cfg.WebSearch.applyDefaults()
+	if explicitWebSearchReaderTopN {
+		cfg.WebSearch.Pipeline.Reader.TopN = webSearchReaderTopN
+	}
 	cfg.WebFetch.applyDefaults()
 	cfg.Bash.applyDefaults()
 	cfg.Memory.Sidecar.applyDefaults()
@@ -1361,6 +1441,25 @@ func memoryExtractionTimezoneValue(data []byte) (bool, string) {
 		return false, ""
 	}
 	return true, *raw.Memory.Extraction.Timezone
+}
+
+func webSearchReaderTopNValue(data []byte) (bool, int) {
+	var raw struct {
+		WebSearch struct {
+			Pipeline struct {
+				Reader struct {
+					TopN *int `yaml:"top_n"`
+				} `yaml:"reader"`
+			} `yaml:"pipeline"`
+		} `yaml:"websearch"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return false, 0
+	}
+	if raw.WebSearch.Pipeline.Reader.TopN == nil {
+		return false, 0
+	}
+	return true, *raw.WebSearch.Pipeline.Reader.TopN
 }
 
 func (c *Config) applyTimezoneDefaults(explicitMemoryExtractionTimezone bool, memoryExtractionTimezone string) {
@@ -1435,8 +1534,56 @@ func (c *Config) Validate() error {
 		if c.WebSearch.Provider == "" {
 			return fmt.Errorf("websearch.provider is required when websearch is enabled")
 		}
+		switch c.WebSearch.Provider {
+		case "tavily", "pipeline":
+		default:
+			return fmt.Errorf("websearch.provider must be tavily or pipeline, got %q", c.WebSearch.Provider)
+		}
 		if c.WebSearch.APIKeyEnv == "" {
 			return fmt.Errorf("websearch.api_key_env is required when websearch is enabled")
+		}
+		reader := c.WebSearch.Pipeline.Reader
+		switch reader.ExtractDepth {
+		case "basic", "advanced":
+		default:
+			return fmt.Errorf("websearch.pipeline.reader.extract_depth must be basic or advanced, got %q", reader.ExtractDepth)
+		}
+		switch reader.Format {
+		case "markdown", "text":
+		default:
+			return fmt.Errorf("websearch.pipeline.reader.format must be markdown or text, got %q", reader.Format)
+		}
+		if reader.TopN < 0 {
+			return fmt.Errorf("websearch.pipeline.reader.top_n must be >= 0")
+		}
+		if reader.MaxCharsPerDoc < 0 {
+			return fmt.Errorf("websearch.pipeline.reader.max_chars_per_doc must be >= 0")
+		}
+		if reader.MaxChunkChars < 0 {
+			return fmt.Errorf("websearch.pipeline.reader.max_chunk_chars must be >= 0")
+		}
+		rerank := c.WebSearch.Pipeline.Rerank
+		switch rerank.Provider {
+		case "disabled", "heuristic", "siliconflow":
+		default:
+			return fmt.Errorf("websearch.pipeline.rerank.provider must be disabled, heuristic, or siliconflow, got %q", rerank.Provider)
+		}
+		switch rerank.Fallback {
+		case "disabled", "heuristic":
+		default:
+			return fmt.Errorf("websearch.pipeline.rerank.fallback must be disabled or heuristic, got %q", rerank.Fallback)
+		}
+		if rerank.TimeoutSec < 0 {
+			return fmt.Errorf("websearch.pipeline.rerank.timeout_sec must be >= 0")
+		}
+		if rerank.InputTopN < 0 {
+			return fmt.Errorf("websearch.pipeline.rerank.input_top_n must be >= 0")
+		}
+		if rerank.TopK < 0 {
+			return fmt.Errorf("websearch.pipeline.rerank.top_k must be >= 0")
+		}
+		if rerank.MaxDocChars < 0 {
+			return fmt.Errorf("websearch.pipeline.rerank.max_doc_chars must be >= 0")
 		}
 	}
 	if c.WebFetch.Enabled {
@@ -1484,6 +1631,102 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("work.tool_snip_soft_tokens must be < work.tool_snip_hard_tokens")
 	}
 	return nil
+}
+
+func (c *WebSearchConfig) applyDefaults() {
+	if c.Provider == "" {
+		c.Provider = "tavily"
+	}
+	if c.APIKeyEnv == "" {
+		c.APIKeyEnv = "TAVILY_API_KEY"
+	}
+	if c.BaseURL == "" {
+		c.BaseURL = "https://api.tavily.com"
+	}
+	if c.MaxResults == 0 {
+		c.MaxResults = 5
+	}
+	if c.TimeoutSec == 0 {
+		c.TimeoutSec = 30
+	}
+	c.Pipeline.applyDefaults()
+}
+
+func (c *WebSearchPipelineConfig) applyDefaults() {
+	if c.Search.DefaultProfile == "" {
+		c.Search.DefaultProfile = "auto"
+	}
+	if c.Search.DefaultDepth == "" {
+		c.Search.DefaultDepth = "advanced"
+	}
+	if c.Search.FastDepth == "" {
+		c.Search.FastDepth = "basic"
+	}
+	if c.Search.MaxSubqueries == 0 {
+		c.Search.MaxSubqueries = 1
+	}
+	if c.Search.CandidateCap == 0 {
+		c.Search.CandidateCap = 10
+	}
+	if c.Search.PerQueryMaxResults == 0 {
+		c.Search.PerQueryMaxResults = 5
+	}
+	c.Reader.applyDefaults()
+	c.Rerank.applyDefaults()
+}
+
+func (c *WebSearchPipelineReaderConfig) applyDefaults() {
+	if c.TopN == 0 {
+		c.TopN = 4
+	}
+	if c.ExtractDepth == "" {
+		c.ExtractDepth = "basic"
+	}
+	if c.Format == "" {
+		c.Format = "markdown"
+	}
+	if c.TimeoutSec == 0 {
+		c.TimeoutSec = 20
+	}
+	if c.MaxCharsPerDoc == 0 {
+		c.MaxCharsPerDoc = 12000
+	}
+	if c.MaxChunkChars == 0 {
+		c.MaxChunkChars = 2000
+	}
+}
+
+func (c *WebSearchPipelineRerankConfig) applyDefaults() {
+	if c.Provider == "" {
+		c.Provider = "siliconflow"
+	}
+	if c.Model == "" {
+		c.Model = "BAAI/bge-reranker-v2-m3"
+	}
+	if c.Fallback == "" {
+		c.Fallback = "heuristic"
+	}
+	if c.BaseURL == "" {
+		c.BaseURL = "https://api.siliconflow.cn"
+	}
+	if c.Path == "" {
+		c.Path = "/v1/rerank"
+	}
+	if c.APIKeyEnv == "" {
+		c.APIKeyEnv = "SILICONFLOW_API_KEY"
+	}
+	if c.TimeoutSec == 0 {
+		c.TimeoutSec = 10
+	}
+	if c.InputTopN == 0 {
+		c.InputTopN = 8
+	}
+	if c.TopK == 0 {
+		c.TopK = 5
+	}
+	if c.MaxDocChars == 0 {
+		c.MaxDocChars = 4000
+	}
 }
 
 func (c TurnPipelineConfig) Validate() error {

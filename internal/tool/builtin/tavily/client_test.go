@@ -67,7 +67,7 @@ func TestClientDefaultsBaseURL(t *testing.T) {
 	}
 }
 
-func TestClientPostJSONNon2xxIncludesOperationStatusAndBody(t *testing.T) {
+func TestClientPostJSONNon2xxIncludesOperationStatusWithoutRawBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "rate limited", http.StatusTooManyRequests)
 	}))
@@ -84,8 +84,11 @@ func TestClientPostJSONNon2xxIncludesOperationStatusAndBody(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected non-2xx error")
 	}
-	if !strings.Contains(err.Error(), "search") || !strings.Contains(err.Error(), "429") || !strings.Contains(err.Error(), "rate limited") {
-		t.Fatalf("error = %q, want operation, status, and response body", err.Error())
+	if !strings.Contains(err.Error(), "search") || !strings.Contains(err.Error(), "429") {
+		t.Fatalf("error = %q, want operation and status", err.Error())
+	}
+	if strings.Contains(err.Error(), "rate limited") {
+		t.Fatalf("error = %q, must not include raw response body", err.Error())
 	}
 }
 

@@ -54,6 +54,11 @@ type tavilyRequest struct {
 	IncludeAnswer  bool     `json:"include_answer"`
 	IncludeDomains []string `json:"include_domains"`
 	ExcludeDomains []string `json:"exclude_domains"`
+	Topic          string   `json:"topic,omitempty"`
+	TimeRange      string   `json:"time_range,omitempty"`
+	StartDate      string   `json:"start_date,omitempty"`
+	EndDate        string   `json:"end_date,omitempty"`
+	ExactMatch     bool     `json:"exact_match,omitempty"`
 }
 
 // tavilyResult is a single result item from the Tavily API response.
@@ -98,10 +103,15 @@ func (p *tavilyProvider) Search(ctx context.Context, query string, opts Options)
 		IncludeAnswer:  p.cfg.IncludeAnswer,
 		IncludeDomains: includeDomains,
 		ExcludeDomains: excludeDomains,
+		Topic:          opts.Topic,
+		TimeRange:      opts.TimeRange,
+		StartDate:      opts.StartDate,
+		EndDate:        opts.EndDate,
+		ExactMatch:     opts.ExactMatch,
 	}
 
 	if p.logger != nil {
-		p.logger.DebugContext(ctx, "tavily search", "query", query, "max_results", maxResults, "depth", searchDepth)
+		p.logger.DebugContext(ctx, "tavily search", "max_results", maxResults, "depth", searchDepth)
 	}
 
 	var tavilyResp tavilyResponse
@@ -120,8 +130,9 @@ func (p *tavilyProvider) Search(ctx context.Context, query string, opts Options)
 	}
 
 	return &Response{
-		Query:   tavilyResp.Query,
-		Answer:  tavilyResp.Answer,
-		Results: results,
+		Query:    tavilyResp.Query,
+		Answer:   tavilyResp.Answer,
+		Results:  results,
+		Provider: p.Name(),
 	}, nil
 }

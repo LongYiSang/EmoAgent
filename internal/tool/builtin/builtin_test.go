@@ -317,6 +317,7 @@ func TestBuiltinToolDescriptionsDocumentP1SafetyAndSourceRules(t *testing.T) {
 	assertDescriptionContains(t, WebSearchSpec.Description,
 		"source URLs",
 		"Use web_fetch",
+		"top 1-2",
 	)
 	assertDescriptionContains(t, GetCurrentTimeSpec.Description,
 		"current local time",

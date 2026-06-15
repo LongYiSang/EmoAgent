@@ -265,3 +265,20 @@ func TestBuildWorkSystem_IncludesP1ExecutionQualitySections(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildWorkSystem_GuidesWebSearchBeforeFetch(t *testing.T) {
+	text := BuildWorkSystem(protocol.TaskBrief{
+		Goal:            "research a current API",
+		PermissionScope: "workspace-write",
+	}, runtimeenv.Facts{OS: "linux", BashEnabled: true})
+
+	for _, snippet := range []string{
+		"Use web_search first to obtain already-read and reranked evidence.",
+		"Use web_fetch only when a web_search result has needs_fetch=true, or when you need tables, code blocks, or exact source quotes.",
+		"Limit web_fetch to the top 1-2 result URLs before broadening.",
+	} {
+		if !strings.Contains(text, snippet) {
+			t.Fatalf("system prompt missing %q: %s", snippet, text)
+		}
+	}
+}

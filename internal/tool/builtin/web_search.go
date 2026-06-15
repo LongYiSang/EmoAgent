@@ -14,8 +14,8 @@ import (
 // WebSearchSpec defines the tool specification for web_search.
 var WebSearchSpec = tool.Spec{
 	Name:        "web_search",
-	Description: "Search the web for up-to-date or external facts. Returns results with title, source URLs, and snippets. Use web_fetch on a specific result URL when you need source content beyond the snippet.",
-	Parameters:  json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer"}},"required":["query"],"additionalProperties":false}`),
+	Description: "Search the web for current or external facts. Returns curated, ranked source URLs with title, URL, snippet, score, evidence, reasons, needs_fetch/fetch_hint, warnings, and usage. Use web_fetch only for a specific top 1-2 result URL when needs_fetch is true or you need full tables, code blocks, or exact source wording beyond returned evidence.",
+	Parameters:  json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer"},"profile":{"type":"string"},"include_domains":{"type":"array","items":{"type":"string"}},"exclude_domains":{"type":"array","items":{"type":"string"}},"time_range":{"type":"string"},"start_date":{"type":"string"},"end_date":{"type":"string"},"exact_match":{"type":"boolean"}},"required":["query"],"additionalProperties":false}`),
 	Scope:       tool.ScopeBoth,
 	Permission:  tool.PermReadOnly,
 }
@@ -28,8 +28,15 @@ const webSearchMaxResultsHardCap = 10
 func NewWebSearchHandler(provider websearch.Provider, defaultMax int, logger *slog.Logger) tool.Handler {
 	return func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 		var args struct {
-			Query      string `json:"query"`
-			MaxResults int    `json:"max_results,omitempty"`
+			Query          string   `json:"query"`
+			MaxResults     int      `json:"max_results,omitempty"`
+			Profile        string   `json:"profile,omitempty"`
+			IncludeDomains []string `json:"include_domains,omitempty"`
+			ExcludeDomains []string `json:"exclude_domains,omitempty"`
+			TimeRange      string   `json:"time_range,omitempty"`
+			StartDate      string   `json:"start_date,omitempty"`
+			EndDate        string   `json:"end_date,omitempty"`
+			ExactMatch     bool     `json:"exact_match,omitempty"`
 		}
 		if err := json.Unmarshal(input, &args); err != nil {
 			return nil, fmt.Errorf("web_search: invalid input: %w", err)
@@ -48,9 +55,18 @@ func NewWebSearchHandler(provider websearch.Provider, defaultMax int, logger *sl
 			n = webSearchMaxResultsHardCap
 		}
 
-		logger.DebugContext(ctx, "web_search executing", "query", query, "max_results", n)
+		logger.DebugContext(ctx, "web_search executing", "max_results", n)
 
-		resp, err := provider.Search(ctx, query, websearch.Options{MaxResults: n})
+		resp, err := provider.Search(ctx, query, websearch.Options{
+			MaxResults:     n,
+			Profile:        args.Profile,
+			IncludeDomains: args.IncludeDomains,
+			ExcludeDomains: args.ExcludeDomains,
+			TimeRange:      args.TimeRange,
+			StartDate:      args.StartDate,
+			EndDate:        args.EndDate,
+			ExactMatch:     args.ExactMatch,
+		})
 		if err != nil {
 			return nil, err
 		}

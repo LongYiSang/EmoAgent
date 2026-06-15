@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1507,6 +1508,352 @@ func TestDefaultWebSearchConfig(t *testing.T) {
 	}
 	if ws.IncludeAnswer != false {
 		t.Errorf("default websearch.include_answer = %v, want false", ws.IncludeAnswer)
+	}
+	pipeline := reflect.ValueOf(ws).FieldByName("Pipeline")
+	if !pipeline.IsValid() {
+		t.Fatalf("websearch config missing Pipeline")
+	}
+	enabled := pipeline.FieldByName("Enabled")
+	if !enabled.IsValid() || enabled.Kind() != reflect.Bool {
+		t.Fatalf("websearch.pipeline.enabled missing or non-bool")
+	}
+	if enabled.Bool() {
+		t.Fatalf("default websearch.pipeline.enabled = true, want false")
+	}
+	reader := pipeline.FieldByName("Reader")
+	if !reader.IsValid() {
+		t.Fatalf("websearch.pipeline missing Reader")
+	}
+	if enabled := reader.FieldByName("Enabled"); !enabled.IsValid() || !enabled.Bool() {
+		t.Fatalf("default websearch.pipeline.reader.enabled = %#v, want true", enabled)
+	}
+	assertIntConfigField(t, reader, "TopN", 4)
+	assertStringConfigField(t, reader, "ExtractDepth", "basic")
+	assertStringConfigField(t, reader, "Format", "markdown")
+	if maxChars := reader.FieldByName("MaxCharsPerDoc"); !maxChars.IsValid() || maxChars.Int() <= 0 {
+		t.Fatalf("default websearch.pipeline.reader.max_chars_per_doc = %#v, want > 0", maxChars)
+	}
+	if chunkChars := reader.FieldByName("MaxChunkChars"); !chunkChars.IsValid() || chunkChars.Int() <= 0 {
+		t.Fatalf("default websearch.pipeline.reader.max_chunk_chars = %#v, want > 0", chunkChars)
+	}
+	rerank := pipeline.FieldByName("Rerank")
+	if !rerank.IsValid() {
+		t.Fatalf("websearch.pipeline missing Rerank")
+	}
+	if enabled := rerank.FieldByName("Enabled"); !enabled.IsValid() || !enabled.Bool() {
+		t.Fatalf("default websearch.pipeline.rerank.enabled = %#v, want true", enabled)
+	}
+	assertStringConfigField(t, rerank, "Provider", "siliconflow")
+	assertStringConfigField(t, rerank, "Fallback", "heuristic")
+	assertStringConfigField(t, rerank, "Model", "BAAI/bge-reranker-v2-m3")
+	assertStringConfigField(t, rerank, "APIKeyEnv", "SILICONFLOW_API_KEY")
+	assertIntConfigField(t, rerank, "TimeoutSec", 10)
+	assertIntConfigField(t, rerank, "InputTopN", 8)
+	assertIntConfigField(t, rerank, "TopK", 5)
+	assertIntConfigField(t, rerank, "MaxDocChars", 4000)
+}
+
+func TestLoadWebSearchPipelineSearchConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+websearch:
+  enabled: true
+  provider: pipeline
+  api_key_env: TAVILY_API_KEY
+  pipeline:
+    enabled: true
+    search:
+      default_profile: official_docs
+      default_depth: advanced
+`), 0o644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	pipeline := reflect.ValueOf(cfg.WebSearch).FieldByName("Pipeline")
+	if !pipeline.IsValid() {
+		t.Fatalf("websearch config missing Pipeline")
+	}
+	if enabled := pipeline.FieldByName("Enabled"); !enabled.IsValid() || !enabled.Bool() {
+		t.Fatalf("websearch.pipeline.enabled = %#v, want true", enabled)
+	}
+	search := pipeline.FieldByName("Search")
+	if !search.IsValid() {
+		t.Fatalf("websearch.pipeline missing Search")
+	}
+	assertStringConfigField(t, search, "DefaultProfile", "official_docs")
+	assertStringConfigField(t, search, "DefaultDepth", "advanced")
+}
+
+func TestLoadWebSearchPipelineReaderConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+websearch:
+  enabled: true
+  provider: pipeline
+  api_key_env: TAVILY_API_KEY
+  base_url: http://127.0.0.1:9999
+  pipeline:
+    enabled: true
+    reader:
+      enabled: false
+      top_n: 2
+      extract_depth: advanced
+      format: text
+      max_chars_per_doc: 1234
+      max_chunk_chars: 321
+`), 0o644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	ws := reflect.ValueOf(cfg.WebSearch)
+	assertStringConfigField(t, ws, "BaseURL", "http://127.0.0.1:9999")
+	reader := ws.FieldByName("Pipeline").FieldByName("Reader")
+	if !reader.IsValid() {
+		t.Fatalf("websearch.pipeline missing Reader")
+	}
+	if enabled := reader.FieldByName("Enabled"); !enabled.IsValid() || enabled.Bool() {
+		t.Fatalf("websearch.pipeline.reader.enabled = %#v, want false", enabled)
+	}
+	assertIntConfigField(t, reader, "TopN", 2)
+	assertStringConfigField(t, reader, "ExtractDepth", "advanced")
+	assertStringConfigField(t, reader, "Format", "text")
+	assertIntConfigField(t, reader, "MaxCharsPerDoc", 1234)
+	assertIntConfigField(t, reader, "MaxChunkChars", 321)
+}
+
+func TestLoadWebSearchPipelineReaderTopNZeroIsPreserved(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+websearch:
+  enabled: true
+  provider: pipeline
+  api_key_env: TAVILY_API_KEY
+  pipeline:
+    enabled: true
+    reader:
+      enabled: true
+      top_n: 0
+`), 0o644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	reader := reflect.ValueOf(cfg.WebSearch).FieldByName("Pipeline").FieldByName("Reader")
+	assertIntConfigField(t, reader, "TopN", 0)
+}
+
+func TestLoadWebSearchPipelineRerankConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+websearch:
+  enabled: true
+  provider: pipeline
+  api_key_env: TAVILY_API_KEY
+  pipeline:
+    enabled: true
+    rerank:
+      enabled: true
+      provider: siliconflow
+      model: BAAI/bge-reranker-v2-m3
+      base_url: https://api.siliconflow.cn
+      path: /v1/rerank
+      api_key_env: SILICONFLOW_API_KEY
+      fallback: heuristic
+      timeout_sec: 7
+      input_top_n: 6
+      top_k: 3
+      max_doc_chars: 2048
+`), 0o644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	rerank := reflect.ValueOf(cfg.WebSearch).FieldByName("Pipeline").FieldByName("Rerank")
+	if !rerank.IsValid() {
+		t.Fatalf("websearch.pipeline missing Rerank")
+	}
+	if enabled := rerank.FieldByName("Enabled"); !enabled.IsValid() || !enabled.Bool() {
+		t.Fatalf("websearch.pipeline.rerank.enabled = %#v, want true", enabled)
+	}
+	assertStringConfigField(t, rerank, "Provider", "siliconflow")
+	assertStringConfigField(t, rerank, "Model", "BAAI/bge-reranker-v2-m3")
+	assertStringConfigField(t, rerank, "BaseURL", "https://api.siliconflow.cn")
+	assertStringConfigField(t, rerank, "Path", "/v1/rerank")
+	assertStringConfigField(t, rerank, "APIKeyEnv", "SILICONFLOW_API_KEY")
+	assertStringConfigField(t, rerank, "Fallback", "heuristic")
+	assertIntConfigField(t, rerank, "TimeoutSec", 7)
+	assertIntConfigField(t, rerank, "InputTopN", 6)
+	assertIntConfigField(t, rerank, "TopK", 3)
+	assertIntConfigField(t, rerank, "MaxDocChars", 2048)
+}
+
+func TestLoadWebSearchPipelineExampleConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+websearch:
+  enabled: true
+  provider: pipeline
+  api_key_env: TAVILY_API_KEY
+  base_url: "https://api.tavily.com"
+  max_results: 5
+  timeout_sec: 30
+  include_answer: false
+  pipeline:
+    enabled: true
+    search:
+      default_profile: auto
+      default_depth: advanced
+      fast_depth: basic
+      max_subqueries: 1
+      candidate_cap: 10
+      per_query_max_results: 5
+    reader:
+      enabled: true
+      top_n: 4
+      extract_depth: basic
+      format: markdown
+      timeout_sec: 20
+      max_chars_per_doc: 12000
+      max_chunk_chars: 2000
+    rerank:
+      enabled: true
+      provider: siliconflow
+      base_url: "https://api.siliconflow.cn"
+      path: "/v1/rerank"
+      api_key_env: SILICONFLOW_API_KEY
+      model: "BAAI/bge-reranker-v2-m3"
+      fallback: heuristic
+      timeout_sec: 10
+      input_top_n: 8
+      top_k: 5
+      max_doc_chars: 4000
+`), 0o644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if cfg.WebSearch.Provider != "pipeline" || !cfg.WebSearch.Pipeline.Enabled {
+		t.Fatalf("websearch provider/pipeline = %#v, want enabled pipeline", cfg.WebSearch)
+	}
+	if cfg.WebSearch.BaseURL != "https://api.tavily.com" {
+		t.Fatalf("websearch.base_url = %q", cfg.WebSearch.BaseURL)
+	}
+	if !cfg.WebSearch.Pipeline.Reader.Enabled || cfg.WebSearch.Pipeline.Reader.TopN != 4 {
+		t.Fatalf("reader config = %#v", cfg.WebSearch.Pipeline.Reader)
+	}
+	rerank := cfg.WebSearch.Pipeline.Rerank
+	if !rerank.Enabled || rerank.Provider != "siliconflow" || rerank.APIKeyEnv != "SILICONFLOW_API_KEY" ||
+		rerank.Model != "BAAI/bge-reranker-v2-m3" || rerank.Fallback != "heuristic" {
+		t.Fatalf("rerank config = %#v", rerank)
+	}
+}
+
+func TestWebSearchValidateProviderEnum(t *testing.T) {
+	tests := []struct {
+		provider string
+		wantErr  bool
+	}{
+		{provider: "tavily"},
+		{provider: "pipeline"},
+		{provider: "unknown", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.provider, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.WebSearch.Enabled = true
+			cfg.WebSearch.Provider = tt.provider
+			err := cfg.Validate()
+			if tt.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "websearch.provider") {
+					t.Fatalf("Validate error = %v, want websearch.provider error", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate error = %v, want nil", err)
+			}
+		})
+	}
+}
+
+func TestWebSearchValidateRerankProviderEnum(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		wantErr  bool
+	}{
+		{name: "heuristic", provider: "heuristic"},
+		{name: "siliconflow", provider: "siliconflow"},
+		{name: "unknown", provider: "other", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.WebSearch.Enabled = true
+			cfg.WebSearch.Provider = "pipeline"
+			rerank := reflect.ValueOf(&cfg.WebSearch.Pipeline).Elem().FieldByName("Rerank")
+			if !rerank.IsValid() {
+				t.Fatalf("websearch.pipeline missing Rerank")
+			}
+			rerank.FieldByName("Enabled").SetBool(true)
+			rerank.FieldByName("Provider").SetString(tt.provider)
+
+			err := cfg.Validate()
+			if tt.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "websearch.pipeline.rerank.provider") {
+					t.Fatalf("Validate error = %v, want rerank provider error", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate error = %v, want nil", err)
+			}
+		})
+	}
+}
+
+func assertStringConfigField(t *testing.T, owner reflect.Value, name, want string) {
+	t.Helper()
+	field := owner.FieldByName(name)
+	if !field.IsValid() {
+		t.Fatalf("config missing %s", name)
+	}
+	if field.Kind() != reflect.String {
+		t.Fatalf("%s kind = %s, want string", name, field.Kind())
+	}
+	if got := field.String(); got != want {
+		t.Fatalf("%s = %q, want %q", name, got, want)
+	}
+}
+
+func assertIntConfigField(t *testing.T, owner reflect.Value, name string, want int) {
+	t.Helper()
+	field := owner.FieldByName(name)
+	if !field.IsValid() {
+		t.Fatalf("config missing %s", name)
+	}
+	if field.Kind() != reflect.Int {
+		t.Fatalf("%s kind = %s, want int", name, field.Kind())
+	}
+	if got := int(field.Int()); got != want {
+		t.Fatalf("%s = %d, want %d", name, got, want)
 	}
 }
 
