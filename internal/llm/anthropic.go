@@ -155,12 +155,12 @@ func (c *anthropicClient) convertTools(tools []ToolDef) []anthropicToolDef {
 }
 
 func (c *anthropicClient) parseContentBlocks(content []anthropicContentBlock) (string, []ContentBlock) {
-	var text string
+	var text strings.Builder
 	var blocks []ContentBlock
 	for _, ab := range content {
 		switch ab.Type {
 		case "text":
-			text += ab.Text
+			text.WriteString(ab.Text)
 			blocks = append(blocks, ContentBlock{Type: "text", Text: ab.Text})
 		case "tool_use":
 			blocks = append(blocks, ContentBlock{
@@ -171,7 +171,7 @@ func (c *anthropicClient) parseContentBlocks(content []anthropicContentBlock) (s
 			})
 		}
 	}
-	return text, blocks
+	return text.String(), blocks
 }
 
 func (c *anthropicClient) doRequest(ctx context.Context, body []byte, stream bool) (*http.Response, error) {

@@ -2,6 +2,7 @@ package turn
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 )
@@ -145,7 +146,7 @@ func (s *BoundedOutboundSink) run() {
 		<-timer.C
 	}
 	timerActive := false
-	pendingDelta := ""
+	var pendingDelta strings.Builder
 	pendingMeta := OutboundEvent{}
 	lastProgressAt := time.Time{}
 
@@ -180,13 +181,13 @@ func (s *BoundedOutboundSink) run() {
 	}
 	flush := func() error {
 		stopTimer()
-		if pendingDelta == "" {
+		if pendingDelta.Len() == 0 {
 			return s.err()
 		}
 		event := pendingMeta
 		event.Type = EventStreamDelta
-		event.Content = pendingDelta
-		pendingDelta = ""
+		event.Content = pendingDelta.String()
+		pendingDelta.Reset()
 		pendingMeta = OutboundEvent{}
 		return emit(event)
 	}
@@ -205,11 +206,11 @@ func (s *BoundedOutboundSink) run() {
 			}
 			switch item.event.Type {
 			case EventStreamDelta:
-				pendingDelta += item.event.Content
+				pendingDelta.WriteString(item.event.Content)
 				if pendingMeta.Type == "" {
 					pendingMeta = item.event
 				}
-				if len([]byte(pendingDelta)) >= s.opts.MaxDeltaBytes {
+				if pendingDelta.Len() >= s.opts.MaxDeltaBytes {
 					err = flush()
 				} else {
 					resetTimer()

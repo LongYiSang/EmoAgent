@@ -535,6 +535,29 @@ func TestOpenAIToMessages_ToolResult(t *testing.T) {
 	}
 }
 
+func TestOpenAIToMessagesJoinsTextBlocksWithoutMedia(t *testing.T) {
+	client := &openaiClient{logger: slog.Default()}
+
+	msgs := client.toMessages(ChatRequest{Messages: []Message{{
+		Role: RoleUser,
+		ContentBlocks: []ContentBlock{
+			{Type: "text", Text: "第一段"},
+			{Type: "text", Text: "\n第二段"},
+			{Type: "text", Text: "\n第三段"},
+		},
+	}}})
+
+	if len(msgs) != 1 {
+		t.Fatalf("messages: got %d, want 1", len(msgs))
+	}
+	if msgs[0].Content == nil || *msgs[0].Content != "第一段\n第二段\n第三段" {
+		t.Fatalf("content = %#v, want joined text blocks", msgs[0].Content)
+	}
+	if len(msgs[0].ContentParts) != 0 {
+		t.Fatalf("ContentParts = %#v, want empty without media", msgs[0].ContentParts)
+	}
+}
+
 func TestOpenAIToMessagesPreservesReasoningOnlyWhenCapabilityEnabled(t *testing.T) {
 	req := ChatRequest{Messages: []Message{{
 		Role:             RoleAssistant,

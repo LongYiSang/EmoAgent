@@ -281,11 +281,7 @@ func (c *openaiClient) toMessages(req ChatRequest) []openaiMessage {
 			if hasMediaContentParts(contentParts) {
 				msg.ContentParts = contentParts
 			} else if len(textParts) > 0 {
-				joined := ""
-				for _, p := range textParts {
-					joined += p
-				}
-				msg.Content = strPtr(joined)
+				msg.Content = strPtr(strings.Join(textParts, ""))
 			}
 			if len(toolCalls) > 0 {
 				msg.ToolCalls = toolCalls

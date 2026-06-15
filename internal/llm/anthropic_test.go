@@ -92,6 +92,30 @@ func TestAnthropicStatusLogRedactsImageData(t *testing.T) {
 	}
 }
 
+func TestAnthropicParseContentBlocksJoinsTextAndPreservesBlocks(t *testing.T) {
+	client := &anthropicClient{logger: slog.Default()}
+
+	content, blocks := client.parseContentBlocks([]anthropicContentBlock{
+		{Type: "text", Text: "第一段"},
+		{Type: "text", Text: "\n第二段"},
+		{Type: "tool_use", ID: "toolu_01", Name: "get_time", Input: json.RawMessage(`{"tz":"UTC"}`)},
+		{Type: "text", Text: "\n第三段"},
+	})
+
+	if content != "第一段\n第二段\n第三段" {
+		t.Fatalf("content = %q, want joined text blocks", content)
+	}
+	if len(blocks) != 4 {
+		t.Fatalf("blocks = %#v, want 4 blocks", blocks)
+	}
+	if blocks[0].Type != "text" || blocks[0].Text != "第一段" {
+		t.Fatalf("blocks[0] = %#v, want first text block", blocks[0])
+	}
+	if blocks[2].Type != "tool_use" || blocks[2].ID != "toolu_01" || blocks[2].Name != "get_time" {
+		t.Fatalf("blocks[2] = %#v, want preserved tool_use block", blocks[2])
+	}
+}
+
 func TestAnthropicChat_MapsThinkingParamsAndExtra(t *testing.T) {
 	var payload map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

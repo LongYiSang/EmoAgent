@@ -73,6 +73,42 @@ func TestBoundedOutboundSinkCoalescesDeltasAndPreservesTerminalOrder(t *testing.
 	}
 }
 
+func TestBoundedOutboundSinkFlushesDeltasAtByteLimit(t *testing.T) {
+	var got []OutboundEvent
+	sink := NewBoundedOutboundSink(SinkFunc(func(ctx context.Context, event OutboundEvent) error {
+		got = append(got, event)
+		return nil
+	}), BoundedOutboundOptions{
+		FlushInterval:        time.Hour,
+		MaxDeltaBytes:        5,
+		WorkProgressInterval: time.Minute,
+		QueueSize:            8,
+	})
+
+	ctx := context.Background()
+	for _, content := range []string{"ab", "cd", "ef"} {
+		if err := sink.Emit(ctx, OutboundEvent{Type: EventStreamDelta, Content: content}); err != nil {
+			t.Fatalf("Emit delta %q: %v", content, err)
+		}
+	}
+	if err := sink.Emit(ctx, OutboundEvent{Type: EventStreamEnd}); err != nil {
+		t.Fatalf("Emit end: %v", err)
+	}
+	if err := sink.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("events = %#v, want delta and stream_end", got)
+	}
+	if got[0].Type != EventStreamDelta || got[0].Content != "abcdef" {
+		t.Fatalf("got[0] = %#v, want flushed delta", got[0])
+	}
+	if got[1].Type != EventStreamEnd {
+		t.Fatalf("got[1] = %#v, want stream_end", got[1])
+	}
+}
+
 func TestBoundedOutboundSinkDownsamplesWorkProgress(t *testing.T) {
 	var got []OutboundEvent
 	sink := NewBoundedOutboundSink(SinkFunc(func(ctx context.Context, event OutboundEvent) error {
