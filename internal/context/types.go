@@ -1,8 +1,10 @@
 package context
 
 import (
+	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/promptcenter"
+	"github.com/longyisang/emoagent/internal/storage"
 )
 
 const CurrentContextVersion = 1
@@ -76,6 +78,7 @@ type ContextState struct {
 	LastCompactReason            string         `json:"last_compact_reason"`
 	LastInputEstimate            int            `json:"last_input_estimate"`
 	KeepRecentUserTurns          int            `json:"keep_recent_user_turns"`
+	LastContextStats             *ContextStats  `json:"last_context_stats,omitempty"`
 }
 
 // RunningSummary is the structured rolling summary injected ahead of recent turns.
@@ -114,6 +117,40 @@ type AssembledContext struct {
 	Messages         []llm.Message
 	Budget           Budget
 	CompactReport    CompactReport
+}
+
+type ContextStats struct {
+	SessionID                 string `json:"session_id,omitempty"`
+	TurnID                    string `json:"turn_id,omitempty"`
+	RequestID                 string `json:"request_id,omitempty"`
+	ProviderID                string `json:"provider_id,omitempty"`
+	Model                     string `json:"model,omitempty"`
+	Round                     int    `json:"round"`
+	EstimatedInputTokens      int    `json:"estimated_input_tokens"`
+	ContextLimitTokens        int    `json:"context_limit_tokens"`
+	InputBudgetTokens         int    `json:"input_budget_tokens"`
+	ReserveOutputTokens       int    `json:"reserve_output_tokens"`
+	MaxOutputTokens           int    `json:"max_output_tokens"`
+	RawHistoryEstimatedTokens int    `json:"raw_history_estimated_tokens"`
+	CompactReason             string `json:"compact_reason,omitempty"`
+	Source                    string `json:"source,omitempty"`
+	ProviderInputTokens       int    `json:"provider_input_tokens,omitempty"`
+	ProviderOutputTokens      int    `json:"provider_output_tokens,omitempty"`
+	UpdatedAt                 string `json:"updated_at,omitempty"`
+}
+
+type ContextStatsInput struct {
+	SessionID     string
+	TurnID        string
+	RequestID     string
+	ProviderID    string
+	Round         int
+	Request       llm.ChatRequest
+	RawHistory    []storage.MessageRecord
+	ContextConfig config.ContextConfig
+	CompactReason string
+	Source        string
+	UpdatedAt     string
 }
 
 // IsZero reports whether the running summary is empty and can be skipped during assembly.

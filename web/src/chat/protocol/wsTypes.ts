@@ -63,12 +63,47 @@ export type ContentPart =
   | { type: 'text'; text: string }
   | { type: 'image'; media: MediaPart };
 
+export type ContextStats = {
+  session_id?: string;
+  sessionId?: string;
+  turn_id?: string;
+  turnId?: string;
+  request_id?: string;
+  requestId?: string;
+  provider_id?: string;
+  providerId?: string;
+  model?: string;
+  round?: number;
+  estimated_input_tokens?: number;
+  estimatedInputTokens?: number;
+  context_limit_tokens?: number;
+  contextLimitTokens?: number;
+  input_budget_tokens?: number;
+  inputBudgetTokens?: number;
+  reserve_output_tokens?: number;
+  reserveOutputTokens?: number;
+  max_output_tokens?: number;
+  maxOutputTokens?: number;
+  raw_history_estimated_tokens?: number;
+  rawHistoryEstimatedTokens?: number;
+  compact_reason?: string;
+  compactReason?: string;
+  source?: string;
+  provider_input_tokens?: number;
+  providerInputTokens?: number;
+  provider_output_tokens?: number;
+  providerOutputTokens?: number;
+  updated_at?: string;
+  updatedAt?: string;
+};
+
 export type WSIncoming =
   | { type: 'session_ready'; session_id?: string; SessionID?: string; persona?: string; Persona?: string; is_new?: boolean; IsNew?: boolean }
   | { type: 'greeting'; content?: string }
   | { type: 'stream_start' }
   | { type: 'stream_delta'; content?: string }
   | { type: 'stream_end' }
+  | { type: 'context_stats'; payload?: ContextStats; Payload?: ContextStats }
   | { type: 'tool_call_start'; tool?: ToolActivity; Tool?: ToolActivity }
   | { type: 'tool_call_end'; tool?: ToolActivity; Tool?: ToolActivity }
   | { type: 'reasoning_start'; reasoning?: ReasoningActivity; Reasoning?: ReasoningActivity }

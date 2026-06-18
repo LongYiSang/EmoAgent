@@ -282,6 +282,123 @@ func TestToolDigestTruncatesLargeToolResult(t *testing.T) {
 	}
 }
 
+func TestBuildContextStatsUsesFinalRequestAndRawHistorySeparately(t *testing.T) {
+	cfg := testContextConfig()
+	cfg.InputBudgetTokens = 9000
+	cfg.ReserveOutputTokens = 512
+	req := llm.ChatRequest{
+		Model:     "chat-model",
+		System:    "system prompt",
+		MaxTokens: 128,
+		Messages: []llm.Message{
+			{Role: llm.RoleUser, Content: "current user message"},
+			{
+				Role: llm.RoleAssistant,
+				ContentBlocks: []llm.ContentBlock{
+					{Type: "text", Text: "assistant text"},
+					{Type: "tool_result", ID: "call_1", Content: `{"preview":"snipped result"}`},
+				},
+			},
+		},
+		Tools: []llm.ToolDef{{
+			Name:        "web_search",
+			Description: "Search the web",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}}}`),
+		}},
+	}
+	withoutRaw := ctxpkg.BuildContextStats(ctxpkg.ContextStatsInput{
+		SessionID:     "session-1",
+		TurnID:        "turn-1",
+		RequestID:     "request-1",
+		ProviderID:    "moonshot",
+		Request:       req,
+		ContextConfig: cfg,
+		Source:        "estimate",
+	})
+	withRaw := ctxpkg.BuildContextStats(ctxpkg.ContextStatsInput{
+		SessionID:  "session-1",
+		TurnID:     "turn-1",
+		RequestID:  "request-1",
+		ProviderID: "moonshot",
+		Request:    req,
+		RawHistory: []storage.MessageRecord{
+			{Role: "user", Content: strings.Repeat("old user content ", 200)},
+			{Role: "assistant", Content: strings.Repeat("old assistant content ", 200)},
+		},
+		ContextConfig: cfg,
+		Source:        "estimate",
+	})
+
+	if withRaw.EstimatedInputTokens != withoutRaw.EstimatedInputTokens {
+		t.Fatalf("raw history changed request estimate: with=%d without=%d", withRaw.EstimatedInputTokens, withoutRaw.EstimatedInputTokens)
+	}
+	if withRaw.RawHistoryEstimatedTokens <= withoutRaw.RawHistoryEstimatedTokens {
+		t.Fatalf("raw history estimate = %d, want > %d", withRaw.RawHistoryEstimatedTokens, withoutRaw.RawHistoryEstimatedTokens)
+	}
+	requestWithoutTools := req
+	requestWithoutTools.Tools = nil
+	noTools := ctxpkg.BuildContextStats(ctxpkg.ContextStatsInput{
+		SessionID:     "session-1",
+		TurnID:        "turn-1",
+		RequestID:     "request-1",
+		ProviderID:    "moonshot",
+		Request:       requestWithoutTools,
+		ContextConfig: cfg,
+		Source:        "estimate",
+	})
+	if withRaw.EstimatedInputTokens <= noTools.EstimatedInputTokens {
+		t.Fatalf("tool schema was not included: with_tools=%d no_tools=%d", withRaw.EstimatedInputTokens, noTools.EstimatedInputTokens)
+	}
+	if withRaw.ContextLimitTokens != cfg.InputBudgetTokens || withRaw.MaxOutputTokens != req.MaxTokens {
+		t.Fatalf("limits = context:%d output:%d, want context:%d output:%d", withRaw.ContextLimitTokens, withRaw.MaxOutputTokens, cfg.InputBudgetTokens, req.MaxTokens)
+	}
+}
+
+func TestSessionContextStatePersistsLastContextStats(t *testing.T) {
+	ctx := context.Background()
+	db := openContextTestDB(t)
+	if err := db.CreateSession(ctx, "session-1", "default"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	stats := ctxpkg.ContextStats{
+		SessionID:                 "session-1",
+		TurnID:                    "turn-1",
+		RequestID:                 "request-1",
+		ProviderID:                "moonshot",
+		Model:                     "kimi-k2.6",
+		Round:                     1,
+		EstimatedInputTokens:      123,
+		ContextLimitTokens:        9000,
+		InputBudgetTokens:         9000,
+		ReserveOutputTokens:       512,
+		MaxOutputTokens:           128,
+		RawHistoryEstimatedTokens: 400,
+		CompactReason:             "reactive_overflow",
+		Source:                    "provider_usage",
+		ProviderInputTokens:       120,
+		ProviderOutputTokens:      20,
+		UpdatedAt:                 "2026-06-18T00:00:00Z",
+	}
+	want := ctxpkg.ContextState{
+		ContextVersion:   ctxpkg.CurrentContextVersion,
+		Mode:             ctxpkg.ModeEmotion,
+		LastContextStats: &stats,
+	}
+	if err := ctxpkg.UpdateSessionContextState(ctx, db, "session-1", want); err != nil {
+		t.Fatalf("UpdateSessionContextState: %v", err)
+	}
+	got, err := ctxpkg.LoadSessionState(ctx, db, "session-1", testContextConfig())
+	if err != nil {
+		t.Fatalf("LoadSessionState: %v", err)
+	}
+	if got.LastContextStats == nil {
+		t.Fatal("LastContextStats missing after reload")
+	}
+	if got.LastContextStats.ProviderInputTokens != stats.ProviderInputTokens || got.LastContextStats.CompactReason != stats.CompactReason {
+		t.Fatalf("LastContextStats = %#v, want %#v", got.LastContextStats, stats)
+	}
+}
+
 func TestBuildEmotionContextPlacesToolDigestBeforeRecentTurns(t *testing.T) {
 	persona := &config.Persona{
 		Name:         "default",

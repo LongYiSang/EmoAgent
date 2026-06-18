@@ -63,6 +63,7 @@ export function useChatSession({ state, dispatch, contextRef, closeSocketRef, se
     if (!sessionID) return;
     const detail = await loadSessionDetail(sessionID);
     dispatch({ type: 'SET_HISTORY', messages: detail.messages || detail.Messages || [] });
+    dispatch({ type: 'SET_CONTEXT_STATS', stats: sessionDetailContextStats(detail) });
   }, [contextRef, dispatch]);
 
   useEffect(() => {
@@ -77,7 +78,7 @@ export function useChatSession({ state, dispatch, contextRef, closeSocketRef, se
           const detail = await loadSessionDetail(sessionID);
           personaKey = detail.persona || detail.Persona || personaKey;
           if (!cancelled) {
-            dispatch({ type: 'SET_CONTEXT', sessionID, personaKey });
+            dispatch({ type: 'SET_CONTEXT', sessionID, personaKey, contextStats: sessionDetailContextStats(detail) });
             contextRef.current = { sessionID, personaKey };
             dispatch({ type: 'SET_HISTORY', messages: detail.messages || detail.Messages || [] });
             await Promise.all([refreshApprovals(sessionID), refreshMemoryStatus(sessionID)]);
@@ -125,7 +126,7 @@ export function useChatSession({ state, dispatch, contextRef, closeSocketRef, se
       const detail = await loadSessionDetail(sessionID);
       await closeSocketRef.current();
       const nextPersona = detail.persona || detail.Persona || personaKey || contextRef.current.personaKey;
-      dispatch({ type: 'SET_CONTEXT', sessionID, personaKey: nextPersona });
+      dispatch({ type: 'SET_CONTEXT', sessionID, personaKey: nextPersona, contextStats: sessionDetailContextStats(detail) });
       contextRef.current = { sessionID, personaKey: nextPersona };
       dispatch({ type: 'SET_HISTORY', messages: detail.messages || detail.Messages || [] });
       await Promise.all([refreshApprovals(sessionID), refreshMemoryStatus(sessionID), refreshSessions(nextPersona)]);
@@ -148,4 +149,8 @@ export function useChatSession({ state, dispatch, contextRef, closeSocketRef, se
   }, [contextRef, dispatch, refreshSessions, startNewChat]);
 
   return { refreshSessions, refreshApprovals, refreshMemoryStatus, reloadSessionHistory, startNewChat, switchSession, removeSession };
+}
+
+function sessionDetailContextStats(detail: Awaited<ReturnType<typeof loadSessionDetail>>) {
+  return detail.context_stats || detail.contextStats || detail.ContextStats || null;
 }

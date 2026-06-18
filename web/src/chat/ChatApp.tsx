@@ -224,6 +224,7 @@ export function ChatApp() {
           <ConversationHeader
             subtitle={subtitle}
             status={state.status}
+            contextStats={state.contextStats}
             memoryStatusVisible={state.memoryStatusVisible}
             hasSession={Boolean(state.currentSessionId)}
             onToggleSidebar={() => setSidebarOpen(value => !value)}

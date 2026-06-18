@@ -321,6 +321,45 @@ code {
   background: var(--color-mint);
 }
 
+.context-chip {
+  min-height: 30px;
+  max-width: 240px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 9px;
+  border: 1px solid var(--hair);
+  border-radius: 999px;
+  color: var(--color-ink-2);
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.context-chip strong {
+  overflow: hidden;
+  color: var(--color-tooltip-bg);
+  font-weight: 850;
+  text-overflow: ellipsis;
+}
+
+.context-chip-meter {
+  width: 44px;
+  height: 5px;
+  flex: 0 0 44px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(17, 24, 39, 0.09);
+}
+
+.context-chip-meter span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-lavender);
+}
+
 .code {
   max-height: 420px;
   overflow: auto;

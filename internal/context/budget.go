@@ -1,11 +1,13 @@
 package context
 
 import (
+	"encoding/json"
 	"math"
 	"unicode"
 
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/storage"
 )
 
 const (
@@ -46,6 +48,55 @@ func NewBudget(cfg config.ContextConfig, system string, messages []llm.Message) 
 	}
 	budget.EstimatedTokens = estimated
 	return budget
+}
+
+func BuildContextStats(input ContextStatsInput) ContextStats {
+	req := input.Request
+	source := input.Source
+	if source == "" {
+		source = "estimate"
+	}
+	return ContextStats{
+		SessionID:                 input.SessionID,
+		TurnID:                    input.TurnID,
+		RequestID:                 input.RequestID,
+		ProviderID:                input.ProviderID,
+		Model:                     req.Model,
+		Round:                     input.Round,
+		EstimatedInputTokens:      EstimateRequestTokens(req),
+		ContextLimitTokens:        input.ContextConfig.InputBudgetTokens,
+		InputBudgetTokens:         input.ContextConfig.InputBudgetTokens,
+		ReserveOutputTokens:       input.ContextConfig.ReserveOutputTokens,
+		MaxOutputTokens:           req.MaxTokens,
+		RawHistoryEstimatedTokens: EstimateRawHistoryTokens(input.RawHistory),
+		CompactReason:             input.CompactReason,
+		Source:                    source,
+		UpdatedAt:                 input.UpdatedAt,
+	}
+}
+
+func EstimateRequestTokens(req llm.ChatRequest) int {
+	total := EstimateTokens(req.System)
+	for _, msg := range req.Messages {
+		total += estimateMessageTokens(msg)
+	}
+	if len(req.Tools) > 0 {
+		if payload, err := json.Marshal(req.Tools); err == nil {
+			total += EstimateTokens(string(payload))
+		}
+	}
+	return total
+}
+
+func EstimateRawHistoryTokens(history []storage.MessageRecord) int {
+	total := 0
+	for _, msg := range history {
+		total += estimateMessageTokens(llm.Message{
+			Role:    llm.Role(msg.Role),
+			Content: msg.Content,
+		})
+	}
+	return total
 }
 
 func estimateMessageTokens(msg llm.Message) int {

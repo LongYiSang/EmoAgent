@@ -177,6 +177,9 @@ export function useChatWebSocket({ dispatch, contextRef, refreshSessions, refres
         case 'stream_delta':
           queueStreamDelta(payload.content || '');
           break;
+        case 'context_stats':
+          dispatch({ type: 'SET_CONTEXT_STATS', stats: payload.payload || payload.Payload || null });
+          break;
         case 'stream_end':
           flushPendingStreamDelta();
           flushPendingReasoningDeltas();

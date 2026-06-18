@@ -1,5 +1,5 @@
 import { requestJSON } from '../../shared/lib/api';
-import type { ApprovalRequest } from './wsTypes';
+import type { ApprovalRequest, ContextStats } from './wsTypes';
 
 export type MessageDisplayPart =
   | { type: 'text'; text?: string }
@@ -54,6 +54,9 @@ export type SessionDetail = {
   Persona?: string;
   messages?: MessageRecord[];
   Messages?: MessageRecord[];
+  context_stats?: ContextStats;
+  contextStats?: ContextStats;
+  ContextStats?: ContextStats;
 };
 
 export async function loadSessions(persona: string): Promise<SessionSummary[]> {

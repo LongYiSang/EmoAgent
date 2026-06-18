@@ -17,6 +17,7 @@ import (
 	"github.com/longyisang/emoagent/internal/apperrors"
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/configcenter"
+	contextutil "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/media"
 	"github.com/longyisang/emoagent/internal/memoryhost"
@@ -234,6 +235,62 @@ func TestHandleGetSessionReturnsSafeDisplayParts(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("body = %s, want %s", body, want)
 		}
+	}
+}
+
+func TestHandleGetSessionReturnsContextStatsFromMetadata(t *testing.T) {
+	stats := contextutil.ContextStats{
+		SessionID:                 "session-1",
+		TurnID:                    "turn-1",
+		RequestID:                 "request-1",
+		ProviderID:                "provider-1",
+		Model:                     "model-1",
+		Round:                     2,
+		EstimatedInputTokens:      123,
+		ContextLimitTokens:        24000,
+		InputBudgetTokens:         24000,
+		ReserveOutputTokens:       4096,
+		MaxOutputTokens:           512,
+		RawHistoryEstimatedTokens: 456,
+		CompactReason:             "reactive_overflow",
+		Source:                    "provider_usage",
+		ProviderInputTokens:       111,
+		ProviderOutputTokens:      22,
+		UpdatedAt:                 "2026-06-18T00:00:00Z",
+	}
+	metadata, err := json.Marshal(contextutil.ContextState{LastContextStats: &stats})
+	if err != nil {
+		t.Fatalf("Marshal metadata: %v", err)
+	}
+	app := &fakeAdminApp{
+		sessionDetail: &storage.SessionRecord{
+			ID:       "session-1",
+			Persona:  "default",
+			Title:    "chat",
+			Metadata: string(metadata),
+		},
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/session-1", nil)
+	req.SetPathValue("id", "session-1")
+	rec := httptest.NewRecorder()
+
+	handler.HandleGetSession(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		ContextStats *contextutil.ContextStats `json:"context_stats"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal response: %v", err)
+	}
+	if body.ContextStats == nil {
+		t.Fatalf("body = %s, want context_stats", rec.Body.String())
+	}
+	if *body.ContextStats != stats {
+		t.Fatalf("context_stats = %#v, want %#v", body.ContextStats, stats)
 	}
 }
 

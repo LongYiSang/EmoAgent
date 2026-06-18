@@ -1,8 +1,11 @@
 import { classNames } from '../../shared/lib/classNames';
+import type { ContextStats } from '../protocol/wsTypes';
+import { contextStatsDisplayModel } from './contextStatsDisplay';
 
 export function ConversationHeader({
   subtitle,
   status,
+  contextStats,
   memoryStatusVisible,
   hasSession,
   onToggleSidebar,
@@ -11,12 +14,14 @@ export function ConversationHeader({
 }: {
   subtitle: string;
   status: string;
+  contextStats?: ContextStats;
   memoryStatusVisible: boolean;
   hasSession: boolean;
   onToggleSidebar: () => void;
   onToggleMemory: () => void;
   onScanMemory: () => void;
 }) {
+  const contextModel = contextStats ? contextStatsDisplayModel(contextStats) : null;
   return (
     <header className="conv-top">
       <button className="btn ghost mobile-toggle" id="toggle-sidebar" type="button" onClick={onToggleSidebar}>会话</button>
@@ -26,6 +31,15 @@ export function ConversationHeader({
       </div>
       <div className="conv-actions">
         <span className="status-chip" id="status"><span className="dot" />{status}</span>
+        {contextModel ? (
+          <span className="context-chip" title={contextModel.title} aria-label={`${contextModel.caption} ${contextModel.label}`}>
+            <span>{contextModel.caption}</span>
+            <strong>{contextModel.label}</strong>
+            <span className="context-chip-meter" aria-hidden="true">
+              <span style={{ width: `${contextModel.percent}%` }} />
+            </span>
+          </span>
+        ) : null}
         <button
           className={classNames('btn ghost', memoryStatusVisible && 'active')}
           id="memory-status-toggle"

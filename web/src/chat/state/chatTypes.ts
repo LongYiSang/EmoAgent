@@ -1,6 +1,6 @@
 import type { AnyRecord } from '../../shared/lib/api';
 import type { MessageDisplayPart, MessageRecord, SessionSummary } from '../protocol/sessionApi';
-import type { ApprovalRequest, ContentPart, ReasoningActivity, ToolActivity } from '../protocol/wsTypes';
+import type { ApprovalRequest, ContentPart, ContextStats, ReasoningActivity, ToolActivity } from '../protocol/wsTypes';
 import type { MemoryJob, MemorySegment } from '../protocol/memoryApi';
 
 export type MessageStatus = 'sent' | 'pending' | 'failed';
@@ -28,13 +28,15 @@ export type ChatState = {
   memoryStatusVisible: boolean;
   timeline: TimelineItem[];
   pendingAssistantId: string;
+  contextStats?: ContextStats;
 };
 
 export type ChatAction =
   | { type: 'SET_STATUS'; status: string }
   | { type: 'SET_CONNECTED'; connected: boolean }
   | { type: 'SET_SENDING'; sending: boolean }
-  | { type: 'SET_CONTEXT'; sessionID?: string; personaKey?: string }
+  | { type: 'SET_CONTEXT'; sessionID?: string; personaKey?: string; contextStats?: ContextStats | null }
+  | { type: 'SET_CONTEXT_STATS'; stats?: ContextStats | null }
   | { type: 'SET_SESSIONS'; sessions: SessionSummary[] }
   | { type: 'SET_MEMORY_STATUS'; segments: MemorySegment[]; jobs: MemoryJob[] }
   | { type: 'SET_MEMORY_VISIBLE'; visible: boolean }

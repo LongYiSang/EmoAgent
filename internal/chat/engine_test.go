@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/longyisang/emoagent/internal/config"
+	contextutil "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/progress"
 	"github.com/longyisang/emoagent/internal/promptcenter"
@@ -62,6 +63,26 @@ func (f *fakeLLMClient) ChatStream(_ context.Context, req llm.ChatRequest, cb ll
 		cb(llm.StreamEvent{Done: true})
 	}
 	return f.response, f.err
+}
+
+func contextStatsEvents(t *testing.T, events []WSMessage) []contextutil.ContextStats {
+	t.Helper()
+	var stats []contextutil.ContextStats
+	for _, event := range events {
+		if event.Type != "context_stats" {
+			continue
+		}
+		payload, err := json.Marshal(event.Payload)
+		if err != nil {
+			t.Fatalf("Marshal(context_stats payload): %v", err)
+		}
+		var stat contextutil.ContextStats
+		if err := json.Unmarshal(payload, &stat); err != nil {
+			t.Fatalf("Unmarshal(context_stats payload): %v; raw=%s", err, payload)
+		}
+		stats = append(stats, stat)
+	}
+	return stats
 }
 
 type fakeMemoryBridge struct {
@@ -1208,7 +1229,9 @@ func TestEngineStreamsReasoningEventsAndPersistsMetadata(t *testing.T) {
 
 	var timeline []string
 	ctx := withWSWriter(context.Background(), func(msg WSMessage) {
-		timeline = append(timeline, msg.Type)
+		if msg.Type != "context_stats" {
+			timeline = append(timeline, msg.Type)
+		}
 		if msg.Reasoning != nil && msg.Reasoning.Content != "" {
 			timeline = append(timeline, "reasoning:"+msg.Reasoning.Content)
 		}
@@ -1294,7 +1317,9 @@ func TestEngineEmitsOneShotReasoningWhenOnlyFinalResponseHasReasoning(t *testing
 
 	var timeline []string
 	ctx := withWSWriter(context.Background(), func(msg WSMessage) {
-		timeline = append(timeline, msg.Type)
+		if msg.Type != "context_stats" {
+			timeline = append(timeline, msg.Type)
+		}
 		if msg.Reasoning != nil && msg.Reasoning.Content != "" {
 			timeline = append(timeline, "reasoning:"+msg.Reasoning.Content)
 		}
@@ -1529,6 +1554,57 @@ func TestEngineSendMessageUsesAssemblerInsteadOfRecentMessagesOnly(t *testing.T)
 	}
 	if fakeLLM.lastRequest.Messages[1].Content != "latest user" {
 		t.Fatalf("Messages[1] = %#v, want latest user last", fakeLLM.lastRequest.Messages[1])
+	}
+}
+
+func TestEngineSendMessageEmitsAndPersistsContextStats(t *testing.T) {
+	fakeLLM := &fakeLLMClient{
+		response: &llm.ChatResponse{
+			ID:         "resp-1",
+			Content:    "ok",
+			StopReason: "end_turn",
+			Usage:      llm.Usage{InputTokens: 321, OutputTokens: 45},
+		},
+	}
+	engine, db, _ := newTestEngine(t, fakeLLM)
+	ctx := context.Background()
+	sessionID, err := engine.StartSession(ctx, "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	var events []WSMessage
+	wsCtx := withWSWriter(ctx, func(msg WSMessage) {
+		events = append(events, msg)
+	})
+	persona := &config.Persona{Name: "default", SystemPrompt: "system"}
+	if _, err := engine.SendMessage(wsCtx, sessionID, persona, "hello", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	stats := contextStatsEvents(t, events)
+	if len(stats) != 2 {
+		t.Fatalf("context stats events = %#v, want estimate and provider_usage events", stats)
+	}
+	if stats[0].Source != "estimate" || stats[0].EstimatedInputTokens == 0 {
+		t.Fatalf("estimate stats = %#v, want estimated input tokens", stats[0])
+	}
+	if stats[0].SessionID != sessionID || stats[0].Model != "test-model" || stats[0].ContextLimitTokens != 24000 {
+		t.Fatalf("estimate stats = %#v, want session/model/context limit populated", stats[0])
+	}
+	if stats[1].Source != "provider_usage" || stats[1].ProviderInputTokens != 321 || stats[1].ProviderOutputTokens != 45 {
+		t.Fatalf("provider stats = %#v, want provider usage merged", stats[1])
+	}
+
+	state, err := contextutil.LoadSessionState(ctx, db, sessionID, engine.contextCfg)
+	if err != nil {
+		t.Fatalf("LoadSessionState: %v", err)
+	}
+	if state.LastContextStats == nil {
+		t.Fatal("LastContextStats is nil, want persisted provider stats")
+	}
+	if state.LastContextStats.Source != "provider_usage" || state.LastContextStats.ProviderInputTokens != 321 {
+		t.Fatalf("LastContextStats = %#v, want provider usage persisted", state.LastContextStats)
 	}
 }
 
@@ -1851,6 +1927,9 @@ func TestEngineForcedOutboundEmitsToolEventsWhenRealtimeStreamingDisabled(t *tes
 	}
 	var types []string
 	for _, event := range events {
+		if event.Type == "context_stats" {
+			continue
+		}
 		types = append(types, event.Type)
 	}
 	want := []string{turn.EventToolCallStart, turn.EventToolCallEnd}
@@ -2140,6 +2219,86 @@ func TestEngineToolLoopSnipsLargeToolResult(t *testing.T) {
 	}
 	if strings.Contains(last.Content, strings.Repeat("x", 1000)) {
 		t.Fatal("tool result content still contains raw payload")
+	}
+}
+
+func TestEngineToolLoopContextStatsUseSnippedToolResultRequest(t *testing.T) {
+	mockLLM := &toolLoopLLMClient{}
+
+	registry := tool.NewRegistry()
+	registry.Register(tool.Spec{
+		Name:        "get_current_time",
+		Description: "Get current time",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+		Scope:       tool.ScopeBoth,
+		Permission:  tool.PermReadOnly,
+	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{"body":"` + strings.Repeat("x", 20000) + `"}`), nil
+	})
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chat.db")
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	db, err := storage.Open(path, logger)
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, logger)
+	engine := NewEngine(EngineConfig{
+		LLM:         mockLLM,
+		DB:          db,
+		Logger:      logger,
+		Model:       "test-model",
+		MaxTokens:   256,
+		Temperature: 0.2,
+		ContextConfig: config.ContextConfig{
+			InputBudgetTokens:    24000,
+			SoftCompactRatio:     0.75,
+			HardCompactRatio:     0.92,
+			ReserveOutputTokens:  4096,
+			KeepRecentUserTurns:  6,
+			ToolResultSoftTokens: 10,
+			ToolResultHardTokens: 20,
+		},
+		Provider:   "openai",
+		Registry:   registry,
+		Dispatcher: dispatcher,
+	})
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	var events []WSMessage
+	ctx := withWSWriter(context.Background(), func(msg WSMessage) {
+		events = append(events, msg)
+	})
+	persona := &config.Persona{Name: "default", SystemPrompt: "You are warm."}
+	if _, err := engine.SendMessage(ctx, sessionID, persona, "What time is it?", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if len(mockLLM.requests) != 2 {
+		t.Fatalf("len(requests) = %d, want 2", len(mockLLM.requests))
+	}
+
+	stats := contextStatsEvents(t, events)
+	if len(stats) != 2 {
+		t.Fatalf("context stats events = %#v, want one event before each tool loop request", stats)
+	}
+	secondReq := mockLLM.requests[1]
+	if stats[1].Round != 1 || stats[1].EstimatedInputTokens != contextutil.EstimateRequestTokens(secondReq) {
+		t.Fatalf("second stats = %#v, want estimate from second request", stats[1])
+	}
+	last := secondReq.Messages[len(secondReq.Messages)-1]
+	if !strings.Contains(last.Content, `"is_truncated":true`) {
+		t.Fatalf("second request tool result = %q, want truncated digest JSON", last.Content)
+	}
+	if strings.Contains(last.Content, strings.Repeat("x", 1000)) {
+		t.Fatal("second request still contains raw tool result payload")
 	}
 }
 
@@ -2438,6 +2597,66 @@ func TestReactiveCompactRetriesOnceOnOverflow(t *testing.T) {
 	}
 	if len(client.requests) != 2 {
 		t.Fatalf("len(requests) = %d, want 2", len(client.requests))
+	}
+}
+
+func TestReactiveCompactRetryEmitsStatsForCompactedRequest(t *testing.T) {
+	client := &reactiveRetryLLMClient{
+		errs: []error{
+			&llm.Error{Kind: llm.ErrorKindContextOverflow, Provider: "openai", Operation: "chat_stream", StatusCode: 400, Message: "prompt too long"},
+		},
+		response: &llm.ChatResponse{
+			ID:         "resp-1",
+			Content:    "ok",
+			StopReason: "end_turn",
+			Usage:      llm.Usage{InputTokens: 99, OutputTokens: 7},
+		},
+	}
+	engine, db, _ := newTestEngine(t, client)
+	engine.contextCfg.KeepRecentUserTurns = 1
+	engine.summaryLLM = &fakeLLMClient{
+		chatResponse: &llm.ChatResponse{ID: "summary-1", Model: "summary-model", Content: engineSummaryContent("summary")},
+	}
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	for _, msg := range []struct {
+		id      string
+		role    string
+		content string
+	}{
+		{id: "old-user", role: "user", content: strings.Repeat("old user ", 400)},
+		{id: "old-assistant", role: "assistant", content: strings.Repeat("old assistant ", 400)},
+	} {
+		if err := db.AddMessage(context.Background(), msg.id, sessionID, msg.role, msg.content); err != nil {
+			t.Fatalf("AddMessage(%s): %v", msg.id, err)
+		}
+	}
+
+	var events []WSMessage
+	ctx := withWSWriter(context.Background(), func(msg WSMessage) {
+		events = append(events, msg)
+	})
+	persona := &config.Persona{Name: "default", SystemPrompt: "system"}
+	if _, err := engine.SendMessage(ctx, sessionID, persona, "latest user", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	stats := contextStatsEvents(t, events)
+	if len(stats) != 3 {
+		t.Fatalf("context stats events = %#v, want first estimate, compacted retry estimate, provider usage", stats)
+	}
+	retryStats := stats[1]
+	if retryStats.Source != "reactive_compacted" || retryStats.CompactReason != "reactive_overflow" {
+		t.Fatalf("retry stats = %#v, want reactive compact marker", retryStats)
+	}
+	if retryStats.EstimatedInputTokens != contextutil.EstimateRequestTokens(client.requests[1]) {
+		t.Fatalf("retry estimate = %d, want estimate from retry request %d", retryStats.EstimatedInputTokens, contextutil.EstimateRequestTokens(client.requests[1]))
+	}
+	if stats[2].Source != "provider_usage" || stats[2].ProviderInputTokens != 99 {
+		t.Fatalf("provider stats = %#v, want usage merged into compacted stats", stats[2])
 	}
 }
 

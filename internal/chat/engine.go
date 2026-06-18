@@ -596,6 +596,32 @@ func (r *reasoningRoundTracker) record(content string) {
 	})
 }
 
+func contextStatsPayload(stats contextutil.ContextStats) map[string]any {
+	data, err := json.Marshal(stats)
+	if err != nil {
+		return nil
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil
+	}
+	return payload
+}
+
+func (e *Engine) emitAndPersistContextStats(ctx context.Context, sessionID string, state *contextutil.ContextState, writer func(WSMessage), stats contextutil.ContextStats) {
+	if writer != nil {
+		writer(WSMessage{Type: "context_stats", Payload: contextStatsPayload(stats)})
+	}
+	if state == nil {
+		return
+	}
+	statsCopy := stats
+	state.LastContextStats = &statsCopy
+	if err := contextutil.UpdateSessionContextState(ctx, e.db, sessionID, *state); err != nil {
+		e.logger.Warn("failed to persist session context stats", "session", sessionID, "error", err)
+	}
+}
+
 func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config.Persona, cb func(delta string), opts turnOptions) (reply string, err error) {
 	e.mu.RLock()
 	client := e.llm
@@ -886,10 +912,26 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	var assistantContent string
 	var visibleBuilder strings.Builder
 	var thinkingBlocks []thinkingBlockMetadata
+	contextStatsSource := "estimate"
+	contextStatsCompactReason := ""
 	for round := 0; ; round++ {
 		var roundDeltas []string
 		roundStarted := time.Now()
 		reasoning := newReasoningRoundTracker("reasoning-"+uuid.NewString(), providerName, model, roundStarted, rawWriter, &thinkingBlocks)
+		currentStats := contextutil.BuildContextStats(contextutil.ContextStatsInput{
+			SessionID:     sessionID,
+			TurnID:        memoryAnchor.turnID,
+			RequestID:     requestID,
+			ProviderID:    providerID,
+			Round:         round,
+			Request:       req,
+			RawHistory:    history,
+			ContextConfig: contextCfg,
+			CompactReason: contextStatsCompactReason,
+			Source:        contextStatsSource,
+			UpdatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+		})
+		e.emitAndPersistContextStats(ctx, sessionID, state, rawWriter, currentStats)
 		resp, err = client.ChatStream(ctx, req, func(event llm.StreamEvent) {
 			if event.ReasoningContent != "" {
 				reasoning.delta(event.ReasoningContent)
@@ -929,6 +971,8 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 				messages = append([]llm.Message(nil), compacted...)
 				req.Messages = messages
 				reactiveRetryUsed = true
+				contextStatsCompactReason = report.CompactReason
+				contextStatsSource = "reactive_compacted"
 				round--
 				continue
 			}
@@ -940,6 +984,13 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 			return "", err
 		}
 		reasoning.complete(resp.ReasoningContent)
+		if resp.Usage.InputTokens > 0 || resp.Usage.OutputTokens > 0 {
+			currentStats.ProviderInputTokens = resp.Usage.InputTokens
+			currentStats.ProviderOutputTokens = resp.Usage.OutputTokens
+			currentStats.Source = "provider_usage"
+			currentStats.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+			e.emitAndPersistContextStats(ctx, sessionID, state, rawWriter, currentStats)
+		}
 
 		if resp.StopReason != "tool_use" {
 			if realtimeStreaming {

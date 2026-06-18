@@ -16,6 +16,7 @@ import (
 	"github.com/longyisang/emoagent/internal/apperrors"
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/configcenter"
+	contextutil "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/media"
 	"github.com/longyisang/emoagent/internal/memoryhost"
@@ -819,14 +820,31 @@ func (h *APIHandler) HandleGetSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	response := map[string]interface{}{
 		"id":         session.ID,
 		"persona":    session.Persona,
 		"title":      session.Title,
 		"created_at": session.CreatedAt,
 		"updated_at": session.UpdatedAt,
 		"messages":   renderedMessages,
-	})
+	}
+	if stats := contextStatsFromSessionMetadata(session.Metadata); stats != nil {
+		response["context_stats"] = stats
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func contextStatsFromSessionMetadata(metadata string) *contextutil.ContextStats {
+	if strings.TrimSpace(metadata) == "" {
+		return nil
+	}
+	var state struct {
+		LastContextStats *contextutil.ContextStats `json:"last_context_stats"`
+	}
+	if err := json.Unmarshal([]byte(metadata), &state); err != nil {
+		return nil
+	}
+	return state.LastContextStats
 }
 
 func (h *APIHandler) HandleGetSessionMedia(w http.ResponseWriter, r *http.Request) {

@@ -34,7 +34,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ...state,
         currentSessionId: action.sessionID ?? state.currentSessionId,
         currentPersonaKey: action.personaKey ?? state.currentPersonaKey,
+        contextStats: action.contextStats === undefined ? (action.sessionID === '' ? undefined : state.contextStats) : action.contextStats ?? undefined,
       };
+    case 'SET_CONTEXT_STATS':
+      return { ...state, contextStats: action.stats ?? undefined };
     case 'SET_SESSIONS':
       return { ...state, sessions: action.sessions };
     case 'SET_MEMORY_STATUS':
@@ -44,7 +47,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case 'SET_HISTORY':
       return { ...state, timeline: historyToTimeline(action.messages), pendingAssistantId: '' };
     case 'CLEAR_TIMELINE':
-      return { ...state, timeline: [], approvals: [], pendingAssistantId: '' };
+      return { ...state, timeline: [], approvals: [], pendingAssistantId: '', contextStats: undefined };
     case 'ADD_MESSAGE': {
       const item: TimelineItem = {
         kind: 'message',
