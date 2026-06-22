@@ -56,6 +56,7 @@ type ApprovalKind string
 const (
 	ApprovalKindDestructiveWrite ApprovalKind = "destructive_write"
 	ApprovalKindSensitiveRead    ApprovalKind = "sensitive_read"
+	ApprovalKindPluginInvocation ApprovalKind = "plugin_tool_invocation"
 )
 
 type ApprovalRequirement struct {

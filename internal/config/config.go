@@ -635,6 +635,7 @@ type PluginRuntimeConfig struct {
 	IdleTimeoutSeconds          int     `yaml:"idle_timeout_seconds" json:"idle_timeout_seconds"`
 	CrashBackoffInitialSeconds  int     `yaml:"crash_backoff_initial_seconds" json:"crash_backoff_initial_seconds"`
 	CrashBackoffMaxSeconds      int     `yaml:"crash_backoff_max_seconds" json:"crash_backoff_max_seconds"`
+	CrashQuarantineThreshold    int     `yaml:"crash_quarantine_threshold" json:"crash_quarantine_threshold"`
 	MaxStderrBytes              int     `yaml:"max_stderr_bytes" json:"max_stderr_bytes"`
 	MaxProcesses                int     `yaml:"max_processes" json:"max_processes"`
 	MemoryMB                    int     `yaml:"memory_mb" json:"memory_mb"`
@@ -737,6 +738,7 @@ func (c *PluginRuntimeConfig) UnmarshalYAML(value *yaml.Node) error {
 		"idle_timeout_seconds":           {},
 		"crash_backoff_initial_seconds":  {},
 		"crash_backoff_max_seconds":      {},
+		"crash_quarantine_threshold":     {},
 		"max_stderr_bytes":               {},
 		"max_processes":                  {},
 		"memory_mb":                      {},
@@ -924,6 +926,9 @@ func (c *PluginRuntimeConfig) applyDefaults() {
 	if c.CrashBackoffMaxSeconds == 0 {
 		c.CrashBackoffMaxSeconds = 300
 	}
+	if c.CrashQuarantineThreshold == 0 {
+		c.CrashQuarantineThreshold = 5
+	}
 	if c.MaxStderrBytes == 0 {
 		c.MaxStderrBytes = 262144
 	}
@@ -1013,6 +1018,9 @@ func (c PluginsConfig) Validate(turnPipeline TurnPipelineConfig) error {
 	}
 	if c.Runtime.CrashBackoffMaxSeconds < c.Runtime.CrashBackoffInitialSeconds {
 		return fmt.Errorf("runtime.crash_backoff_max_seconds must be >= crash_backoff_initial_seconds")
+	}
+	if c.Runtime.CrashQuarantineThreshold <= 0 {
+		return fmt.Errorf("runtime.crash_quarantine_threshold must be > 0")
 	}
 	if c.Runtime.MaxStderrBytes <= 0 {
 		return fmt.Errorf("runtime.max_stderr_bytes must be > 0")

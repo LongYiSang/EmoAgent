@@ -3,11 +3,14 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -119,6 +122,423 @@ func TestRuntimeSupervisorRejectsInvokeWhenRunningPluginBecomesDisabled(t *testi
 	}
 }
 
+func TestRuntimeSupervisorConcurrentEnsureReadyStartsOneProcess(t *testing.T) {
+	python := findPythonForTest(t)
+	startLog := filepath.Join(t.TempDir(), "starts.log")
+	store, manifest := writeProcessPluginPackage(t, concurrentStartPythonPluginSource())
+	supervisor := NewRuntimeSupervisor(store, config.PluginRuntimeConfig{
+		ProcessEnabled:    true,
+		PythonExecutable:  python,
+		StartupTimeoutMS:  3000,
+		ShutdownTimeoutMS: 1000,
+		MaxStderrBytes:    8192,
+	}, nil)
+	supervisor.SetAdditionalEnvVars([]string{
+		"EMO_TEST_START_LOG=" + startLog,
+		"EMO_TEST_INIT_DELAY_MS=300",
+		"EMO_TEST_AUTO_EXIT_MS=5000",
+	})
+	supervisor.AddPlugin(manifest)
+	t.Cleanup(func() { _ = supervisor.StopAll(context.Background()) })
+
+	const callers = 20
+	start := make(chan struct{})
+	runtimes := make(chan *ProcessRuntime, callers)
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			runtime, err := supervisor.EnsureReady(context.Background(), manifest.ID)
+			runtimes <- runtime
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(runtimes)
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("EnsureReady: %v", err)
+		}
+	}
+	uniqueRuntimePIDs := map[int]struct{}{}
+	for runtime := range runtimes {
+		if runtime == nil {
+			t.Fatal("runtime = nil")
+		}
+		uniqueRuntimePIDs[runtime.PID()] = struct{}{}
+	}
+	if len(uniqueRuntimePIDs) != 1 {
+		t.Fatalf("returned runtime pids = %#v, want one shared runtime", uniqueRuntimePIDs)
+	}
+	if got := uniqueStartLogCount(t, startLog); got != 1 {
+		t.Fatalf("process starts = %d, want 1", got)
+	}
+}
+
+func TestRuntimeSupervisorConcurrentEnsureReadyStartFailureSharesError(t *testing.T) {
+	python := findPythonForTest(t)
+	startLog := filepath.Join(t.TempDir(), "starts.log")
+	store, manifest := writeProcessPluginPackage(t, failingInitializePythonPluginSource())
+	supervisor := NewRuntimeSupervisor(store, config.PluginRuntimeConfig{
+		ProcessEnabled:    true,
+		PythonExecutable:  python,
+		StartupTimeoutMS:  3000,
+		ShutdownTimeoutMS: 1000,
+		MaxStderrBytes:    8192,
+	}, nil)
+	supervisor.SetAdditionalEnvVars([]string{
+		"EMO_TEST_START_LOG=" + startLog,
+		"EMO_TEST_INIT_DELAY_MS=300",
+		"EMO_TEST_INIT_ERROR=init failed once",
+	})
+	supervisor.AddPlugin(manifest)
+
+	const callers = 20
+	start := make(chan struct{})
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := supervisor.EnsureReady(context.Background(), manifest.ID)
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	var firstErr string
+	for err := range errs {
+		if err == nil {
+			t.Fatal("EnsureReady error = nil, want initialize error")
+		}
+		if firstErr == "" {
+			firstErr = err.Error()
+		} else if err.Error() != firstErr {
+			t.Fatalf("EnsureReady error = %q, want shared %q", err.Error(), firstErr)
+		}
+	}
+	if !strings.Contains(firstErr, "init failed once") {
+		t.Fatalf("EnsureReady error = %q, want init failed once", firstErr)
+	}
+	if got := uniqueStartLogCount(t, startLog); got != 1 {
+		t.Fatalf("process starts = %d, want 1", got)
+	}
+}
+
+func TestRuntimeSupervisorStopConcurrentStartDoesNotAllowOldGenerationToOverwriteNewRuntime(t *testing.T) {
+	python := findPythonForTest(t)
+	root := t.TempDir()
+	startLog := filepath.Join(root, "starts.log")
+	v1Started := filepath.Join(root, "v1-started")
+	releaseV1 := filepath.Join(root, "release-v1")
+	store, v1 := writeProcessPluginPackage(t, gatedInitializePythonPluginSource())
+	v2 := writeProcessPluginPackageVersion(t, store, v1, "0.2.0", gatedInitializePythonPluginSource())
+	supervisor := NewRuntimeSupervisor(store, config.PluginRuntimeConfig{
+		ProcessEnabled:    true,
+		PythonExecutable:  python,
+		StartupTimeoutMS:  3000,
+		ShutdownTimeoutMS: 1000,
+		MaxStderrBytes:    8192,
+	}, nil)
+	supervisor.SetAdditionalEnvVars([]string{
+		"EMO_TEST_START_LOG=" + startLog,
+		"EMO_TEST_V1_STARTED=" + v1Started,
+		"EMO_TEST_RELEASE_V1=" + releaseV1,
+		"EMO_TEST_AUTO_EXIT_MS=5000",
+	})
+	supervisor.AddPlugin(v1)
+	t.Cleanup(func() { _ = supervisor.StopAll(context.Background()) })
+
+	v1Done := make(chan error, 1)
+	go func() {
+		_, err := supervisor.EnsureReady(context.Background(), v1.ID)
+		v1Done <- err
+	}()
+	waitForFile(t, v1Started)
+
+	supervisor.AddPlugin(v2)
+	if err := supervisor.Stop(context.Background(), v1.ID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	v2Runtime, err := supervisor.EnsureReady(context.Background(), v2.ID)
+	if err != nil {
+		t.Fatalf("EnsureReady v2: %v", err)
+	}
+	if err := os.WriteFile(releaseV1, []byte("ok"), 0o644); err != nil {
+		t.Fatalf("release v1: %v", err)
+	}
+	select {
+	case <-v1Done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("v1 EnsureReady did not return")
+	}
+
+	status := supervisor.Status(v2.ID)
+	if status.Version != v2.Version || status.PID != v2Runtime.PID() {
+		t.Fatalf("status = %#v, want v2 runtime pid %d", status, v2Runtime.PID())
+	}
+}
+
+func TestRuntimeSupervisorConcurrentHookAndToolFirstUseStartsOneProcess(t *testing.T) {
+	python := findPythonForTest(t)
+	startLog := filepath.Join(t.TempDir(), "starts.log")
+	store, manifest := writeProcessPluginPackage(t, concurrentStartPythonPluginSource())
+	supervisor := NewRuntimeSupervisor(store, config.PluginRuntimeConfig{
+		ProcessEnabled:    true,
+		PythonExecutable:  python,
+		StartupTimeoutMS:  3000,
+		ShutdownTimeoutMS: 1000,
+		MaxStderrBytes:    8192,
+	}, nil)
+	supervisor.SetAdditionalEnvVars([]string{
+		"EMO_TEST_START_LOG=" + startLog,
+		"EMO_TEST_INIT_DELAY_MS=300",
+		"EMO_TEST_AUTO_EXIT_MS=5000",
+	})
+	supervisor.AddPlugin(manifest)
+	t.Cleanup(func() { _ = supervisor.StopAll(context.Background()) })
+
+	start := make(chan struct{})
+	hookErr := make(chan error, 1)
+	toolErr := make(chan error, 1)
+	go func() {
+		<-start
+		result, err := supervisor.InvokeHook(context.Background(), manifest.ID, HookAfterTurnEnd, HookContext{})
+		if err == nil && result.Annotations["hook"] != "ok" {
+			err = fmt.Errorf("hook annotations = %#v, want hook ok", result.Annotations)
+		}
+		hookErr <- err
+	}()
+	go func() {
+		<-start
+		raw, err := supervisor.InvokeTool(context.Background(), manifest.ID, "echo", json.RawMessage(`{"text":"hello"}`))
+		if err == nil && !strings.Contains(string(raw), "hello") {
+			err = fmt.Errorf("tool raw = %s, want hello", raw)
+		}
+		toolErr <- err
+	}()
+	close(start)
+
+	if err := <-hookErr; err != nil {
+		t.Fatalf("InvokeHook: %v", err)
+	}
+	if err := <-toolErr; err != nil {
+		t.Fatalf("InvokeTool: %v", err)
+	}
+	if got := uniqueStartLogCount(t, startLog); got != 1 {
+		t.Fatalf("process starts = %d, want 1", got)
+	}
+}
+
+func TestRuntimeSupervisorIdleReaperStopsIdleRuntimeAfterTimeout(t *testing.T) {
+	python := findPythonForTest(t)
+	now := time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC)
+	store, manifest := writeProcessPluginPackage(t, normalPythonPluginSource())
+	supervisor := NewRuntimeSupervisor(store, config.PluginRuntimeConfig{
+		ProcessEnabled:             true,
+		PythonExecutable:           python,
+		StartupTimeoutMS:           3000,
+		ShutdownTimeoutMS:          1000,
+		IdleTimeoutSeconds:         10,
+		MaxStderrBytes:             8192,
+		CrashBackoffInitialSeconds: 1,
+		CrashBackoffMaxSeconds:     2,
+		CrashQuarantineThreshold:   5,
+	}, nil)
+	supervisor.now = func() time.Time { return now }
+	supervisor.AddPlugin(manifest)
+	t.Cleanup(func() { _ = supervisor.StopAll(context.Background()) })
+
+	if _, err := supervisor.InvokeHook(t.Context(), manifest.ID, HookAfterTurnEnd, HookContext{}); err != nil {
+		t.Fatalf("InvokeHook: %v", err)
+	}
+	running := supervisor.Status(manifest.ID)
+	if running.Status != "running" || running.PID == 0 || running.LastUsedAt == "" {
+		t.Fatalf("running status = %#v, want running pid and last_used_at", running)
+	}
+
+	now = now.Add(9 * time.Second)
+	supervisor.reapIdleRuntimes(context.Background())
+	if status := supervisor.Status(manifest.ID); status.Status != "running" || status.PID != running.PID {
+		t.Fatalf("status before idle timeout = %#v, want running pid %d", status, running.PID)
+	}
+
+	now = now.Add(1 * time.Second)
+	supervisor.reapIdleRuntimes(context.Background())
+	if status := supervisor.Status(manifest.ID); status.Status != "stopped" || status.PID != 0 {
+		t.Fatalf("status after idle timeout = %#v, want stopped", status)
+	}
+}
+
+func TestRuntimeSupervisorIdleReaperSkipsInFlightRuntime(t *testing.T) {
+	python := findPythonForTest(t)
+	now := time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	started := filepath.Join(root, "hook-started")
+	release := filepath.Join(root, "release-hook")
+	store, manifest := writeProcessPluginPackage(t, gatedHookPythonPluginSource())
+	supervisor := NewRuntimeSupervisor(store, config.PluginRuntimeConfig{
+		ProcessEnabled:             true,
+		PythonExecutable:           python,
+		StartupTimeoutMS:           3000,
+		ShutdownTimeoutMS:          1000,
+		IdleTimeoutSeconds:         1,
+		MaxStderrBytes:             8192,
+		CrashBackoffInitialSeconds: 1,
+		CrashBackoffMaxSeconds:     2,
+		CrashQuarantineThreshold:   5,
+	}, nil)
+	supervisor.now = func() time.Time { return now }
+	supervisor.SetAdditionalEnvVars([]string{
+		"EMO_TEST_HOOK_STARTED=" + started,
+		"EMO_TEST_RELEASE_HOOK=" + release,
+	})
+	supervisor.AddPlugin(manifest)
+	t.Cleanup(func() { _ = supervisor.StopAll(context.Background()) })
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := supervisor.InvokeHook(context.Background(), manifest.ID, HookAfterTurnEnd, HookContext{})
+		errCh <- err
+	}()
+	waitForFile(t, started)
+
+	now = now.Add(2 * time.Second)
+	supervisor.reapIdleRuntimes(context.Background())
+	if status := supervisor.Status(manifest.ID); status.Status != "running" || status.InFlight != 1 {
+		t.Fatalf("status during in-flight hook = %#v, want running in_flight=1", status)
+	}
+
+	if err := os.WriteFile(release, []byte("ok"), 0o644); err != nil {
+		t.Fatalf("release hook: %v", err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("InvokeHook: %v", err)
+	}
+	now = now.Add(time.Second)
+	supervisor.reapIdleRuntimes(context.Background())
+	if status := supervisor.Status(manifest.ID); status.Status != "stopped" {
+		t.Fatalf("status after in-flight hook completed = %#v, want stopped", status)
+	}
+}
+
+func TestRuntimeSupervisorStartFailureBackoffAndQuarantine(t *testing.T) {
+	python := findPythonForTest(t)
+	now := time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC)
+	startLog := filepath.Join(t.TempDir(), "starts.log")
+	store, manifest := writeProcessPluginPackage(t, failingInitializePythonPluginSource())
+	supervisor := NewRuntimeSupervisor(store, config.PluginRuntimeConfig{
+		ProcessEnabled:             true,
+		PythonExecutable:           python,
+		StartupTimeoutMS:           3000,
+		ShutdownTimeoutMS:          1000,
+		MaxStderrBytes:             8192,
+		CrashBackoffInitialSeconds: 2,
+		CrashBackoffMaxSeconds:     5,
+		CrashQuarantineThreshold:   2,
+	}, nil)
+	supervisor.now = func() time.Time { return now }
+	supervisor.SetAdditionalEnvVars([]string{
+		"EMO_TEST_START_LOG=" + startLog,
+		"EMO_TEST_INIT_ERROR=init failed for backoff",
+	})
+	supervisor.AddPlugin(manifest)
+
+	_, err := supervisor.EnsureReady(t.Context(), manifest.ID)
+	if err == nil || !strings.Contains(err.Error(), "init failed for backoff") {
+		t.Fatalf("EnsureReady error = %v, want init failure", err)
+	}
+	status := supervisor.Status(manifest.ID)
+	if status.Status != "backoff" || status.ConsecutiveFailures != 1 || status.NextStartAt == "" {
+		t.Fatalf("status after first failure = %#v, want backoff with next_start_at", status)
+	}
+
+	_, err = supervisor.EnsureReady(t.Context(), manifest.ID)
+	var backoffErr *RuntimeBackoffError
+	if !errors.As(err, &backoffErr) || !backoffErr.NextStartAt.Equal(now.Add(2*time.Second)) {
+		t.Fatalf("EnsureReady backoff error = %#v, want next_start_at %s", err, now.Add(2*time.Second))
+	}
+	if got := uniqueStartLogCount(t, startLog); got != 1 {
+		t.Fatalf("process starts in backoff = %d, want 1", got)
+	}
+
+	now = now.Add(2 * time.Second)
+	_, err = supervisor.EnsureReady(t.Context(), manifest.ID)
+	if err == nil || !strings.Contains(err.Error(), "init failed for backoff") {
+		t.Fatalf("EnsureReady second failure error = %v, want init failure", err)
+	}
+	status = supervisor.Status(manifest.ID)
+	if status.Status != "quarantined" || status.ConsecutiveFailures != 2 {
+		t.Fatalf("status after second failure = %#v, want quarantined", status)
+	}
+	_, err = supervisor.EnsureReady(t.Context(), manifest.ID)
+	if err == nil || !strings.Contains(err.Error(), "quarantined") {
+		t.Fatalf("EnsureReady quarantined error = %v", err)
+	}
+	if got := uniqueStartLogCount(t, startLog); got != 2 {
+		t.Fatalf("process starts after quarantine = %d, want 2", got)
+	}
+}
+
+func TestRuntimeSupervisorStableRuntimeResetsConsecutiveFailures(t *testing.T) {
+	python := findPythonForTest(t)
+	now := time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	failInit := filepath.Join(root, "fail-init")
+	crashHook := filepath.Join(root, "crash-hook")
+	if err := os.WriteFile(failInit, []byte("fail once"), 0o644); err != nil {
+		t.Fatalf("write fail marker: %v", err)
+	}
+	store, manifest := writeProcessPluginPackage(t, flakyRuntimePythonPluginSource())
+	supervisor := NewRuntimeSupervisor(store, config.PluginRuntimeConfig{
+		ProcessEnabled:             true,
+		PythonExecutable:           python,
+		StartupTimeoutMS:           3000,
+		ShutdownTimeoutMS:          1000,
+		MaxStderrBytes:             8192,
+		CrashBackoffInitialSeconds: 1,
+		CrashBackoffMaxSeconds:     5,
+		CrashQuarantineThreshold:   2,
+	}, nil)
+	supervisor.now = func() time.Time { return now }
+	supervisor.SetAdditionalEnvVars([]string{
+		"EMO_TEST_FAIL_INIT_MARKER=" + failInit,
+		"EMO_TEST_CRASH_HOOK_MARKER=" + crashHook,
+	})
+	supervisor.AddPlugin(manifest)
+	t.Cleanup(func() { _ = supervisor.StopAll(context.Background()) })
+
+	if _, err := supervisor.EnsureReady(t.Context(), manifest.ID); err == nil {
+		t.Fatal("EnsureReady error = nil, want first initialize failure")
+	}
+	now = now.Add(1 * time.Second)
+	if _, err := supervisor.EnsureReady(t.Context(), manifest.ID); err != nil {
+		t.Fatalf("EnsureReady after backoff: %v", err)
+	}
+	now = now.Add(runtimeStableResetDuration + time.Second)
+	if err := os.WriteFile(crashHook, []byte("crash"), 0o644); err != nil {
+		t.Fatalf("write crash marker: %v", err)
+	}
+	_, err := supervisor.InvokeHook(t.Context(), manifest.ID, HookAfterTurnEnd, HookContext{})
+	if err == nil {
+		t.Fatal("InvokeHook error = nil, want crash")
+	}
+	status := supervisor.Status(manifest.ID)
+	if status.Status != "backoff" || status.ConsecutiveFailures != 1 {
+		t.Fatalf("status after stable crash = %#v, want backoff with consecutive_failures reset to 1", status)
+	}
+}
+
 func TestRuntimeSupervisorAcceptsManagedPythonProcess(t *testing.T) {
 	python := findPythonForTest(t)
 	store, manifest := writeProcessPluginPackage(t, normalPythonPluginSource())
@@ -190,6 +610,7 @@ func TestRuntimeSupervisorManagedPythonUsesIsolatedHostBootstrap(t *testing.T) {
 		ShutdownTimeoutMS:       1000,
 		MaxStderrBytes:          8192,
 	}, nil)
+	supervisor.SetAdditionalEnvVars([]string{"EMO_TEST_INHERITED_PYTHONPATH=" + inheritedPythonPath})
 	supervisor.AddPlugin(manifest)
 	t.Cleanup(func() { _ = supervisor.StopAll(context.Background()) })
 
@@ -207,6 +628,35 @@ func TestRuntimeSupervisorManagedPythonUsesIsolatedHostBootstrap(t *testing.T) {
 	} {
 		if result.Annotations[key] != value {
 			t.Fatalf("annotation %s = %#v, want %#v in %#v", key, result.Annotations[key], value, result.Annotations)
+		}
+	}
+}
+
+func TestRuntimeSupervisorManagedPythonDoesNotInheritHostSensitiveEnv(t *testing.T) {
+	python := findPythonForTest(t)
+	requirePythonIsolatedSafePathSupport(t, python)
+	for _, name := range []string{"DATABASE_URL", "GITHUB_PAT", "MY_PRIVATE_VALUE", "TAVILY_API_KEY"} {
+		t.Setenv(name, "secret")
+	}
+	store, manifest := writeProcessPluginPackage(t, envLeakProbePythonPluginSource())
+	manifest.Runtime.Kind = RuntimeManagedPythonProcess
+	supervisor := NewRuntimeSupervisor(store, config.PluginRuntimeConfig{
+		ProcessEnabled:          true,
+		PrivatePythonExecutable: python,
+		StartupTimeoutMS:        3000,
+		ShutdownTimeoutMS:       1000,
+		MaxStderrBytes:          8192,
+	}, nil)
+	supervisor.AddPlugin(manifest)
+	t.Cleanup(func() { _ = supervisor.StopAll(context.Background()) })
+
+	result, err := supervisor.InvokeHook(t.Context(), manifest.ID, HookAfterTurnEnd, HookContext{})
+	if err != nil {
+		t.Fatalf("InvokeHook: %v", err)
+	}
+	for _, name := range []string{"DATABASE_URL", "GITHUB_PAT", "MY_PRIVATE_VALUE", "TAVILY_API_KEY"} {
+		if result.Annotations[name] != false {
+			t.Fatalf("%s visible to managed plugin: annotations=%#v", name, result.Annotations)
 		}
 	}
 }
@@ -682,6 +1132,37 @@ func envMap(values []string) map[string]string {
 	return out
 }
 
+func uniqueStartLogCount(t *testing.T, path string) int {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return 0
+	}
+	if err != nil {
+		t.Fatalf("read start log: %v", err)
+	}
+	unique := map[string]struct{}{}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			unique[line] = struct{}{}
+		}
+	}
+	return len(unique)
+}
+
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("file %s was not created", path)
+}
+
 func writeProcessPluginPackage(t *testing.T, source string) (*PluginStore, ManifestV2) {
 	t.Helper()
 	store, err := NewPluginStore(filepath.Join(t.TempDir(), "store"))
@@ -770,6 +1251,99 @@ hooks:
 		t.Fatalf("write main.py %s: %v", version, err)
 	}
 	return manifest
+}
+
+func concurrentStartPythonPluginSource() string {
+	return pythonRPCPrelude() + pythonConcurrentTestHelpers() + `
+def handle(method, params):
+    if method == "initialize":
+        log_start()
+        arm_auto_exit()
+        delay_ms = int_env("EMO_TEST_INIT_DELAY_MS")
+        if delay_ms > 0:
+            time.sleep(delay_ms / 1000)
+        return {"tools": [{"name": "echo", "description": "Echo input", "parameters": {"type": "object"}}]}
+    if method == "invoke_hook":
+        return {"Annotations": {"hook": "ok"}}
+    if method == "invoke_tool":
+        return {"ok": True, "input": params.get("input")}
+    if method == "shutdown":
+        send({"jsonrpc": "2.0", "id": current_id, "result": None})
+        sys.exit(0)
+    return None
+
+main(handle)
+`
+}
+
+func failingInitializePythonPluginSource() string {
+	return pythonRPCPrelude() + pythonConcurrentTestHelpers() + `
+def handle(method, params):
+    if method == "initialize":
+        log_start()
+        delay_ms = int_env("EMO_TEST_INIT_DELAY_MS")
+        if delay_ms > 0:
+            time.sleep(delay_ms / 1000)
+        raise RuntimeError(os.environ.get("EMO_TEST_INIT_ERROR", "init failed"))
+    if method == "shutdown":
+        send({"jsonrpc": "2.0", "id": current_id, "result": None})
+        sys.exit(0)
+    return None
+
+main(handle)
+`
+}
+
+func gatedInitializePythonPluginSource() string {
+	return pythonRPCPrelude() + pythonConcurrentTestHelpers() + `
+def handle(method, params):
+    if method == "initialize":
+        log_start()
+        arm_auto_exit()
+        if os.environ.get("EMO_PLUGIN_VERSION") == "0.1.0":
+            started = os.environ.get("EMO_TEST_V1_STARTED")
+            if started:
+                with open(started, "w", encoding="utf-8") as f:
+                    f.write("started")
+            release = os.environ.get("EMO_TEST_RELEASE_V1")
+            while release and not os.path.exists(release):
+                time.sleep(0.01)
+        return {"tools": []}
+    if method == "shutdown":
+        send({"jsonrpc": "2.0", "id": current_id, "result": None})
+        sys.exit(0)
+    return None
+
+main(handle)
+`
+}
+
+func pythonConcurrentTestHelpers() string {
+	return `
+import os, threading
+
+def int_env(name):
+    try:
+        return int(os.environ.get(name, "0"))
+    except ValueError:
+        return 0
+
+def log_start():
+    path = os.environ.get("EMO_TEST_START_LOG")
+    if path:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(str(os.getpid()) + "\n")
+            f.flush()
+
+def arm_auto_exit():
+    delay_ms = int_env("EMO_TEST_AUTO_EXIT_MS")
+    if delay_ms <= 0:
+        return
+    def exit_later():
+        time.sleep(delay_ms / 1000)
+        os._exit(0)
+    threading.Thread(target=exit_later, daemon=True).start()
+`
 }
 
 func findPythonForTest(t *testing.T) string {
@@ -871,6 +1445,25 @@ main(handle)
 `
 }
 
+func envLeakProbePythonPluginSource() string {
+	return pythonRPCPrelude() + `
+import os
+
+def handle(method, params):
+    if method == "initialize":
+        return {"tools": []}
+    if method == "invoke_hook":
+        names = ["DATABASE_URL", "GITHUB_PAT", "MY_PRIVATE_VALUE", "TAVILY_API_KEY"]
+        return {"Annotations": {name: os.environ.get(name) == "secret" for name in names}}
+    if method == "shutdown":
+        send({"jsonrpc": "2.0", "id": current_id, "result": None})
+        sys.exit(0)
+    return None
+
+main(handle)
+`
+}
+
 func dependencyImportPythonPluginSource() string {
 	return pythonRPCPrelude() + `
 def handle(method, params):
@@ -897,6 +1490,56 @@ def handle(method, params):
     if method == "invoke_hook":
         time.sleep(2)
         return {"Annotations": {"late": True}}
+    if method == "shutdown":
+        send({"jsonrpc": "2.0", "id": current_id, "result": None})
+        sys.exit(0)
+    return None
+
+main(handle)
+`
+}
+
+func gatedHookPythonPluginSource() string {
+	return pythonRPCPrelude() + `
+import os
+
+def handle(method, params):
+    if method == "initialize":
+        return {"tools": []}
+    if method == "invoke_hook":
+        started = os.environ.get("EMO_TEST_HOOK_STARTED")
+        if started:
+            with open(started, "w", encoding="utf-8") as f:
+                f.write("started")
+        release = os.environ.get("EMO_TEST_RELEASE_HOOK")
+        while release and not os.path.exists(release):
+            time.sleep(0.01)
+        return {"Annotations": {"hook": "done"}}
+    if method == "shutdown":
+        send({"jsonrpc": "2.0", "id": current_id, "result": None})
+        sys.exit(0)
+    return None
+
+main(handle)
+`
+}
+
+func flakyRuntimePythonPluginSource() string {
+	return pythonRPCPrelude() + `
+import os
+
+def handle(method, params):
+    if method == "initialize":
+        marker = os.environ.get("EMO_TEST_FAIL_INIT_MARKER")
+        if marker and os.path.exists(marker):
+            os.remove(marker)
+            raise RuntimeError("init failed once")
+        return {"tools": []}
+    if method == "invoke_hook":
+        marker = os.environ.get("EMO_TEST_CRASH_HOOK_MARKER")
+        if marker and os.path.exists(marker):
+            sys.exit(7)
+        return {"Annotations": {"hook": "ok"}}
     if method == "shutdown":
         send({"jsonrpc": "2.0", "id": current_id, "result": None})
         sys.exit(0)

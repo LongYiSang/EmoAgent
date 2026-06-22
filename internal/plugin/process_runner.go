@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -418,12 +419,10 @@ func (r *ProcessRuntime) StderrTail() string {
 }
 
 func buildPluginProcessEnv(base []string, cfg ProcessLaunchConfig) []string {
-	blocked := map[string]struct{}{}
 	if cfg.ManagedPython {
-		for _, name := range managedPythonBlockedEnvNames() {
-			blocked[name] = struct{}{}
-		}
+		return buildManagedPythonProcessEnv(base, cfg)
 	}
+	blocked := map[string]struct{}{}
 	for _, name := range cfg.BlockedEnvNames {
 		name = strings.ToUpper(strings.TrimSpace(name))
 		if name != "" {
@@ -458,14 +457,137 @@ func buildPluginProcessEnv(base []string, cfg ProcessLaunchConfig) []string {
 	return out
 }
 
-func managedPythonBlockedEnvNames() []string {
-	return []string{
-		"PYTHONHOME",
-		"PYTHONPATH",
-		"PYTHONSTARTUP",
-		"PYTHONUSERBASE",
-		"VIRTUAL_ENV",
+func buildManagedPythonProcessEnv(base []string, cfg ProcessLaunchConfig) []string {
+	out := make([]string, 0, 16+len(cfg.AdditionalEnvVars))
+	for _, name := range managedPythonAllowedHostEnvNames() {
+		if value, ok := lookupEnv(base, name); ok {
+			out = append(out, name+"="+value)
+		}
 	}
+	for _, prefix := range managedPythonAllowedHostEnvPrefixes() {
+		for _, item := range base {
+			name, value, ok := strings.Cut(item, "=")
+			if ok && strings.HasPrefix(strings.ToUpper(name), prefix) {
+				out = append(out, name+"="+value)
+			}
+		}
+	}
+	if path := managedPythonPath(base, cfg.PythonExecutable); path != "" {
+		out = append(out, "PATH="+path)
+	}
+	out = append(out,
+		"EMO_PLUGIN_ID="+cfg.PluginID,
+		"EMO_PLUGIN_VERSION="+cfg.Version,
+		"EMO_PLUGIN_ROOT="+cfg.WorkDir,
+		"EMO_PLUGIN_STATE_DIR="+cfg.StateDir,
+		"EMO_PLUGIN_CACHE_DIR="+cfg.CacheDir,
+		"EMO_PLUGIN_RUN_DIR="+cfg.RunDir,
+		"PYTHONUNBUFFERED=1",
+	)
+	if strings.TrimSpace(cfg.DependencyEnvDir) != "" {
+		out = append(out, "EMO_PLUGIN_DEPS_DIR="+cfg.DependencyEnvDir)
+	}
+	out = append(out, managedPythonExplicitEnv(cfg.AdditionalEnvVars)...)
+	return out
+}
+
+func managedPythonAllowedHostEnvNames() []string {
+	return []string{
+		"SystemRoot",
+		"WINDIR",
+		"ComSpec",
+		"TEMP",
+		"TMP",
+		"PATHEXT",
+		"LANG",
+		"LC_ALL",
+		"LC_CTYPE",
+		"LC_MESSAGES",
+	}
+}
+
+func managedPythonAllowedHostEnvPrefixes() []string {
+	return []string{"EMO_PLUGIN_"}
+}
+
+func managedPythonExplicitEnv(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, item := range values {
+		name, _, ok := strings.Cut(item, "=")
+		if !ok {
+			continue
+		}
+		if managedPythonControlledEnvName(name) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func managedPythonControlledEnvName(name string) bool {
+	switch strings.ToUpper(strings.TrimSpace(name)) {
+	case "PATH", "PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONUSERBASE", "VIRTUAL_ENV":
+		return true
+	default:
+		return false
+	}
+}
+
+func managedPythonPath(base []string, pythonExecutable string) string {
+	parts := []string{}
+	if dir := filepath.Dir(strings.TrimSpace(pythonExecutable)); dir != "." && dir != "" {
+		parts = append(parts, dir)
+	}
+	if runtime.GOOS == "windows" {
+		if root, ok := lookupEnv(base, "SystemRoot"); ok && strings.TrimSpace(root) != "" {
+			parts = append(parts,
+				filepath.Join(root, "System32"),
+				root,
+				filepath.Join(root, "System32", "Wbem"),
+			)
+		} else if root, ok := lookupEnv(base, "WINDIR"); ok && strings.TrimSpace(root) != "" {
+			parts = append(parts,
+				filepath.Join(root, "System32"),
+				root,
+				filepath.Join(root, "System32", "Wbem"),
+			)
+		}
+	} else {
+		parts = append(parts, "/usr/local/bin", "/usr/bin", "/bin")
+	}
+	return strings.Join(uniqueNonEmptyPaths(parts), string(os.PathListSeparator))
+}
+
+func uniqueNonEmptyPaths(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := value
+		if runtime.GOOS == "windows" {
+			key = strings.ToUpper(value)
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func lookupEnv(values []string, target string) (string, bool) {
+	for _, item := range values {
+		name, value, ok := strings.Cut(item, "=")
+		if ok && strings.EqualFold(name, target) {
+			return value, true
+		}
+	}
+	return "", false
 }
 
 func sensitiveEnvName(name string) bool {

@@ -979,6 +979,34 @@ func TestBuildToolApprovalPacket_SensitiveReadWordingAndBindingKind(t *testing.T
 	}
 }
 
+func TestBuildToolApprovalPacket_PluginInvocationWordingAndBindingKind(t *testing.T) {
+	brief := protocol.TaskBrief{
+		TaskID:          "task-plugin-invocation",
+		Goal:            "echo text",
+		PermissionScope: "read-only",
+	}
+	call := tool.Call{
+		ID:    "plugin-1",
+		Name:  "plugin.com.example.echo.echo",
+		Input: json.RawMessage(`{"text":"hello"}`),
+	}
+
+	packet := buildToolApprovalPacket(brief, approvalClassificationForCall(call, tool.ApprovalKindPluginInvocation, "third-party plugin invocation"))
+	want := "即将调用第三方 Python 插件 `com.example.echo` 的工具 `echo`。该插件作为当前用户身份下的本地代码运行。"
+	if !strings.Contains(packet.Question, want) {
+		t.Fatalf("Question = %q, want plugin invocation wording %q", packet.Question, want)
+	}
+	if strings.Contains(packet.Question, "破坏") {
+		t.Fatalf("Question = %q, should not describe plugin invocation as destructive", packet.Question)
+	}
+	if packet.ToolApprovalBinding == nil {
+		t.Fatal("ToolApprovalBinding is nil")
+	}
+	if packet.ToolApprovalBinding.ApprovalKind != string(tool.ApprovalKindPluginInvocation) {
+		t.Fatalf("ApprovalKind = %q, want %q", packet.ToolApprovalBinding.ApprovalKind, tool.ApprovalKindPluginInvocation)
+	}
+}
+
 func TestRuntime_AutoPausesOnApprovalBlockedToolFiltersSiblingToolCalls(t *testing.T) {
 	client := &scriptedLLM{
 		responses: []*llm.ChatResponse{

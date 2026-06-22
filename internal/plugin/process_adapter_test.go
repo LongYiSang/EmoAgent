@@ -26,11 +26,11 @@ func TestRegisterProcessPluginHooksAndToolsThroughExistingGates(t *testing.T) {
 	}
 	supervisor := &fakeProcessSupervisor{
 		tools: []ProcessToolSpec{{
-			Name:        "danger",
-			Description: "Dangerous test tool",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`),
+			Name:        "echo",
+			Description: "Echo test tool",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false}`),
 			Scope:       tool.ScopeBoth,
-			Permission:  tool.PermApprovedDestructive,
+			Permission:  tool.PermReadOnly,
 		}},
 	}
 	pluginRegistry := NewPluginRegistry()
@@ -47,32 +47,60 @@ func TestRegisterProcessPluginHooksAndToolsThroughExistingGates(t *testing.T) {
 	if hookResult.Annotations["process_hook"] != "called" {
 		t.Fatalf("hook annotations = %#v", hookResult.Annotations)
 	}
-	namespaced := "plugin.com.example.echo.danger"
-	if _, ok := toolRegistry.GetSpec(namespaced); !ok {
+	namespaced := "plugin.com.example.echo.echo"
+	spec, ok := toolRegistry.GetSpec(namespaced)
+	if !ok {
 		t.Fatalf("namespaced tool %q not registered", namespaced)
+	}
+	if spec.Permission != tool.PermReadOnly {
+		t.Fatalf("permission = %q, want read-only", spec.Permission)
+	}
+	if spec.ApprovalClassifier == nil {
+		t.Fatal("ApprovalClassifier is nil, want plugin invocation approval gate")
+	}
+	if len(toolRegistry.ForScope(tool.ScopeEmotion)) != 0 {
+		t.Fatalf("emotion tools = %#v, want default plugin exposure hidden from Emotion", toolRegistry.ForScope(tool.ScopeEmotion))
+	}
+	if len(toolRegistry.ForScope(tool.ScopeWork)) != 1 {
+		t.Fatalf("work tools = %#v, want default plugin exposure visible to Work", toolRegistry.ForScope(tool.ScopeWork))
 	}
 
 	dispatcher := tool.NewDispatcher(toolRegistry, tool.MinimalSchemaValidator{}, nil)
-	call := tool.Call{ID: "call-1", Name: namespaced, Input: json.RawMessage(`{"path":"target.txt"}`)}
-	result := dispatcher.Execute(t.Context(), call, tool.PermApprovedDestructive)
+	call := tool.Call{ID: "call-1", Name: namespaced, Input: json.RawMessage(`{"text":"hello"}`)}
+	classification := dispatcher.ClassifyCall(t.Context(), call, tool.PermReadOnly)
+	if classification.Action != tool.CallActionToolApprovalRequired {
+		t.Fatalf("action = %q, want tool approval", classification.Action)
+	}
+	if classification.RequiredPermission != tool.PermReadOnly {
+		t.Fatalf("required permission = %q, want read-only", classification.RequiredPermission)
+	}
+	if classification.ApprovalKind != tool.ApprovalKindPluginInvocation {
+		t.Fatalf("approval kind = %q, want %q", classification.ApprovalKind, tool.ApprovalKindPluginInvocation)
+	}
+	result := dispatcher.ExecuteClassified(t.Context(), classification, tool.PermReadOnly)
 	if !result.NeedsApproval || supervisor.toolCalls != 0 {
 		t.Fatalf("without approval result = %#v toolCalls=%d, want approval and no execution", result, supervisor.toolCalls)
 	}
-	binding, err := tool.BuildApprovalBinding(call, "approval-1", tool.ApprovalKindDestructiveWrite)
+	binding, err := tool.BuildApprovalBinding(call, "approval-1", tool.ApprovalKindPluginInvocation)
 	if err != nil {
 		t.Fatalf("BuildApprovalBinding: %v", err)
 	}
 	approvedCtx := tool.WithApproval(t.Context(), tool.ApprovalContext{
 		RequestID:           binding.RequestID,
 		ApprovalKind:        binding.ApprovalKind,
-		AllowDestructive:    true,
+		AllowToolCall:       true,
 		ToolName:            binding.ToolName,
 		NormalizedInputHash: binding.NormalizedInputHash,
 		PathDigest:          binding.PathDigest,
 	})
-	result = dispatcher.Execute(approvedCtx, call, tool.PermApprovedDestructive)
+	result = dispatcher.Execute(approvedCtx, call, tool.PermReadOnly)
 	if result.IsError || supervisor.toolCalls != 1 {
 		t.Fatalf("approved result = %#v toolCalls=%d, want execution", result, supervisor.toolCalls)
+	}
+	mutatedCall := tool.Call{ID: "call-2", Name: namespaced, Input: json.RawMessage(`{"text":"changed"}`)}
+	result = dispatcher.Execute(approvedCtx, mutatedCall, tool.PermReadOnly)
+	if !result.NeedsApproval || supervisor.toolCalls != 1 {
+		t.Fatalf("mutated input result = %#v toolCalls=%d, want re-approval without execution", result, supervisor.toolCalls)
 	}
 }
 
@@ -180,8 +208,11 @@ func (f *fakeProcessSupervisor) Tools(string) []ProcessToolSpec {
 
 func TestProcessToolSpecDefaults(t *testing.T) {
 	spec := ProcessToolSpec{Name: "echo"}.ToToolSpec("com.example.echo", "0.1.0", RuntimeManagedPythonProcess)
-	if spec.Scope != tool.ScopeWork || spec.Permission != tool.PermApprovedDestructive {
+	if spec.Scope != tool.ScopeWork || spec.Permission != tool.PermReadOnly {
 		t.Fatalf("spec defaults = %#v", spec)
+	}
+	if spec.ApprovalClassifier == nil {
+		t.Fatal("ApprovalClassifier is nil, want default plugin invocation ask policy")
 	}
 	if spec.Source.RuntimeKind != resultv2.RuntimeManagedPython {
 		t.Fatalf("runtime kind = %q, want managed_python_process", spec.Source.RuntimeKind)
@@ -214,7 +245,10 @@ func TestProcessToolSpecGetsHostDerivedUnverifiedDataOnlyLabels(t *testing.T) {
 		t.Fatalf("scope = %q, want host-derived work exposure", spec.Scope)
 	}
 	if spec.Permission != tool.PermApprovedDestructive {
-		t.Fatalf("permission = %q, want host-derived ask policy", spec.Permission)
+		t.Fatalf("permission = %q, want self-reported coarse permission", spec.Permission)
+	}
+	if spec.ApprovalClassifier == nil {
+		t.Fatal("ApprovalClassifier is nil, want host-derived ask policy")
 	}
 	labels := spec.Source.DefaultLabels
 	if labels.Executor != resultv2.ExecutorManagedPythonPlugin {
@@ -240,10 +274,55 @@ func TestProcessToolSpecSelfReportedLowerPermissionsCannotBypassHostAskPolicy(t 
 				Permission: permission,
 			}.ToToolSpec("com.example.echo", "0.1.0", RuntimeManagedPythonProcess)
 
-			if spec.Scope != tool.ScopeWork || spec.Permission != tool.PermApprovedDestructive {
-				t.Fatalf("spec = %#v, want host-derived Work + approved-destructive", spec)
+			if spec.Scope != tool.ScopeWork || spec.Permission != permission {
+				t.Fatalf("spec = %#v, want host-derived Work + self-reported coarse permission", spec)
+			}
+			if spec.ApprovalClassifier == nil {
+				t.Fatal("ApprovalClassifier is nil, want host-derived ask policy")
 			}
 		})
+	}
+}
+
+func TestProcessToolSpecInvocationPolicyAutoDoesNotAsk(t *testing.T) {
+	spec := ProcessToolSpec{
+		Name:             "echo",
+		InvocationPolicy: InvocationAuto,
+	}.ToToolSpec("com.example.echo", "0.1.0", RuntimeManagedPythonProcess)
+
+	if spec.Permission != tool.PermReadOnly {
+		t.Fatalf("permission = %q, want read-only", spec.Permission)
+	}
+	if spec.ApprovalClassifier != nil {
+		t.Fatal("ApprovalClassifier should be nil for invocation=auto")
+	}
+}
+
+func TestRegisterProcessPluginSkipsInvocationPolicyDenyTools(t *testing.T) {
+	manifest := ManifestV2{
+		SchemaVersion:   ManifestSchemaV02,
+		ID:              "com.example.echo",
+		Name:            "Echo",
+		Version:         "0.1.0",
+		EmoAgentVersion: ">=0.2.0",
+		Runtime:         ManifestV2Runtime{Kind: RuntimePythonProcess, Entry: "main.py"},
+		Access: ManifestV2Access{
+			Tier:         AccessTierRuntimeSafe,
+			Capabilities: []Capability{CapabilityToolRegister},
+		},
+	}
+	supervisor := &fakeProcessSupervisor{
+		tools: []ProcessToolSpec{{
+			Name:             "echo",
+			InvocationPolicy: InvocationDeny,
+		}},
+	}
+	toolRegistry := tool.NewRegistry()
+	if err := RegisterProcessPlugin(t.Context(), manifest, NewPluginRegistry(), toolRegistry, NewHookBus(HookBusConfig{}, nil), supervisor); err != nil {
+		t.Fatalf("RegisterProcessPlugin: %v", err)
+	}
+	if _, ok := toolRegistry.GetSpec("plugin.com.example.echo.echo"); ok {
+		t.Fatal("deny invocation tool was registered")
 	}
 }
 

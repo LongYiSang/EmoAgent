@@ -55,6 +55,9 @@ func RegisterProcessPluginWithPolicy(ctx context.Context, manifest ManifestV2, p
 		return err
 	}
 	for _, processTool := range supervisor.Tools(manifest.ID) {
+		if normalizePluginInvocationPolicy(processTool.InvocationPolicy) == InvocationDeny {
+			continue
+		}
 		spec := processTool.ToToolSpec(manifest.ID, manifest.Version, manifest.Runtime.Kind)
 		name := processTool.Name
 		if err := registrar.Tools.Register(ctx, spec, func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
@@ -87,12 +90,15 @@ func activeHookMode(mode HookMode) bool {
 
 func (s ProcessToolSpec) ToToolSpec(pluginID, version string, runtimeKind RuntimeKind) tool.Spec {
 	sourceRuntime, executor := processToolSourceRuntime(runtimeKind)
+	permission := processToolPermission(s.Permission)
+	approvalClassifier := pluginInvocationApprovalClassifier(pluginID, s.Name, s.InvocationPolicy)
 	return tool.Spec{
-		Name:        s.Name,
-		Description: s.Description,
-		Parameters:  append(json.RawMessage(nil), s.Parameters...),
-		Scope:       tool.ScopeWork,
-		Permission:  tool.PermApprovedDestructive,
+		Name:               s.Name,
+		Description:        s.Description,
+		Parameters:         append(json.RawMessage(nil), s.Parameters...),
+		Scope:              tool.ScopeWork,
+		Permission:         permission,
+		ApprovalClassifier: approvalClassifier,
 		Source: tool.ToolSourceMetadata{
 			Kind:            tool.ToolSourcePlugin,
 			ProducerID:      pluginID,
@@ -105,6 +111,38 @@ func (s ProcessToolSpec) ToToolSpec(pluginID, version string, runtimeKind Runtim
 				InstructionAuthority: resultv2.InstructionDataOnly,
 			},
 		},
+	}
+}
+
+func processToolPermission(permission tool.Permission) tool.Permission {
+	switch permission {
+	case tool.PermReadOnly, tool.PermWorkspaceWrite, tool.PermApprovedDestructive:
+		return permission
+	default:
+		return tool.PermReadOnly
+	}
+}
+
+func pluginInvocationApprovalClassifier(pluginID, toolName string, policy InvocationPolicy) tool.ApprovalClassifier {
+	if normalizePluginInvocationPolicy(policy) != InvocationAsk {
+		return nil
+	}
+	reason := fmt.Sprintf("third-party plugin %q tool %q requires explicit invocation approval", pluginID, toolName)
+	return func(context.Context, json.RawMessage) (tool.ApprovalRequirement, bool) {
+		return tool.ApprovalRequirement{Kind: tool.ApprovalKindPluginInvocation, Reason: reason}, true
+	}
+}
+
+func normalizePluginInvocationPolicy(policy InvocationPolicy) InvocationPolicy {
+	switch policy {
+	case "", InvocationAsk:
+		return InvocationAsk
+	case InvocationAuto:
+		return InvocationAuto
+	case InvocationDeny:
+		return InvocationDeny
+	default:
+		return InvocationAsk
 	}
 }
 

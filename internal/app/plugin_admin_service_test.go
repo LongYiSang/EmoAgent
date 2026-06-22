@@ -2423,11 +2423,11 @@ func executeApprovedPluginToolForTest(t *testing.T, ctx context.Context, service
 	t.Helper()
 	dispatcher := tool.NewDispatcher(service.tools.Registry(), tool.MinimalSchemaValidator{}, nil)
 	call := tool.Call{ID: "call-" + strings.TrimPrefix(name, "plugin.com.example.admin."), Name: name, Input: json.RawMessage(input)}
-	result := dispatcher.Execute(ctx, call, tool.PermApprovedDestructive)
+	result := dispatcher.Execute(ctx, call, tool.PermReadOnly)
 	if !result.IsError || !result.NeedsApproval {
 		t.Fatalf("initial tool result = %#v, want approval before plugin execution", result)
 	}
-	binding, err := tool.BuildApprovalBinding(call, "approval-"+call.ID, tool.ApprovalKindDestructiveWrite)
+	binding, err := tool.BuildApprovalBinding(call, "approval-"+call.ID, tool.ApprovalKindPluginInvocation)
 	if err != nil {
 		t.Fatalf("BuildApprovalBinding: %v", err)
 	}
@@ -2435,12 +2435,11 @@ func executeApprovedPluginToolForTest(t *testing.T, ctx context.Context, service
 		RequestID:           binding.RequestID,
 		ApprovalKind:        binding.ApprovalKind,
 		AllowToolCall:       true,
-		AllowDestructive:    true,
 		ToolName:            binding.ToolName,
 		NormalizedInputHash: binding.NormalizedInputHash,
 		PathDigest:          binding.PathDigest,
 	})
-	result = dispatcher.Execute(approvedCtx, call, tool.PermApprovedDestructive)
+	result = dispatcher.Execute(approvedCtx, call, tool.PermReadOnly)
 	if result.IsError {
 		t.Fatalf("approved tool result = %#v", result)
 	}

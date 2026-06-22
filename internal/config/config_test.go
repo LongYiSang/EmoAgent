@@ -118,7 +118,8 @@ func TestDefaultConfig(t *testing.T) {
 		}
 	}
 	if cfg.Plugins.Runtime.DefaultKind != "managed_python_process" || cfg.Plugins.Runtime.ProcessDevEnabled ||
-		cfg.Plugins.Runtime.MaxProcesses != 64 || cfg.Plugins.Runtime.MemoryMB != 1024 {
+		cfg.Plugins.Runtime.MaxProcesses != 64 || cfg.Plugins.Runtime.MemoryMB != 1024 ||
+		cfg.Plugins.Runtime.CrashQuarantineThreshold != 5 {
 		t.Fatalf("default plugins.runtime kind/dev = %#v", cfg.Plugins.Runtime)
 	}
 	if cfg.Plugins.Policy.AllowActiveHooks {
@@ -1048,6 +1049,7 @@ plugins:
     idle_timeout_seconds: 30
     crash_backoff_initial_seconds: 2
     crash_backoff_max_seconds: 10
+    crash_quarantine_threshold: 7
     max_stderr_bytes: 1024
     container_enabled: false
   installer:
@@ -1079,7 +1081,9 @@ plugins:
 	if cfg.Plugins.ProviderGateway.Enabled || cfg.Plugins.Admin.Enabled {
 		t.Fatalf("plugins provider/admin enabled = %v/%v, want explicit false", cfg.Plugins.ProviderGateway.Enabled, cfg.Plugins.Admin.Enabled)
 	}
-	if cfg.Plugins.Runtime.PythonExecutable != "python" || cfg.Plugins.Runtime.MaxStderrBytes != 1024 {
+	if cfg.Plugins.Runtime.PythonExecutable != "python" ||
+		cfg.Plugins.Runtime.MaxStderrBytes != 1024 ||
+		cfg.Plugins.Runtime.CrashQuarantineThreshold != 7 {
 		t.Fatalf("plugins.runtime = %#v", cfg.Plugins.Runtime)
 	}
 	if cfg.Plugins.Runtime.DefaultKind != "managed_python_process" || cfg.Plugins.Runtime.ProcessDevEnabled {

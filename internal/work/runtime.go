@@ -743,6 +743,9 @@ func toolApprovalQuestion(classification tool.CallClassification) string {
 	if classification.ApprovalKind == tool.ApprovalKindSensitiveRead {
 		return sensitiveReadApprovalQuestion(call)
 	}
+	if classification.ApprovalKind == tool.ApprovalKindPluginInvocation {
+		return pluginInvocationApprovalQuestion(call)
+	}
 	switch strings.TrimSpace(call.Name) {
 	case "bash":
 		command := bashCommandPreview(call.Input)
@@ -809,7 +812,42 @@ func toolApprovalWhyBlocked(classification tool.CallClassification) string {
 		}
 		return fmt.Sprintf(`Tool %q requires explicit sensitive-read approval before execution.`, classification.Call.Name)
 	}
+	if classification.ApprovalKind == tool.ApprovalKindPluginInvocation {
+		return fmt.Sprintf(`Tool %q requires explicit third-party plugin invocation approval before execution.`, classification.Call.Name)
+	}
 	return fmt.Sprintf(`Tool %q requires explicit human approval before execution.`, classification.Call.Name)
+}
+
+func pluginInvocationApprovalQuestion(call tool.Call) string {
+	pluginID, toolName := pluginToolIdentity(call.Name)
+	if pluginID == "" {
+		pluginID = "unknown"
+	}
+	if toolName == "" {
+		toolName = strings.TrimSpace(call.Name)
+	}
+	return strings.Join([]string{
+		fmt.Sprintf("即将调用第三方 Python 插件 `%s` 的工具 `%s`。该插件作为当前用户身份下的本地代码运行。", pluginID, toolName),
+		"",
+		"该工具尚未执行。",
+		"影响：批准后才会执行这一次工具输入对应的操作。",
+		"",
+		"确认执行请点击“允许执行”；取消请点击“拒绝”。",
+	}, "\n")
+}
+
+func pluginToolIdentity(name string) (string, string) {
+	const prefix = "plugin."
+	trimmed := strings.TrimSpace(name)
+	if !strings.HasPrefix(trimmed, prefix) {
+		return trimmed, ""
+	}
+	rest := strings.TrimPrefix(trimmed, prefix)
+	idx := strings.LastIndex(rest, ".")
+	if idx <= 0 || idx == len(rest)-1 {
+		return rest, ""
+	}
+	return rest[:idx], rest[idx+1:]
 }
 
 func sensitiveReadApprovalQuestion(call tool.Call) string {
