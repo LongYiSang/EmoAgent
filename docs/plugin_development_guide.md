@@ -16,7 +16,7 @@
 2. `chat.turn_pipeline.enabled: true`，且 turn pipeline rollout 或 allow list 命中。
 3. 插件已安装并启用。
 4. `plugins.runtime.process_enabled: true`。
-5. 运行环境能启动 `plugins.runtime.python_executable`。
+5. 运行环境能启动宿主私有 Python；默认位置是 `plugins.store.root_dir/runtime/python/python(.exe)`，也可通过 `plugins.runtime.private_python_executable` 配置绝对路径。
 
 当前面向第三方插件的稳定路径是 Python stdio JSON-RPC 插件。`container` 只做 mount plan 校验，不执行容器。`builtin` 是仓库内 Go 插件使用的内部路径。
 
@@ -47,14 +47,12 @@ plugins:
     allow_dev_dirs: true
   runtime:
     process_enabled: true
-    python_executable: python3
     startup_timeout_ms: 5000
     shutdown_timeout_ms: 3000
     idle_timeout_seconds: 600
     crash_backoff_initial_seconds: 5
     crash_backoff_max_seconds: 300
     max_stderr_bytes: 262144
-    container_enabled: false
   installer:
     github_enabled: true
     require_signature: true
@@ -75,16 +73,20 @@ plugins:
 | `enabled` | 总运行时开关。为 `false` 时插件管理 API/UI 仍可用，但 hook/tool 不会运行。 |
 | `default_timeout_ms` / `max_timeout_ms` | hook 默认超时和 manifest `hooks[].timeout_ms` 上限。 |
 | `store.root_dir` | 安装包、state/cache/run/workspace 目录根路径。 |
-| `runtime.python_executable` | 启动 Python 插件的可执行文件。 |
+| `runtime.private_python_executable` | `managed_python_process` 的宿主私有 Python 绝对路径；未配置时使用 `store.root_dir/runtime/python/python(.exe)`。 |
+| `runtime.private_python_artifact_path` / `runtime.private_python_artifact_sha256` | 本地 Host-private Python zip artifact 和对应 `sha256:<64 hex>`；宿主会校验后安装到 `store.root_dir/runtime/python`。 |
+| `runtime.python_executable` | 仅用于 legacy/dev `python_process` / `process` 的显式 Python 路径。 |
 | `runtime.max_stderr_bytes` | 插件 stderr tail 保留上限。 |
 | `installer.allow_unsigned_dev` | 开发本地目录/zip 可无签名安装。 |
 | `installer.require_signature` | 要求签名时，非 dev unsigned 包会安装失败。 |
 | `provider_gateway.*` | `provider.generate` 的全局默认 provider/model 和网关开关。 |
 | `admin.enabled` | 插件管理 API/UI 开关。 |
 
+旧配置键 `runtime.container_enabled`、`runtime.sandbox_endpoint` 和 `runtime.prefer_rootless` 仍可被解析，但会被丢弃，不会进入运行时配置、Admin API、UI、runtime status 或 supervisor 决策。未来如果实现容器运行时，需要新的可验证 backend 配置和健康检查，不能让这些旧键自动变成权限开关。
+
 `plugins.rollout_percent` 和 `plugins.fail_closed_hooks` 当前有配置字段和校验，但本次审阅未看到它们接入 HookBus 运行行为。插件作者应以 manifest 中每个 hook 的 `failure_policy` 作为当前实际失败策略来源。
 
-Windows 开发环境里 `python3` 不一定存在。若插件状态显示启动失败，先确认 `plugins.runtime.python_executable` 能直接执行；在 Windows 上通常需要改成 `python`，或填写解释器绝对路径。
+若 `managed_python_process` 状态显示启动失败，先确认宿主私有 Python 是否存在于 `plugins.store.root_dir/runtime/python/python(.exe)`，配置本地 `private_python_artifact_path` + `private_python_artifact_sha256` 让宿主安装，或把 `plugins.runtime.private_python_executable` 配成绝对路径。artifact 校验只说明宿主解释器 artifact 的来源/完整性符合本机配置，不会提升插件 trust/tier/capability。`plugins.runtime.python_executable` 只用于 legacy/dev 进程运行时，不作为 managed 默认值。
 
 ## 从零跑通示例插件
 
@@ -92,10 +94,10 @@ Windows 开发环境里 `python3` 不一定存在。若插件状态显示启动�
 
 1. 在 `config.yaml` 中设置 `plugins.enabled: true`。
 2. 确认 `chat.turn_pipeline.enabled: true`，并让当前 persona/session 命中 `chat.turn_pipeline.rollout_percent` 或 allow list。默认仓库配置里 rollout 是 100。
-3. 确认 `plugins.runtime.python_executable` 在当前系统可执行。Windows 上常见值是 `python`。
+3. 确认宿主私有 Python 可用；如果使用 legacy/dev `python_process`，再显式配置 `plugins.runtime.python_executable`。
 4. 重启 EmoAgent 宿主，让插件 host 和 Python runtime 配置生效。
 5. 打开 `/plugins.html`，或调用 `/api/plugins/install/local` 安装 `D:\Dev\Project\Agent\EmoAgent\sdk\python\examples\echo_plugin`。
-6. 启用 `com.example.echo`。UI 默认 grant `{}` 表示不额外收窄 manifest capabilities；如果要最小授权，可填下文启用 API 示例里的 `user_grant_json`。
+6. 启用 `com.example.echo`。UI 默认 grant `{}` 不会授予 facade capability；如果插件需要调用 Host API，请填下文启用 API 示例里的 `user_grant_json.capabilities`。
 7. 发起一次聊天触发 `after_turn_end`，然后查看 `/api/plugins/com.example.echo/access-events?limit=25` 或插件页审计信息。
 8. 调用插件工具时，工具名是 `plugin.com.example.echo.echo` 或 `plugin.com.example.echo.provider_ping`。
 
@@ -162,7 +164,7 @@ name: Echo Plugin
 version: 0.1.0
 emoagent_version: ">=0.2.0"
 runtime:
-  kind: python_process
+  kind: managed_python_process
   entry: main.py
 access:
   tier: runtime_safe
@@ -191,7 +193,7 @@ Manifest 使用严格 YAML 解码，未知字段会导致安装失败。
 | `name` | 是 | 展示名。 |
 | `version` | 是 | 插件版本，格式为 semver，例如 `0.1.0` 或 `0.1.0-beta.1`。 |
 | `emoagent_version` | 是 | 兼容范围，可写精确版本或 `^`、`~`、`>=`、`<=`、`>`、`<` 前缀范围，例如 `>=0.2.0`。 |
-| `runtime.kind` | 是 | 支持值见下表。第三方插件当前推荐 `python_process`。 |
+| `runtime.kind` | 是 | 支持值见下表。第三方插件当前推荐 `managed_python_process`。 |
 | `runtime.entry` | Python 插件必填；`process` 当前启动时也需要 | 相对路径，必须干净，不能是绝对路径，不能包含 `..`。 |
 | `access.tier` | 是 | 插件申请的访问等级。 |
 | `access.capabilities` | 是 | 插件申请的能力列表。 |
@@ -203,8 +205,9 @@ Manifest 使用严格 YAML 解码，未知字段会导致安装失败。
 
 | 值 | 当前用途 |
 | --- | --- |
-| `python_process` | 当前第三方插件主路径。宿主用 `python_executable runtime.entry` 启动。 |
-| `process` | 代码允许，但当前 supervisor 仍按 Python executable 加 `runtime.entry` 启动，非 Python runner 合约未稳定。不要把它当成通用进程 runtime。 |
+| `managed_python_process` | 当前第三方插件主路径。宿主用私有 Python runtime 加 `runtime.entry` 启动；缺失时 fail-closed，不回退系统 Python。 |
+| `python_process` | legacy/dev 路径。必须显式配置 `plugins.runtime.python_executable`，按当前用户进程启动，不是 managed/private/sandbox。 |
+| `process` | legacy/dev 路径。当前 supervisor 仍按 Python executable 加 `runtime.entry` 启动，非 Python runner 合约未稳定。不要把它当成通用进程 runtime。 |
 | `container` | manifest 可校验，容器执行未实现。 |
 | `builtin` | 仓库内 Go 插件使用。第三方包不要使用。 |
 
@@ -215,9 +218,9 @@ Manifest 使用严格 YAML 解码，未知字段会导致安装失败。
 | `runtime_safe` | 只接触运行时安全摘要、hash、计数、插件私有状态等。 |
 | `user_context` | 申请用户上下文相关能力。 |
 | `workspace` | 申请工作区相关能力。 |
-| `trusted` | 最高信任等级，仅应给受信插件。 |
+| `trusted` | 最高 Manifest 访问层级，仅应由受信插件申请；它不是 Host 派生 Trust。 |
 
-启用插件时的 `user_grant_json` 可以限制实际授权。若 grant tier 低于 manifest tier，facade 调用会被拒绝。若 grant 显式列出 `capabilities`，插件只能使用该子集：
+启用插件时的 `user_grant_json` 可以限制实际授权。若 grant 显式写入 `tier`，必须与 manifest tier 匹配；grant 不能用更高 tier 或信任字段升级插件权限。若 grant 显式列出 `capabilities`，插件只能使用 manifest 已声明 capability 的子集：
 
 ```json
 {
@@ -226,9 +229,13 @@ Manifest 使用严格 YAML 解码，未知字段会导致安装失败。
 }
 ```
 
-当前 `user_grant_json` 主要在 process facade 调用路径强制执行。hook 注册、process 工具注册主要依据 manifest 声明和 capability 授权；不要把 grant 当成当前版本的全局沙箱。
+当前 `user_grant_json` 主要在 process facade 调用路径强制执行。hook 注册、process 工具注册主要依据 manifest 声明和 host policy；不要把 grant 当成当前版本的全局沙箱。
 
-插件页默认 grant 是 `{}`，含义是“不额外收窄 manifest 声明的能力”。只有显式写入 `capabilities` 数组时，facade 调用才会被限制到该子集。
+插件页默认 grant 是 `{}`，含义是“不授予 facade capability”。只有显式写入 `capabilities` 数组，且该 capability 同时在 manifest 中声明时，facade 调用才会被允许。
+
+插件页显示的 `trust_level` 是 Host 根据安装来源、签名/发布者、用户接受和宿主策略派生的代码运行信任分类。Manifest、`user_grant_json`、依赖 digest、私有 Python artifact 或插件返回值都不能自提升该字段；签名验证只说明供应链完整性/发布者匹配，不代表插件处在 OS 沙箱内。
+
+插件页同时显示 Host 派生的 `host_api_policy`、`tool_policy` 和 `hook_policy`。`host_api_policy` 用于说明 Manifest 申请、用户 Grant 与宿主 allowlist 收敛后的 facade capability；`tool_policy` 显示第三方工具默认 `work + ask`，Host 会生成最终 Tool Spec，插件自报 `scope` / `permission` 只作为兼容 hint；`hook_policy` 显示 observe/active hook 分类和 active hook 是否被宿主策略允许。这些字段用于可解释性和重新确认，不是 OS 沙箱、文件/网络隔离或恶意插件隔离证明。
 
 ## Capabilities
 
@@ -512,13 +519,13 @@ async def echo(input_data, ctx):
 | `name` | 本地工具名。宿主会注册为 `plugin.<plugin_id>.<name>`。如果传入完整 `plugin.<plugin_id>.<name>` 也可；其他 `plugin.*` 前缀会被拒绝。 |
 | `description` | 给 LLM 的工具说明。 |
 | `parameters` | JSON Schema。工具调用前会校验输入。 |
-| `scope` | `emotion`、`work` 或 `both`。控制哪个 agent 能看到工具。 |
-| `permission` | `read-only`、`workspace-write` 或 `approved-destructive`。 |
+| `scope` | `emotion`、`work` 或 `both`。仅作为插件声明的展示/请求意图；最终可见范围由 Host 派生的 tool policy 决定。 |
+| `permission` | `read-only`、`workspace-write` 或 `approved-destructive`。仅作为兼容提示；最终权限、审批策略和是否暴露给 Emotion/Work 由 Host 生成。 |
 
-插件工具仍走宿主 `tool.Dispatcher`：
+插件工具仍走宿主 `tool.Dispatcher`；插件自报 `scope`/`permission` 不能提升权限：
 
 - 未知工具、重复工具名、schema 校验失败会拒绝。
-- 权限不足会拒绝。
+- Host 派生策略不足会拒绝。
 - `approved-destructive` 需要有效审批。
 - `before_tool_call` hook 可以进一步要求审批或降级权限，但不能提升权限。
 
@@ -547,6 +554,38 @@ Content-Type: application/json
 }
 ```
 
+若详情里的 `trust_review.required=true`，先读取目标版本详情，并把 Host 返回的完整 `trust_review.acknowledgement` 原样随启用请求带回：
+
+```http
+GET /api/plugins/com.example.echo?version=0.2.0
+```
+
+```http
+POST /api/plugins/com.example.echo/enable
+Content-Type: application/json
+
+{
+  "version": "0.2.0",
+  "user_grant_json": "{\"tier\":\"runtime_safe\",\"capabilities\":[\"turn.read\",\"provider.generate\"]}",
+  "trust_acknowledgement": {
+    "plugin_id": "com.example.echo",
+    "version": "0.2.0",
+    "package_digest": "sha256:...",
+    "manifest_digest": "sha256:...",
+    "signature_status": "verified",
+    "publisher_id": "example",
+    "default_tool_exposure": "work",
+    "default_invocation_policy": "ask",
+    "ack_nonce": "...",
+    "ack_issued_at": "2026-06-22T10:00:00Z",
+    "user_action": "enable_plugin",
+    "reasons": ["capability_added:provider.generate"]
+  }
+}
+```
+
+`ack_nonce` 是宿主为当前进程中这一次启用确认签发的一次性值；缺失、被使用过、服务重启后失效或不再匹配当前 review 的 acknowledgement 会被拒绝，需要重新读取详情获取新的 acknowledgement。
+
 常用管理 API：
 
 | Method | Path | 说明 |
@@ -564,6 +603,14 @@ Content-Type: application/json
 | `GET` | `/api/plugins/{id}/access-events?limit=25` | facade 访问审计。 |
 | `GET` | `/api/plugins/{id}/provider-usage?limit=25` | provider 使用审计。 |
 | `DELETE` | `/api/plugins/{id}` | 删除安装记录。 |
+
+`/api/plugins/{id}/status` 的 `runtime_status` 对 Python process 会包含可用性诊断字段：`runtime_kind`、`python_executable_path`、`python_executable_source` 和 `python_executable_available`。这些字段只说明宿主会从哪里启动 Python，以及该路径在启动检查时是否存在；它们不是插件权限、信任等级或安全边界。
+
+`GET /api/plugins` 和 `GET /api/plugins/{id}` 的摘要会返回 `trust_level`、`trust_review`、`trust_acceptance`、`host_api_policy`、`tool_policy` 与 `hook_policy`。若 `trust_review.required=true`，启用请求必须带回 Host 生成的 `trust_acknowledgement`；服务端会重新计算目标版本、digest、publisher/signature、capability、active hook 与 tool policy 后再接受，不信任客户端自造的权限或 trust 字段。Host 还会为该 acknowledgement 绑定一次性 `ack_nonce`、`ack_issued_at` 和 `user_action=enable_plugin`；这些字段只证明启用请求回传了当前进程刚签发的 review，不证明真实用户身份、浏览器会话、不可抵赖或长期授权。`trust_acceptance` 是当前启用状态的最小审计 snapshot，只包含 `trust_level`、`accepted_at`、`acknowledgement_hash`、`reasons`、`default_tool_exposure` 和 `default_invocation_policy`；append-only history 会额外保存 Host 计算的 `user_grant_hash` 与 `host_policy_fingerprint`。这些 history 字段不保存原始 grant 或完整 Host policy，不授予 capability，不批准工具，不启用 hook，不是签名验证、权限提升、OS 沙箱、文件/网络隔离、Provider Key/MemoryCore 隔离、真实用户身份或不可抵赖证明；旧行为空表示该接受事件发生在记录这些指纹之前。
+
+`managed_python_process` 还会报告 `dependency_env_dir`。该目录对应插件 store 下的 `dependencies/<plugin_id>/<version>`，只表示宿主为该插件版本准备并加入 `PYTHONPATH` 的依赖导入目录；它不是沙箱、权限来源或信任提升。
+
+`process_guard_kind`、`process_guard_attached` 和 `process_guard_error` 是进程生命周期诊断，只说明宿主是否用 Job Object 等机制管理启动、停止、超时和进程树清理；它们不是权限、信任等级、OS 沙箱或数据隔离证明。
 
 本地目录和本地 zip 在 `plugins.installer.allow_unsigned_dev: true` 时可无签名安装，signature status 为 `unsigned_dev`。目录或 zip 根目录必须直接包含 `emo_plugin.yaml`。zip 内路径会被校验，不能包含逃逸路径，不能包含 symlink。release/生产分发建议提供 `emo_plugin.signature.yaml` 并配置 trusted publisher。
 
@@ -595,10 +642,11 @@ signature_base64: ...
 Python process 启动方式：
 
 ```text
-<plugins.runtime.python_executable> <runtime.entry>
+managed_python_process: <private Python runtime> <runtime.entry>
+python_process/process: <plugins.runtime.python_executable> <runtime.entry>
 ```
 
-`runtime.entry` 总是相对安装包目录解析。当前 `process` 和 `python_process` 都由 Python process supervisor 启动，因此都需要一个可执行的 Python 入口文件。
+`runtime.entry` 总是相对安装包目录解析。当前 `managed_python_process`、`process` 和 `python_process` 都由 Python process supervisor 启动，因此都需要一个可执行的 Python 入口文件。
 
 工作目录是安装后的 immutable package 目录。宿主注入环境变量：
 
@@ -609,8 +657,29 @@ EMO_PLUGIN_ROOT
 EMO_PLUGIN_STATE_DIR
 EMO_PLUGIN_CACHE_DIR
 EMO_PLUGIN_RUN_DIR
+EMO_PLUGIN_DEPS_DIR
 PYTHONUNBUFFERED=1
 ```
+
+`managed_python_process` 会把 `EMO_PLUGIN_DEPS_DIR` 加入 `PYTHONPATH`，顺序在宿主 audit shim 之后、宿主 SDK 路径之前。managed runtime 不继承宿主进程的 `PYTHONPATH`。
+
+如果插件包根目录包含 `emo_dependencies.lock.json`，宿主会在插件 `initialize` 前安装其中声明的本地依赖 artifact。当前只支持包内相对路径的 `python_module_zip`，并要求每个 artifact 带 `sha256:<64 hex>`：
+
+```json
+{
+  "version": 1,
+  "packages": [
+    {
+      "name": "depmod",
+      "kind": "python_module_zip",
+      "path": "deps/depmod.zip",
+      "sha256": "sha256:<64 hex>"
+    }
+  ]
+}
+```
+
+宿主会校验 zip digest、拒绝逃逸路径和 zip-slip 条目，然后解压到 `plugins.store.root_dir/dependencies/<plugin_id>/<version>`。锁文件 digest 匹配时会跳过重装。该机制不运行 pip、不联网、不解析依赖树，也不会提升插件 trust、tier 或 capability。
 
 开发环境下，宿主还会把仓库的 `sdk/python` 加进 `PYTHONPATH`，所以示例插件可以直接 `from emoagent_plugin import ...`。
 
@@ -623,7 +692,7 @@ PYTHONUNBUFFERED=1
 - 临时运行文件：使用 `EMO_PLUGIN_RUN_DIR`。
 - 缓存：使用 `EMO_PLUGIN_CACHE_DIR`。
 
-Python runner 会注入 `sitecustomize` audit shim，阻止插件代码绑定 socket listener，并阻止直接打开插件 store 外部的 SQLite、MemoryCore、Trivium 路径。
+Python runner 会注入 `sitecustomize` audit shim，阻止插件代码绑定 socket listener，并阻止直接打开插件 store 外部的 SQLite、MemoryCore、Trivium 路径。该 shim 是 Python-level best-effort guardrail，不是 OS 文件/网络沙箱，也不是恶意插件隔离证明。
 
 ## Go 内置插件
 
@@ -656,7 +725,7 @@ type BuiltinPlugin interface {
 - `outbound.decorate_text` 当前被忽略，插件不能修改最终 assistant 文本。
 - `turn.annotate`、memory query/block patch、LLM appendix/tool hint patch 当前没有稳定消费路径。
 - `memory.safe_context.current`、`memory.candidate.submit`、`memory.forget.request`、`agent_affect.current` 等 process facade 当前多为占位实现，不要把它们当成完整数据/写入通道。
-- 插件不能直连 SQLite、MemoryCore、TriviumDB、原始 provider client 或 provider API key。
+- Host API 不提供 SQLite、MemoryCore、TriviumDB、原始 provider client 或 provider API key 直连能力；环境过滤和 Python audit observer 只降低误用风险，不是 OS 沙箱，不能承诺阻止恶意本地代码以当前用户权限直接访问文件或网络。
 - 插件工具名不能覆盖宿主内置工具；重复注册会失败。
 - `fail_closed` 只在派发点传播错误时阻断宿主流程。除非插件确实是安全策略类插件，且 hook 位于会传播错误的调用点，否则优先使用 `fail_open`。
 
@@ -665,8 +734,9 @@ type BuiltinPlugin interface {
 | 现象 | 优先检查 |
 | --- | --- |
 | 插件能安装但不执行 | `plugins.enabled` 是否为 `true`；当前 session/persona 是否命中 `chat.turn_pipeline` rollout 或 allow list；插件是否已启用。 |
-| 启用后状态是 stopped 或 start failed | `/api/plugins/{id}/status` 和 `/api/plugins/{id}/logs`；确认 `plugins.runtime.python_executable` 能执行。 |
-| Windows 上启动失败，提示找不到 Python | 把 `plugins.runtime.python_executable` 从 `python3` 改成 `python`，或填写解释器绝对路径。 |
+| 启用后状态是 stopped 或 start failed | `/api/plugins/{id}/status` 和 `/api/plugins/{id}/logs`；确认 managed 私有 Python 或 legacy `plugins.runtime.python_executable` 能执行。 |
+| Windows 上启动失败，提示找不到 Python | managed 插件检查 `plugins.store.root_dir/runtime/python/python.exe`、本地 private Python artifact 配置，或 `plugins.runtime.private_python_executable` 绝对路径；legacy/dev 插件才检查 `plugins.runtime.python_executable`。 |
+| 依赖模块 import 失败 | 检查 `emo_dependencies.lock.json`、artifact 相对路径和 `sha256` 是否匹配；宿主只安装本地 `python_module_zip`，不会运行 pip、联网或继承宿主 `PYTHONPATH`。 |
 | stdout 协议错误 | Python 插件不要向 stdout 打普通日志；普通日志写 stderr，或使用 `ctx.log(...)`。 |
 | `import emoagent_plugin` 失败 | 仓库内运行时会注入 `sdk/python`；独立插件开发时需要把 SDK 源码放入 `PYTHONPATH` 或随包携带。 |
 | 安装失败，提示 manifest decode/unknown field | `emo_plugin.yaml` 使用严格字段；删除未知字段并检查 `schema_version`、`runtime.entry`、capability、hook 名。 |
@@ -685,15 +755,25 @@ type BuiltinPlugin interface {
 5. Python 代码不会向 stdout 打印普通日志。
 6. 工具参数 JSON Schema 能覆盖必填字段。
 7. provider 调用有合理 `purpose`、`max_tokens`，并配置默认 provider/model 或要求调用方传入。
-8. 在目标系统上确认 `plugins.runtime.python_executable` 可执行；Windows 上不要默认假设 `python3` 存在。
+8. 在目标系统上确认 managed 私有 Python 可执行；legacy/dev 插件再确认 `plugins.runtime.python_executable` 是显式可执行路径。
 9. 独立插件仓库确认 `emoagent_plugin` 可以被导入，或随插件包携带兼容 SDK。
-10. `user_grant_json` 不会低于 manifest tier；如果显式列出 `capabilities`，必须覆盖插件实际 facade 调用。
+10. `user_grant_json` 的 tier 与 manifest tier 匹配；如果显式列出 `capabilities`，必须是 manifest 声明的子集并覆盖插件实际 facade 调用。
 11. 使用插件页或 `/api/plugins/{id}/logs` 检查 stderr；使用 access-events/provider-usage 检查 facade 和 provider 调用是否被拒绝。
 
-仓库内示例的最小 smoke test：
+仓库内示例的 legacy/dev 最小 smoke test：
 
 ```powershell
 go test ./internal/plugin -run TestSDKExamplePluginInstallEnableHookToolProviderAudit -v
 ```
 
-该测试会安装并启用 `sdk/python/examples/echo_plugin`，验证 hook、插件工具、ProviderGateway fake client 和审计写入。
+该测试会安装并启用 `sdk/python/examples/echo_plugin`，验证 hook、插件工具、ProviderGateway fake client 和审计写入。它使用显式 `plugins.runtime.python_executable`，不证明 Host-private Python artifact 或 store-private runtime。
+
+Host-private Python runtime smoke 需要显式提供真实 artifact：
+
+```powershell
+$env:EMO_TEST_PRIVATE_PYTHON_ARTIFACT="D:\path\python-runtime.zip"
+$env:EMO_TEST_PRIVATE_PYTHON_SHA256="sha256:<64 hex>"
+go test ./internal/plugin -run TestRuntimeSupervisorManagedPythonStorePrivateRuntimeAuditGuardSmoke -v
+```
+
+该测试会校验 artifact、安装到 `plugins.store.root_dir/runtime/python`，再以 `managed_python_process` 启动插件；测试中故意配置无效 legacy `python_executable`，因此不能静默回退系统 Python。它还验证 `sitecustomize` audit guard 对原始 socket listener 和直接数据库访问生效。该 smoke 只证明宿主选择的 private Python 可启动并加载 guardrail，不提升插件 signature、trust、tier、capability，也不等同于容器或 OS sandbox。

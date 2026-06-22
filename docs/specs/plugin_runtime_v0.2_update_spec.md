@@ -41,14 +41,15 @@ plugins:
     allow_dev_dirs: true
   runtime:
     process_enabled: true
-    python_executable: python3
+    # optional local Host-private Python artifact provisioning
+    # private_python_artifact_path: ./runtime/python-embed.zip
+    # private_python_artifact_sha256: sha256:<64 hex>
     startup_timeout_ms: 5000
     shutdown_timeout_ms: 3000
     idle_timeout_seconds: 600
     crash_backoff_initial_seconds: 5
     crash_backoff_max_seconds: 300
     max_stderr_bytes: 262144
-    container_enabled: false
   installer:
     github_enabled: true
     require_signature: true
@@ -62,6 +63,8 @@ plugins:
 
 Unknown nested plugin config keys must be rejected by strict YAML loading.
 
+Legacy `plugins.runtime.container_enabled`, `plugins.runtime.sandbox_endpoint`, and `plugins.runtime.prefer_rootless` are parsed for old config compatibility and ignored. They must not become runtime authority, JSON output, Admin/API state, or container enablement.
+
 ## Manifest v0.2
 
 Required shape:
@@ -73,7 +76,7 @@ name: Echo Plugin
 version: 0.1.0
 emoagent_version: ">=0.2.0"
 runtime:
-  kind: python_process
+  kind: managed_python_process
   entry: main.py
 access:
   tier: runtime_safe
@@ -93,8 +96,8 @@ Validation requirements:
 - preserve existing plugin id regex
 - require semver plugin version
 - require supported semver range for `emoagent_version`
-- allow `builtin`, `process`, `python_process`, `container`
-- require clean relative `runtime.entry` for `python_process`
+- allow `builtin`, `managed_python_process`, `process`, `python_process`, `container`
+- require clean relative `runtime.entry` for `managed_python_process` and `python_process`
 - reject absolute entry paths and `..`
 - require known `access.tier`
 - require known capabilities
@@ -122,6 +125,8 @@ Installer behavior:
 - verify Ed25519 signature descriptors with deterministic canonical payloads
 - support statuses `verified`, `unsigned_dev`, `missing_signature`, `bad_signature`, `unknown_publisher`, `digest_mismatch`
 - reject missing signatures when required unless local unsigned dev installs are explicitly allowed
+- never apply `unsigned_dev` bypass to GitHub release installs
+- require signed zip/release descriptors to include `package_digest`, so signatures cover package code and not only `emo_plugin.yaml`
 - reject zip absolute paths, `..`, symlinks, and missing manifest
 - copy validated package contents to immutable `packages/<plugin_id>/<version>`
 - reject duplicate immutable package versions
@@ -143,6 +148,12 @@ Process protocol methods:
 - Plugin to Host: `facade.call`, `log.emit`, `metric.emit`
 
 Stdout is JSON-RPC only. Stderr is bounded logs. Timeouts and crashes mark runtime status as failed.
+
+When `private_python_artifact_path` is configured, the Host verifies the local zip artifact against `private_python_artifact_sha256` before installing it into `plugins.store.root_dir/runtime/python`. The artifact path and checksum are a Host runtime dependency policy, not plugin package trust metadata. `private_python_executable` is mutually exclusive with artifact provisioning, and `managed_python_process` must not fall back to system Python when provisioning fails.
+
+For `managed_python_process`, the Host must prepare `plugins.store.root_dir/dependencies/<plugin_id>/<version>` and add it to the plugin process `PYTHONPATH` after the Host audit shim and before any configured SDK path. The process environment exposes the chosen path as `EMO_PLUGIN_DEPS_DIR`. Managed runtime does not inherit the host process `PYTHONPATH`.
+
+If the installed package contains `emo_dependencies.lock.json`, the Host materializes local dependency artifacts before plugin `initialize`. Version `1` lock files support only package-local entries with `kind: "python_module_zip"`, a clean relative `path`, and `sha256:<64 hex>`. The Host verifies each local zip artifact, rejects unsafe paths and zip-slip entries, extracts it into the version-scoped dependency env, writes a lock digest marker, and skips reinstall when the marker already matches. This does not run pip, resolve dependencies, fetch from the network, or upgrade plugin trust.
 
 Host-side JSON-RPC handlers are bound to the manifest plugin ID by the supervisor. Any `plugin_id` supplied by a plugin is checked against that bound identity and cannot select another plugin's grant/capabilities.
 
@@ -207,6 +218,7 @@ Routes:
 ```text
 GET    /api/plugins
 GET    /api/plugins/{id}
+GET    /api/plugins/{id}?version=<semver>
 POST   /api/plugins/install/local
 POST   /api/plugins/install/local-zip
 POST   /api/plugins/install/github-release
@@ -222,6 +234,10 @@ GET    /api/plugins/{id}/provider-usage
 
 `/local` and `/local-zip` both accept a local filesystem `path` JSON body for this development-targeted update.
 
+`GET /api/plugins/{id}` returns the currently enabled version when one exists; otherwise it returns the newest installed version. `GET /api/plugins/{id}?version=...` returns an explicit installed version. Enabling a plugin accepts an optional `version` body field, and update/rollback is modeled as enabling the selected immutable version.
+
+Enable requests validate `user_grant_json` before writing `plugin_enabled_state`: grant tier must be known and match the installed manifest tier when present, and every granted capability must be known and declared by the installed manifest. Empty `{}` is allowed and means the plugin may be enabled without any facade capability grant.
+
 ## Admin UI
 
 The `plugins` tab must show:
@@ -235,7 +251,7 @@ The `plugins` tab must show:
 - manifest capabilities and hooks
 - local install path action
 - grant JSON editor
-- enable/disable/restart/delete
+- enable selected version / disable / restart / delete
 - stderr logs
 - access audit
 - provider usage

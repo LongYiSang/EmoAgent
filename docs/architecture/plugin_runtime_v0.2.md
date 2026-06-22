@@ -37,7 +37,9 @@ Python process plugins are launched as:
 <python_executable> <runtime.entry>
 ```
 
-The working directory is the immutable package directory. The plugin receives only runtime-safe environment variables:
+For `managed_python_process`, `<python_executable>` is either an explicit `plugins.runtime.private_python_executable` absolute path or the Host-owned store path `plugins.store.root_dir/runtime/python/python(.exe)`. If `plugins.runtime.private_python_artifact_path` and `plugins.runtime.private_python_artifact_sha256` are configured, the Host verifies the local zip artifact and installs it to the store path before creating the runtime supervisor. This runtime artifact provenance is separate from plugin package signatures and does not change plugin trust, access tier, grants, or tool policy.
+
+The working directory is the immutable package directory. The plugin receives a filtered inherited host environment plus Host-injected runtime variables:
 
 ```text
 EMO_PLUGIN_ID
@@ -46,16 +48,21 @@ EMO_PLUGIN_ROOT
 EMO_PLUGIN_STATE_DIR
 EMO_PLUGIN_CACHE_DIR
 EMO_PLUGIN_RUN_DIR
+EMO_PLUGIN_DEPS_DIR
 PYTHONUNBUFFERED=1
 ```
 
-Inherited environment variables whose names contain `API_KEY`, `SECRET`, `TOKEN`, or `PASSWORD` are stripped. Configured provider `api_key_env` names from static config and SQLite are also stripped, including non-standard names. Provider API keys are never passed intentionally to plugin processes.
+For `managed_python_process`, the Host prepares a version-scoped dependency directory at `dependencies/<plugin_id>/<version>` under the plugin store and adds it to `PYTHONPATH` after the Host audit shim. When a package includes `emo_dependencies.lock.json`, the Host verifies package-local `python_module_zip` artifacts by SHA-256 and extracts them into that dependency directory before process initialization. A matching lock digest marker skips reinstall. The dependency directory and lock digest are operational dependency provenance, not a sandbox, permission source, package trust upgrade, or malicious-plugin containment.
+
+Managed Python processes do not inherit the host process `PYTHONPATH`; the process path is built from the audit shim, the version-scoped dependency env, and Host-configured SDK paths. Legacy `python_process` / `process` keeps its explicit `python_executable` behavior.
+
+Inherited environment variables whose names contain `API_KEY`, `SECRET`, `TOKEN`, or `PASSWORD` are stripped. Configured provider `api_key_env` names from static config and SQLite are also stripped, including non-standard names. Provider API keys are never passed intentionally to plugin processes. This filtering is a host process hygiene step, not a sandbox boundary.
 
 Stdout is JSON-RPC only; stderr is retained as bounded logs.
 
 Host RPC handlers are bound by `RuntimeSupervisor` to the manifest plugin ID. A plugin-supplied `plugin_id` is only a consistency check and cannot impersonate another enabled plugin.
 
-The runner injects a Python `sitecustomize` audit shim. It blocks plugin-code socket listener binds and blocks Python stdlib file opens for plugin-store-external SQLite, MemoryCore, and Trivium paths while preserving Python runtime internals such as Windows `asyncio` self-pipes.
+The runner injects a Python `sitecustomize` audit shim. It provides a Python-level best-effort guardrail against plugin-code socket listener binds and Python stdlib file opens for plugin-store-external SQLite, MemoryCore, and Trivium paths while preserving Python runtime internals such as Windows `asyncio` self-pipes. It is not an OS file/network sandbox and does not make bypass impossible for malicious local code.
 
 ## Hook And Tool Flow
 
@@ -71,7 +78,7 @@ The supervisor checks SQLite enabled state before starting or invoking a process
 
 ## Facade Boundary
 
-Plugins cannot access MemoryCore, TriviumDB, SQLite, raw provider clients, screen/process capture, or network listeners directly. All host access goes through `facade.call`.
+Host API does not expose direct MemoryCore, TriviumDB, SQLite, raw provider client, screen/process capture, or network listener access to plugins. All supported host access goes through `facade.call`; the Python audit guard and process lifecycle guard are best-effort guardrails, not malicious-plugin data isolation.
 
 Implemented facade methods include:
 
@@ -121,7 +128,11 @@ Schema repair is additive for plugin runtime tables and indexes.
 
 The admin API exposes install, list, detail, enable, disable, restart, delete, status, logs, access events, and provider usage routes under `/api/plugins`.
 
-The admin UI adds a `插件` tab showing installed plugins, access tier, signature and digest state, source, runtime state, manifest hook/capability summary, state/cache/run/workspace directories, stderr tail, access events, provider usage, and a privacy warning.
+Multiple immutable versions of the same plugin may be installed. The default detail route reports the currently enabled version when present, while `?version=` selects a specific installed version. Update and rollback are represented by enabling a chosen immutable version; this does not weaken package signature or digest policy.
+
+When a version is enabled, the Host validates the stored user grant against that installed manifest. A grant cannot add capabilities that the manifest did not declare, cannot use unknown capability names, and cannot set a different access tier to upgrade the plugin's effective authority. An empty grant is valid but grants no facade capabilities.
+
+The admin UI adds a `插件` tab showing installed plugin versions, access tier, signature and digest state, source, runtime state, manifest hook/capability summary, state/cache/run/workspace directories, stderr tail, access events, provider usage, and a privacy warning.
 
 The UI does not load arbitrary plugin dashboard JavaScript.
 

@@ -207,7 +207,7 @@ Admin 配置中心中的 Memory Core、Pipelines、Retrieval/Mirror、Sidecar、
 
 HTTP API 覆盖 LLM providers、agent configs、chat settings、personas、sessions、approvals、memory extractions 和 memory segments。WebSocket `/ws` 支持 session resume、persona query、流式输出、工具/推理活动和审批事件。
 
-内置工具包括 `get_current_time`、`read_file`、`list_dir`、`write_file`、`edit_file`、`web_search`、`web_fetch`、`bash`。其中 `web_search`、`web_fetch`、`bash` 按配置和 provider 可用性注册。`read_file` / `list_dir` 支持 `read_scope=workspace|all`；外部敏感读取和破坏性写入都会进入 `tool_approval`。
+内置工具包括 `get_current_time`、`read_file`、`list_dir`、`write_file`、`edit_file`、`web_search`、`web_fetch`、`bash`。其中 `web_search`、`web_fetch`、`bash` 按配置和 provider 可用性注册。`bash` 是当前用户权限下的 managed host process，不是安全沙箱；Resource Broker / ChangeSet 只约束对应的宿主资源工具。`read_file` / `list_dir` 支持 `read_scope=workspace|all`；外部敏感读取和破坏性写入都会进入 `tool_approval`。
 
 ## 技术栈
 
