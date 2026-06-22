@@ -2,6 +2,7 @@ package sidecar
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -143,14 +144,17 @@ func (s *Supervisor) Stop(ctx context.Context) error {
 		go func() {
 			done <- s.cmd.Wait()
 		}()
-		_ = s.cmd.Process.Kill()
+		killErr := s.cmd.Process.Kill()
+		if killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
+			stopErr = killErr
+		}
 		timeout := s.spec.ShutdownTimeout
 		if timeout <= 0 {
 			timeout = 5 * time.Second
 		}
 		select {
 		case err := <-done:
-			if err != nil {
+			if err != nil && stopErr != nil {
 				stopErr = err
 			}
 		case <-time.After(timeout):
