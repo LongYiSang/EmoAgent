@@ -29,6 +29,7 @@ func NewWriteFileTool(projectRoot string) (tool.Spec, tool.Handler) {
 		}`),
 		Scope:                 tool.ScopeWork,
 		Permission:            tool.PermWorkspaceWrite,
+		Source:                workspaceFileSource(),
 		DestructiveClassifier: classifyWriteFileDestructive(projectRoot),
 	}
 

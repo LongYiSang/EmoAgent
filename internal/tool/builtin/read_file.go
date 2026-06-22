@@ -7,6 +7,7 @@ import (
 	"os"
 	"unicode/utf8"
 
+	"github.com/longyisang/emoagent/internal/resource"
 	"github.com/longyisang/emoagent/internal/tool"
 )
 
@@ -14,6 +15,10 @@ const readFileMaxBytes = 1 << 20
 
 // NewReadFileTool constructs the read_file tool for Work.
 func NewReadFileTool(projectRoot string) (tool.Spec, tool.Handler) {
+	return NewReadFileToolWithBroker(projectRoot, nil)
+}
+
+func NewReadFileToolWithBroker(projectRoot string, broker *resource.Broker) (tool.Spec, tool.Handler) {
 	spec := tool.Spec{
 		Name:        "read_file",
 		Description: "Read a valid UTF-8 text file. With read_scope=workspace, use a workspace-relative path. Absolute paths and path traversal are rejected in workspace scope. With read_scope=all, absolute or workspace-relative paths are allowed. Files larger than 1 MiB are rejected. Returns path, path_scope, content, and size.",
@@ -25,6 +30,7 @@ func NewReadFileTool(projectRoot string) (tool.Spec, tool.Handler) {
 		}`),
 		Scope:              tool.ScopeWork,
 		Permission:         tool.PermReadOnly,
+		Source:             workspaceFileSource(),
 		ApprovalClassifier: classifySensitiveRead(projectRoot, "read_file"),
 	}
 
@@ -35,6 +41,24 @@ func NewReadFileTool(projectRoot string) (tool.Spec, tool.Handler) {
 		if err := json.Unmarshal(input, &in); err != nil {
 			return nil, fmt.Errorf("read_file: invalid input: %w", err)
 		}
+		if broker != nil && tool.ReadScopeFromContext(ctx) == tool.ReadScopeAll {
+			data, ref, err := broker.Read(ctx, hostResourceSelector(in.Path), resource.ReadOptions{MaxBytes: readFileMaxBytes})
+			if err != nil {
+				return nil, fmt.Errorf("read_file: %w", err)
+			}
+			if !utf8.Valid(data) {
+				return nil, fmt.Errorf("read_file: file is not valid UTF-8")
+			}
+			return json.Marshal(map[string]any{
+				"path":        ref.DisplayPath,
+				"path_scope":  "external",
+				"resource_id": ref.ID,
+				"root_id":     ref.RootID,
+				"content":     string(data),
+				"size":        len(data),
+			})
+		}
+
 		resolved, err := resolveReadPath(ctx, projectRoot, in.Path)
 		if err != nil {
 			return nil, fmt.Errorf("read_file: %w", err)

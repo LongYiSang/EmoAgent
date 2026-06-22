@@ -11,6 +11,19 @@ export type ToolActivity = {
   hash?: string;
   is_truncated?: boolean;
   isTruncated?: boolean;
+  origin?: string;
+  runtime_kind?: string;
+  runtimeKind?: string;
+  producer_id?: string;
+  producerID?: string;
+  executor?: string;
+  integrity?: string;
+  instruction_authority?: string;
+  instructionAuthority?: string;
+  sensitivity?: string;
+  redacted?: boolean;
+  grant_ids?: string[];
+  grantIDs?: string[];
 };
 
 export type ReasoningActivity = {

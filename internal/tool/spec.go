@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/tool/resultv2"
 )
 
 // Scope controls which agent can see a tool.
@@ -64,6 +65,23 @@ type ApprovalRequirement struct {
 
 type ApprovalClassifier func(ctx context.Context, input json.RawMessage) (ApprovalRequirement, bool)
 
+type ToolSourceKind string
+
+const (
+	ToolSourceBuiltin ToolSourceKind = "builtin"
+	ToolSourcePlugin  ToolSourceKind = "plugin"
+	ToolSourceRemote  ToolSourceKind = "remote"
+)
+
+type ToolSourceMetadata struct {
+	Kind            ToolSourceKind         `json:"kind,omitempty"`
+	ProducerID      string                 `json:"producer_id,omitempty"`
+	ProducerVersion string                 `json:"producer_version,omitempty"`
+	RuntimeKind     string                 `json:"runtime_kind,omitempty"`
+	DefaultLabels   resultv2.ContentLabels `json:"default_labels,omitempty"`
+	OutputSchema    json.RawMessage        `json:"output_schema,omitempty"`
+}
+
 // Spec defines a tool available to the LLM.
 type Spec struct {
 	Name                  string                `json:"name"`
@@ -71,6 +89,7 @@ type Spec struct {
 	Parameters            json.RawMessage       `json:"parameters"` // JSON Schema
 	Scope                 Scope                 `json:"scope"`
 	Permission            Permission            `json:"permission"`
+	Source                ToolSourceMetadata    `json:"source,omitempty"`
 	DestructiveClassifier DestructiveClassifier `json:"-"`
 	ApprovalClassifier    ApprovalClassifier    `json:"-"`
 }
@@ -101,4 +120,5 @@ type Result struct {
 	Content       json.RawMessage // JSON result
 	IsError       bool
 	NeedsApproval bool
+	Envelope      *resultv2.ToolResultEnvelope
 }

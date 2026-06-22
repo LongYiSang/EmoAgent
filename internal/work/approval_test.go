@@ -72,10 +72,17 @@ func TestApprovalService_RoundTripsToolApprovalBinding(t *testing.T) {
 	packet.Category = protocol.CatToolApproval
 	packet.ToolApprovalBinding = &protocol.ToolApprovalBinding{
 		ApprovalKind:        "destructive_write",
-		ToolName:            "write_file",
+		ToolName:            "host_apply_change",
 		NormalizedInputHash: "sha256:input",
 		PathDigest:          "sha256:path",
-		InputPreview:        "path=docs/a.md, content_bytes=12",
+		InputPreview:        "changeset_id=cs-1, plan_hash=sha256:plan",
+		ChangeSetID:         "cs-1",
+		PlanHash:            "sha256:plan",
+		ResourceID:          "local:abc",
+		CanonicalPathHash:   "sha256:canonical",
+		BaselineHash:        "sha256:baseline",
+		BaselineFileID:      "file-id",
+		DeleteMode:          "quarantine",
 	}
 
 	req, err := svc.CreateRequestFromDecision("session-1", packet, time.Now().UTC().Add(time.Hour))

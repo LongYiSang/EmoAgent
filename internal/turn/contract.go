@@ -156,14 +156,23 @@ type OutboundEvent struct {
 }
 
 type ToolActivity struct {
-	ID          string
-	Name        string
-	Status      string
-	DurationMS  int64
-	Preview     string
-	Size        int
-	Hash        string
-	IsTruncated bool
+	ID                   string
+	Name                 string
+	Status               string
+	DurationMS           int64
+	Preview              string
+	Size                 int
+	Hash                 string
+	IsTruncated          bool
+	Origin               string
+	RuntimeKind          string
+	ProducerID           string
+	Executor             string
+	Integrity            string
+	InstructionAuthority string
+	Sensitivity          string
+	Redacted             bool
+	GrantIDs             []string
 }
 
 type ReasoningActivity struct {

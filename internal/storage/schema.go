@@ -36,6 +36,12 @@ CREATE TABLE IF NOT EXISTS plugin_enabled_state (
     version TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0,1)),
     user_grant_json TEXT NOT NULL DEFAULT '{}',
+    trust_level TEXT NOT NULL DEFAULT '',
+    trust_accepted_at TEXT NOT NULL DEFAULT '',
+    trust_ack_hash TEXT NOT NULL DEFAULT '',
+    trust_review_reasons_json TEXT NOT NULL DEFAULT '[]',
+    default_tool_exposure TEXT NOT NULL DEFAULT '',
+    default_invocation_policy TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -62,6 +68,27 @@ CREATE TABLE IF NOT EXISTS plugin_access_events (
     input_hash TEXT NOT NULL DEFAULT '',
     output_hash TEXT NOT NULL DEFAULT '',
     duration_ms INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS plugin_trust_acceptance_history (
+    id TEXT PRIMARY KEY,
+    plugin_id TEXT NOT NULL,
+    version TEXT NOT NULL,
+    trust_level TEXT NOT NULL DEFAULT '',
+    accepted_at TEXT NOT NULL DEFAULT '',
+    trust_ack_hash TEXT NOT NULL DEFAULT '',
+    trust_review_reasons_json TEXT NOT NULL DEFAULT '[]',
+    default_tool_exposure TEXT NOT NULL DEFAULT '',
+    default_invocation_policy TEXT NOT NULL DEFAULT '',
+    user_grant_hash TEXT NOT NULL DEFAULT '',
+    host_policy_fingerprint TEXT NOT NULL DEFAULT '',
+    dependency_lock_digest TEXT NOT NULL DEFAULT '',
+    package_digest TEXT NOT NULL DEFAULT '',
+    manifest_digest TEXT NOT NULL DEFAULT '',
+    signature_status TEXT NOT NULL DEFAULT '',
+    publisher_id TEXT NOT NULL DEFAULT '',
+    source_type TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -92,6 +119,9 @@ CREATE TABLE IF NOT EXISTS plugin_kv (
 const pluginRuntimeIndexSQL = `
 CREATE INDEX IF NOT EXISTS idx_plugin_access_events_plugin_time
     ON plugin_access_events(plugin_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_plugin_trust_acceptance_history_plugin_time
+    ON plugin_trust_acceptance_history(plugin_id, accepted_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_plugin_provider_usage_plugin_time
     ON plugin_provider_usage(plugin_id, created_at DESC);
@@ -152,6 +182,107 @@ CREATE INDEX IF NOT EXISTS idx_prompt_render_snapshots_agent_time
 
 CREATE INDEX IF NOT EXISTS idx_prompt_render_snapshots_purpose_time
     ON prompt_render_snapshots(purpose, created_at DESC);
+`
+
+const resourceGrantSchemaSQL = `
+CREATE TABLE IF NOT EXISTS resource_grants (
+    id TEXT PRIMARY KEY,
+    principal_kind TEXT NOT NULL,
+    principal_id TEXT NOT NULL,
+    capability TEXT NOT NULL,
+    resource_json TEXT NOT NULL,
+    operations_json TEXT NOT NULL DEFAULT '[]',
+    constraints_json TEXT NOT NULL DEFAULT '{}',
+    lifetime TEXT NOT NULL CHECK (lifetime IN ('once','task','session','persistent')),
+    status TEXT NOT NULL CHECK (status IN ('pending','active','consumed','revoked','expired')),
+    approval_request_id TEXT NOT NULL DEFAULT '',
+    binding_hash TEXT NOT NULL,
+    issued_by TEXT NOT NULL DEFAULT 'policy',
+    created_at TEXT NOT NULL,
+    expires_at TEXT,
+    consumed_at TEXT,
+    revoked_at TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS resource_grant_events (
+    id TEXT PRIMARY KEY,
+    grant_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    principal_kind TEXT NOT NULL,
+    principal_id TEXT NOT NULL,
+    summary_hash TEXT NOT NULL DEFAULT '',
+    provenance_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(grant_id) REFERENCES resource_grants(id)
+);
+
+`
+
+const resourceGrantIndexSQL = `
+CREATE INDEX IF NOT EXISTS idx_resource_grants_principal_status
+    ON resource_grants(principal_kind, principal_id, status);
+CREATE INDEX IF NOT EXISTS idx_resource_grants_capability_status
+    ON resource_grants(capability, status);
+CREATE INDEX IF NOT EXISTS idx_resource_grants_expires
+    ON resource_grants(status, expires_at);
+CREATE INDEX IF NOT EXISTS idx_resource_grant_events_grant_time
+    ON resource_grant_events(grant_id, created_at);
+`
+
+const hostResourceChangeSetSchemaSQL = `
+CREATE TABLE IF NOT EXISTS host_resource_changesets (
+    id TEXT PRIMARY KEY,
+    principal_kind TEXT NOT NULL DEFAULT '',
+    principal_id TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL CHECK (status IN ('staged','approval_pending','applying','applied','conflict','failed','cancelled','restored')),
+    operation TEXT NOT NULL,
+    source_ref_json TEXT NOT NULL DEFAULT '{}',
+    target_ref_json TEXT NOT NULL DEFAULT '{}',
+    target_display_path TEXT NOT NULL DEFAULT '',
+    baseline_hash TEXT NOT NULL DEFAULT '',
+    baseline_file_id TEXT NOT NULL DEFAULT '',
+    content_hash TEXT NOT NULL DEFAULT '',
+    plan_hash TEXT NOT NULL,
+    staging_path TEXT NOT NULL DEFAULT '',
+    quarantine_path TEXT NOT NULL DEFAULT '',
+    preview_json TEXT NOT NULL DEFAULT '{}',
+    permanent_delete INTEGER NOT NULL DEFAULT 0 CHECK (permanent_delete IN (0,1)),
+    recursive INTEGER NOT NULL DEFAULT 0 CHECK (recursive IN (0,1)),
+    error_message TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    applied_at TEXT,
+    canceled_at TEXT,
+    restored_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS host_resource_change_ops (
+    id TEXT PRIMARY KEY,
+    changeset_id TEXT NOT NULL,
+    op_index INTEGER NOT NULL,
+    operation TEXT NOT NULL,
+    source_display_path TEXT NOT NULL DEFAULT '',
+    target_display_path TEXT NOT NULL DEFAULT '',
+    source_hash TEXT NOT NULL DEFAULT '',
+    target_hash TEXT NOT NULL DEFAULT '',
+    bytes INTEGER NOT NULL DEFAULT 0,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(changeset_id) REFERENCES host_resource_changesets(id)
+);
+
+`
+
+const hostResourceChangeSetIndexSQL = `
+CREATE INDEX IF NOT EXISTS idx_host_resource_changesets_status_time
+    ON host_resource_changesets(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_host_resource_changesets_principal_time
+    ON host_resource_changesets(principal_kind, principal_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_host_resource_changesets_plan_hash
+    ON host_resource_changesets(plan_hash);
+CREATE INDEX IF NOT EXISTS idx_host_resource_change_ops_changeset
+    ON host_resource_change_ops(changeset_id, op_index);
 `
 
 var migrations = []Migration{
@@ -1082,6 +1213,49 @@ CREATE TABLE IF NOT EXISTS llm_model_capabilities (
 		Version: 27,
 		SQL:     promptCenterSchemaSQL,
 	},
+	{
+		Version: 28,
+		SQL:     `SELECT 1;`,
+	},
+	{
+		Version: 29,
+		SQL:     `SELECT 1;`,
+	},
+	{
+		Version: 30,
+		SQL:     `SELECT 1;`,
+	},
+	{
+		Version: 31,
+		SQL: `
+CREATE TABLE IF NOT EXISTS plugin_trust_acceptance_history (
+    id TEXT PRIMARY KEY,
+    plugin_id TEXT NOT NULL,
+    version TEXT NOT NULL,
+    trust_level TEXT NOT NULL DEFAULT '',
+    accepted_at TEXT NOT NULL DEFAULT '',
+    trust_ack_hash TEXT NOT NULL DEFAULT '',
+    trust_review_reasons_json TEXT NOT NULL DEFAULT '[]',
+    default_tool_exposure TEXT NOT NULL DEFAULT '',
+    default_invocation_policy TEXT NOT NULL DEFAULT '',
+    user_grant_hash TEXT NOT NULL DEFAULT '',
+    host_policy_fingerprint TEXT NOT NULL DEFAULT '',
+    dependency_lock_digest TEXT NOT NULL DEFAULT '',
+    package_digest TEXT NOT NULL DEFAULT '',
+    manifest_digest TEXT NOT NULL DEFAULT '',
+    signature_status TEXT NOT NULL DEFAULT '',
+    publisher_id TEXT NOT NULL DEFAULT '',
+    source_type TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_plugin_trust_acceptance_history_plugin_time
+    ON plugin_trust_acceptance_history(plugin_id, accepted_at DESC);
+`,
+	},
+	{
+		Version: 32,
+		SQL:     `SELECT 1;`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.
@@ -1150,8 +1324,138 @@ func ApplySchemaRepairs(db *sql.DB) error {
 	if err := ensurePromptCenterSchema(db); err != nil {
 		return err
 	}
+	if err := ensureResourceGrantSchema(db); err != nil {
+		return err
+	}
+	if err := ensureHostResourceChangeSetSchema(db); err != nil {
+		return err
+	}
 	if err := ensureNoImageBase64Guards(db); err != nil {
 		return err
+	}
+	return nil
+}
+
+func ensureHostResourceChangeSetSchema(db *sql.DB) error {
+	if _, err := db.Exec(hostResourceChangeSetSchemaSQL); err != nil {
+		return fmt.Errorf("ensure host resource changeset schema: %w", err)
+	}
+	repairs := map[string][]struct {
+		name string
+		sql  string
+	}{
+		"host_resource_changesets": {
+			{"id", "ALTER TABLE host_resource_changesets ADD COLUMN id TEXT NOT NULL DEFAULT ''"},
+			{"principal_kind", "ALTER TABLE host_resource_changesets ADD COLUMN principal_kind TEXT NOT NULL DEFAULT ''"},
+			{"principal_id", "ALTER TABLE host_resource_changesets ADD COLUMN principal_id TEXT NOT NULL DEFAULT ''"},
+			{"status", "ALTER TABLE host_resource_changesets ADD COLUMN status TEXT NOT NULL DEFAULT 'staged'"},
+			{"operation", "ALTER TABLE host_resource_changesets ADD COLUMN operation TEXT NOT NULL DEFAULT ''"},
+			{"source_ref_json", "ALTER TABLE host_resource_changesets ADD COLUMN source_ref_json TEXT NOT NULL DEFAULT '{}'"},
+			{"target_ref_json", "ALTER TABLE host_resource_changesets ADD COLUMN target_ref_json TEXT NOT NULL DEFAULT '{}'"},
+			{"target_display_path", "ALTER TABLE host_resource_changesets ADD COLUMN target_display_path TEXT NOT NULL DEFAULT ''"},
+			{"baseline_hash", "ALTER TABLE host_resource_changesets ADD COLUMN baseline_hash TEXT NOT NULL DEFAULT ''"},
+			{"baseline_file_id", "ALTER TABLE host_resource_changesets ADD COLUMN baseline_file_id TEXT NOT NULL DEFAULT ''"},
+			{"content_hash", "ALTER TABLE host_resource_changesets ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''"},
+			{"plan_hash", "ALTER TABLE host_resource_changesets ADD COLUMN plan_hash TEXT NOT NULL DEFAULT ''"},
+			{"staging_path", "ALTER TABLE host_resource_changesets ADD COLUMN staging_path TEXT NOT NULL DEFAULT ''"},
+			{"quarantine_path", "ALTER TABLE host_resource_changesets ADD COLUMN quarantine_path TEXT NOT NULL DEFAULT ''"},
+			{"preview_json", "ALTER TABLE host_resource_changesets ADD COLUMN preview_json TEXT NOT NULL DEFAULT '{}'"},
+			{"permanent_delete", "ALTER TABLE host_resource_changesets ADD COLUMN permanent_delete INTEGER NOT NULL DEFAULT 0"},
+			{"recursive", "ALTER TABLE host_resource_changesets ADD COLUMN recursive INTEGER NOT NULL DEFAULT 0"},
+			{"error_message", "ALTER TABLE host_resource_changesets ADD COLUMN error_message TEXT NOT NULL DEFAULT ''"},
+			{"created_at", "ALTER TABLE host_resource_changesets ADD COLUMN created_at TEXT NOT NULL DEFAULT ''"},
+			{"updated_at", "ALTER TABLE host_resource_changesets ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''"},
+			{"applied_at", "ALTER TABLE host_resource_changesets ADD COLUMN applied_at TEXT"},
+			{"canceled_at", "ALTER TABLE host_resource_changesets ADD COLUMN canceled_at TEXT"},
+			{"restored_at", "ALTER TABLE host_resource_changesets ADD COLUMN restored_at TEXT"},
+		},
+		"host_resource_change_ops": {
+			{"id", "ALTER TABLE host_resource_change_ops ADD COLUMN id TEXT NOT NULL DEFAULT ''"},
+			{"changeset_id", "ALTER TABLE host_resource_change_ops ADD COLUMN changeset_id TEXT NOT NULL DEFAULT ''"},
+			{"op_index", "ALTER TABLE host_resource_change_ops ADD COLUMN op_index INTEGER NOT NULL DEFAULT 0"},
+			{"operation", "ALTER TABLE host_resource_change_ops ADD COLUMN operation TEXT NOT NULL DEFAULT ''"},
+			{"source_display_path", "ALTER TABLE host_resource_change_ops ADD COLUMN source_display_path TEXT NOT NULL DEFAULT ''"},
+			{"target_display_path", "ALTER TABLE host_resource_change_ops ADD COLUMN target_display_path TEXT NOT NULL DEFAULT ''"},
+			{"source_hash", "ALTER TABLE host_resource_change_ops ADD COLUMN source_hash TEXT NOT NULL DEFAULT ''"},
+			{"target_hash", "ALTER TABLE host_resource_change_ops ADD COLUMN target_hash TEXT NOT NULL DEFAULT ''"},
+			{"bytes", "ALTER TABLE host_resource_change_ops ADD COLUMN bytes INTEGER NOT NULL DEFAULT 0"},
+			{"metadata_json", "ALTER TABLE host_resource_change_ops ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'"},
+			{"created_at", "ALTER TABLE host_resource_change_ops ADD COLUMN created_at TEXT NOT NULL DEFAULT ''"},
+		},
+	}
+	if err := ensureTableColumns(db, repairs); err != nil {
+		return fmt.Errorf("repair host resource changeset schema: %w", err)
+	}
+	if _, err := db.Exec(hostResourceChangeSetIndexSQL); err != nil {
+		return fmt.Errorf("ensure host resource changeset indexes: %w", err)
+	}
+	return nil
+}
+
+func ensureResourceGrantSchema(db *sql.DB) error {
+	if _, err := db.Exec(resourceGrantSchemaSQL); err != nil {
+		return fmt.Errorf("ensure resource grant schema: %w", err)
+	}
+	repairs := map[string][]struct {
+		name string
+		sql  string
+	}{
+		"resource_grants": {
+			{"id", "ALTER TABLE resource_grants ADD COLUMN id TEXT NOT NULL DEFAULT ''"},
+			{"principal_kind", "ALTER TABLE resource_grants ADD COLUMN principal_kind TEXT NOT NULL DEFAULT ''"},
+			{"principal_id", "ALTER TABLE resource_grants ADD COLUMN principal_id TEXT NOT NULL DEFAULT ''"},
+			{"capability", "ALTER TABLE resource_grants ADD COLUMN capability TEXT NOT NULL DEFAULT ''"},
+			{"resource_json", "ALTER TABLE resource_grants ADD COLUMN resource_json TEXT NOT NULL DEFAULT '{}'"},
+			{"operations_json", "ALTER TABLE resource_grants ADD COLUMN operations_json TEXT NOT NULL DEFAULT '[]'"},
+			{"constraints_json", "ALTER TABLE resource_grants ADD COLUMN constraints_json TEXT NOT NULL DEFAULT '{}'"},
+			{"lifetime", "ALTER TABLE resource_grants ADD COLUMN lifetime TEXT NOT NULL DEFAULT 'once'"},
+			{"status", "ALTER TABLE resource_grants ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'"},
+			{"approval_request_id", "ALTER TABLE resource_grants ADD COLUMN approval_request_id TEXT NOT NULL DEFAULT ''"},
+			{"binding_hash", "ALTER TABLE resource_grants ADD COLUMN binding_hash TEXT NOT NULL DEFAULT ''"},
+			{"issued_by", "ALTER TABLE resource_grants ADD COLUMN issued_by TEXT NOT NULL DEFAULT 'policy'"},
+			{"created_at", "ALTER TABLE resource_grants ADD COLUMN created_at TEXT NOT NULL DEFAULT ''"},
+			{"expires_at", "ALTER TABLE resource_grants ADD COLUMN expires_at TEXT"},
+			{"consumed_at", "ALTER TABLE resource_grants ADD COLUMN consumed_at TEXT"},
+			{"revoked_at", "ALTER TABLE resource_grants ADD COLUMN revoked_at TEXT"},
+			{"updated_at", "ALTER TABLE resource_grants ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''"},
+		},
+		"resource_grant_events": {
+			{"id", "ALTER TABLE resource_grant_events ADD COLUMN id TEXT NOT NULL DEFAULT ''"},
+			{"grant_id", "ALTER TABLE resource_grant_events ADD COLUMN grant_id TEXT NOT NULL DEFAULT ''"},
+			{"event_type", "ALTER TABLE resource_grant_events ADD COLUMN event_type TEXT NOT NULL DEFAULT ''"},
+			{"principal_kind", "ALTER TABLE resource_grant_events ADD COLUMN principal_kind TEXT NOT NULL DEFAULT ''"},
+			{"principal_id", "ALTER TABLE resource_grant_events ADD COLUMN principal_id TEXT NOT NULL DEFAULT ''"},
+			{"summary_hash", "ALTER TABLE resource_grant_events ADD COLUMN summary_hash TEXT NOT NULL DEFAULT ''"},
+			{"provenance_json", "ALTER TABLE resource_grant_events ADD COLUMN provenance_json TEXT NOT NULL DEFAULT '{}'"},
+			{"created_at", "ALTER TABLE resource_grant_events ADD COLUMN created_at TEXT NOT NULL DEFAULT ''"},
+		},
+	}
+	if err := ensureTableColumns(db, repairs); err != nil {
+		return fmt.Errorf("repair resource grant schema: %w", err)
+	}
+	if _, err := db.Exec(resourceGrantIndexSQL); err != nil {
+		return fmt.Errorf("ensure resource grant indexes: %w", err)
+	}
+	return nil
+}
+
+func ensureTableColumns(db *sql.DB, repairs map[string][]struct {
+	name string
+	sql  string
+}) error {
+	for table, columns := range repairs {
+		existing, err := tableColumns(db, table)
+		if err != nil {
+			return fmt.Errorf("read %s columns: %w", table, err)
+		}
+		for _, column := range columns {
+			if existing[column.name] {
+				continue
+			}
+			if _, err := db.Exec(column.sql); err != nil {
+				return fmt.Errorf("add %s.%s: %w", table, column.name, err)
+			}
+		}
 	}
 	return nil
 }
@@ -1192,6 +1496,12 @@ func ensurePluginRuntimeSchema(db *sql.DB) error {
 			{"version", "ALTER TABLE plugin_enabled_state ADD COLUMN version TEXT NOT NULL DEFAULT ''"},
 			{"enabled", "ALTER TABLE plugin_enabled_state ADD COLUMN enabled INTEGER NOT NULL DEFAULT 0"},
 			{"user_grant_json", "ALTER TABLE plugin_enabled_state ADD COLUMN user_grant_json TEXT NOT NULL DEFAULT '{}'"},
+			{"trust_level", "ALTER TABLE plugin_enabled_state ADD COLUMN trust_level TEXT NOT NULL DEFAULT ''"},
+			{"trust_accepted_at", "ALTER TABLE plugin_enabled_state ADD COLUMN trust_accepted_at TEXT NOT NULL DEFAULT ''"},
+			{"trust_ack_hash", "ALTER TABLE plugin_enabled_state ADD COLUMN trust_ack_hash TEXT NOT NULL DEFAULT ''"},
+			{"trust_review_reasons_json", "ALTER TABLE plugin_enabled_state ADD COLUMN trust_review_reasons_json TEXT NOT NULL DEFAULT '[]'"},
+			{"default_tool_exposure", "ALTER TABLE plugin_enabled_state ADD COLUMN default_tool_exposure TEXT NOT NULL DEFAULT ''"},
+			{"default_invocation_policy", "ALTER TABLE plugin_enabled_state ADD COLUMN default_invocation_policy TEXT NOT NULL DEFAULT ''"},
 			{"updated_at", "ALTER TABLE plugin_enabled_state ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''"},
 		},
 		"plugin_runtime_records": {
@@ -1217,6 +1527,26 @@ func ensurePluginRuntimeSchema(db *sql.DB) error {
 			{"output_hash", "ALTER TABLE plugin_access_events ADD COLUMN output_hash TEXT NOT NULL DEFAULT ''"},
 			{"duration_ms", "ALTER TABLE plugin_access_events ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0"},
 			{"created_at", "ALTER TABLE plugin_access_events ADD COLUMN created_at TEXT NOT NULL DEFAULT ''"},
+		},
+		"plugin_trust_acceptance_history": {
+			{"id", "ALTER TABLE plugin_trust_acceptance_history ADD COLUMN id TEXT NOT NULL DEFAULT ''"},
+			{"plugin_id", "ALTER TABLE plugin_trust_acceptance_history ADD COLUMN plugin_id TEXT NOT NULL DEFAULT ''"},
+			{"version", "ALTER TABLE plugin_trust_acceptance_history ADD COLUMN version TEXT NOT NULL DEFAULT ''"},
+			{"trust_level", "ALTER TABLE plugin_trust_acceptance_history ADD COLUMN trust_level TEXT NOT NULL DEFAULT ''"},
+			{"accepted_at", "ALTER TABLE plugin_trust_acceptance_history ADD COLUMN accepted_at TEXT NOT NULL DEFAULT ''"},
+			{"trust_ack_hash", "ALTER TABLE plugin_trust_acceptance_history ADD COLUMN trust_ack_hash TEXT NOT NULL DEFAULT ''"},
+			{"trust_review_reasons_json", "ALTER TABLE plugin_trust_acceptance_history ADD COLUMN trust_review_reasons_json TEXT NOT NULL DEFAULT '[]'"},
+			{"default_tool_exposure", "ALTER TABLE plugin_trust_acceptance_history ADD COLUMN default_tool_exposure TEXT NOT NULL DEFAULT ''"},
+			{"default_invocation_policy", "ALTER TABLE plugin_trust_acceptance_history ADD COLUMN default_invocation_policy TEXT NOT NULL DEFAULT ''"},
+			{"user_grant_hash", "ALTER TABLE plugin_trust_acceptance_history ADD COLUMN user_grant_hash TEXT NOT NULL DEFAULT ''"},
+			{"host_policy_fingerprint", "ALTER TABLE plugin_trust_acceptance_history ADD COLUMN host_policy_fingerprint TEXT NOT NULL DEFAULT ''"},
+			{"dependency_lock_digest", "ALTER TABLE plugin_trust_acceptance_history ADD COLUMN dependency_lock_digest TEXT NOT NULL DEFAULT ''"},
+			{"package_digest", "ALTER TABLE plugin_trust_acceptance_history ADD COLUMN package_digest TEXT NOT NULL DEFAULT ''"},
+			{"manifest_digest", "ALTER TABLE plugin_trust_acceptance_history ADD COLUMN manifest_digest TEXT NOT NULL DEFAULT ''"},
+			{"signature_status", "ALTER TABLE plugin_trust_acceptance_history ADD COLUMN signature_status TEXT NOT NULL DEFAULT ''"},
+			{"publisher_id", "ALTER TABLE plugin_trust_acceptance_history ADD COLUMN publisher_id TEXT NOT NULL DEFAULT ''"},
+			{"source_type", "ALTER TABLE plugin_trust_acceptance_history ADD COLUMN source_type TEXT NOT NULL DEFAULT ''"},
+			{"created_at", "ALTER TABLE plugin_trust_acceptance_history ADD COLUMN created_at TEXT NOT NULL DEFAULT ''"},
 		},
 		"plugin_provider_usage": {
 			{"id", "ALTER TABLE plugin_provider_usage ADD COLUMN id TEXT NOT NULL DEFAULT ''"},
@@ -1342,6 +1672,13 @@ CREATE TABLE IF NOT EXISTS approval_requests (
     normalized_input_hash TEXT NOT NULL DEFAULT '',
     path_digest           TEXT NOT NULL DEFAULT '',
     input_preview         TEXT NOT NULL DEFAULT '',
+    changeset_id          TEXT NOT NULL DEFAULT '',
+    plan_hash             TEXT NOT NULL DEFAULT '',
+    resource_id           TEXT NOT NULL DEFAULT '',
+    canonical_path_hash   TEXT NOT NULL DEFAULT '',
+    baseline_hash         TEXT NOT NULL DEFAULT '',
+    baseline_file_id      TEXT NOT NULL DEFAULT '',
+    delete_mode           TEXT NOT NULL DEFAULT '',
     created_at            TEXT NOT NULL,
     updated_at            TEXT NOT NULL
 );
@@ -1362,6 +1699,13 @@ CREATE TABLE IF NOT EXISTS approval_requests (
 		{"path_digest", "ALTER TABLE approval_requests ADD COLUMN path_digest TEXT NOT NULL DEFAULT ''"},
 		{"input_preview", "ALTER TABLE approval_requests ADD COLUMN input_preview TEXT NOT NULL DEFAULT ''"},
 		{"approval_kind", "ALTER TABLE approval_requests ADD COLUMN approval_kind TEXT NOT NULL DEFAULT ''"},
+		{"changeset_id", "ALTER TABLE approval_requests ADD COLUMN changeset_id TEXT NOT NULL DEFAULT ''"},
+		{"plan_hash", "ALTER TABLE approval_requests ADD COLUMN plan_hash TEXT NOT NULL DEFAULT ''"},
+		{"resource_id", "ALTER TABLE approval_requests ADD COLUMN resource_id TEXT NOT NULL DEFAULT ''"},
+		{"canonical_path_hash", "ALTER TABLE approval_requests ADD COLUMN canonical_path_hash TEXT NOT NULL DEFAULT ''"},
+		{"baseline_hash", "ALTER TABLE approval_requests ADD COLUMN baseline_hash TEXT NOT NULL DEFAULT ''"},
+		{"baseline_file_id", "ALTER TABLE approval_requests ADD COLUMN baseline_file_id TEXT NOT NULL DEFAULT ''"},
+		{"delete_mode", "ALTER TABLE approval_requests ADD COLUMN delete_mode TEXT NOT NULL DEFAULT ''"},
 	} {
 		if columns[column.name] {
 			continue
@@ -1382,6 +1726,8 @@ CREATE INDEX IF NOT EXISTS idx_approval_requests_binding
     ON approval_requests(session_id, task_id, tool_name, normalized_input_hash, path_digest);
 CREATE INDEX IF NOT EXISTS idx_approval_requests_kind_binding
     ON approval_requests(session_id, task_id, approval_kind, tool_name, normalized_input_hash, path_digest);
+CREATE INDEX IF NOT EXISTS idx_approval_requests_changeset_binding
+    ON approval_requests(session_id, task_id, changeset_id, plan_hash);
 `); err != nil {
 		return fmt.Errorf("ensure approval_requests indexes: %w", err)
 	}

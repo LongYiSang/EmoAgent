@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -175,6 +176,8 @@ func writeToolApprovalResumeEvent(ctx context.Context, journal *Journal, round i
 		"tool_name":             call.Name,
 		"normalized_input_hash": actual.NormalizedInputHash,
 		"path_digest":           actual.PathDigest,
+		"changeset_id":          actual.ChangeSetID,
+		"plan_hash":             actual.PlanHash,
 		"destructive_reason":    destructiveReason,
 		"binding_match":         bindingMatched,
 		"executed":              bindingMatched && !result.NeedsApproval,
@@ -190,7 +193,14 @@ func approvalMatchesBindingForJournal(approval tool.ApprovalContext, binding too
 		kindMatches &&
 		approval.ToolName == binding.ToolName &&
 		approval.NormalizedInputHash == binding.NormalizedInputHash &&
-		approval.PathDigest == binding.PathDigest
+		approval.PathDigest == binding.PathDigest &&
+		approval.ChangeSetID == binding.ChangeSetID &&
+		approval.PlanHash == binding.PlanHash &&
+		approval.ResourceID == binding.ResourceID &&
+		approval.CanonicalPathHash == binding.CanonicalPathHash &&
+		approval.BaselineHash == binding.BaselineHash &&
+		approval.BaselineFileID == binding.BaselineFileID &&
+		approval.DeleteMode == binding.DeleteMode
 }
 
 func writeApprovalBindingMismatchEvent(ctx context.Context, journal *Journal, round int, call tool.Call) {
@@ -214,6 +224,10 @@ func writeApprovalBindingMismatchEvent(ctx context.Context, journal *Journal, ro
 		"actual_normalized_input_hash":   actual.NormalizedInputHash,
 		"expected_path_digest":           approval.PathDigest,
 		"actual_path_digest":             actual.PathDigest,
+		"expected_changeset_id":          approval.ChangeSetID,
+		"actual_changeset_id":            actual.ChangeSetID,
+		"expected_plan_hash":             approval.PlanHash,
+		"actual_plan_hash":               actual.PlanHash,
 	})
 }
 
@@ -322,11 +336,7 @@ func (r *Runtime) runLoop(
 			calls := tool.ExtractToolCalls(resp)
 			for _, call := range calls {
 				if journal != nil {
-					journal.Write("tool_call", round, map[string]any{
-						"call_id": call.ID,
-						"name":    call.Name,
-						"input":   string(call.Input),
-					})
+					journal.Write("tool_call", round, safeToolCallJournalPayload(call))
 				}
 			}
 			if progressCB != nil {
@@ -451,12 +461,9 @@ func (r *Runtime) runLoop(
 				blockedCall := blocked.Call
 				messages[len(messages)-1] = filterAssistantMessageForBlockedCallPause(messages[len(messages)-1], blockedCall.ID)
 				if journal != nil {
-					journal.Write("permission_escalation_intercepted", round, map[string]any{
-						"task_id": brief.TaskID,
-						"call_id": blockedCall.ID,
-						"name":    blockedCall.Name,
-						"input":   string(blockedCall.Input),
-					})
+					fields := safeToolCallJournalPayload(blockedCall)
+					fields["task_id"] = brief.TaskID
+					journal.Write("permission_escalation_intercepted", round, fields)
 				}
 				if escalationCount >= r.cfg.MaxEscalations {
 					report := failedReport(brief, fmt.Sprintf("max escalations exceeded (%d)", r.cfg.MaxEscalations))
@@ -475,21 +482,19 @@ func (r *Runtime) runLoop(
 				messages[len(messages)-1] = filterAssistantMessageForBlockedCallPause(messages[len(messages)-1], blockedCall.ID)
 				packet := buildToolApprovalPacket(brief, blocked)
 				if journal != nil {
-					fields := map[string]any{
-						"task_id":             brief.TaskID,
-						"call_id":             blockedCall.ID,
-						"name":                blockedCall.Name,
-						"input":               string(blockedCall.Input),
-						"approval_request_id": "",
-						"approval_kind":       blocked.ApprovalKind,
-						"approval_reason":     blocked.ApprovalReason,
-						"destructive_reason":  blocked.DestructiveReason,
-					}
+					fields := safeToolCallJournalPayload(blockedCall)
+					fields["task_id"] = brief.TaskID
+					fields["approval_request_id"] = ""
+					fields["approval_kind"] = blocked.ApprovalKind
+					fields["approval_reason"] = blocked.ApprovalReason
+					fields["destructive_reason"] = blocked.DestructiveReason
 					if packet.ToolApprovalBinding != nil {
 						fields["binding_approval_kind"] = packet.ToolApprovalBinding.ApprovalKind
 						fields["tool_name"] = packet.ToolApprovalBinding.ToolName
 						fields["normalized_input_hash"] = packet.ToolApprovalBinding.NormalizedInputHash
 						fields["path_digest"] = packet.ToolApprovalBinding.PathDigest
+						fields["changeset_id"] = packet.ToolApprovalBinding.ChangeSetID
+						fields["plan_hash"] = packet.ToolApprovalBinding.PlanHash
 					}
 					journal.Write("tool_approval_intercepted", round, fields)
 				}
@@ -694,6 +699,13 @@ func buildToolApprovalPacket(brief protocol.TaskBrief, classification tool.CallC
 			NormalizedInputHash: binding.NormalizedInputHash,
 			PathDigest:          binding.PathDigest,
 			InputPreview:        binding.InputPreview,
+			ChangeSetID:         binding.ChangeSetID,
+			PlanHash:            binding.PlanHash,
+			ResourceID:          binding.ResourceID,
+			CanonicalPathHash:   binding.CanonicalPathHash,
+			BaselineHash:        binding.BaselineHash,
+			BaselineFileID:      binding.BaselineFileID,
+			DeleteMode:          binding.DeleteMode,
 		}
 	}
 	return protocol.DecisionPacket{
@@ -946,16 +958,48 @@ func pickNamedToolCall(calls []tool.Call, name string) (tool.Call, bool, bool) {
 
 func logToolResults(journal *Journal, round int, results []tool.Result) {
 	for _, result := range results {
-		preview, truncated := truncateContent(string(result.Content), 500)
+		digest := contextutil.SnipToolResult("tool_result", result.CallID, result.Content, 64, 128)
+		preview, truncated := truncateContent(digest.Preview, 500)
 		if journal != nil {
-			journal.Write("tool_result", round, map[string]any{
+			fields := map[string]any{
 				"call_id":         result.CallID,
 				"content_preview": preview,
+				"content_hash":    digest.Hash,
 				"truncated":       truncated,
 				"is_error":        result.IsError,
-			})
+			}
+			if result.Envelope != nil {
+				fields["provenance"] = map[string]any{
+					"producer_kind": result.Envelope.Provenance.ProducerKind,
+					"producer_id":   result.Envelope.Provenance.ProducerID,
+					"tool_name":     result.Envelope.Provenance.ToolName,
+					"input_hash":    result.Envelope.Provenance.InputHash,
+					"runtime_kind":  result.Envelope.Provenance.RuntimeKind,
+				}
+				fields["labels"] = result.Envelope.Labels
+			}
+			journal.Write("tool_result", round, fields)
 		}
 	}
+}
+
+var journalSecretPattern = regexp.MustCompile(`(?i)(api[_-]?secret|secret|password|token|api[_-]?key)=\S+`)
+
+func safeToolCallJournalPayload(call tool.Call) map[string]any {
+	inputHash, err := tool.NormalizedInputHash(call.Input)
+	if err != nil {
+		inputHash = "invalid:" + err.Error()
+	}
+	return map[string]any{
+		"call_id":       call.ID,
+		"name":          call.Name,
+		"input_hash":    inputHash,
+		"input_preview": redactJournalPreview(tool.InputPreviewForCall(call)),
+	}
+}
+
+func redactJournalPreview(preview string) string {
+	return journalSecretPattern.ReplaceAllString(preview, "$1=[redacted]")
 }
 
 func errorToolResult(callID, message string) tool.Result {

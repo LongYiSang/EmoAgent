@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/longyisang/emoagent/internal/resource"
 	"github.com/longyisang/emoagent/internal/tool"
 )
 
@@ -25,6 +26,10 @@ type dirEntry struct {
 
 // NewListDirTool constructs the list_dir tool for Work.
 func NewListDirTool(projectRoot string) (tool.Spec, tool.Handler) {
+	return NewListDirToolWithBroker(projectRoot, nil)
+}
+
+func NewListDirToolWithBroker(projectRoot string, broker *resource.Broker) (tool.Spec, tool.Handler) {
 	spec := tool.Spec{
 		Name:        "list_dir",
 		Description: "List files and directories. With read_scope=workspace, use a workspace-relative path; with read_scope=all, absolute or workspace-relative paths are allowed. Use max_entries to keep results focused; output includes truncated when the listing hit the limit. Returns path, path_scope, name, type, size, and modification time.",
@@ -40,6 +45,7 @@ func NewListDirTool(projectRoot string) (tool.Spec, tool.Handler) {
 		}`),
 		Scope:              tool.ScopeWork,
 		Permission:         tool.PermReadOnly,
+		Source:             workspaceFileSource(),
 		ApprovalClassifier: classifySensitiveRead(projectRoot, "list_dir"),
 	}
 
@@ -56,6 +62,32 @@ func NewListDirTool(projectRoot string) (tool.Spec, tool.Handler) {
 		rel := in.Path
 		if rel == "" {
 			rel = "."
+		}
+		if broker != nil && tool.ReadScopeFromContext(ctx) == tool.ReadScopeAll {
+			entries, ref, truncated, err := broker.List(ctx, hostResourceSelector(rel), resource.ListOptions{
+				Recursive:  in.Recursive,
+				MaxEntries: in.MaxEntries,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("list_dir: %w", err)
+			}
+			outEntries := make([]dirEntry, 0, len(entries))
+			for _, entry := range entries {
+				outEntries = append(outEntries, dirEntry{
+					Name:    entry.Name,
+					Type:    entry.Type,
+					Size:    entry.Size,
+					ModTime: entry.ModTime,
+				})
+			}
+			return json.Marshal(map[string]any{
+				"path":        ref.DisplayPath,
+				"path_scope":  "external",
+				"resource_id": ref.ID,
+				"root_id":     ref.RootID,
+				"entries":     outEntries,
+				"truncated":   truncated,
+			})
 		}
 		resolved, err := resolveReadPath(ctx, projectRoot, rel)
 		if err != nil {

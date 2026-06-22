@@ -63,6 +63,13 @@ type ToolApprovalBinding struct {
 	NormalizedInputHash string `json:"normalized_input_hash"`
 	PathDigest          string `json:"path_digest,omitempty"`
 	InputPreview        string `json:"input_preview,omitempty"`
+	ChangeSetID         string `json:"changeset_id,omitempty"`
+	PlanHash            string `json:"plan_hash,omitempty"`
+	ResourceID          string `json:"resource_id,omitempty"`
+	CanonicalPathHash   string `json:"canonical_path_hash,omitempty"`
+	BaselineHash        string `json:"baseline_hash,omitempty"`
+	BaselineFileID      string `json:"baseline_file_id,omitempty"`
+	DeleteMode          string `json:"delete_mode,omitempty"`
 }
 
 // DecisionPacket is the structured escalation payload from Work to Emotion.

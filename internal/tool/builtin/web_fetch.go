@@ -37,6 +37,7 @@ func NewWebFetchToolWithProvider(provider webfetch.Provider, cfg config.WebFetch
 		}`),
 		Scope:      tool.ScopeWork,
 		Permission: tool.PermReadOnly,
+		Source:     externalWebSource(),
 	}
 
 	handler := func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {

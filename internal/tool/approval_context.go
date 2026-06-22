@@ -10,6 +10,13 @@ type ApprovalContext struct {
 	ToolName            string
 	NormalizedInputHash string
 	PathDigest          string
+	ChangeSetID         string
+	PlanHash            string
+	ResourceID          string
+	CanonicalPathHash   string
+	BaselineHash        string
+	BaselineFileID      string
+	DeleteMode          string
 }
 
 type approvalContextKey struct{}

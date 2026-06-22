@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/tool/resultv2"
 )
 
 func noopHandler(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
@@ -143,6 +144,43 @@ func TestRegistryUnregisterRemovesTool(t *testing.T) {
 	r.Unregister("missing")
 }
 
+func TestRegistryUnregisterPluginRemovesOnlyThatPluginTools(t *testing.T) {
+	r := NewRegistry()
+	r.Register(Spec{Name: "builtin", Parameters: json.RawMessage(`{}`), Scope: ScopeWork, Permission: PermReadOnly}, noopHandler)
+	r.Register(Spec{
+		Name:       "plugin.com.example.a.echo",
+		Parameters: json.RawMessage(`{}`),
+		Scope:      ScopeWork,
+		Permission: PermApprovedDestructive,
+		Source: ToolSourceMetadata{
+			Kind:       ToolSourcePlugin,
+			ProducerID: "com.example.a",
+		},
+	}, noopHandler)
+	r.Register(Spec{
+		Name:       "plugin.com.example.b.echo",
+		Parameters: json.RawMessage(`{}`),
+		Scope:      ScopeWork,
+		Permission: PermApprovedDestructive,
+		Source: ToolSourceMetadata{
+			Kind:       ToolSourcePlugin,
+			ProducerID: "com.example.b",
+		},
+	}, noopHandler)
+
+	r.UnregisterPlugin("com.example.a")
+
+	if _, ok := r.GetSpec("plugin.com.example.a.echo"); ok {
+		t.Fatal("plugin A tool still present after UnregisterPlugin")
+	}
+	if _, ok := r.GetSpec("plugin.com.example.b.echo"); !ok {
+		t.Fatal("plugin B tool removed by UnregisterPlugin for plugin A")
+	}
+	if _, ok := r.GetSpec("builtin"); !ok {
+		t.Fatal("builtin tool removed by UnregisterPlugin")
+	}
+}
+
 func TestRegistryForScope(t *testing.T) {
 	r := NewRegistry()
 
@@ -173,6 +211,39 @@ func TestRegistrySpecs(t *testing.T) {
 	specs := r.Specs()
 	if len(specs) != 2 {
 		t.Errorf("Specs: got %d, want 2", len(specs))
+	}
+}
+
+func TestRegistryPreservesToolSourceMetadata(t *testing.T) {
+	r := NewRegistry()
+	spec := Spec{
+		Name:       "read_file",
+		Parameters: json.RawMessage(`{}`),
+		Scope:      ScopeWork,
+		Permission: PermReadOnly,
+		Source: ToolSourceMetadata{
+			Kind:        ToolSourceBuiltin,
+			ProducerID:  "emoagent.builtin",
+			RuntimeKind: resultv2.RuntimeHost,
+			DefaultLabels: resultv2.ContentLabels{
+				Executor:             resultv2.ExecutorHostBuiltin,
+				Origin:               resultv2.OriginWorkspaceFile,
+				Integrity:            resultv2.IntegrityHashVerified,
+				InstructionAuthority: resultv2.InstructionDataOnly,
+			},
+		},
+	}
+	r.Register(spec, noopHandler)
+
+	got, ok := r.GetSpec("read_file")
+	if !ok {
+		t.Fatal("read_file spec missing")
+	}
+	if got.Source.Kind != ToolSourceBuiltin {
+		t.Fatalf("source kind = %q, want builtin", got.Source.Kind)
+	}
+	if got.Source.DefaultLabels.Origin != resultv2.OriginWorkspaceFile {
+		t.Fatalf("origin = %q, want workspace_file", got.Source.DefaultLabels.Origin)
 	}
 }
 

@@ -101,6 +101,28 @@ func (r *Registry) Unregister(name string) {
 	delete(r.funcs, name)
 }
 
+// UnregisterPlugin removes all tools owned by the given plugin.
+func (r *Registry) UnregisterPlugin(pluginID string) {
+	if r == nil {
+		return
+	}
+	pluginID = strings.TrimSpace(pluginID)
+	if pluginID == "" {
+		return
+	}
+	prefix := "plugin." + pluginID + "."
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for name, spec := range r.specs {
+		if (spec.Source.Kind == ToolSourcePlugin && spec.Source.ProducerID == pluginID) || strings.HasPrefix(name, prefix) {
+			delete(r.specs, name)
+			delete(r.funcs, name)
+		}
+	}
+}
+
 // Get returns the handler for a tool name.
 func (r *Registry) Get(name string) (Handler, bool) {
 	r.mu.RLock()

@@ -9,10 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/progress"
 	"github.com/longyisang/emoagent/internal/protocol"
+	"github.com/longyisang/emoagent/internal/resource"
 	"github.com/longyisang/emoagent/internal/tool"
+	"github.com/longyisang/emoagent/internal/tool/builtin"
 )
 
 func makePausedForResume(t *testing.T, taskID string) *PausedWork {
@@ -636,6 +639,81 @@ func TestResumeTool_ApprovedRequestSuppliesApprovalBindingAndExecutesPendingTool
 	}
 }
 
+func TestResumeTool_ApprovedHostApplyChangeAppliesRealChangeSet(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "note.txt")
+	if err := os.WriteFile(target, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manager := newResumeToolChangeSetManager(t, root)
+	cs, err := manager.PrepareChange(context.Background(), resource.ChangeSetRequest{
+		Operation: resource.ChangeOpOverwriteFile,
+		Path:      "@documents/note.txt",
+		Content:   "new\n",
+	})
+	if err != nil {
+		t.Fatalf("PrepareChange: %v", err)
+	}
+
+	call := tool.Call{
+		ID:    "apply-1",
+		Name:  "host_apply_change",
+		Input: hostApplyInputForChangeSet(t, cs),
+	}
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			textResp(`{"status":"completed","summary":"changeset applied"}`),
+		},
+	}
+	runtime := newRealHostApplyChangeRuntime(t, client, manager)
+	pending := newSQLitePendingRegistry(t)
+	paused := makePausedForResume(t, "task-real-host-apply")
+	paused.Brief.PermissionScope = "approved-destructive"
+	paused.PendingToolCall = &call
+	paused.Packet = buildToolApprovalPacket(paused.Brief, approvalClassificationForCall(call, tool.ApprovalKindDestructiveWrite, "apply external changeset"))
+	if err := pending.Put("session-1", paused.TaskID, paused); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	list := pending.ListInjectable("session-1")
+	if len(list) != 1 || list[0].Approval == nil || list[0].Approval.RequestID == "" {
+		t.Fatalf("ListInjectable = %#v, want approval request id", list)
+	}
+	requestID := list[0].Approval.RequestID
+	if _, err := pending.approvals.ApproveRequest("session-1", requestID, "allow", "web", ""); err != nil {
+		t.Fatalf("ApproveRequest: %v", err)
+	}
+
+	_, handler := NewResumeTool(runtime, pending, t.TempDir(), testLogger())
+	raw, err := handler(WithSessionID(context.Background(), "session-1"), json.RawMessage(`{"task_id":"task-real-host-apply","approval_request_id":"`+requestID+`"}`))
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	var report protocol.TaskReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatalf("unmarshal report: %v", err)
+	}
+	if report.Status != "completed" {
+		t.Fatalf("status = %q, want completed", report.Status)
+	}
+	if got := readResumeToolText(t, target); got != "new\n" {
+		t.Fatalf("file = %q, want applied content", got)
+	}
+	applied, err := manager.PreviewChange(context.Background(), cs.ID)
+	if err != nil {
+		t.Fatalf("PreviewChange: %v", err)
+	}
+	if applied.Status != resource.ChangeSetStatusApplied {
+		t.Fatalf("changeset status = %q, want applied", applied.Status)
+	}
+	req, err := pending.approvals.GetRequest("session-1", requestID)
+	if err != nil {
+		t.Fatalf("GetRequest: %v", err)
+	}
+	if req == nil || req.Status != string(protocol.ApprovalStatusConsumed) {
+		t.Fatalf("approval request = %#v, want consumed", req)
+	}
+}
+
 func TestResumeTool_SensitiveReadApprovalDoesNotEscalatePermissionScope(t *testing.T) {
 	client := &scriptedLLM{
 		responses: []*llm.ChatResponse{
@@ -881,4 +959,81 @@ func TestResumeTool_ApprovedRequestWithMutatedPendingToolCallDoesNotExecute(t *t
 	if !strings.Contains(journalText, `"kind":"tool_approval_binding_mismatch"`) {
 		t.Fatalf("journal missing tool_approval_binding_mismatch: %s", journalText)
 	}
+}
+
+func newResumeToolChangeSetManager(t *testing.T, root string) *resource.ChangeSetManager {
+	t.Helper()
+	broker, err := resource.NewBroker(config.HostResourcesConfig{
+		Enabled:          true,
+		Roots:            []config.HostResourceRoot{{ID: "documents", Path: root, Access: "read", Recursive: true}},
+		MaxReadBytes:     1024 * 1024,
+		MaxSearchResults: 100,
+		ProtectedPolicy:  "default",
+	})
+	if err != nil {
+		t.Fatalf("NewBroker: %v", err)
+	}
+	manager, err := resource.NewChangeSetManager(broker, nil, resource.ChangeSetManagerOptions{
+		StagingDir:    filepath.Join(t.TempDir(), "staging"),
+		QuarantineDir: filepath.Join(t.TempDir(), "quarantine"),
+		MaxBytes:      1024 * 1024,
+	})
+	if err != nil {
+		t.Fatalf("NewChangeSetManager: %v", err)
+	}
+	return manager
+}
+
+func newRealHostApplyChangeRuntime(t *testing.T, client llm.Client, manager *resource.ChangeSetManager) *Runtime {
+	t.Helper()
+	registry := tool.NewRegistry()
+	spec, handler := builtin.NewHostApplyChangeTool(manager)
+	registry.Register(spec, handler)
+	registry.Register(NewFinishTaskTool(), FinishTaskPlaceholderHandler)
+	registry.Register(NewRequestDecisionTool(), RequestDecisionPlaceholderHandler)
+
+	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, testLogger())
+	return NewRuntime(RuntimeConfig{
+		LLM:                      client,
+		Provider:                 "openai",
+		Model:                    "test-model",
+		MaxTokens:                2048,
+		Temperature:              0.2,
+		MaxToolRounds:            4,
+		MaxInputTokens:           100000,
+		Registry:                 registry,
+		Dispatcher:               dispatcher,
+		Logger:                   testLogger(),
+		MaxEscalations:           3,
+		PendingSnapshotMaxTokens: 4000,
+	})
+}
+
+func hostApplyInputForChangeSet(t *testing.T, cs resource.ChangeSet) json.RawMessage {
+	t.Helper()
+	ref := cs.Source
+	if ref.ID == "" {
+		ref = cs.Target
+	}
+	raw, err := json.Marshal(map[string]any{
+		"changeset_id":        cs.ID,
+		"plan_hash":           cs.PlanHash,
+		"resource_id":         ref.ID,
+		"canonical_path_hash": ref.CanonicalPathHash,
+		"baseline_hash":       cs.BaselineHash,
+		"baseline_file_id":    cs.BaselineFileID,
+	})
+	if err != nil {
+		t.Fatalf("marshal host_apply_change input: %v", err)
+	}
+	return raw
+}
+
+func readResumeToolText(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile %s: %v", path, err)
+	}
+	return string(data)
 }

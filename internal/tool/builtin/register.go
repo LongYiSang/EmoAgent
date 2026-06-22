@@ -1,10 +1,13 @@
 package builtin
 
 import (
+	"database/sql"
 	"log/slog"
+	"path/filepath"
 	"runtime"
 
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/resource"
 	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/tool"
 	"github.com/longyisang/emoagent/internal/tool/builtin/webfetch"
@@ -20,12 +23,19 @@ func RegisterAll(registry *tool.Registry, cfg *config.Config, projectRoot string
 
 // RegisterAllWithFacts registers all built-in tools with explicit environment facts.
 func RegisterAllWithFacts(registry *tool.Registry, cfg *config.Config, projectRoot string, env runtimeenv.Facts, logger *slog.Logger) {
+	RegisterAllWithFactsAndDB(registry, cfg, projectRoot, env, logger, nil)
+}
+
+// RegisterAllWithFactsAndDB registers built-in tools with optional DB-backed host resource state.
+func RegisterAllWithFactsAndDB(registry *tool.Registry, cfg *config.Config, projectRoot string, env runtimeenv.Facts, logger *slog.Logger, db *sql.DB) {
+	hostBroker := configuredHostBroker(cfg, logger)
+	changeManager := configuredChangeSetManager(cfg, projectRoot, hostBroker, db, logger)
 	registry.Register(GetCurrentTimeSpec, GetCurrentTimeHandler)
 
-	readFileSpec, readFileHandler := NewReadFileTool(projectRoot)
+	readFileSpec, readFileHandler := NewReadFileToolWithBroker(projectRoot, hostBroker)
 	registry.Register(readFileSpec, readFileHandler)
 
-	listDirSpec, listDirHandler := NewListDirTool(projectRoot)
+	listDirSpec, listDirHandler := NewListDirToolWithBroker(projectRoot, hostBroker)
 	registry.Register(listDirSpec, listDirHandler)
 
 	writeFileSpec, writeFileHandler := NewWriteFileTool(projectRoot)
@@ -37,6 +47,87 @@ func RegisterAllWithFacts(registry *tool.Registry, cfg *config.Config, projectRo
 	registerWebSearch(registry, cfg, logger)
 	registerWebFetch(registry, cfg, logger)
 	registerBash(registry, cfg, env, logger)
+	registerHostResourceTools(registry, cfg, projectRoot, hostBroker, changeManager, logger)
+}
+
+func configuredHostBroker(cfg *config.Config, logger *slog.Logger) *resource.Broker {
+	if cfg == nil || !cfg.HostResources.Enabled {
+		return nil
+	}
+	broker, err := resource.NewBroker(cfg.HostResources)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("host resource broker unavailable; external host resources fail closed", "error", err)
+		}
+		return resource.NewDenyBroker()
+	}
+	return broker
+}
+
+func configuredChangeSetManager(cfg *config.Config, projectRoot string, broker *resource.Broker, db *sql.DB, logger *slog.Logger) *resource.ChangeSetManager {
+	if cfg == nil || !cfg.HostResources.Enabled || broker == nil {
+		return nil
+	}
+	var store resource.ChangeSetStore
+	if db != nil {
+		store = resource.NewSQLiteChangeSetStore(db)
+	}
+	manager, err := resource.NewChangeSetManager(broker, store, resource.ChangeSetManagerOptions{
+		StagingDir:    hostResourceDataDir(projectRoot, cfg.HostResources.StagingDir),
+		QuarantineDir: hostResourceDataDir(projectRoot, cfg.HostResources.QuarantineDir),
+		MaxBytes:      cfg.HostResources.MaxReadBytes,
+	})
+	if err != nil {
+		if logger != nil {
+			logger.Warn("host resource changeset manager unavailable; external writes fail closed", "error", err)
+		}
+		return nil
+	}
+	return manager
+}
+
+func hostResourceDataDir(projectRoot, dir string) string {
+	if filepath.IsAbs(dir) || projectRoot == "" {
+		return dir
+	}
+	return filepath.Join(projectRoot, dir)
+}
+
+func registerHostResourceTools(registry *tool.Registry, cfg *config.Config, projectRoot string, broker *resource.Broker, changeManager *resource.ChangeSetManager, logger *slog.Logger) {
+	if cfg == nil || !cfg.HostResources.Enabled {
+		return
+	}
+	for _, pair := range []struct {
+		spec    tool.Spec
+		handler tool.Handler
+	}{
+		mustHostTool(NewHostReadTool(broker)),
+		mustHostTool(NewHostListTool(broker)),
+		mustHostTool(NewHostStatTool(broker)),
+		mustHostTool(NewHostSearchTool(broker)),
+		mustHostTool(NewHostCopyToWorkspaceTool(broker, projectRoot)),
+		mustHostTool(NewHostStageResourceTool(changeManager)),
+		mustHostTool(NewHostPrepareChangeTool(changeManager)),
+		mustHostTool(NewHostPreviewChangeTool(changeManager)),
+		mustHostTool(NewHostApplyChangeTool(changeManager)),
+		mustHostTool(NewHostCancelChangeTool(changeManager)),
+		mustHostTool(NewHostRestoreQuarantineTool(changeManager)),
+	} {
+		registry.Register(pair.spec, pair.handler)
+	}
+	if logger != nil {
+		logger.Info("host resource tools registered")
+	}
+}
+
+func mustHostTool(spec tool.Spec, handler tool.Handler) struct {
+	spec    tool.Spec
+	handler tool.Handler
+} {
+	return struct {
+		spec    tool.Spec
+		handler tool.Handler
+	}{spec: spec, handler: handler}
 }
 
 // registerWebSearch conditionally registers the web_search tool.

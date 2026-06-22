@@ -15,6 +15,16 @@ export function ToolCard({ tool, collapsed, open: controlledOpen, onOpenChange }
   const actualOpen = controlledOpen ?? open;
   const status = stringField(tool, 'status') || 'running';
   const duration = numberField(tool, 'duration_ms') || numberField(tool, 'durationMS');
+  const provenanceMeta = [
+    ['origin', stringField(tool, 'origin')],
+    ['runtime', stringField(tool, 'runtime_kind') || stringField(tool, 'runtimeKind')],
+    ['producer', stringField(tool, 'producer_id') || stringField(tool, 'producerID')],
+    ['executor', stringField(tool, 'executor')],
+    ['integrity', stringField(tool, 'integrity')],
+    ['authority', stringField(tool, 'instruction_authority') || stringField(tool, 'instructionAuthority')],
+    ['sensitivity', stringField(tool, 'sensitivity')],
+  ]
+    .filter((item): item is [string, string] => Boolean(item[1]));
   const toggleOpen = () => {
     const nextOpen = !actualOpen;
     if (onOpenChange) onOpenChange(nextOpen);
@@ -29,7 +39,7 @@ export function ToolCard({ tool, collapsed, open: controlledOpen, onOpenChange }
           <span className="tool-badge">{toolStatusLabel(status)}</span>
           <span className="tool-caret" aria-hidden="true" />
         </button>
-        {actualOpen && <div className="tool-body"><pre className="tool-preview">{stringField(tool, 'preview') || '正在等待结果...'}</pre><div className="tool-meta">{duration ? <span>{duration} ms</span> : null}{numberField(tool, 'size') ? <span>{numberField(tool, 'size')} bytes</span> : null}{stringField(tool, 'hash') ? <span>hash {stringField(tool, 'hash')}</span> : null}</div></div>}
+        {actualOpen && <div className="tool-body"><pre className="tool-preview">{stringField(tool, 'preview') || '正在等待结果...'}</pre><div className="tool-meta">{duration ? <span>{duration} ms</span> : null}{numberField(tool, 'size') ? <span>{numberField(tool, 'size')} bytes</span> : null}{stringField(tool, 'hash') ? <span>hash {stringField(tool, 'hash')}</span> : null}{provenanceMeta.map(([label, value]) => <span key={`${label}:${value}`}>{label}: {value}</span>)}</div></div>}
       </div>
     </div>
   );

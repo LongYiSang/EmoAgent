@@ -39,7 +39,7 @@ func TestRuntime_CompressesOnSoftLimit(t *testing.T) {
 		Scope:       tool.ScopeWork,
 		Permission:  tool.PermReadOnly,
 	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
-		return json.RawMessage(largeContent(5000)), nil
+		return json.RawMessage(largeContent(20000)), nil
 	})
 	registry.Register(NewFinishTaskTool(), FinishTaskPlaceholderHandler)
 	registry.Register(NewRequestDecisionTool(), RequestDecisionPlaceholderHandler)
@@ -54,8 +54,8 @@ func TestRuntime_CompressesOnSoftLimit(t *testing.T) {
 		Model:                    "test",
 		MaxTokens:                4096,
 		MaxToolRounds:            10,
-		MaxInputTokens:           3500,
-		CompressSoftRatio:        0.7,
+		MaxInputTokens:           20000,
+		CompressSoftRatio:        0.2,
 		CompressKeepRounds:       2,
 		ToolSnipSoftTokens:       500,
 		ToolSnipHardTokens:       2000,

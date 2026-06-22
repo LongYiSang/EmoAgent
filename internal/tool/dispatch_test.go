@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/tool/resultv2"
 )
 
 // mockValidator implements SchemaValidator for testing.
@@ -119,6 +120,23 @@ func setupSensitiveReadRegistry(executed *int) *Registry {
 			(*executed)++
 		}
 		return json.RawMessage(`{"content":"ok"}`), nil
+	})
+	return registry
+}
+
+func setupHostApplyRegistry(executed *int) *Registry {
+	registry := NewRegistry()
+	registry.Register(Spec{
+		Name:        "host_apply_change",
+		Description: "Apply host resource changeset",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"changeset_id":{"type":"string"},"plan_hash":{"type":"string"},"resource_id":{"type":"string"},"canonical_path_hash":{"type":"string"},"baseline_hash":{"type":"string"},"baseline_file_id":{"type":"string"},"delete_mode":{"type":"string"}},"required":["changeset_id","plan_hash"],"additionalProperties":false}`),
+		Scope:       ScopeWork,
+		Permission:  PermApprovedDestructive,
+	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		if executed != nil {
+			(*executed)++
+		}
+		return json.RawMessage(`{"status":"applied"}`), nil
 	})
 	return registry
 }
@@ -706,6 +724,84 @@ func TestDispatcherExecute_DoesNotRunHandlerWhenApprovalBindingMismatches(t *tes
 	}
 }
 
+func TestDispatcherExecute_ChangeSetApprovalBindsPlanHash(t *testing.T) {
+	call := Call{
+		ID:    "apply-1",
+		Name:  "host_apply_change",
+		Input: json.RawMessage(`{"changeset_id":"cs-1","plan_hash":"sha256:plan-a","resource_id":"local:abc","canonical_path_hash":"sha256:path","baseline_hash":"sha256:old","baseline_file_id":"file-id","delete_mode":"quarantine"}`),
+	}
+	binding, err := BuildApprovalBinding(call, "approval-1", ApprovalKindDestructiveWrite)
+	if err != nil {
+		t.Fatalf("BuildApprovalBinding: %v", err)
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*ApprovalContext)
+	}{
+		{name: "changeset_id", mutate: func(ctx *ApprovalContext) { ctx.ChangeSetID = "cs-2" }},
+		{name: "plan_hash", mutate: func(ctx *ApprovalContext) { ctx.PlanHash = "sha256:plan-b" }},
+		{name: "resource_id", mutate: func(ctx *ApprovalContext) { ctx.ResourceID = "local:def" }},
+		{name: "canonical_path_hash", mutate: func(ctx *ApprovalContext) { ctx.CanonicalPathHash = "sha256:path-b" }},
+		{name: "baseline_hash", mutate: func(ctx *ApprovalContext) { ctx.BaselineHash = "sha256:new" }},
+		{name: "baseline_file_id", mutate: func(ctx *ApprovalContext) { ctx.BaselineFileID = "file-id-2" }},
+		{name: "delete_mode", mutate: func(ctx *ApprovalContext) { ctx.DeleteMode = "permanent" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var executed int
+			d := NewDispatcher(setupHostApplyRegistry(&executed), MinimalSchemaValidator{}, slog.Default())
+			approval := ApprovalContext{
+				RequestID:           binding.RequestID,
+				ApprovalKind:        binding.ApprovalKind,
+				AllowToolCall:       true,
+				AllowDestructive:    true,
+				ToolName:            binding.ToolName,
+				NormalizedInputHash: binding.NormalizedInputHash,
+				PathDigest:          binding.PathDigest,
+				ChangeSetID:         binding.ChangeSetID,
+				PlanHash:            binding.PlanHash,
+				ResourceID:          binding.ResourceID,
+				CanonicalPathHash:   binding.CanonicalPathHash,
+				BaselineHash:        binding.BaselineHash,
+				BaselineFileID:      binding.BaselineFileID,
+				DeleteMode:          binding.DeleteMode,
+			}
+			tc.mutate(&approval)
+			result := d.Execute(WithApproval(context.Background(), approval), call, PermApprovedDestructive)
+			if !result.IsError || !result.NeedsApproval {
+				t.Fatalf("result = %#v, want approval-required mismatch", result)
+			}
+			if executed != 0 {
+				t.Fatalf("handler executed %d times, want 0", executed)
+			}
+		})
+	}
+
+	var executed int
+	d := NewDispatcher(setupHostApplyRegistry(&executed), MinimalSchemaValidator{}, slog.Default())
+	result := d.Execute(WithApproval(context.Background(), ApprovalContext{
+		RequestID:           binding.RequestID,
+		ApprovalKind:        binding.ApprovalKind,
+		AllowToolCall:       true,
+		AllowDestructive:    true,
+		ToolName:            binding.ToolName,
+		NormalizedInputHash: binding.NormalizedInputHash,
+		PathDigest:          binding.PathDigest,
+		ChangeSetID:         binding.ChangeSetID,
+		PlanHash:            binding.PlanHash,
+		ResourceID:          binding.ResourceID,
+		CanonicalPathHash:   binding.CanonicalPathHash,
+		BaselineHash:        binding.BaselineHash,
+		BaselineFileID:      binding.BaselineFileID,
+		DeleteMode:          binding.DeleteMode,
+	}), call, PermApprovedDestructive)
+	if result.IsError || result.NeedsApproval {
+		t.Fatalf("result = %#v, want execution", result)
+	}
+	if executed != 1 {
+		t.Fatalf("handler executed %d times, want 1", executed)
+	}
+}
+
 func TestDispatcherExecute_NonDestructiveCommandDoesNotRequireApproval(t *testing.T) {
 	d := NewDispatcher(setupDestructiveRegistry(), &mockValidator{}, slog.Default())
 
@@ -800,9 +896,7 @@ func TestResultsToMessagesAnthropic(t *testing.T) {
 	if msg.ContentBlocks[0].ID != "call_1" {
 		t.Errorf("block[0].ID: got %q", msg.ContentBlocks[0].ID)
 	}
-	if msg.ContentBlocks[0].Content != `{"time":"10:00"}` {
-		t.Errorf("block[0].Content: got %q", msg.ContentBlocks[0].Content)
-	}
+	assertProviderData(t, msg.ContentBlocks[0].Content, `{"time":"10:00"}`)
 	if msg.ContentBlocks[0].IsError {
 		t.Error("block[0] should not be error")
 	}
@@ -837,6 +931,64 @@ func TestResultsToMessagesOpenAI(t *testing.T) {
 		if len(msgs[i].ContentBlocks) != 0 {
 			t.Errorf("msg[%d].ContentBlocks: got %d, want 0", i, len(msgs[i].ContentBlocks))
 		}
+	}
+}
+
+func TestResultsToMessagesWrapsLegacyResultInCompactEnvelope(t *testing.T) {
+	results := []Result{
+		{CallID: "call_1", Content: json.RawMessage(`{"time":"10:00"}`), IsError: false},
+	}
+
+	msgs := ResultsToMessages("openai", results)
+	if len(msgs) != 1 {
+		t.Fatalf("messages: got %d, want 1", len(msgs))
+	}
+
+	var rendered struct {
+		Data    json.RawMessage `json:"data"`
+		EmoMeta struct {
+			Origin               string `json:"origin"`
+			Executor             string `json:"executor"`
+			InstructionAuthority string `json:"instruction_authority"`
+			Integrity            string `json:"integrity"`
+			InputHash            string `json:"input_hash"`
+			InvocationID         string `json:"invocation_id"`
+		} `json:"_emo_meta"`
+	}
+	if err := json.Unmarshal([]byte(msgs[0].Content), &rendered); err != nil {
+		t.Fatalf("provider content is not compact envelope JSON: %v\n%s", err, msgs[0].Content)
+	}
+	if string(rendered.Data) != `{"time":"10:00"}` {
+		t.Fatalf("data = %s, want legacy content", rendered.Data)
+	}
+	if rendered.EmoMeta.InstructionAuthority != resultv2.InstructionDataOnly {
+		t.Fatalf("instruction_authority = %q, want data_only", rendered.EmoMeta.InstructionAuthority)
+	}
+	if rendered.EmoMeta.InputHash == "" || rendered.EmoMeta.InvocationID == "" {
+		t.Fatalf("missing compact provenance meta: %#v", rendered.EmoMeta)
+	}
+}
+
+func TestDispatcherExecuteAttachesMinimumEnvelope(t *testing.T) {
+	registry := setupTestRegistry()
+	d := NewDispatcher(registry, &mockValidator{}, slog.Default())
+
+	result := d.Execute(context.Background(), Call{
+		ID:    "call_1",
+		Name:  "get_time",
+		Input: json.RawMessage(`{"tz":"UTC"}`),
+	}, PermReadOnly)
+	if result.Envelope == nil {
+		t.Fatal("Envelope = nil, want minimum provenance envelope")
+	}
+	if result.Envelope.CallID != "call_1" {
+		t.Fatalf("Envelope.CallID = %q", result.Envelope.CallID)
+	}
+	if result.Envelope.Provenance.ToolName != "get_time" || result.Envelope.Provenance.InputHash == "" {
+		t.Fatalf("provenance = %#v", result.Envelope.Provenance)
+	}
+	if result.Envelope.Labels.Executor == "" || result.Envelope.Labels.InstructionAuthority == "" {
+		t.Fatalf("labels = %#v", result.Envelope.Labels)
 	}
 }
 
@@ -899,9 +1051,7 @@ func TestExtractAndDispatchRoundTrip(t *testing.T) {
 	if msg.ContentBlocks[0].ID != "call_rt" {
 		t.Errorf("ID: got %q", msg.ContentBlocks[0].ID)
 	}
-	if msg.ContentBlocks[0].Content != `{"time":"10:00"}` {
-		t.Errorf("Content: got %q", msg.ContentBlocks[0].Content)
-	}
+	assertProviderData(t, msg.ContentBlocks[0].Content, `{"time":"10:00"}`)
 }
 
 func TestExtractAndDispatchRoundTripOpenAI(t *testing.T) {
@@ -928,8 +1078,19 @@ func TestExtractAndDispatchRoundTripOpenAI(t *testing.T) {
 	if msgs[0].ToolCallID != "call_rt" {
 		t.Errorf("ToolCallID: got %q", msgs[0].ToolCallID)
 	}
-	if msgs[0].Content != `{"time":"10:00"}` {
-		t.Errorf("Content: got %q", msgs[0].Content)
+	assertProviderData(t, msgs[0].Content, `{"time":"10:00"}`)
+}
+
+func assertProviderData(t *testing.T, content, want string) {
+	t.Helper()
+	var rendered struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(content), &rendered); err != nil {
+		t.Fatalf("provider content is not compact envelope JSON: %v\n%s", err, content)
+	}
+	if string(rendered.Data) != want {
+		t.Fatalf("provider data = %s, want %s", rendered.Data, want)
 	}
 }
 

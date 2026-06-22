@@ -66,10 +66,13 @@ func TestOpenAndMigrate(t *testing.T) {
 		"plugin_enabled_state",
 		"plugin_runtime_records",
 		"plugin_access_events",
+		"plugin_trust_acceptance_history",
 		"plugin_provider_usage",
 		"plugin_kv",
 		"prompt_overrides",
 		"prompt_render_snapshots",
+		"resource_grants",
+		"resource_grant_events",
 	}
 	for _, table := range tables {
 		var name string
@@ -133,8 +136,56 @@ func TestOpenAndMigrate(t *testing.T) {
 	if err := db.SqlDB().QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_version").Scan(&latestVersion); err != nil {
 		t.Fatalf("read latest schema_version: %v", err)
 	}
-	if latestVersion != 27 {
-		t.Fatalf("latest schema_version = %d, want 27", latestVersion)
+	if latestVersion != 32 {
+		t.Fatalf("latest schema_version = %d, want 32", latestVersion)
+	}
+}
+
+func TestOpenAndMigrate_CreatesResourceGrantTables(t *testing.T) {
+	db := testDB(t)
+
+	if _, err := db.SqlDB().Exec(`
+INSERT INTO resource_grants (
+	id, principal_kind, principal_id, capability, resource_json, operations_json,
+	constraints_json, lifetime, status, binding_hash, issued_by, created_at
+) VALUES (
+	'grant-1', 'work_task', 'task-1', 'host.fs.read', '{"kind":"alias","path":"@documents"}', '["read"]',
+	'{}', 'once', 'active', 'sha256:binding', 'policy', datetime('now')
+)`); err != nil {
+		t.Fatalf("insert resource_grants: %v", err)
+	}
+	if _, err := db.SqlDB().Exec(`
+INSERT INTO resource_grant_events (
+	id, grant_id, event_type, principal_kind, principal_id, summary_hash, provenance_json, created_at
+) VALUES (
+	'event-1', 'grant-1', 'created', 'work_task', 'task-1', 'sha256:summary', '{}', datetime('now')
+)`); err != nil {
+		t.Fatalf("insert resource_grant_events: %v", err)
+	}
+}
+
+func TestOpenAndMigrate_CreatesHostResourceChangeSetTables(t *testing.T) {
+	db := testDB(t)
+
+	if _, err := db.SqlDB().Exec(`
+INSERT INTO host_resource_changesets (
+	id, principal_kind, principal_id, status, operation, source_ref_json, target_ref_json,
+	target_display_path, plan_hash, preview_json, created_at, updated_at
+) VALUES (
+	'cs-1', 'work_task', 'task-1', 'approval_pending', 'overwrite_file', '{"id":"local:source"}', '{}',
+	'@documents/note.txt', 'sha256:plan', '{"summary":"overwrite @documents/note.txt"}', datetime('now'), datetime('now')
+)`); err != nil {
+		t.Fatalf("insert host_resource_changesets: %v", err)
+	}
+	if _, err := db.SqlDB().Exec(`
+INSERT INTO host_resource_change_ops (
+	id, changeset_id, op_index, operation, source_display_path, target_display_path,
+	source_hash, target_hash, bytes, metadata_json, created_at
+) VALUES (
+	'op-1', 'cs-1', 0, 'overwrite_file', '@documents/note.txt', '@documents/note.txt',
+	'sha256:old', 'sha256:new', 5, '{}', datetime('now')
+)`); err != nil {
+		t.Fatalf("insert host_resource_change_ops: %v", err)
 	}
 }
 
@@ -176,6 +227,116 @@ func TestPluginRuntimeStorageCRUD(t *testing.T) {
 		t.Fatalf("enabled state = %#v", state)
 	}
 
+	trust := PluginTrustAcceptanceRecord{
+		TrustLevel:              "user_trusted",
+		AcknowledgementHash:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		ReviewReasonsJSON:       `["capability_added:provider.generate"]`,
+		DefaultToolExposure:     "work",
+		DefaultInvocationPolicy: "ask",
+	}
+	if err := db.SetPluginEnabledWithTrust(ctx, "com.example.echo", "0.1.0", true, `{"tier":"runtime_safe"}`, trust); err != nil {
+		t.Fatalf("SetPluginEnabledWithTrust: %v", err)
+	}
+	state, err = db.GetPluginEnabledState(ctx, "com.example.echo")
+	if err != nil {
+		t.Fatalf("GetPluginEnabledState with trust: %v", err)
+	}
+	if state.TrustLevel != "user_trusted" || state.TrustAcceptedAt == "" || state.TrustAcknowledgementHash != trust.AcknowledgementHash || state.TrustReviewReasonsJSON != trust.ReviewReasonsJSON {
+		t.Fatalf("trusted enabled state = %#v", state)
+	}
+	if state.DefaultToolExposure != "work" || state.DefaultInvocationPolicy != "ask" {
+		t.Fatalf("trusted tool policy = %q/%q", state.DefaultToolExposure, state.DefaultInvocationPolicy)
+	}
+	if err := db.RecordPluginTrustAcceptance(ctx, PluginTrustAcceptanceHistoryRecord{
+		PluginID:                "com.example.echo",
+		Version:                 "0.1.0",
+		TrustLevel:              trust.TrustLevel,
+		AcknowledgementHash:     trust.AcknowledgementHash,
+		ReviewReasonsJSON:       trust.ReviewReasonsJSON,
+		DefaultToolExposure:     trust.DefaultToolExposure,
+		DefaultInvocationPolicy: trust.DefaultInvocationPolicy,
+		UserGrantHash:           "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+		HostPolicyFingerprint:   "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+		DependencyLockDigest:    "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+		PackageDigest:           installation.PackageDigest,
+		ManifestDigest:          installation.ManifestDigest,
+		SignatureStatus:         installation.SignatureStatus,
+		PublisherID:             installation.PublisherID,
+		SourceType:              installation.SourceType,
+	}); err != nil {
+		t.Fatalf("RecordPluginTrustAcceptance: %v", err)
+	}
+	history, err := db.ListPluginTrustAcceptanceHistory(ctx, "com.example.echo", 10)
+	if err != nil {
+		t.Fatalf("ListPluginTrustAcceptanceHistory: %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("history len = %d, want 1", len(history))
+	}
+	gotTrust := history[0]
+	if gotTrust.PluginID != "com.example.echo" || gotTrust.Version != "0.1.0" || gotTrust.TrustLevel != "user_trusted" {
+		t.Fatalf("history identity/trust = %#v", gotTrust)
+	}
+	if gotTrust.AcknowledgementHash != trust.AcknowledgementHash || gotTrust.ReviewReasonsJSON != trust.ReviewReasonsJSON {
+		t.Fatalf("history ack = %#v", gotTrust)
+	}
+	if gotTrust.UserGrantHash != "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" ||
+		gotTrust.HostPolicyFingerprint != "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" {
+		t.Fatalf("history grant/policy = %#v", gotTrust)
+	}
+	if gotTrust.DependencyLockDigest != "sha256:9999999999999999999999999999999999999999999999999999999999999999" {
+		t.Fatalf("history dependency lock digest = %#v", gotTrust)
+	}
+	if gotTrust.PackageDigest != installation.PackageDigest || gotTrust.ManifestDigest != installation.ManifestDigest || gotTrust.SignatureStatus != installation.SignatureStatus {
+		t.Fatalf("history package summary = %#v", gotTrust)
+	}
+	if gotTrust.AcceptedAt == "" || gotTrust.CreatedAt == "" {
+		t.Fatalf("history timestamps = %#v, want accepted_at and created_at", gotTrust)
+	}
+	if err := db.RecordPluginTrustAcceptance(ctx, PluginTrustAcceptanceHistoryRecord{
+		PluginID:                "com.example.echo",
+		Version:                 "0.2.0",
+		TrustLevel:              "user_trusted",
+		AcknowledgementHash:     "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		ReviewReasonsJSON:       `[]`,
+		DefaultToolExposure:     "work",
+		DefaultInvocationPolicy: "ask",
+		UserGrantHash:           "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+		HostPolicyFingerprint:   "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+		DependencyLockDigest:    "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+		PackageDigest:           "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		ManifestDigest:          "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+		SignatureStatus:         "verified",
+		PublisherID:             "publisher-b",
+		SourceType:              "local_zip",
+	}); err != nil {
+		t.Fatalf("RecordPluginTrustAcceptance v2: %v", err)
+	}
+	history, err = db.ListPluginTrustAcceptanceHistory(ctx, "com.example.echo", 10)
+	if err != nil {
+		t.Fatalf("ListPluginTrustAcceptanceHistory v2: %v", err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("history len after v2 = %d, want 2", len(history))
+	}
+	if err := db.SetPluginEnabled(ctx, "com.example.echo", "0.1.0", false, "{}"); err != nil {
+		t.Fatalf("SetPluginEnabled disable: %v", err)
+	}
+	state, err = db.GetPluginEnabledState(ctx, "com.example.echo")
+	if err != nil {
+		t.Fatalf("GetPluginEnabledState disabled: %v", err)
+	}
+	if state.TrustAcceptedAt != "" || state.TrustAcknowledgementHash != "" || state.TrustLevel != "" || state.DefaultToolExposure != "" || state.DefaultInvocationPolicy != "" || state.TrustReviewReasonsJSON != "[]" {
+		t.Fatalf("disabled trust state = %#v, want cleared acceptance", state)
+	}
+	history, err = db.ListPluginTrustAcceptanceHistory(ctx, "com.example.echo", 10)
+	if err != nil {
+		t.Fatalf("ListPluginTrustAcceptanceHistory after disable: %v", err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("history len after disable = %d, want 2", len(history))
+	}
+
 	pid := 1234
 	if err := db.UpsertPluginRuntimeRecord(ctx, PluginRuntimeRecord{
 		PluginID:     "com.example.echo",
@@ -193,6 +354,25 @@ func TestPluginRuntimeStorageCRUD(t *testing.T) {
 	}
 	if runtimeRecord == nil || runtimeRecord.PID == nil || *runtimeRecord.PID != 1234 || runtimeRecord.Status != "running" {
 		t.Fatalf("runtime record = %#v", runtimeRecord)
+	}
+	if runtimeRecord.LastStartedAt == "" || runtimeRecord.LastStoppedAt != "" {
+		t.Fatalf("running runtime timestamps = started:%q stopped:%q", runtimeRecord.LastStartedAt, runtimeRecord.LastStoppedAt)
+	}
+	startedAt := runtimeRecord.LastStartedAt
+	if err := db.UpsertPluginRuntimeRecord(ctx, PluginRuntimeRecord{
+		PluginID:    "com.example.echo",
+		Version:     "0.1.0",
+		RuntimeKind: "python_process",
+		Status:      "stopped",
+	}); err != nil {
+		t.Fatalf("Upsert stopped PluginRuntimeRecord: %v", err)
+	}
+	runtimeRecord, err = db.GetPluginRuntimeRecord(ctx, "com.example.echo")
+	if err != nil {
+		t.Fatalf("Get stopped PluginRuntimeRecord: %v", err)
+	}
+	if runtimeRecord == nil || runtimeRecord.PID != nil || runtimeRecord.LastStartedAt != startedAt || runtimeRecord.LastStoppedAt == "" {
+		t.Fatalf("stopped runtime record = %#v, want cleared pid and retained start/stop evidence", runtimeRecord)
 	}
 
 	if err := db.RecordPluginAccessEvent(ctx, PluginAccessEvent{
@@ -262,6 +442,67 @@ CREATE TABLE plugin_access_events (
     access_kind TEXT NOT NULL,
     status TEXT NOT NULL
 );
+CREATE TABLE plugin_enabled_state (
+    plugin_id TEXT PRIMARY KEY,
+    version TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    user_grant_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO plugin_enabled_state (plugin_id, version, enabled, user_grant_json, updated_at)
+VALUES ('com.example.old', '0.1.0', 1, '{"tier":"runtime_safe"}', '2026-06-22T00:00:00Z');
+CREATE TABLE plugin_trust_acceptance_history (
+    id TEXT PRIMARY KEY,
+    plugin_id TEXT NOT NULL,
+    version TEXT NOT NULL,
+    trust_level TEXT NOT NULL DEFAULT '',
+    accepted_at TEXT NOT NULL DEFAULT '',
+    trust_ack_hash TEXT NOT NULL DEFAULT '',
+    trust_review_reasons_json TEXT NOT NULL DEFAULT '[]',
+    default_tool_exposure TEXT NOT NULL DEFAULT '',
+    default_invocation_policy TEXT NOT NULL DEFAULT '',
+    package_digest TEXT NOT NULL DEFAULT '',
+    manifest_digest TEXT NOT NULL DEFAULT '',
+    signature_status TEXT NOT NULL DEFAULT '',
+    publisher_id TEXT NOT NULL DEFAULT '',
+    source_type TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO plugin_trust_acceptance_history (
+    id, plugin_id, version, trust_level, accepted_at, trust_ack_hash,
+    trust_review_reasons_json, default_tool_exposure, default_invocation_policy,
+    package_digest, manifest_digest, signature_status, publisher_id, source_type, created_at
+) VALUES (
+    'hist-old', 'com.example.old', '0.1.0', 'developer', '2026-06-22T00:00:01Z',
+    'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    '[]', 'work', 'ask',
+    'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+    'unsigned_dev', '', 'local_dir', '2026-06-22T00:00:01Z'
+);
+CREATE TABLE resource_grants (
+    id TEXT PRIMARY KEY,
+    principal_kind TEXT NOT NULL,
+    principal_id TEXT NOT NULL,
+    capability TEXT NOT NULL
+);
+CREATE TABLE resource_grant_events (
+    id TEXT PRIMARY KEY,
+    grant_id TEXT NOT NULL,
+    event_type TEXT NOT NULL
+);
+CREATE TABLE host_resource_changesets (
+    id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    plan_hash TEXT NOT NULL
+);
+CREATE TABLE host_resource_change_ops (
+    id TEXT PRIMARY KEY,
+    changeset_id TEXT NOT NULL,
+    op_index INTEGER NOT NULL,
+    operation TEXT NOT NULL
+);
 `)
 	if err != nil {
 		t.Fatalf("seed drifted plugin schema: %v", err)
@@ -277,6 +518,58 @@ CREATE TABLE plugin_access_events (
 	for _, required := range []string{"capability", "request_summary", "input_hash", "output_hash", "duration_ms", "created_at"} {
 		if !columns[required] {
 			t.Fatalf("plugin_access_events missing repaired column %q", required)
+		}
+	}
+	var historyID, historyGrantHash, historyPolicyFingerprint, historyDependencyLockDigest string
+	if err := sqlDB.QueryRow(`
+		SELECT id, user_grant_hash, host_policy_fingerprint, dependency_lock_digest
+		FROM plugin_trust_acceptance_history
+		WHERE plugin_id = 'com.example.old'
+	`).Scan(&historyID, &historyGrantHash, &historyPolicyFingerprint, &historyDependencyLockDigest); err != nil {
+		t.Fatalf("plugin_trust_acceptance_history not repaired by migration: %v", err)
+	}
+	if historyID != "hist-old" || historyGrantHash != "" || historyPolicyFingerprint != "" || historyDependencyLockDigest != "" {
+		t.Fatalf("repaired history row = %q/%q/%q/%q, want old row with empty R38 hashes", historyID, historyGrantHash, historyPolicyFingerprint, historyDependencyLockDigest)
+	}
+	columns, err = tableColumns(sqlDB, "plugin_enabled_state")
+	if err != nil {
+		t.Fatalf("tableColumns plugin_enabled_state: %v", err)
+	}
+	for _, required := range []string{"trust_level", "trust_accepted_at", "trust_ack_hash", "trust_review_reasons_json", "default_tool_exposure", "default_invocation_policy"} {
+		if !columns[required] {
+			t.Fatalf("plugin_enabled_state missing repaired column %q", required)
+		}
+	}
+	var version, grant, trustLevel, trustAcceptedAt, trustHash, trustReasons, defaultExposure, defaultInvocation string
+	var enabled int
+	if err := sqlDB.QueryRow(`
+		SELECT version, enabled, user_grant_json, trust_level, trust_accepted_at, trust_ack_hash,
+		       trust_review_reasons_json, default_tool_exposure, default_invocation_policy
+		FROM plugin_enabled_state
+		WHERE plugin_id = 'com.example.old'
+	`).Scan(&version, &enabled, &grant, &trustLevel, &trustAcceptedAt, &trustHash, &trustReasons, &defaultExposure, &defaultInvocation); err != nil {
+		t.Fatalf("read repaired plugin_enabled_state row: %v", err)
+	}
+	if version != "0.1.0" || enabled != 1 || grant != `{"tier":"runtime_safe"}` {
+		t.Fatalf("repaired plugin_enabled_state row lost existing values: version=%q enabled=%d grant=%q", version, enabled, grant)
+	}
+	if trustLevel != "" || trustAcceptedAt != "" || trustHash != "" || trustReasons != "[]" || defaultExposure != "" || defaultInvocation != "" {
+		t.Fatalf("repaired trust defaults = %q/%q/%q/%q/%q/%q", trustLevel, trustAcceptedAt, trustHash, trustReasons, defaultExposure, defaultInvocation)
+	}
+	for table, required := range map[string][]string{
+		"resource_grants":          {"resource_json", "operations_json", "constraints_json", "lifetime", "status", "approval_request_id", "binding_hash", "issued_by", "created_at", "updated_at"},
+		"resource_grant_events":    {"principal_kind", "principal_id", "summary_hash", "provenance_json", "created_at"},
+		"host_resource_changesets": {"principal_kind", "principal_id", "source_ref_json", "target_ref_json", "target_display_path", "baseline_hash", "baseline_file_id", "content_hash", "staging_path", "quarantine_path", "preview_json", "permanent_delete", "recursive", "error_message", "created_at", "updated_at", "applied_at"},
+		"host_resource_change_ops": {"source_display_path", "target_display_path", "source_hash", "target_hash", "bytes", "metadata_json", "created_at"},
+	} {
+		columns, err := tableColumns(sqlDB, table)
+		if err != nil {
+			t.Fatalf("tableColumns %s: %v", table, err)
+		}
+		for _, column := range required {
+			if !columns[column] {
+				t.Fatalf("%s missing repaired column %q", table, column)
+			}
 		}
 	}
 }
@@ -503,6 +796,58 @@ func approvalRequestColumns(t *testing.T, db *sql.DB) map[string]bool {
 	return columns
 }
 
+func requiredApprovalChangeSetBindingColumns() []string {
+	return []string{
+		"changeset_id",
+		"plan_hash",
+		"resource_id",
+		"canonical_path_hash",
+		"baseline_hash",
+		"baseline_file_id",
+		"delete_mode",
+	}
+}
+
+func assertSQLiteIndexExists(t *testing.T, db *sql.DB, name string) {
+	t.Helper()
+
+	var indexName string
+	if err := db.QueryRow("SELECT name FROM sqlite_master WHERE type='index' AND name=?", name).Scan(&indexName); err != nil {
+		t.Fatalf("missing index %q: %v", name, err)
+	}
+}
+
+func assertSQLiteIndexColumns(t *testing.T, db *sql.DB, name string, want []string) {
+	t.Helper()
+
+	rows, err := db.Query("PRAGMA index_info(" + name + ")")
+	if err != nil {
+		t.Fatalf("PRAGMA index_info(%s): %v", name, err)
+	}
+	defer rows.Close()
+
+	var got []string
+	for rows.Next() {
+		var seqno, cid int
+		var column string
+		if err := rows.Scan(&seqno, &cid, &column); err != nil {
+			t.Fatalf("Scan(index_info %s): %v", name, err)
+		}
+		got = append(got, column)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err(index_info %s): %v", name, err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("index %s columns = %#v, want %#v", name, got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("index %s columns = %#v, want %#v", name, got, want)
+		}
+	}
+}
+
 func TestOpenAndMigrate_CreatesApprovalRequestsTableAndColumns(t *testing.T) {
 	db := testDB(t)
 
@@ -523,11 +868,17 @@ func TestOpenAndMigrate_CreatesApprovalRequestsTableAndColumns(t *testing.T) {
 			t.Fatalf("approval_requests missing column %q", required)
 		}
 	}
-
-	var indexName string
-	if err := db.SqlDB().QueryRow("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_approval_requests_kind_binding'").Scan(&indexName); err != nil {
-		t.Fatalf("approval_requests missing kind binding index: %v", err)
+	for _, required := range requiredApprovalChangeSetBindingColumns() {
+		if !columns[required] {
+			t.Fatalf("approval_requests missing ChangeSet binding column %q", required)
+		}
 	}
+
+	assertSQLiteIndexExists(t, db.SqlDB(), "idx_approval_requests_kind_binding")
+	assertSQLiteIndexExists(t, db.SqlDB(), "idx_approval_requests_changeset_binding")
+	assertSQLiteIndexColumns(t, db.SqlDB(), "idx_approval_requests_changeset_binding", []string{
+		"session_id", "task_id", "changeset_id", "plan_hash",
+	})
 }
 
 func TestApplyMigrationsRepairsDriftedApprovalRequestSchema(t *testing.T) {
@@ -585,15 +936,20 @@ CREATE TABLE approval_requests (
 			t.Fatalf("approval_requests missing repaired column %q", required)
 		}
 	}
-
-	for _, required := range []string{
-		"idx_approval_requests_binding", "idx_approval_requests_kind_binding",
-	} {
-		var indexName string
-		if err := sqlDB.QueryRow("SELECT name FROM sqlite_master WHERE type='index' AND name=?", required).Scan(&indexName); err != nil {
-			t.Fatalf("approval_requests missing repaired index %q: %v", required, err)
+	for _, required := range requiredApprovalChangeSetBindingColumns() {
+		if !columns[required] {
+			t.Fatalf("approval_requests missing repaired ChangeSet binding column %q", required)
 		}
 	}
+
+	for _, required := range []string{
+		"idx_approval_requests_binding", "idx_approval_requests_kind_binding", "idx_approval_requests_changeset_binding",
+	} {
+		assertSQLiteIndexExists(t, sqlDB, required)
+	}
+	assertSQLiteIndexColumns(t, sqlDB, "idx_approval_requests_changeset_binding", []string{
+		"session_id", "task_id", "changeset_id", "plan_hash",
+	})
 }
 
 func TestOpenAndMigrate_AddsApprovalRequestIDColumnsToDecisionTables(t *testing.T) {

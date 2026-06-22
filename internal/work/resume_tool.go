@@ -151,6 +151,13 @@ func NewResumeToolWithFactory(runtimeFactory func() (*Runtime, error), pending *
 							approvalCtx.ToolName = binding.ToolName
 							approvalCtx.NormalizedInputHash = binding.NormalizedInputHash
 							approvalCtx.PathDigest = binding.PathDigest
+							approvalCtx.ChangeSetID = binding.ChangeSetID
+							approvalCtx.PlanHash = binding.PlanHash
+							approvalCtx.ResourceID = binding.ResourceID
+							approvalCtx.CanonicalPathHash = binding.CanonicalPathHash
+							approvalCtx.BaselineHash = binding.BaselineHash
+							approvalCtx.BaselineFileID = binding.BaselineFileID
+							approvalCtx.DeleteMode = binding.DeleteMode
 						}
 					}
 					resumeCtx = tool.WithApproval(resumeCtx, approvalCtx)
@@ -260,6 +267,13 @@ func approvalContextFromRequest(req *protocol.ApprovalRequest) tool.ApprovalCont
 		ctx.ToolName = req.ToolApprovalBinding.ToolName
 		ctx.NormalizedInputHash = req.ToolApprovalBinding.NormalizedInputHash
 		ctx.PathDigest = req.ToolApprovalBinding.PathDigest
+		ctx.ChangeSetID = req.ToolApprovalBinding.ChangeSetID
+		ctx.PlanHash = req.ToolApprovalBinding.PlanHash
+		ctx.ResourceID = req.ToolApprovalBinding.ResourceID
+		ctx.CanonicalPathHash = req.ToolApprovalBinding.CanonicalPathHash
+		ctx.BaselineHash = req.ToolApprovalBinding.BaselineHash
+		ctx.BaselineFileID = req.ToolApprovalBinding.BaselineFileID
+		ctx.DeleteMode = req.ToolApprovalBinding.DeleteMode
 	} else {
 		ctx.ApprovalKind = string(tool.ApprovalKindDestructiveWrite)
 		ctx.AllowToolCall = true

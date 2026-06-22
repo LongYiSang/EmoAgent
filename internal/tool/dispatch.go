@@ -223,7 +223,14 @@ func approvalBindingMatches(approval ApprovalContext, binding ApprovalBinding) b
 	return approval.RequestID != "" &&
 		approval.ToolName == binding.ToolName &&
 		approval.NormalizedInputHash == binding.NormalizedInputHash &&
-		approval.PathDigest == binding.PathDigest
+		approval.PathDigest == binding.PathDigest &&
+		approval.ChangeSetID == binding.ChangeSetID &&
+		approval.PlanHash == binding.PlanHash &&
+		approval.ResourceID == binding.ResourceID &&
+		approval.CanonicalPathHash == binding.CanonicalPathHash &&
+		approval.BaselineHash == binding.BaselineHash &&
+		approval.BaselineFileID == binding.BaselineFileID &&
+		approval.DeleteMode == binding.DeleteMode
 }
 
 // Execute runs a single tool call through the fail-closed pipeline:
@@ -249,20 +256,20 @@ func (d *Dispatcher) ExecuteClassified(ctx context.Context, classification CallC
 		// continue
 	case CallActionToolApprovalRequired:
 		d.logClassificationBlock(classification, maxPermission)
-		return d.afterToolCall(ctx, view, approvalRequiredResult(call.ID, classification.Reason))
+		return d.finalizeToolCall(ctx, view, approvalRequiredResult(call.ID, classification.Reason))
 	case CallActionError, CallActionPermissionDenied, CallActionPermissionEscalationRequired:
 		d.logClassificationBlock(classification, maxPermission)
-		return d.afterToolCall(ctx, view, errorResult(call.ID, classification.Reason))
+		return d.finalizeToolCall(ctx, view, errorResult(call.ID, classification.Reason))
 	default:
-		return d.afterToolCall(ctx, view, errorResult(call.ID, fmt.Sprintf("unsupported tool action %q", classification.Action)))
+		return d.finalizeToolCall(ctx, view, errorResult(call.ID, fmt.Sprintf("unsupported tool action %q", classification.Action)))
 	}
 
 	if d == nil || d.registry == nil {
-		return d.afterToolCall(ctx, view, errorResult(call.ID, "tool dispatcher is not configured"))
+		return d.finalizeToolCall(ctx, view, errorResult(call.ID, "tool dispatcher is not configured"))
 	}
 	handler, _ := d.registry.Get(call.Name)
 	if handler == nil {
-		return d.afterToolCall(ctx, view, errorResult(call.ID, fmt.Sprintf("handler for tool %q not found", call.Name)))
+		return d.finalizeToolCall(ctx, view, errorResult(call.ID, fmt.Sprintf("handler for tool %q not found", call.Name)))
 	}
 
 	// 4. Execute handler.
@@ -274,7 +281,7 @@ func (d *Dispatcher) ExecuteClassified(ctx context.Context, classification CallC
 			"call_id", call.ID,
 			"error", err,
 		)
-		return d.afterToolCall(ctx, view, errorResult(call.ID, fmt.Sprintf("execution error: %v", err)))
+		return d.finalizeToolCall(ctx, view, errorResult(call.ID, fmt.Sprintf("execution error: %v", err)))
 	}
 
 	digest := contextutil.SnipToolResult(call.Name, call.ID, result, maxInt, maxInt)
@@ -285,12 +292,17 @@ func (d *Dispatcher) ExecuteClassified(ctx context.Context, classification CallC
 		"preview", digest.Preview,
 		"hash", digest.Hash,
 	)
-	return d.afterToolCall(ctx, view, Result{
+	return d.finalizeToolCall(ctx, view, Result{
 		CallID:        call.ID,
 		Content:       result,
 		IsError:       false,
 		NeedsApproval: false,
 	})
+}
+
+func (d *Dispatcher) finalizeToolCall(ctx context.Context, view CallHookView, result Result) Result {
+	result = DefaultResultGateway().Wrap(result, view.Call, view.Spec)
+	return d.afterToolCall(ctx, view, result)
 }
 
 func (d *Dispatcher) afterToolCall(ctx context.Context, view CallHookView, result Result) Result {
@@ -348,6 +360,7 @@ func ExtractToolCalls(resp *llm.ChatResponse) []Call {
 // Anthropic expects a single user message with tool_result content blocks.
 // OpenAI expects one role=tool message per result with a tool_call_id.
 func ResultsToMessages(provider string, results []Result) []llm.Message {
+	gateway := DefaultResultGateway()
 	switch provider {
 	case "anthropic":
 		blocks := make([]llm.ContentBlock, len(results))
@@ -355,7 +368,7 @@ func ResultsToMessages(provider string, results []Result) []llm.Message {
 			blocks[i] = llm.ContentBlock{
 				Type:    "tool_result",
 				ID:      r.CallID,
-				Content: string(r.Content),
+				Content: string(gateway.ProviderContent(r)),
 				IsError: r.IsError,
 			}
 		}
@@ -369,7 +382,7 @@ func ResultsToMessages(provider string, results []Result) []llm.Message {
 			msgs[i] = llm.Message{
 				Role:       llm.RoleTool,
 				ToolCallID: r.CallID,
-				Content:    string(r.Content),
+				Content:    string(gateway.ProviderContent(r)),
 			}
 		}
 		return msgs

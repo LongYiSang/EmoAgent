@@ -151,6 +151,49 @@ func newApprovalTestRuntime(t *testing.T, client llm.Client, executed *[]string)
 	})
 }
 
+func newHostApplyApprovalTestRuntime(t *testing.T, client llm.Client, executed *int) *Runtime {
+	t.Helper()
+
+	registry := tool.NewRegistry()
+	registry.Register(tool.Spec{
+		Name:        "host_apply_change",
+		Description: "apply a host resource changeset",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"changeset_id":{"type":"string"},"plan_hash":{"type":"string"},"resource_id":{"type":"string"},"canonical_path_hash":{"type":"string"},"baseline_hash":{"type":"string"},"baseline_file_id":{"type":"string"},"delete_mode":{"type":"string"},"recursive":{"type":"boolean"}},"required":["changeset_id","plan_hash","resource_id","canonical_path_hash","baseline_hash","baseline_file_id"],"additionalProperties":false}`),
+		Scope:       tool.ScopeWork,
+		Permission:  tool.PermApprovedDestructive,
+	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		if executed != nil {
+			(*executed)++
+		}
+		return json.RawMessage(`{"status":"applied"}`), nil
+	})
+	registry.Register(NewFinishTaskTool(), FinishTaskPlaceholderHandler)
+	registry.Register(NewRequestDecisionTool(), RequestDecisionPlaceholderHandler)
+
+	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, testLogger())
+	return NewRuntime(RuntimeConfig{
+		LLM:                      client,
+		Provider:                 "openai",
+		Model:                    "test-model",
+		MaxTokens:                2048,
+		Temperature:              0.2,
+		MaxToolRounds:            4,
+		MaxInputTokens:           100000,
+		Registry:                 registry,
+		Dispatcher:               dispatcher,
+		Logger:                   testLogger(),
+		MaxEscalations:           3,
+		PendingSnapshotMaxTokens: 4000,
+		EnvironmentFacts: runtimeenv.Facts{
+			OS:            "linux",
+			WorkspaceRoot: "/repo",
+			PathStyle:     "posix",
+			BashEnabled:   true,
+			ShellDisplay:  "sh -c",
+		},
+	})
+}
+
 func newTestRuntimeWithDecider(t *testing.T, client llm.Client, decider RuntimeDecider) *Runtime {
 	t.Helper()
 	registry, dispatcher := newTestRegistryAndDispatcher(t)
@@ -732,6 +775,48 @@ func TestRuntime_AutoPausesOnApprovalBlockedTool(t *testing.T) {
 	}
 }
 
+func TestRuntime_JournalHashesToolInputAndDoesNotPersistRawSecret(t *testing.T) {
+	secret := "API_SECRET=phase1-do-not-log"
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			toolUseResp("bash-1", "bash", `{"command":"echo API_SECRET=phase1-do-not-log && rm -rf tmp"}`),
+		},
+	}
+	var executed []string
+	runtime := newApprovalTestRuntime(t, client, &executed)
+	brief := newValidatedBrief(t)
+	brief.TaskID = "task-journal-secret"
+	brief.PermissionScope = "approved-destructive"
+
+	root := t.TempDir()
+	now := time.Now().UTC()
+	journal, err := Open(root, brief.TaskID, now, testLogger())
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	outcome := runtime.Run(context.Background(), brief, journal)
+	if err := journal.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+	if outcome.Paused == nil {
+		t.Fatalf("expected paused outcome, got %#v", outcome)
+	}
+	data, err := os.ReadFile(filepath.Join(root, now.Format("2006-01-02"), brief.TaskID+".jsonl"))
+	if err != nil {
+		t.Fatalf("expected journal file: %v", err)
+	}
+	text := string(data)
+	if strings.Contains(text, secret) {
+		t.Fatalf("journal leaked raw tool input secret: %s", text)
+	}
+	if !strings.Contains(text, `"input_hash"`) {
+		t.Fatalf("journal missing input_hash: %s", text)
+	}
+	if strings.Contains(text, `"input":`) {
+		t.Fatalf("journal should not persist raw input field: %s", text)
+	}
+}
+
 func TestRuntime_WorkspaceWriteDestructiveCallBecomesPermissionEscalationPause(t *testing.T) {
 	client := &scriptedLLM{
 		responses: []*llm.ChatResponse{
@@ -973,6 +1058,70 @@ func TestRuntime_AutoPausesOnApprovalBlockedToolFiltersSiblingToolCalls(t *testi
 	last := client.calls[1].Messages[len(client.calls[1].Messages)-1]
 	if last.ToolCallID != "bash-1" {
 		t.Fatalf("tool result call id = %q, want bash-1", last.ToolCallID)
+	}
+}
+
+func TestRuntime_HostApplyChangePauseAndResumeBindsChangeSetSnapshot(t *testing.T) {
+	applyInput := `{"changeset_id":"cs-1","plan_hash":"sha256:plan","resource_id":"local:abc","canonical_path_hash":"sha256:path","baseline_hash":"sha256:old","baseline_file_id":"file-id","delete_mode":"quarantine","recursive":true}`
+	client := &scriptedLLM{
+		responses: []*llm.ChatResponse{
+			toolUseResp("apply-1", "host_apply_change", applyInput),
+			toolUseResp("finish-1", "finish_task", finishTaskPayloadJSON("completed", "done", nil, nil)),
+		},
+	}
+	var executed int
+	runtime := newHostApplyApprovalTestRuntime(t, client, &executed)
+	brief := newValidatedBrief(t)
+	brief.TaskID = "task-host-apply-approval"
+	brief.Goal = "apply approved external changeset"
+	brief.PermissionScope = "approved-destructive"
+
+	outcome := runtime.Run(context.Background(), brief, nil)
+	if outcome.Paused == nil {
+		t.Fatalf("expected host_apply_change to pause for approval, got %#v", outcome)
+	}
+	if executed != 0 {
+		t.Fatalf("host_apply_change executed before approval: %d", executed)
+	}
+	if outcome.Paused.Packet.ToolApprovalBinding == nil {
+		t.Fatal("ToolApprovalBinding is nil")
+	}
+	packetBinding := outcome.Paused.Packet.ToolApprovalBinding
+	if packetBinding.ChangeSetID != "cs-1" ||
+		packetBinding.PlanHash != "sha256:plan" ||
+		packetBinding.ResourceID != "local:abc" ||
+		packetBinding.CanonicalPathHash != "sha256:path" ||
+		packetBinding.BaselineHash != "sha256:old" ||
+		packetBinding.BaselineFileID != "file-id" ||
+		packetBinding.DeleteMode != "quarantine" {
+		t.Fatalf("packet binding = %#v, want exact ChangeSet snapshot fields", packetBinding)
+	}
+
+	binding, err := tool.BuildApprovalBinding(*outcome.Paused.PendingToolCall, "req-1", tool.ApprovalKindDestructiveWrite)
+	if err != nil {
+		t.Fatalf("BuildApprovalBinding: %v", err)
+	}
+	resumed := runtime.Resume(tool.WithApproval(context.Background(), tool.ApprovalContext{
+		RequestID:           binding.RequestID,
+		ApprovalKind:        binding.ApprovalKind,
+		AllowToolCall:       true,
+		AllowDestructive:    true,
+		ToolName:            binding.ToolName,
+		NormalizedInputHash: binding.NormalizedInputHash,
+		PathDigest:          binding.PathDigest,
+		ChangeSetID:         binding.ChangeSetID,
+		PlanHash:            binding.PlanHash,
+		ResourceID:          binding.ResourceID,
+		CanonicalPathHash:   binding.CanonicalPathHash,
+		BaselineHash:        binding.BaselineHash,
+		BaselineFileID:      binding.BaselineFileID,
+		DeleteMode:          binding.DeleteMode,
+	}), outcome.Paused, protocol.DecisionResponse{TaskID: brief.TaskID}, nil)
+	if resumed.Report == nil || resumed.Report.Status != "completed" {
+		t.Fatalf("expected completed report after host_apply_change approval, got %#v", resumed)
+	}
+	if executed != 1 {
+		t.Fatalf("host_apply_change executed %d times, want once after approval", executed)
 	}
 }
 

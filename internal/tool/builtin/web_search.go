@@ -18,6 +18,7 @@ var WebSearchSpec = tool.Spec{
 	Parameters:  json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer"},"profile":{"type":"string"},"include_domains":{"type":"array","items":{"type":"string"}},"exclude_domains":{"type":"array","items":{"type":"string"}},"time_range":{"type":"string"},"start_date":{"type":"string"},"end_date":{"type":"string"},"exact_match":{"type":"boolean"}},"required":["query"],"additionalProperties":false}`),
 	Scope:       tool.ScopeBoth,
 	Permission:  tool.PermReadOnly,
+	Source:      externalWebSource(),
 }
 
 // webSearchMaxResultsHardCap is the maximum number of results the handler will request.

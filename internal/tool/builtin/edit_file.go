@@ -30,6 +30,7 @@ func NewEditFileTool(projectRoot string) (tool.Spec, tool.Handler) {
 		}`),
 		Scope:                 tool.ScopeWork,
 		Permission:            tool.PermWorkspaceWrite,
+		Source:                workspaceFileSource(),
 		DestructiveClassifier: classifyEditFileDestructive(projectRoot),
 	}
 

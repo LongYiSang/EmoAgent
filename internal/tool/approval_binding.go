@@ -20,6 +20,13 @@ type ApprovalBinding struct {
 	NormalizedInputHash string `json:"normalized_input_hash"`
 	PathDigest          string `json:"path_digest,omitempty"`
 	InputPreview        string `json:"input_preview,omitempty"`
+	ChangeSetID         string `json:"changeset_id,omitempty"`
+	PlanHash            string `json:"plan_hash,omitempty"`
+	ResourceID          string `json:"resource_id,omitempty"`
+	CanonicalPathHash   string `json:"canonical_path_hash,omitempty"`
+	BaselineHash        string `json:"baseline_hash,omitempty"`
+	BaselineFileID      string `json:"baseline_file_id,omitempty"`
+	DeleteMode          string `json:"delete_mode,omitempty"`
 }
 
 func BuildApprovalBinding(call Call, requestID string, kind ApprovalKind) (ApprovalBinding, error) {
@@ -30,14 +37,16 @@ func BuildApprovalBinding(call Call, requestID string, kind ApprovalKind) (Appro
 	if err != nil {
 		return ApprovalBinding{}, err
 	}
-	return ApprovalBinding{
+	binding := ApprovalBinding{
 		RequestID:           requestID,
 		ApprovalKind:        string(kind),
 		ToolName:            strings.TrimSpace(call.Name),
 		NormalizedInputHash: inputHash,
 		PathDigest:          PathDigestForCall(call),
 		InputPreview:        InputPreviewForCall(call),
-	}, nil
+	}
+	applyChangeSetBindingFields(call, &binding)
+	return binding, nil
 }
 
 func NormalizedInputHash(input json.RawMessage) (string, error) {
@@ -54,11 +63,15 @@ func PathDigestForCall(call Call) string {
 		return ""
 	}
 	pathValue, ok := object["path"].(string)
-	if !ok || strings.TrimSpace(pathValue) == "" {
-		return ""
+	if ok && strings.TrimSpace(pathValue) != "" {
+		cleaned := filepath.ToSlash(filepath.Clean(strings.TrimSpace(pathValue)))
+		return "sha256:" + sha256Hex([]byte(cleaned))
 	}
-	cleaned := filepath.ToSlash(filepath.Clean(strings.TrimSpace(pathValue)))
-	return "sha256:" + sha256Hex([]byte(cleaned))
+	if changeSetID, ok := object["changeset_id"].(string); ok && strings.TrimSpace(changeSetID) != "" {
+		planHash, _ := object["plan_hash"].(string)
+		return "sha256:" + sha256Hex([]byte(strings.TrimSpace(changeSetID)+"\x00"+strings.TrimSpace(planHash)))
+	}
+	return ""
 }
 
 func InputPreviewForCall(call Call) string {
@@ -77,8 +90,31 @@ func InputPreviewForCall(call Call) string {
 		if command, ok := object["command"].(string); ok {
 			return "command=" + truncatePreview(command, 160)
 		}
+	case "host_apply_change", "host_restore_quarantine":
+		return previewChangeSetApplyInput(name, object)
 	}
 	return previewGenericInput(name, object)
+}
+
+func applyChangeSetBindingFields(call Call, binding *ApprovalBinding) {
+	if binding == nil {
+		return
+	}
+	name := strings.TrimSpace(call.Name)
+	if name != "host_apply_change" && name != "host_restore_quarantine" {
+		return
+	}
+	var object map[string]any
+	if err := json.Unmarshal(call.Input, &object); err != nil {
+		return
+	}
+	binding.ChangeSetID = stringField(object, "changeset_id")
+	binding.PlanHash = stringField(object, "plan_hash")
+	binding.ResourceID = stringField(object, "resource_id")
+	binding.CanonicalPathHash = stringField(object, "canonical_path_hash")
+	binding.BaselineHash = stringField(object, "baseline_hash")
+	binding.BaselineFileID = stringField(object, "baseline_file_id")
+	binding.DeleteMode = stringField(object, "delete_mode")
 }
 
 func canonicalJSON(input json.RawMessage) ([]byte, error) {
@@ -141,6 +177,26 @@ func previewEditFileInput(object map[string]any) string {
 	return strings.Join(parts, ", ")
 }
 
+func previewChangeSetApplyInput(name string, object map[string]any) string {
+	parts := []string{}
+	if changeSetID := stringField(object, "changeset_id"); changeSetID != "" {
+		parts = append(parts, "changeset_id="+truncatePreview(changeSetID, 80))
+	}
+	if planHash := stringField(object, "plan_hash"); planHash != "" {
+		parts = append(parts, "plan_hash="+truncatePreview(planHash, 96))
+	}
+	if deleteMode := stringField(object, "delete_mode"); deleteMode != "" {
+		parts = append(parts, "delete_mode="+truncatePreview(deleteMode, 40))
+	}
+	if recursive, ok := object["recursive"].(bool); ok && recursive {
+		parts = append(parts, "recursive=true")
+	}
+	if len(parts) == 0 {
+		return name
+	}
+	return strings.Join(parts, ", ")
+}
+
 func previewGenericInput(name string, object map[string]any) string {
 	keys := make([]string, 0, len(object))
 	for key := range object {
@@ -160,6 +216,14 @@ func previewGenericInput(name string, object map[string]any) string {
 		return strings.Join(parts, ", ")
 	}
 	return name + " (" + strings.Join(parts, ", ") + ")"
+}
+
+func stringField(object map[string]any, key string) string {
+	value, ok := object[key].(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(value)
 }
 
 func previewValue(value any) string {

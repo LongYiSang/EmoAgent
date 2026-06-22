@@ -15,6 +15,7 @@ var GetCurrentTimeSpec = tool.Spec{
 	Parameters:  json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
 	Scope:       tool.ScopeWork,
 	Permission:  tool.PermReadOnly,
+	Source:      systemGeneratedSource(),
 }
 
 // currentTimeResponse is the JSON structure returned by the handler.

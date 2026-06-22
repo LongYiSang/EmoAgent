@@ -66,3 +66,40 @@ func TestBuildApprovalBindingIncludesFullInputInHashButPreviewOmitsWriteContent(
 		t.Fatal("path digest should stay stable when only content changes")
 	}
 }
+
+func TestBuildApprovalBindingIncludesChangeSetPlanFields(t *testing.T) {
+	call := Call{
+		ID:    "apply-1",
+		Name:  "host_apply_change",
+		Input: json.RawMessage(`{"changeset_id":"cs-1","plan_hash":"sha256:plan","resource_id":"local:abc","canonical_path_hash":"sha256:path","baseline_hash":"sha256:old","baseline_file_id":"file-id","delete_mode":"quarantine","recursive":true}`),
+	}
+
+	binding, err := BuildApprovalBinding(call, "approval-1", ApprovalKindDestructiveWrite)
+	if err != nil {
+		t.Fatalf("BuildApprovalBinding: %v", err)
+	}
+	if binding.ChangeSetID != "cs-1" || binding.PlanHash != "sha256:plan" || binding.ResourceID != "local:abc" ||
+		binding.CanonicalPathHash != "sha256:path" || binding.BaselineHash != "sha256:old" ||
+		binding.BaselineFileID != "file-id" || binding.DeleteMode != "quarantine" {
+		t.Fatalf("binding = %#v", binding)
+	}
+	if binding.PathDigest == "" ||
+		!strings.Contains(binding.InputPreview, "changeset_id=cs-1") ||
+		!strings.Contains(binding.InputPreview, "recursive=true") ||
+		strings.Contains(binding.InputPreview, "file-id") {
+		t.Fatalf("binding preview/path digest = %#v", binding)
+	}
+
+	mutated := call
+	mutated.Input = json.RawMessage(`{"changeset_id":"cs-1","plan_hash":"sha256:changed"}`)
+	mutatedBinding, err := BuildApprovalBinding(mutated, "approval-1", ApprovalKindDestructiveWrite)
+	if err != nil {
+		t.Fatalf("BuildApprovalBinding(mutated): %v", err)
+	}
+	if binding.NormalizedInputHash == mutatedBinding.NormalizedInputHash {
+		t.Fatal("normalized input hash should change when plan_hash changes")
+	}
+	if binding.PathDigest == mutatedBinding.PathDigest {
+		t.Fatal("path digest should bind changeset_id and plan_hash for host_apply_change")
+	}
+}

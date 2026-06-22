@@ -6,12 +6,15 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/tool"
+	"github.com/longyisang/emoagent/internal/tool/resultv2"
 )
 
 func TestGetCurrentTimeHandler(t *testing.T) {
@@ -158,6 +161,97 @@ func TestRegisterAll_WebSearchEnabled(t *testing.T) {
 	}
 	if !found {
 		t.Error("web_search not found in registered specs")
+	}
+}
+
+func TestRegisterAll_HostResourcesRegistersBrokerToolsAndBlocksUnconfiguredExternalRead(t *testing.T) {
+	workspace := t.TempDir()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "note.txt"), []byte("host note"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	outsideFile := filepath.Join(outside, "outside.txt")
+	if err := os.WriteFile(outsideFile, []byte("outside"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.DefaultConfig()
+	cfg.HostResources.Enabled = true
+	cfg.HostResources.Roots = []config.HostResourceRoot{{
+		ID:        "documents",
+		Path:      root,
+		Access:    "read",
+		Recursive: true,
+	}}
+	registry := tool.NewRegistry()
+	RegisterAll(registry, cfg, workspace, slog.Default())
+
+	for _, name := range []string{
+		"host_read",
+		"host_list",
+		"host_stat",
+		"host_search",
+		"host_copy_to_workspace",
+		"host_stage_resource",
+		"host_prepare_change",
+		"host_preview_change",
+		"host_apply_change",
+		"host_cancel_change",
+		"host_restore_quarantine",
+	} {
+		if _, ok := registry.GetSpec(name); !ok {
+			t.Fatalf("%s spec missing", name)
+		}
+	}
+	for _, name := range []string{"host_apply_change", "host_restore_quarantine"} {
+		spec, _ := registry.GetSpec(name)
+		if spec.Permission != tool.PermApprovedDestructive {
+			t.Fatalf("%s permission = %q, want approved-destructive", name, spec.Permission)
+		}
+	}
+	handler, ok := registry.Get("read_file")
+	if !ok {
+		t.Fatal("read_file handler missing")
+	}
+	ctx := tool.WithReadScope(context.Background(), tool.ReadScopeAll)
+	if _, err := handler(ctx, mustJSON(t, map[string]any{"path": "@documents/note.txt"})); err != nil {
+		t.Fatalf("read_file configured host root: %v", err)
+	}
+	if _, err := handler(ctx, mustJSON(t, map[string]any{"path": outsideFile})); err == nil {
+		t.Fatal("read_file should reject unconfigured external path when host_resources is enabled")
+	}
+}
+
+func TestRegisterAll_SourceMetadataLabelsFileAndWebTools(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.WebSearch.Enabled = true
+	cfg.WebSearch.Provider = "tavily"
+	cfg.WebSearch.APIKeyEnv = "TEST_TAVILY_KEY"
+	t.Setenv("TEST_TAVILY_KEY", "fake-key")
+
+	registry := tool.NewRegistry()
+	RegisterAll(registry, cfg, t.TempDir(), slog.Default())
+
+	readSpec, ok := registry.GetSpec("read_file")
+	if !ok {
+		t.Fatal("read_file spec missing")
+	}
+	if readSpec.Source.DefaultLabels.Origin != resultv2.OriginWorkspaceFile {
+		t.Fatalf("read_file origin = %q, want workspace_file", readSpec.Source.DefaultLabels.Origin)
+	}
+	if readSpec.Source.DefaultLabels.InstructionAuthority != resultv2.InstructionDataOnly {
+		t.Fatalf("read_file instruction authority = %q", readSpec.Source.DefaultLabels.InstructionAuthority)
+	}
+
+	webSpec, ok := registry.GetSpec("web_search")
+	if !ok {
+		t.Fatal("web_search spec missing")
+	}
+	if webSpec.Source.DefaultLabels.Origin != resultv2.OriginExternalWeb {
+		t.Fatalf("web_search origin = %q, want external_web", webSpec.Source.DefaultLabels.Origin)
+	}
+	if webSpec.Source.DefaultLabels.Integrity != resultv2.IntegrityUnverified {
+		t.Fatalf("web_search integrity = %q, want unverified", webSpec.Source.DefaultLabels.Integrity)
 	}
 }
 
