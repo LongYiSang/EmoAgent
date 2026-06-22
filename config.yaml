@@ -46,14 +46,12 @@ plugins:
     allow_dev_dirs: true
   runtime:
     process_enabled: true
-    python_executable: python3
     startup_timeout_ms: 5000
     shutdown_timeout_ms: 3000
     idle_timeout_seconds: 600
     crash_backoff_initial_seconds: 5
     crash_backoff_max_seconds: 300
     max_stderr_bytes: 262144
-    container_enabled: false
   installer:
     github_enabled: true
     require_signature: true

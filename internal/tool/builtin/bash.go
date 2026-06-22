@@ -7,12 +7,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os/exec"
 	"runtime"
 	"strings"
-	"time"
 
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/execution"
 	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/tool"
 )
@@ -41,12 +40,18 @@ func NewBashToolWithFacts(cfg config.BashConfig, facts runtimeenv.Facts, logger 
 		}`),
 		Scope:                 tool.ScopeWork,
 		Permission:            tool.PermWorkspaceWrite,
+		Source:                bashSource(cfg),
 		DestructiveClassifier: classifyBashDestructive,
 	}
 
 	shellArgs := resolveShellArgs(runtimeenv.ShellSpec{
 		Executable: facts.ShellExecutable,
 		ArgsPrefix: facts.ShellArgsPrefix,
+	})
+	manager := execution.NewHostExecutionManager(execution.ManagerConfig{
+		Mode:                  cfg.ExecutionMode,
+		UnsafeHostExecEnabled: cfg.UnsafeHostExecEnabled,
+		GOOS:                  facts.OS,
 	})
 
 	handler := func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
@@ -69,49 +74,58 @@ func NewBashToolWithFacts(cfg config.BashConfig, facts runtimeenv.Facts, logger 
 			timeoutSec = bashMaxTimeoutSec
 		}
 
-		runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
-		defer cancel()
-
 		args := append(shellArgs, in.Command)
-		cmd := exec.CommandContext(runCtx, args[0], args[1:]...)
-		cmd.Dir = facts.WorkspaceRoot
-
-		cap := cfg.MaxOutputBytes
-		var stdoutBuf, stderrBuf cappedBuffer
-		stdoutBuf.cap = cap
-		stderrBuf.cap = cap
-		cmd.Stdout = &stdoutBuf
-		cmd.Stderr = &stderrBuf
-
-		runErr := cmd.Run()
-
-		timedOut := runCtx.Err() == context.DeadlineExceeded
-		exitCode := 0
-		if cmd.ProcessState != nil {
-			exitCode = cmd.ProcessState.ExitCode()
-		} else if runErr != nil && !timedOut {
-			return nil, fmt.Errorf("bash: start failed: %w", runErr)
+		workspace := facts.WorkspaceRoot
+		if workspace == "" {
+			workspace = "."
+		}
+		result, err := manager.Execute(ctx, execution.CommandRequest{
+			Command:      args,
+			WorkspaceDir: workspace,
+			Profile:      bashManagedProcessProfile(cfg, timeoutSec),
+			Metadata:     json.RawMessage(`{"tool":"bash"}`),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("bash: %w", err)
 		}
 
 		if logger != nil {
 			logger.DebugContext(ctx, "bash done",
-				"exit_code", exitCode,
-				"timed_out", timedOut,
-				"stdout_bytes", stdoutBuf.written,
+				"exit_code", result.ExitCode,
+				"timed_out", result.TimedOut,
+				"unavailable", result.Unavailable,
+				"execution_mode", result.ExecutionMode,
 			)
 		}
 
-		return json.Marshal(map[string]any{
-			"stdout":           stdoutBuf.String(),
-			"stdout_truncated": stdoutBuf.truncated,
-			"stderr":           stderrBuf.String(),
-			"stderr_truncated": stderrBuf.truncated,
-			"exit_code":        exitCode,
-			"timed_out":        timedOut,
-		})
+		return json.Marshal(result)
 	}
 
 	return spec, handler
+}
+
+func bashSource(cfg config.BashConfig) tool.ToolSourceMetadata {
+	if cfg.ExecutionMode == "legacy_host" && cfg.UnsafeHostExecEnabled {
+		return unsafeHostSource()
+	}
+	return managedHostProcessSource()
+}
+
+func bashManagedProcessProfile(cfg config.BashConfig, timeoutSec int) execution.ManagedProcessProfile {
+	return execution.ManagedProcessProfile{
+		WorkspaceMode: "rw",
+		TempMode:      "rw",
+		PersonalMode:  "ro",
+		NetworkMode:   execution.NetworkAllow,
+		EnvAllowlist:  execution.DefaultCommandEnvAllowlist(),
+		Limits: execution.CommandLimits{
+			TimeoutSeconds: timeoutSec,
+			CPUQuota:       cfg.CPUs,
+			MemoryBytes:    int64(cfg.MemoryMB) << 20,
+			MaxProcesses:   cfg.MaxProcesses,
+			MaxOutputBytes: cfg.MaxOutputBytes,
+		},
+	}
 }
 
 func buildBashDescription(facts runtimeenv.Facts) string {

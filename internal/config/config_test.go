@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -92,8 +93,45 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Plugins.Store.RootDir != "data/plugins" || !cfg.Plugins.Store.AllowDevDirs {
 		t.Fatalf("default plugins.store = %#v, want data/plugins with dev dirs", cfg.Plugins.Store)
 	}
-	if !cfg.Plugins.Runtime.ProcessEnabled || cfg.Plugins.Runtime.PythonExecutable != "python3" || cfg.Plugins.Runtime.StartupTimeoutMS != 5000 {
+	if !cfg.Plugins.Runtime.ProcessEnabled ||
+		cfg.Plugins.Runtime.PythonExecutable != "" ||
+		cfg.Plugins.Runtime.PrivatePythonExecutable != "" ||
+		cfg.Plugins.Runtime.StartupTimeoutMS != 5000 {
 		t.Fatalf("default plugins.runtime = %#v", cfg.Plugins.Runtime)
+	}
+	if _, ok := reflect.TypeOf(*cfg).FieldByName("CapabilityRuntime"); ok {
+		t.Fatal("default config still exposes legacy capability_runtime")
+	}
+	if cfg.HostResources.Enabled {
+		t.Fatal("default host_resources.enabled = true, want false in phase 0")
+	}
+	if cfg.HostResources.DefaultProfile != "personal_read" || cfg.HostResources.StagingDir != "data/resource-staging" || cfg.HostResources.QuarantineDir != "data/resource-quarantine" {
+		t.Fatalf("default host_resources = %#v", cfg.HostResources)
+	}
+	if cfg.Bash.ExecutionMode != "managed_host" || cfg.Bash.UnsafeHostExecEnabled || cfg.Bash.MaxProcesses != 64 || cfg.Bash.MemoryMB != 512 {
+		t.Fatalf("default bash managed fields = %#v", cfg.Bash)
+	}
+	bashType := reflect.TypeOf(cfg.Bash)
+	for _, field := range []string{"NetworkDefault", "LinuxDriver", "MacOSDriver", "WindowsDriver"} {
+		if _, ok := bashType.FieldByName(field); ok {
+			t.Fatalf("default BashConfig still exposes legacy %s", field)
+		}
+	}
+	if cfg.Plugins.Runtime.DefaultKind != "managed_python_process" || cfg.Plugins.Runtime.ProcessDevEnabled ||
+		cfg.Plugins.Runtime.MaxProcesses != 64 || cfg.Plugins.Runtime.MemoryMB != 1024 {
+		t.Fatalf("default plugins.runtime kind/dev = %#v", cfg.Plugins.Runtime)
+	}
+	if cfg.Plugins.Policy.AllowActiveHooks {
+		t.Fatalf("default plugins.policy.allow_active_hooks = true, want false")
+	}
+	runtimeType := reflect.TypeOf(cfg.Plugins.Runtime)
+	for _, field := range []string{"ContainerEnabled", "SandboxEndpoint", "PreferRootless"} {
+		if _, ok := runtimeType.FieldByName(field); ok {
+			t.Fatalf("default PluginRuntimeConfig still exposes legacy %s", field)
+		}
+	}
+	if !cfg.Plugins.Runtime.FailClosedIfUnavailable {
+		t.Fatalf("default plugins.runtime should fail closed when runtime unavailable: %#v", cfg.Plugins.Runtime)
 	}
 	if !cfg.Plugins.Installer.GithubEnabled || !cfg.Plugins.Installer.RequireSignature || !cfg.Plugins.Installer.AllowUnsignedDev {
 		t.Fatalf("default plugins.installer = %#v", cfg.Plugins.Installer)
@@ -335,6 +373,37 @@ func TestLoadMissingFile(t *testing.T) {
 	}
 	if cfg.Server.Port != 8080 {
 		t.Errorf("expected defaults, got port %d", cfg.Server.Port)
+	}
+}
+
+func TestLoadLegacySandboxAndContainerFieldsRemainParseable(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+bash:
+  enabled: true
+  execution_mode: sandbox
+  linux_driver: bubblewrap
+  macos_driver: seatbelt
+  windows_driver: wsl2
+plugins:
+  runtime:
+    default_kind: container
+    container_enabled: true
+    sandbox_endpoint: npipe://emo-sandboxd
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load legacy config: %v", err)
+	}
+	if cfg.Bash.ExecutionMode != "sandbox" {
+		t.Fatalf("legacy bash fields not preserved: %#v", cfg.Bash)
+	}
+	if cfg.Plugins.Runtime.DefaultKind != "container" {
+		t.Fatalf("legacy plugin runtime fields not preserved: %#v", cfg.Plugins.Runtime)
 	}
 }
 
@@ -948,6 +1017,20 @@ plugins:
 	}
 }
 
+func TestLoadRejectsUnknownTopLevelConfigKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+capability_runtim:
+  enabled: true
+`), 0o644)
+
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), `capability_runtim is not supported`) {
+		t.Fatalf("Load error = %v, want unsupported top-level key", err)
+	}
+}
+
 func TestLoadPluginRuntimeV02Config(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -998,6 +1081,606 @@ plugins:
 	}
 	if cfg.Plugins.Runtime.PythonExecutable != "python" || cfg.Plugins.Runtime.MaxStderrBytes != 1024 {
 		t.Fatalf("plugins.runtime = %#v", cfg.Plugins.Runtime)
+	}
+	if cfg.Plugins.Runtime.DefaultKind != "managed_python_process" || cfg.Plugins.Runtime.ProcessDevEnabled {
+		t.Fatalf("plugins.runtime v0.2 compatibility managed defaults = %#v", cfg.Plugins.Runtime)
+	}
+	if !cfg.Plugins.Runtime.FailClosedIfUnavailable {
+		t.Fatalf("plugins.runtime v0.2 default managed fields = %#v", cfg.Plugins.Runtime)
+	}
+}
+
+func TestLoadPluginRuntimePrivatePythonExecutable(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+plugins:
+  runtime:
+    private_python_executable: C:/EmoAgent/runtime/python/python.exe
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Plugins.Runtime.PrivatePythonExecutable != "C:/EmoAgent/runtime/python/python.exe" {
+		t.Fatalf("private_python_executable = %q", cfg.Plugins.Runtime.PrivatePythonExecutable)
+	}
+	if cfg.Plugins.Runtime.PythonExecutable != "" {
+		t.Fatalf("python_executable default = %q, want empty", cfg.Plugins.Runtime.PythonExecutable)
+	}
+}
+
+func TestLoadPluginRuntimePrivatePythonProvisioningConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+plugins:
+  runtime:
+    private_python_artifact_path: ./runtime/python-embed.zip
+    private_python_artifact_sha256: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Plugins.Runtime.PrivatePythonArtifactPath != "./runtime/python-embed.zip" {
+		t.Fatalf("private_python_artifact_path = %q", cfg.Plugins.Runtime.PrivatePythonArtifactPath)
+	}
+	if cfg.Plugins.Runtime.PrivatePythonArtifactSHA256 != "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("private_python_artifact_sha256 = %q", cfg.Plugins.Runtime.PrivatePythonArtifactSHA256)
+	}
+}
+
+func TestLoadPluginRuntimeProcessLimits(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+plugins:
+  runtime:
+    max_processes: 12
+    memory_mb: 256
+    cpus: 0.5
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Plugins.Runtime.MaxProcesses != 12 || cfg.Plugins.Runtime.MemoryMB != 256 || cfg.Plugins.Runtime.CPUs != 0.5 {
+		t.Fatalf("runtime limits = %#v", cfg.Plugins.Runtime)
+	}
+}
+
+func TestLoadPluginRuntimePrivatePythonArtifactRequiresChecksum(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+plugins:
+  runtime:
+    private_python_artifact_path: ./runtime/python-embed.zip
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "private_python_artifact_sha256 is required") {
+		t.Fatalf("Load error = %v, want checksum required", err)
+	}
+}
+
+func TestLoadPluginRuntimePrivatePythonArtifactRejectsInvalidChecksum(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+plugins:
+  runtime:
+    private_python_artifact_path: ./runtime/python-embed.zip
+    private_python_artifact_sha256: sha256:not-a-real-digest
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "private_python_artifact_sha256 must be sha256") {
+		t.Fatalf("Load error = %v, want invalid checksum", err)
+	}
+}
+
+func TestLoadPluginRuntimePrivatePythonArtifactChecksumRequiresPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+plugins:
+  runtime:
+    private_python_artifact_sha256: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "private_python_artifact_path is required") {
+		t.Fatalf("Load error = %v, want artifact path required", err)
+	}
+}
+
+func TestLoadPluginRuntimePrivatePythonArtifactConflictsWithExplicitExecutable(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+plugins:
+  runtime:
+    private_python_executable: C:/EmoAgent/runtime/python/python.exe
+    private_python_artifact_path: ./runtime/python-embed.zip
+    private_python_artifact_sha256: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "private_python_executable cannot be combined") {
+		t.Fatalf("Load error = %v, want explicit executable conflict", err)
+	}
+}
+
+func TestRepositoryConfigDoesNotDefaultPluginRuntimeToSystemPython(t *testing.T) {
+	cfg, err := Load(filepath.Join("..", "..", "config.yaml"))
+	if err != nil {
+		t.Fatalf("Load repository config: %v", err)
+	}
+	if cfg.Plugins.Runtime.PythonExecutable == "python3" {
+		t.Fatalf("repository config python_executable = %q, want no normal-path system Python default", cfg.Plugins.Runtime.PythonExecutable)
+	}
+}
+
+func TestLoadCapabilityRuntimePhase0Config(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+capability_runtime:
+  enabled: true
+host_resources:
+  enabled: true
+  default_profile: personal_read
+  staging_dir: ./tmp/staging
+  quarantine_dir: ./tmp/quarantine
+  max_read_bytes: 2048
+  max_search_results: 50
+  persistent_grants_enabled: true
+  protected_policy: default
+  roots:
+    - id: documents
+      path: ${HOME}/Documents
+      access: read
+      recursive: true
+bash:
+  enabled: false
+  execution_mode: sandbox
+  unsafe_host_exec_enabled: false
+  network_default: deny
+  linux_driver: bubblewrap
+  macos_driver: seatbelt
+  windows_driver: wsl2
+  max_processes: 32
+  memory_mb: 512
+  cpus: 0.5
+plugins:
+  runtime:
+    default_kind: container
+    process_enabled: false
+    process_dev_enabled: true
+    container_enabled: true
+    sandbox_endpoint: npipe://emo-sandboxd
+    fail_closed_if_unavailable: true
+    prefer_rootless: false
+`), 0o644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.HostResources.Enabled || cfg.HostResources.StagingDir != "./tmp/staging" || len(cfg.HostResources.Roots) != 1 {
+		t.Fatalf("host_resources = %#v", cfg.HostResources)
+	}
+	if cfg.HostResources.Roots[0].ID != "documents" || cfg.HostResources.Roots[0].Access != "read" || !cfg.HostResources.Roots[0].Recursive {
+		t.Fatalf("host_resources.roots[0] = %#v", cfg.HostResources.Roots[0])
+	}
+	if cfg.Bash.Enabled || cfg.Bash.ExecutionMode != "sandbox" || cfg.Bash.UnsafeHostExecEnabled {
+		t.Fatalf("bash = %#v", cfg.Bash)
+	}
+	if cfg.Plugins.Runtime.DefaultKind != "container" || !cfg.Plugins.Runtime.ProcessDevEnabled {
+		t.Fatalf("plugins.runtime = %#v", cfg.Plugins.Runtime)
+	}
+}
+
+func TestCapabilityRuntimeLegacyConfigIsParseOnly(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+capability_runtime:
+  enabled: true
+`), 0o644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, ok := reflect.TypeOf(*cfg).FieldByName("CapabilityRuntime"); ok {
+		t.Fatal("Config still exposes legacy capability_runtime as runtime state")
+	}
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	if strings.Contains(string(raw), "capability_runtime") {
+		t.Fatalf("marshaled config exposed legacy capability_runtime: %s", raw)
+	}
+}
+
+func TestPluginRuntimeLegacySandboxContainerFieldsAreParseOnly(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+plugins:
+  runtime:
+    container_enabled: true
+    sandbox_endpoint: npipe://emo-sandboxd
+    prefer_rootless: true
+`), 0o644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	runtimeType := reflect.TypeOf(cfg.Plugins.Runtime)
+	for _, field := range []string{"ContainerEnabled", "SandboxEndpoint", "PreferRootless"} {
+		if _, ok := runtimeType.FieldByName(field); ok {
+			t.Fatalf("PluginRuntimeConfig still exposes legacy %s as runtime state", field)
+		}
+	}
+	raw, err := json.Marshal(cfg.Plugins.Runtime)
+	if err != nil {
+		t.Fatalf("marshal plugin runtime config: %v", err)
+	}
+	for _, key := range []string{"container_enabled", "sandbox_endpoint", "prefer_rootless"} {
+		if strings.Contains(string(raw), key) {
+			t.Fatalf("marshaled plugin runtime config exposed legacy %s: %s", key, raw)
+		}
+	}
+}
+
+func TestBashLegacySandboxResourceFieldsAreParseOnly(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+bash:
+  enabled: true
+  execution_mode: sandbox
+  unsafe_host_exec_enabled: false
+  network_default: deny
+  linux_driver: bubblewrap
+  macos_driver: seatbelt
+  windows_driver: wsl2
+  max_processes: 32
+  memory_mb: 512
+  cpus: 0.5
+`), 0o644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Bash.Enabled || cfg.Bash.ExecutionMode != "sandbox" || cfg.Bash.UnsafeHostExecEnabled ||
+		cfg.Bash.MaxProcesses != 32 || cfg.Bash.MemoryMB != 512 || cfg.Bash.CPUs != 0.5 {
+		t.Fatalf("bash executable compatibility fields = %#v", cfg.Bash)
+	}
+	bashType := reflect.TypeOf(cfg.Bash)
+	for _, field := range []string{"NetworkDefault", "LinuxDriver", "MacOSDriver", "WindowsDriver"} {
+		if _, ok := bashType.FieldByName(field); ok {
+			t.Fatalf("BashConfig still exposes legacy %s as runtime state", field)
+		}
+	}
+	raw, err := json.Marshal(cfg.Bash)
+	if err != nil {
+		t.Fatalf("marshal bash config: %v", err)
+	}
+	for _, key := range []string{"network_default", "linux_driver", "macos_driver", "windows_driver"} {
+		if strings.Contains(string(raw), key) {
+			t.Fatalf("marshaled bash config exposed legacy %s: %s", key, raw)
+		}
+	}
+}
+
+func TestPluginRuntimeDocsAndRepositoryConfigDoNotPromoteLegacySandboxContainerKnobs(t *testing.T) {
+	for _, path := range []string{
+		filepath.Join("..", "..", "config.yaml"),
+		filepath.Join("..", "..", "docs", "plugin_development_guide.md"),
+		filepath.Join("..", "..", "docs", "specs", "plugin_runtime_v0.2_update_spec.md"),
+	} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		text := string(raw)
+		for _, legacyKey := range []string{"container_enabled:", "sandbox_endpoint:", "prefer_rootless:"} {
+			if strings.Contains(text, legacyKey) {
+				t.Fatalf("%s still promotes legacy runtime key %q", path, legacyKey)
+			}
+		}
+	}
+
+	guidePath := filepath.Join("..", "..", "docs", "plugin_development_guide.md")
+	raw, err := os.ReadFile(guidePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", guidePath, err)
+	}
+	guide := string(raw)
+	if strings.Contains(guide, "第三方插件当前推荐 `python_process`") ||
+		strings.Contains(guide, "`python_process` | 当前第三方插件主路径") {
+		t.Fatalf("plugin guide still recommends legacy python_process")
+	}
+	if !strings.Contains(guide, "`managed_python_process` | 当前第三方插件主路径") {
+		t.Fatalf("plugin guide does not present managed_python_process as the third-party main path")
+	}
+	if !strings.Contains(guide, "legacy/dev") {
+		t.Fatalf("plugin guide does not label python_process/process as legacy/dev")
+	}
+}
+
+func TestLoadPluginPolicyConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+plugins:
+  enabled: false
+  policy:
+    allow_active_hooks: true
+    allowed_capabilities:
+      - plugin.kv
+      - provider.generate
+`), 0o644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Plugins.Policy.AllowActiveHooks {
+		t.Fatalf("plugins.policy.allow_active_hooks = false, want true")
+	}
+	if got := strings.Join(cfg.Plugins.Policy.AllowedCapabilities, ","); got != "plugin.kv,provider.generate" {
+		t.Fatalf("plugins.policy.allowed_capabilities = %q", got)
+	}
+}
+
+func TestLoadPluginInstallerTrustPolicyConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+plugins:
+  enabled: false
+  installer:
+    blocked_package_digests:
+      - sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    blocked_manifest_digests:
+      - sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    blocked_publishers:
+      - revoked-publisher
+`), 0o644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := strings.Join(cfg.Plugins.Installer.BlockedPackageDigests, ","); got != "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("blocked package digests = %q", got)
+	}
+	if got := strings.Join(cfg.Plugins.Installer.BlockedManifestDigests, ","); got != "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" {
+		t.Fatalf("blocked manifest digests = %q", got)
+	}
+	if got := strings.Join(cfg.Plugins.Installer.BlockedPublishers, ","); got != "revoked-publisher" {
+		t.Fatalf("blocked publishers = %q", got)
+	}
+}
+
+func TestPluginInstallerTrustPolicyRejectsInvalidDigest(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+plugins:
+  enabled: false
+  installer:
+    blocked_package_digests:
+      - sha256:not-real
+`), 0o644)
+
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), `installer.blocked_package_digests contains invalid digest "sha256:not-real"`) {
+		t.Fatalf("Load error = %v, want invalid blocked digest rejection", err)
+	}
+}
+
+func TestPluginPolicyRejectsUnknownCapability(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+plugins:
+  enabled: false
+  policy:
+    allowed_capabilities:
+      - does.not.exist
+`), 0o644)
+
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), `policy.allowed_capabilities contains unknown capability "does.not.exist"`) {
+		t.Fatalf("Load error = %v, want unknown capability rejection", err)
+	}
+}
+
+func TestLoadAllowsEnabledBashSandboxAfterBroker(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+bash:
+  enabled: true
+  execution_mode: sandbox
+  unsafe_host_exec_enabled: false
+`), 0o644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Bash.Enabled || cfg.Bash.ExecutionMode != "sandbox" || cfg.Bash.UnsafeHostExecEnabled {
+		t.Fatalf("bash = %#v", cfg.Bash)
+	}
+}
+
+func TestLoadRejectsEnabledLegacyHostBashWithoutUnsafeFlag(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+bash:
+  enabled: true
+  execution_mode: legacy_host
+  unsafe_host_exec_enabled: false
+`), 0o644)
+
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), `bash.execution_mode=legacy_host requires unsafe_host_exec_enabled=true`) {
+		t.Fatalf("Load error = %v, want unsafe legacy rejection", err)
+	}
+}
+
+func TestLoadAllowsExplicitUnsafeLegacyHostBash(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+bash:
+  enabled: true
+  execution_mode: legacy_host
+  unsafe_host_exec_enabled: true
+`), 0o644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Bash.ExecutionMode != "legacy_host" || !cfg.Bash.UnsafeHostExecEnabled {
+		t.Fatalf("bash = %#v", cfg.Bash)
+	}
+}
+
+func TestLoadRejectsUnknownHostResourcesKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+host_resources:
+  enabled: true
+  raw_host_path: true
+`), 0o644)
+
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), `host_resources.raw_host_path is not supported`) {
+		t.Fatalf("Load error = %v, want unsupported host_resources key", err)
+	}
+}
+
+func TestLoadRejectsUnknownHostResourceRootKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+host_resources:
+  roots:
+    - id: documents
+      path: ${HOME}/Documents
+      raw_host_path: true
+`), 0o644)
+
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), `host_resources.roots[].raw_host_path is not supported`) {
+		t.Fatalf("Load error = %v, want unsupported host_resources root key", err)
+	}
+}
+
+func TestLoadRejectsHostResourceRootWithoutAccess(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+host_resources:
+  roots:
+    - id: documents
+      path: ${HOME}/Documents
+`), 0o644)
+
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), `host_resources.roots[0].access is required`) {
+		t.Fatalf("Load error = %v, want missing root access", err)
+	}
+}
+
+func TestLoadRejectsInvalidCapabilityRuntimeConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+capability_runtime:
+  enabled: false
+  shadow: true
+`), 0o644)
+
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), `capability_runtime.shadow is not supported`) {
+		t.Fatalf("Load error = %v, want unsupported capability_runtime key", err)
+	}
+}
+
+func TestLoadRejectsNonMappingCapabilityRuntimeConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+capability_runtime: true
+`), 0o644)
+
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), `capability_runtime must be a mapping`) {
+		t.Fatalf("Load error = %v, want non-mapping capability_runtime rejection", err)
+	}
+}
+
+func TestValidatePluginsEnabledRejectsContainerDefaultBeforeRuntime(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Plugins.Enabled = true
+	cfg.Plugins.Runtime.DefaultKind = "container"
+	cfg.Chat.TurnPipeline.Enabled = true
+	cfg.Chat.TurnPipeline.AllowPersonas = []string{"default"}
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), `runtime.default_kind=container is unavailable`) {
+		t.Fatalf("Validate error = %v, want container unavailable", err)
+	}
+}
+
+func TestValidatePluginsEnabledRejectsProcessDevDefaultUnlessExplicit(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Plugins.Enabled = true
+	cfg.Plugins.Runtime.DefaultKind = "process_dev"
+	cfg.Chat.TurnPipeline.Enabled = true
+	cfg.Chat.TurnPipeline.AllowPersonas = []string{"default"}
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), `runtime.default_kind=process_dev requires process_dev_enabled=true`) {
+		t.Fatalf("Validate error = %v, want process_dev explicit opt-in", err)
+	}
+
+	cfg.Plugins.Runtime.ProcessDevEnabled = true
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate with process_dev explicit opt-in: %v", err)
 	}
 }
 

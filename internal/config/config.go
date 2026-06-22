@@ -12,25 +12,76 @@ import (
 )
 
 type Config struct {
-	Server       ServerConfig       `yaml:"server"`
-	Time         TimeConfig         `yaml:"time"`
-	Chat         ChatConfig         `yaml:"chat"`
-	Context      ContextConfig      `yaml:"context"`
-	Work         WorkConfig         `yaml:"work"`
-	PromptCenter PromptCenterConfig `yaml:"prompt_center" json:"prompt_center"`
-	LLMProviders []LLMProvider      `yaml:"llm_providers"`
-	AgentConfigs []AgentConfig      `yaml:"agent_configs"`
-	Agent        AgentRuntimeConfig `yaml:"agent"`
-	AgentAffect  AgentAffectConfig  `yaml:"agent_affect" json:"agent_affect"`
-	Memory       MemoryConfig       `yaml:"memory"`
-	Media        MediaConfig        `yaml:"media" json:"media"`
-	DB           DBConfig           `yaml:"db"`
-	Log          LogConfig          `yaml:"log"`
-	Personas     PersonasConfig     `yaml:"personas"`
-	WebSearch    WebSearchConfig    `yaml:"websearch"`
-	WebFetch     WebFetchConfig     `yaml:"webfetch"`
-	Bash         BashConfig         `yaml:"bash"`
-	Plugins      PluginsConfig      `yaml:"plugins"`
+	Server        ServerConfig        `yaml:"server"`
+	Time          TimeConfig          `yaml:"time"`
+	Chat          ChatConfig          `yaml:"chat"`
+	Context       ContextConfig       `yaml:"context"`
+	Work          WorkConfig          `yaml:"work"`
+	PromptCenter  PromptCenterConfig  `yaml:"prompt_center" json:"prompt_center"`
+	HostResources HostResourcesConfig `yaml:"host_resources" json:"host_resources"`
+	LLMProviders  []LLMProvider       `yaml:"llm_providers"`
+	AgentConfigs  []AgentConfig       `yaml:"agent_configs"`
+	Agent         AgentRuntimeConfig  `yaml:"agent"`
+	AgentAffect   AgentAffectConfig   `yaml:"agent_affect" json:"agent_affect"`
+	Memory        MemoryConfig        `yaml:"memory"`
+	Media         MediaConfig         `yaml:"media" json:"media"`
+	DB            DBConfig            `yaml:"db"`
+	Log           LogConfig           `yaml:"log"`
+	Personas      PersonasConfig      `yaml:"personas"`
+	WebSearch     WebSearchConfig     `yaml:"websearch"`
+	WebFetch      WebFetchConfig      `yaml:"webfetch"`
+	Bash          BashConfig          `yaml:"bash"`
+	Plugins       PluginsConfig       `yaml:"plugins"`
+}
+
+func (c *Config) UnmarshalYAML(value *yaml.Node) error {
+	if value == nil || value.Kind == 0 {
+		return nil
+	}
+	if value.Kind != yaml.MappingNode {
+		return fmt.Errorf("config must be a mapping")
+	}
+	allowed := map[string]struct{}{
+		"server":             {},
+		"time":               {},
+		"chat":               {},
+		"context":            {},
+		"work":               {},
+		"prompt_center":      {},
+		"capability_runtime": {},
+		"host_resources":     {},
+		"llm":                {},
+		"llm_profiles":       {},
+		"llm_providers":      {},
+		"agent_configs":      {},
+		"agent":              {},
+		"agent_affect":       {},
+		"memory":             {},
+		"media":              {},
+		"db":                 {},
+		"log":                {},
+		"personas":           {},
+		"websearch":          {},
+		"webfetch":           {},
+		"bash":               {},
+		"plugins":            {},
+	}
+	for i := 0; i < len(value.Content); i += 2 {
+		key := strings.TrimSpace(value.Content[i].Value)
+		if _, ok := allowed[key]; !ok {
+			return fmt.Errorf("%s is not supported", key)
+		}
+	}
+	if err := validateLegacyCapabilityRuntimeConfig(value); err != nil {
+		return err
+	}
+	type rawConfig Config
+	decoded := rawConfig(*c)
+	if err := value.Decode(&decoded); err != nil {
+		return err
+	}
+	*c = Config(decoded)
+	return nil
 }
 
 type MediaConfig struct {
@@ -437,11 +488,108 @@ func (c *WebFetchConfig) applyDefaults() {
 	}
 }
 
+type HostResourcesConfig struct {
+	Enabled                 bool               `yaml:"enabled" json:"enabled"`
+	DefaultProfile          string             `yaml:"default_profile" json:"default_profile"`
+	StagingDir              string             `yaml:"staging_dir" json:"staging_dir"`
+	QuarantineDir           string             `yaml:"quarantine_dir" json:"quarantine_dir"`
+	MaxReadBytes            int64              `yaml:"max_read_bytes" json:"max_read_bytes"`
+	MaxSearchResults        int                `yaml:"max_search_results" json:"max_search_results"`
+	PersistentGrantsEnabled bool               `yaml:"persistent_grants_enabled" json:"persistent_grants_enabled"`
+	Roots                   []HostResourceRoot `yaml:"roots" json:"roots"`
+	ProtectedPolicy         string             `yaml:"protected_policy" json:"protected_policy"`
+}
+
+type HostResourceRoot struct {
+	ID        string `yaml:"id" json:"id"`
+	Path      string `yaml:"path" json:"path"`
+	Access    string `yaml:"access" json:"access"`
+	Recursive bool   `yaml:"recursive" json:"recursive"`
+}
+
+func (r *HostResourceRoot) UnmarshalYAML(value *yaml.Node) error {
+	if err := decodeKnownPluginMapping(value, "host_resources.roots[]", map[string]struct{}{
+		"id":        {},
+		"path":      {},
+		"access":    {},
+		"recursive": {},
+	}, (*rawHostResourceRoot)(r)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateLegacyCapabilityRuntimeConfig(value *yaml.Node) error {
+	if value == nil || value.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i < len(value.Content); i += 2 {
+		key := strings.TrimSpace(value.Content[i].Value)
+		if key != "capability_runtime" {
+			continue
+		}
+		var legacy struct {
+			Enabled bool `yaml:"enabled"`
+		}
+		return decodeKnownPluginMapping(value.Content[i+1], "capability_runtime", map[string]struct{}{
+			"enabled": {},
+		}, &legacy)
+	}
+	return nil
+}
+
+func (c *HostResourcesConfig) UnmarshalYAML(value *yaml.Node) error {
+	if err := decodeKnownPluginMapping(value, "host_resources", map[string]struct{}{
+		"enabled":                   {},
+		"default_profile":           {},
+		"staging_dir":               {},
+		"quarantine_dir":            {},
+		"max_read_bytes":            {},
+		"max_search_results":        {},
+		"persistent_grants_enabled": {},
+		"roots":                     {},
+		"protected_policy":          {},
+	}, (*rawHostResourcesConfig)(c)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *BashConfig) UnmarshalYAML(value *yaml.Node) error {
+	if err := decodeKnownPluginMapping(value, "bash", map[string]struct{}{
+		"enabled":                  {},
+		"timeout_sec":              {},
+		"max_output_bytes":         {},
+		"shell":                    {},
+		"execution_mode":           {},
+		"unsafe_host_exec_enabled": {},
+		"network_default":          {},
+		"linux_driver":             {},
+		"macos_driver":             {},
+		"windows_driver":           {},
+		"max_processes":            {},
+		"memory_mb":                {},
+		"cpus":                     {},
+	}, (*rawBashConfig)(c)); err != nil {
+		return err
+	}
+	return nil
+}
+
+type rawHostResourcesConfig HostResourcesConfig
+type rawHostResourceRoot HostResourceRoot
+type rawBashConfig BashConfig
+
 type BashConfig struct {
-	Enabled        bool   `yaml:"enabled"`
-	TimeoutSec     int    `yaml:"timeout_sec"`
-	MaxOutputBytes int    `yaml:"max_output_bytes"`
-	Shell          string `yaml:"shell"`
+	Enabled               bool    `yaml:"enabled" json:"enabled"`
+	TimeoutSec            int     `yaml:"timeout_sec" json:"timeout_sec"`
+	MaxOutputBytes        int     `yaml:"max_output_bytes" json:"max_output_bytes"`
+	Shell                 string  `yaml:"shell" json:"shell"`
+	ExecutionMode         string  `yaml:"execution_mode" json:"execution_mode"`
+	UnsafeHostExecEnabled bool    `yaml:"unsafe_host_exec_enabled" json:"unsafe_host_exec_enabled"`
+	MaxProcesses          int     `yaml:"max_processes" json:"max_processes"`
+	MemoryMB              int     `yaml:"memory_mb" json:"memory_mb"`
+	CPUs                  float64 `yaml:"cpus" json:"cpus"`
 }
 
 type PluginsConfig struct {
@@ -458,6 +606,7 @@ type PluginsConfig struct {
 	Installer        PluginInstallerConfig       `yaml:"installer" json:"installer"`
 	ProviderGateway  PluginProviderGatewayConfig `yaml:"provider_gateway" json:"provider_gateway"`
 	Admin            PluginAdminConfig           `yaml:"admin" json:"admin"`
+	Policy           PluginPolicyConfig          `yaml:"policy" json:"policy"`
 }
 
 type PluginAuditConfig struct {
@@ -474,26 +623,38 @@ type PluginStoreConfig struct {
 }
 
 type PluginRuntimeConfig struct {
-	ProcessEnabled             bool   `yaml:"process_enabled" json:"process_enabled"`
-	PythonExecutable           string `yaml:"python_executable" json:"python_executable"`
-	StartupTimeoutMS           int    `yaml:"startup_timeout_ms" json:"startup_timeout_ms"`
-	ShutdownTimeoutMS          int    `yaml:"shutdown_timeout_ms" json:"shutdown_timeout_ms"`
-	IdleTimeoutSeconds         int    `yaml:"idle_timeout_seconds" json:"idle_timeout_seconds"`
-	CrashBackoffInitialSeconds int    `yaml:"crash_backoff_initial_seconds" json:"crash_backoff_initial_seconds"`
-	CrashBackoffMaxSeconds     int    `yaml:"crash_backoff_max_seconds" json:"crash_backoff_max_seconds"`
-	MaxStderrBytes             int    `yaml:"max_stderr_bytes" json:"max_stderr_bytes"`
-	ContainerEnabled           bool   `yaml:"container_enabled" json:"container_enabled"`
-	processEnabledSet          bool
+	ProcessEnabled              bool    `yaml:"process_enabled" json:"process_enabled"`
+	ProcessDevEnabled           bool    `yaml:"process_dev_enabled" json:"process_dev_enabled"`
+	DefaultKind                 string  `yaml:"default_kind" json:"default_kind"`
+	PythonExecutable            string  `yaml:"python_executable" json:"python_executable"`
+	PrivatePythonExecutable     string  `yaml:"private_python_executable" json:"private_python_executable"`
+	PrivatePythonArtifactPath   string  `yaml:"private_python_artifact_path" json:"private_python_artifact_path"`
+	PrivatePythonArtifactSHA256 string  `yaml:"private_python_artifact_sha256" json:"private_python_artifact_sha256"`
+	StartupTimeoutMS            int     `yaml:"startup_timeout_ms" json:"startup_timeout_ms"`
+	ShutdownTimeoutMS           int     `yaml:"shutdown_timeout_ms" json:"shutdown_timeout_ms"`
+	IdleTimeoutSeconds          int     `yaml:"idle_timeout_seconds" json:"idle_timeout_seconds"`
+	CrashBackoffInitialSeconds  int     `yaml:"crash_backoff_initial_seconds" json:"crash_backoff_initial_seconds"`
+	CrashBackoffMaxSeconds      int     `yaml:"crash_backoff_max_seconds" json:"crash_backoff_max_seconds"`
+	MaxStderrBytes              int     `yaml:"max_stderr_bytes" json:"max_stderr_bytes"`
+	MaxProcesses                int     `yaml:"max_processes" json:"max_processes"`
+	MemoryMB                    int     `yaml:"memory_mb" json:"memory_mb"`
+	CPUs                        float64 `yaml:"cpus" json:"cpus"`
+	FailClosedIfUnavailable     bool    `yaml:"fail_closed_if_unavailable" json:"fail_closed_if_unavailable"`
+	processEnabledSet           bool
+	failClosedSet               bool
 }
 
 type PluginInstallerConfig struct {
-	GithubEnabled         bool   `yaml:"github_enabled" json:"github_enabled"`
-	RequireSignature      bool   `yaml:"require_signature" json:"require_signature"`
-	TrustedPublishersPath string `yaml:"trusted_publishers_path" json:"trusted_publishers_path"`
-	AllowUnsignedDev      bool   `yaml:"allow_unsigned_dev" json:"allow_unsigned_dev"`
-	githubEnabledSet      bool
-	requireSignatureSet   bool
-	allowUnsignedDevSet   bool
+	GithubEnabled          bool     `yaml:"github_enabled" json:"github_enabled"`
+	RequireSignature       bool     `yaml:"require_signature" json:"require_signature"`
+	TrustedPublishersPath  string   `yaml:"trusted_publishers_path" json:"trusted_publishers_path"`
+	AllowUnsignedDev       bool     `yaml:"allow_unsigned_dev" json:"allow_unsigned_dev"`
+	BlockedPackageDigests  []string `yaml:"blocked_package_digests" json:"blocked_package_digests"`
+	BlockedManifestDigests []string `yaml:"blocked_manifest_digests" json:"blocked_manifest_digests"`
+	BlockedPublishers      []string `yaml:"blocked_publishers" json:"blocked_publishers"`
+	githubEnabledSet       bool
+	requireSignatureSet    bool
+	allowUnsignedDevSet    bool
 }
 
 type PluginProviderGatewayConfig struct {
@@ -501,6 +662,11 @@ type PluginProviderGatewayConfig struct {
 	DefaultProviderID string `yaml:"default_provider_id" json:"default_provider_id"`
 	DefaultModel      string `yaml:"default_model" json:"default_model"`
 	enabledSet        bool
+}
+
+type PluginPolicyConfig struct {
+	AllowActiveHooks    bool     `yaml:"allow_active_hooks" json:"allow_active_hooks"`
+	AllowedCapabilities []string `yaml:"allowed_capabilities" json:"allowed_capabilities"`
 }
 
 type PluginAdminConfig struct {
@@ -529,6 +695,7 @@ func (c *PluginsConfig) UnmarshalYAML(value *yaml.Node) error {
 		"installer":          {},
 		"provider_gateway":   {},
 		"admin":              {},
+		"policy":             {},
 	}
 	for i := 0; i < len(value.Content); i += 2 {
 		key := strings.TrimSpace(value.Content[i].Value)
@@ -558,28 +725,43 @@ func (c *PluginStoreConfig) UnmarshalYAML(value *yaml.Node) error {
 
 func (c *PluginRuntimeConfig) UnmarshalYAML(value *yaml.Node) error {
 	if err := decodeKnownPluginMapping(value, "plugins.runtime", map[string]struct{}{
-		"process_enabled":               {},
-		"python_executable":             {},
-		"startup_timeout_ms":            {},
-		"shutdown_timeout_ms":           {},
-		"idle_timeout_seconds":          {},
-		"crash_backoff_initial_seconds": {},
-		"crash_backoff_max_seconds":     {},
-		"max_stderr_bytes":              {},
-		"container_enabled":             {},
+		"default_kind":                   {},
+		"process_enabled":                {},
+		"process_dev_enabled":            {},
+		"python_executable":              {},
+		"private_python_executable":      {},
+		"private_python_artifact_path":   {},
+		"private_python_artifact_sha256": {},
+		"startup_timeout_ms":             {},
+		"shutdown_timeout_ms":            {},
+		"idle_timeout_seconds":           {},
+		"crash_backoff_initial_seconds":  {},
+		"crash_backoff_max_seconds":      {},
+		"max_stderr_bytes":               {},
+		"max_processes":                  {},
+		"memory_mb":                      {},
+		"cpus":                           {},
+		"container_enabled":              {},
+		"sandbox_endpoint":               {},
+		"fail_closed_if_unavailable":     {},
+		"prefer_rootless":                {},
 	}, (*rawPluginRuntimeConfig)(c)); err != nil {
 		return err
 	}
 	c.processEnabledSet = yamlMappingHasKey(value, "process_enabled")
+	c.failClosedSet = yamlMappingHasKey(value, "fail_closed_if_unavailable")
 	return nil
 }
 
 func (c *PluginInstallerConfig) UnmarshalYAML(value *yaml.Node) error {
 	if err := decodeKnownPluginMapping(value, "plugins.installer", map[string]struct{}{
-		"github_enabled":          {},
-		"require_signature":       {},
-		"trusted_publishers_path": {},
-		"allow_unsigned_dev":      {},
+		"github_enabled":           {},
+		"require_signature":        {},
+		"trusted_publishers_path":  {},
+		"allow_unsigned_dev":       {},
+		"blocked_package_digests":  {},
+		"blocked_manifest_digests": {},
+		"blocked_publishers":       {},
 	}, (*rawPluginInstallerConfig)(c)); err != nil {
 		return err
 	}
@@ -601,6 +783,13 @@ func (c *PluginProviderGatewayConfig) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
+func (c *PluginPolicyConfig) UnmarshalYAML(value *yaml.Node) error {
+	return decodeKnownPluginMapping(value, "plugins.policy", map[string]struct{}{
+		"allow_active_hooks":   {},
+		"allowed_capabilities": {},
+	}, (*rawPluginPolicyConfig)(c))
+}
+
 func (c *PluginAdminConfig) UnmarshalYAML(value *yaml.Node) error {
 	if err := decodeKnownPluginMapping(value, "plugins.admin", map[string]struct{}{
 		"enabled": {},
@@ -615,6 +804,7 @@ type rawPluginStoreConfig PluginStoreConfig
 type rawPluginRuntimeConfig PluginRuntimeConfig
 type rawPluginInstallerConfig PluginInstallerConfig
 type rawPluginProviderGatewayConfig PluginProviderGatewayConfig
+type rawPluginPolicyConfig PluginPolicyConfig
 type rawPluginAdminConfig PluginAdminConfig
 
 func decodeKnownPluginMapping(value *yaml.Node, prefix string, allowed map[string]struct{}, target any) error {
@@ -716,8 +906,8 @@ func (c *PluginRuntimeConfig) applyDefaults() {
 	if !c.processEnabledSet {
 		c.ProcessEnabled = true
 	}
-	if c.PythonExecutable == "" {
-		c.PythonExecutable = "python3"
+	if c.DefaultKind == "" {
+		c.DefaultKind = "managed_python_process"
 	}
 	if c.StartupTimeoutMS == 0 {
 		c.StartupTimeoutMS = 5000
@@ -736,6 +926,15 @@ func (c *PluginRuntimeConfig) applyDefaults() {
 	}
 	if c.MaxStderrBytes == 0 {
 		c.MaxStderrBytes = 262144
+	}
+	if c.MaxProcesses == 0 {
+		c.MaxProcesses = 64
+	}
+	if c.MemoryMB == 0 {
+		c.MemoryMB = 1024
+	}
+	if !c.failClosedSet {
+		c.FailClosedIfUnavailable = true
 	}
 }
 
@@ -760,6 +959,27 @@ func (c *PluginProviderGatewayConfig) applyDefaults() {
 func (c *PluginAdminConfig) applyDefaults() {
 	if !c.enabledSet {
 		c.Enabled = true
+	}
+}
+
+func (c *HostResourcesConfig) applyDefaults() {
+	if c.DefaultProfile == "" {
+		c.DefaultProfile = "personal_read"
+	}
+	if c.StagingDir == "" {
+		c.StagingDir = "data/resource-staging"
+	}
+	if c.QuarantineDir == "" {
+		c.QuarantineDir = "data/resource-quarantine"
+	}
+	if c.MaxReadBytes == 0 {
+		c.MaxReadBytes = 1 << 20
+	}
+	if c.MaxSearchResults == 0 {
+		c.MaxSearchResults = 1000
+	}
+	if c.ProtectedPolicy == "" {
+		c.ProtectedPolicy = "default"
 	}
 }
 
@@ -797,13 +1017,74 @@ func (c PluginsConfig) Validate(turnPipeline TurnPipelineConfig) error {
 	if c.Runtime.MaxStderrBytes <= 0 {
 		return fmt.Errorf("runtime.max_stderr_bytes must be > 0")
 	}
+	if c.Runtime.MaxProcesses < 0 {
+		return fmt.Errorf("runtime.max_processes must be >= 0")
+	}
+	if c.Runtime.MemoryMB < 0 {
+		return fmt.Errorf("runtime.memory_mb must be >= 0")
+	}
+	if c.Runtime.CPUs < 0 {
+		return fmt.Errorf("runtime.cpus must be >= 0")
+	}
+	if c.Runtime.CPUs > 100 {
+		return fmt.Errorf("runtime.cpus must be <= 100")
+	}
+	artifactPath := strings.TrimSpace(c.Runtime.PrivatePythonArtifactPath)
+	artifactSHA256 := strings.TrimSpace(c.Runtime.PrivatePythonArtifactSHA256)
+	if artifactPath != "" {
+		if strings.TrimSpace(c.Runtime.PrivatePythonExecutable) != "" {
+			return fmt.Errorf("runtime.private_python_executable cannot be combined with private_python_artifact_path")
+		}
+		if artifactSHA256 == "" {
+			return fmt.Errorf("runtime.private_python_artifact_sha256 is required when private_python_artifact_path is set")
+		}
+		if !validSHA256Digest(artifactSHA256) {
+			return fmt.Errorf("runtime.private_python_artifact_sha256 must be sha256:<64 hex chars>")
+		}
+	} else if artifactSHA256 != "" {
+		return fmt.Errorf("runtime.private_python_artifact_path is required when private_python_artifact_sha256 is set")
+	}
+	switch c.Runtime.DefaultKind {
+	case "", "managed_python_process", "python_process", "process_dev", "process", "container":
+	default:
+		return fmt.Errorf("runtime.default_kind must be managed_python_process, python_process, process_dev, process, or container, got %q", c.Runtime.DefaultKind)
+	}
 	for _, hook := range c.FailClosedHooks {
 		if !knownPluginHookName(hook) {
 			return fmt.Errorf("fail_closed_hooks contains unknown hook %q", hook)
 		}
 	}
+	for _, capability := range c.Policy.AllowedCapabilities {
+		capability = strings.TrimSpace(capability)
+		if !knownPluginCapabilityName(capability) {
+			return fmt.Errorf("policy.allowed_capabilities contains unknown capability %q", capability)
+		}
+	}
+	for _, digest := range c.Installer.BlockedPackageDigests {
+		digest = strings.TrimSpace(digest)
+		if !validSHA256Digest(digest) {
+			return fmt.Errorf("installer.blocked_package_digests contains invalid digest %q", digest)
+		}
+	}
+	for _, digest := range c.Installer.BlockedManifestDigests {
+		digest = strings.TrimSpace(digest)
+		if !validSHA256Digest(digest) {
+			return fmt.Errorf("installer.blocked_manifest_digests contains invalid digest %q", digest)
+		}
+	}
+	for _, publisher := range c.Installer.BlockedPublishers {
+		if strings.TrimSpace(publisher) == "" {
+			return fmt.Errorf("installer.blocked_publishers contains empty publisher")
+		}
+	}
 	if !c.Enabled {
 		return nil
+	}
+	if c.Runtime.DefaultKind == "container" {
+		return fmt.Errorf("runtime.default_kind=container is unavailable until plugin container runtime is implemented")
+	}
+	if c.Runtime.DefaultKind == "process_dev" && !c.Runtime.ProcessDevEnabled {
+		return fmt.Errorf("runtime.default_kind=process_dev requires process_dev_enabled=true")
 	}
 	if !turnPipeline.Enabled {
 		return fmt.Errorf("plugins.enabled requires chat.turn_pipeline.enabled=true")
@@ -812,6 +1093,19 @@ func (c PluginsConfig) Validate(turnPipeline TurnPipelineConfig) error {
 		return fmt.Errorf("plugins.enabled requires chat.turn_pipeline rollout or allow list")
 	}
 	return nil
+}
+
+func validSHA256Digest(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) != len("sha256:")+64 || !strings.HasPrefix(value, "sha256:") {
+		return false
+	}
+	for _, r := range value[len("sha256:"):] {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 func knownPluginHookName(hook string) bool {
@@ -848,6 +1142,42 @@ func knownPluginHookName(hook string) bool {
 	}
 }
 
+func knownPluginCapabilityName(capability string) bool {
+	switch strings.TrimSpace(capability) {
+	case "turn.read",
+		"turn.annotate",
+		"memory.read.safe",
+		"memory.candidate.submit",
+		"memory.forget.request",
+		"memory.forget.destructive",
+		"work.observe",
+		"work.dispatch.annotate",
+		"approval.observe",
+		"outbound.decorate",
+		"outbound.emit.safe_debug",
+		"tool.register",
+		"tool.observe",
+		"tool.require_approval",
+		"agent_affect.read",
+		"agent_affect.read.reason",
+		"agent_affect.evaluate",
+		"agent_affect.submit",
+		"agent_affect.write_delta",
+		"agent_affect.write_target",
+		"agent_affect.configure",
+		"agent_affect.observe",
+		"provider.generate",
+		"provider.embed",
+		"plugin.kv",
+		"plugin.files",
+		"network.web",
+		"plugin.admin.read":
+		return true
+	default:
+		return false
+	}
+}
+
 func (c *BashConfig) applyDefaults() {
 	if c.TimeoutSec == 0 {
 		c.TimeoutSec = 60
@@ -855,6 +1185,74 @@ func (c *BashConfig) applyDefaults() {
 	if c.MaxOutputBytes == 0 {
 		c.MaxOutputBytes = 256 << 10 // 256 KiB
 	}
+	if c.MaxProcesses == 0 {
+		c.MaxProcesses = 64
+	}
+	if c.MemoryMB == 0 {
+		c.MemoryMB = 512
+	}
+	if c.ExecutionMode == "" {
+		c.ExecutionMode = "managed_host"
+	}
+}
+
+func (c BashConfig) Validate() error {
+	switch c.ExecutionMode {
+	case "", "managed_host", "legacy_host", "sandbox":
+	default:
+		return fmt.Errorf("bash.execution_mode must be managed_host, legacy_host, or sandbox, got %q", c.ExecutionMode)
+	}
+	if c.Enabled && c.ExecutionMode == "legacy_host" && !c.UnsafeHostExecEnabled {
+		return fmt.Errorf("bash.execution_mode=legacy_host requires unsafe_host_exec_enabled=true")
+	}
+	if c.MaxProcesses < 0 {
+		return fmt.Errorf("bash.max_processes must be >= 0")
+	}
+	if c.MemoryMB < 0 {
+		return fmt.Errorf("bash.memory_mb must be >= 0")
+	}
+	if c.CPUs < 0 {
+		return fmt.Errorf("bash.cpus must be >= 0")
+	}
+	if c.CPUs > 100 {
+		return fmt.Errorf("bash.cpus must be <= 100")
+	}
+	return nil
+}
+
+func (c HostResourcesConfig) Validate() error {
+	if strings.TrimSpace(c.DefaultProfile) == "" {
+		return fmt.Errorf("host_resources.default_profile is required")
+	}
+	if strings.TrimSpace(c.StagingDir) == "" {
+		return fmt.Errorf("host_resources.staging_dir is required")
+	}
+	if strings.TrimSpace(c.QuarantineDir) == "" {
+		return fmt.Errorf("host_resources.quarantine_dir is required")
+	}
+	if c.MaxReadBytes <= 0 {
+		return fmt.Errorf("host_resources.max_read_bytes must be > 0")
+	}
+	if c.MaxSearchResults <= 0 {
+		return fmt.Errorf("host_resources.max_search_results must be > 0")
+	}
+	for i, root := range c.Roots {
+		if strings.TrimSpace(root.ID) == "" {
+			return fmt.Errorf("host_resources.roots[%d].id is required", i)
+		}
+		if strings.TrimSpace(root.Path) == "" {
+			return fmt.Errorf("host_resources.roots[%d].path is required", i)
+		}
+		if strings.TrimSpace(root.Access) == "" {
+			return fmt.Errorf("host_resources.roots[%d].access is required", i)
+		}
+		switch root.Access {
+		case "read", "ask", "deny":
+		default:
+			return fmt.Errorf("host_resources.roots[%d].access must be read, ask, or deny", i)
+		}
+	}
+	return nil
 }
 
 type ServerConfig struct {
@@ -1077,6 +1475,16 @@ func DefaultConfig() *Config {
 				RetentionDays:        30,
 				MaxRows:              1000,
 			},
+		},
+		HostResources: HostResourcesConfig{
+			Enabled:                 false,
+			DefaultProfile:          "personal_read",
+			StagingDir:              "data/resource-staging",
+			QuarantineDir:           "data/resource-quarantine",
+			MaxReadBytes:            1 << 20,
+			MaxSearchResults:        1000,
+			PersistentGrantsEnabled: false,
+			ProtectedPolicy:         "default",
 		},
 		DB: DBConfig{
 			Path: "./data/emo.db",
@@ -1334,6 +1742,7 @@ func DefaultConfig() *Config {
 			Enabled:        false,
 			TimeoutSec:     60,
 			MaxOutputBytes: 256 << 10,
+			ExecutionMode:  "managed_host",
 		},
 		Plugins: PluginsConfig{
 			Enabled:          false,
@@ -1350,6 +1759,8 @@ func DefaultConfig() *Config {
 		},
 	}
 	cfg.Work.ApplyDefaults()
+	cfg.HostResources.applyDefaults()
+	cfg.Bash.applyDefaults()
 	cfg.Plugins.applyDefaults()
 	return cfg
 }
@@ -1387,6 +1798,7 @@ func Load(path string) (*Config, error) {
 		cfg.WebSearch.Pipeline.Reader.TopN = webSearchReaderTopN
 	}
 	cfg.WebFetch.applyDefaults()
+	cfg.HostResources.applyDefaults()
 	cfg.Bash.applyDefaults()
 	cfg.Memory.Sidecar.applyDefaults()
 	cfg.Memory.Extraction.applyDefaults()
@@ -1484,6 +1896,12 @@ func (c *Config) Validate() error {
 	}
 	if err := c.Plugins.Validate(c.Chat.TurnPipeline); err != nil {
 		return fmt.Errorf("plugins: %w", err)
+	}
+	if err := c.HostResources.Validate(); err != nil {
+		return err
+	}
+	if err := c.Bash.Validate(); err != nil {
+		return err
 	}
 	if c.Memory.Enabled && strings.TrimSpace(c.Memory.ConfigPath) == "" {
 		return fmt.Errorf("memory.config_path is required when memory is enabled")

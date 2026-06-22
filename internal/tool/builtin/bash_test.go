@@ -3,6 +3,8 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -16,12 +18,52 @@ func defaultBashCfg() config.BashConfig {
 		Enabled:        true,
 		TimeoutSec:     10,
 		MaxOutputBytes: 1024,
+		ExecutionMode:  "managed_host",
 	}
 }
 
-func TestBash_Echo(t *testing.T) {
+func unsafeBashCfg() config.BashConfig {
+	cfg := defaultBashCfg()
+	cfg.ExecutionMode = "legacy_host"
+	cfg.UnsafeHostExecEnabled = true
+	return cfg
+}
+
+func TestBash_DefaultManagedHostRunsAndIsNotSandboxed(t *testing.T) {
 	root := t.TempDir()
-	_, handler := NewBashTool(defaultBashCfg(), root, nil)
+	cfg := defaultBashCfg()
+	_, handler := NewBashTool(cfg, root, nil)
+
+	raw, err := handler(context.Background(), json.RawMessage(`{"command":"echo hello"}`))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	var out struct {
+		Stdout            string `json:"stdout"`
+		Unavailable       bool   `json:"unavailable"`
+		UnavailableReason string `json:"unavailable_reason"`
+		ExecutionMode     string `json:"execution_mode"`
+		IsolationLevel    string `json:"isolation_level"`
+		Sandboxed         bool   `json:"sandboxed"`
+		Unsafe            bool   `json:"unsafe"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Unavailable || out.UnavailableReason != "" {
+		t.Fatalf("out = %#v, want available managed host process", out)
+	}
+	if !strings.Contains(out.Stdout, "hello") {
+		t.Fatalf("stdout = %q, want hello", out.Stdout)
+	}
+	if out.ExecutionMode != "managed_host" || out.IsolationLevel != "current_user_process" || out.Sandboxed || out.Unsafe {
+		t.Fatalf("managed host labels = %#v", out)
+	}
+}
+
+func TestBash_UnsafeHostEchoIsExplicitlyLabeled(t *testing.T) {
+	root := t.TempDir()
+	_, handler := NewBashTool(unsafeBashCfg(), root, nil)
 
 	var cmd string
 	if runtime.GOOS == "windows" {
@@ -37,9 +79,11 @@ func TestBash_Echo(t *testing.T) {
 	}
 
 	var out struct {
-		Stdout   string `json:"stdout"`
-		ExitCode int    `json:"exit_code"`
-		TimedOut bool   `json:"timed_out"`
+		Stdout        string `json:"stdout"`
+		ExitCode      int    `json:"exit_code"`
+		TimedOut      bool   `json:"timed_out"`
+		Unsafe        bool   `json:"unsafe"`
+		ExecutionMode string `json:"execution_mode"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -53,11 +97,47 @@ func TestBash_Echo(t *testing.T) {
 	if out.TimedOut {
 		t.Fatal("timed_out should be false")
 	}
+	if !out.Unsafe || out.ExecutionMode != "unsafe_host_exec" {
+		t.Fatalf("unsafe labels = unsafe:%v execution_mode:%q", out.Unsafe, out.ExecutionMode)
+	}
+}
+
+func TestBash_ExplicitSandboxModeUnavailableDoesNotExecuteHostCommand(t *testing.T) {
+	root := t.TempDir()
+	marker := filepath.Join(root, "should-not-exist.txt")
+	cfg := defaultBashCfg()
+	cfg.ExecutionMode = "sandbox"
+	_, handler := NewBashTool(cfg, root, nil)
+
+	var cmd string
+	if runtime.GOOS == "windows" {
+		cmd = "echo ran > should-not-exist.txt"
+	} else {
+		cmd = "touch should-not-exist.txt"
+	}
+	raw, err := handler(context.Background(), mustJSON(t, map[string]string{"command": cmd}))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	var out struct {
+		Unavailable       bool   `json:"unavailable"`
+		UnavailableReason string `json:"unavailable_reason"`
+		ExecutionMode     string `json:"execution_mode"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !out.Unavailable || out.ExecutionMode != "sandbox" || out.UnavailableReason == "" {
+		t.Fatalf("sandbox result = %#v, want explicit unavailable", out)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("sandbox fallback executed host command; marker stat err=%v", err)
+	}
 }
 
 func TestBash_NonZeroExitNotAnError(t *testing.T) {
 	root := t.TempDir()
-	_, handler := NewBashTool(defaultBashCfg(), root, nil)
+	_, handler := NewBashTool(unsafeBashCfg(), root, nil)
 
 	var cmd string
 	if runtime.GOOS == "windows" {
@@ -85,7 +165,7 @@ func TestBash_NonZeroExitNotAnError(t *testing.T) {
 
 func TestBash_StdoutTruncation(t *testing.T) {
 	root := t.TempDir()
-	cfg := defaultBashCfg()
+	cfg := unsafeBashCfg()
 	cfg.MaxOutputBytes = 10
 	_, handler := NewBashTool(cfg, root, nil)
 
@@ -138,7 +218,7 @@ func TestBash_Timeout(t *testing.T) {
 		t.Skip("skipping timeout test in short mode")
 	}
 	root := t.TempDir()
-	cfg := defaultBashCfg()
+	cfg := unsafeBashCfg()
 	cfg.TimeoutSec = 1
 	_, handler := NewBashTool(cfg, root, nil)
 
@@ -225,6 +305,55 @@ func TestNewBashTool_AttachesDestructiveClassifier(t *testing.T) {
 				t.Fatalf("DestructiveClassifier(%s) = %v, want %v", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestNewBashTool_SourceMetadataReflectsExecutionMode(t *testing.T) {
+	managedSpec, _ := NewBashTool(defaultBashCfg(), t.TempDir(), nil)
+	if managedSpec.Source.RuntimeKind != "managed_host_process" || managedSpec.Source.DefaultLabels.Integrity != "host_verified" {
+		t.Fatalf("managed host source = %#v", managedSpec.Source)
+	}
+
+	unsafeSpec, _ := NewBashTool(unsafeBashCfg(), t.TempDir(), nil)
+	if unsafeSpec.Source.RuntimeKind != "host" || unsafeSpec.Source.DefaultLabels.Integrity != "unverified" {
+		t.Fatalf("unsafe source = %#v", unsafeSpec.Source)
+	}
+}
+
+func TestBashManagedProfileCarriesConfiguredProcessLimits(t *testing.T) {
+	cfg := defaultBashCfg()
+	cfg.MaxOutputBytes = 4096
+	cfg.MaxProcesses = 8
+	cfg.MemoryMB = 128
+
+	profile := bashManagedProcessProfile(cfg, 7)
+	if profile.WorkspaceMode != "rw" || profile.TempMode != "rw" || profile.PersonalMode != "ro" {
+		t.Fatalf("profile modes = %#v", profile)
+	}
+	if string(profile.NetworkMode) != "allow" {
+		t.Fatalf("network mode = %q, want allow for current-user managed host process", profile.NetworkMode)
+	}
+	if len(profile.EnvAllowlist) == 0 {
+		t.Fatal("EnvAllowlist should not be empty")
+	}
+	if profile.Limits.TimeoutSeconds != 7 ||
+		profile.Limits.MaxOutputBytes != 4096 ||
+		profile.Limits.MaxProcesses != 8 ||
+		profile.Limits.MemoryBytes != 128<<20 {
+		t.Fatalf("limits = %#v", profile.Limits)
+	}
+}
+
+func TestBashHandlerDoesNotImportOrCallHostExecDirectly(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("bash.go"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	source := string(data)
+	for _, forbidden := range []string{`"os/exec"`, "exec.CommandContext", "exec.Command("} {
+		if strings.Contains(source, forbidden) {
+			t.Fatalf("bash.go contains forbidden direct host exec token %q", forbidden)
+		}
 	}
 }
 
