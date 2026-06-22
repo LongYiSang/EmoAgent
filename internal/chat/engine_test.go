@@ -20,6 +20,7 @@ import (
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/storage"
 	"github.com/longyisang/emoagent/internal/tool"
+	"github.com/longyisang/emoagent/internal/tool/resultv2"
 	"github.com/longyisang/emoagent/internal/turn"
 	"github.com/longyisang/emoagent/internal/work"
 )
@@ -2162,6 +2163,17 @@ func TestEngineToolLoopSnipsLargeToolResult(t *testing.T) {
 		Parameters:  json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
 		Scope:       tool.ScopeBoth,
 		Permission:  tool.PermReadOnly,
+		Source: tool.ToolSourceMetadata{
+			Kind:        tool.ToolSourceBuiltin,
+			ProducerID:  "emoagent.test",
+			RuntimeKind: resultv2.RuntimeHost,
+			DefaultLabels: resultv2.ContentLabels{
+				Executor:             resultv2.ExecutorHostBuiltin,
+				Origin:               resultv2.OriginExternalWeb,
+				Integrity:            resultv2.IntegrityUnverified,
+				InstructionAuthority: resultv2.InstructionDataOnly,
+			},
+		},
 	}, func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
 		return json.RawMessage(`{"body":"` + strings.Repeat("x", 20000) + `"}`), nil
 	})
@@ -2217,8 +2229,40 @@ func TestEngineToolLoopSnipsLargeToolResult(t *testing.T) {
 	if !strings.Contains(last.Content, `"is_truncated":true`) {
 		t.Fatalf("tool result content = %q, want truncated digest JSON", last.Content)
 	}
+	if !strings.Contains(last.Content, `"origin":"external_web"`) || !strings.Contains(last.Content, `"tool_name":"get_current_time"`) {
+		t.Fatalf("tool result content lost envelope metadata: %q", last.Content)
+	}
 	if strings.Contains(last.Content, strings.Repeat("x", 1000)) {
 		t.Fatal("tool result content still contains raw payload")
+	}
+}
+
+func TestApplyEnvelopeToToolActivityUsesManagedRuntimeLabels(t *testing.T) {
+	activity := &ToolActivity{ID: "bash-1", Name: "bash", Status: "success"}
+	applyEnvelopeToToolActivity(activity, &resultv2.ToolResultEnvelope{
+		Labels: resultv2.ContentLabels{
+			Executor:             resultv2.ExecutorHostBuiltin,
+			Origin:               resultv2.OriginSystemGenerated,
+			Integrity:            resultv2.IntegrityUnverified,
+			InstructionAuthority: resultv2.InstructionDataOnly,
+		},
+		Provenance: resultv2.Provenance{
+			RuntimeKind:    resultv2.RuntimeManagedHostProcess,
+			SandboxProfile: "unsafe_host_exec",
+			ProducerID:     "emoagent.builtin",
+		},
+	})
+	if activity.RuntimeKind != resultv2.RuntimeManagedHostProcess ||
+		activity.InstructionAuthority != resultv2.InstructionDataOnly ||
+		activity.Integrity != resultv2.IntegrityUnverified {
+		t.Fatalf("activity = %#v", activity)
+	}
+	raw, err := json.Marshal(activity)
+	if err != nil {
+		t.Fatalf("Marshal activity: %v", err)
+	}
+	if strings.Contains(string(raw), "sandbox_profile") {
+		t.Fatalf("activity exposed legacy sandbox profile: %s", raw)
 	}
 }
 

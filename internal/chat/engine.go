@@ -22,6 +22,7 @@ import (
 	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/storage"
 	"github.com/longyisang/emoagent/internal/tool"
+	"github.com/longyisang/emoagent/internal/tool/resultv2"
 	"github.com/longyisang/emoagent/internal/work"
 )
 
@@ -1089,24 +1090,36 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 				} else if result.IsError {
 					status = "error"
 				}
+				activity := ToolActivity{
+					ID:          result.CallID,
+					Name:        call.Name,
+					Status:      status,
+					DurationMS:  time.Since(toolStarted).Milliseconds(),
+					Preview:     digest.Preview,
+					Size:        digest.Size,
+					Hash:        digest.Hash,
+					IsTruncated: digest.IsTruncated,
+				}
+				applyEnvelopeToToolActivity(&activity, result.Envelope)
 				rawWriter(WSMessage{
 					Type: "tool_call_end",
-					Tool: &ToolActivity{
-						ID:          result.CallID,
-						Name:        call.Name,
-						Status:      status,
-						DurationMS:  time.Since(toolStarted).Milliseconds(),
-						Preview:     digest.Preview,
-						Size:        digest.Size,
-						Hash:        digest.Hash,
-						IsTruncated: digest.IsTruncated,
-					},
+					Tool: &activity,
 				})
 			}
+			snippedContent := json.RawMessage(contextutil.ToolResultContent(digest))
+			envelope := cloneToolResultEnvelope(result.Envelope)
+			if envelope != nil {
+				envelope.StructuredContent = append(json.RawMessage(nil), snippedContent...)
+				envelope.Metrics.OutputBytes = int64(len(snippedContent))
+				if digest.IsTruncated {
+					envelope.Redactions = append(envelope.Redactions, resultv2.Redaction{Kind: "snipped", Reason: "tool_result_context_budget"})
+				}
+			}
 			snippedResults[i] = tool.Result{
-				CallID:  result.CallID,
-				Content: json.RawMessage(contextutil.ToolResultContent(digest)),
-				IsError: result.IsError,
+				CallID:   result.CallID,
+				Content:  snippedContent,
+				IsError:  result.IsError,
+				Envelope: envelope,
 			}
 		}
 
@@ -1817,7 +1830,7 @@ func memoryPromptRenderComponent(snapshot *memoryPromptSnapshot) promptcenter.Re
 	if snapshot == nil {
 		return promptcenter.RenderComponent{}
 	}
-	return promptcenter.DynamicComponent(promptcenter.ComponentMemoryPromptBlock, "memory_context", promptcenter.SourceMemoryDynamic, snapshot.PromptBlock, map[string]any{
+	return promptcenter.MemoryPromptDynamicComponent(snapshot.PromptBlock, map[string]any{
 		"record_metadata":    snapshot.RecordMetadata,
 		"has_pipeline_trace": snapshot.PipelineTrace != nil,
 		"prompt_chars":       len([]rune(snapshot.PromptBlock)),
@@ -2081,6 +2094,39 @@ func logCompactFailure(logger *slog.Logger, report contextutil.CompactReport, re
 		slog.Any("error", err),
 	)
 	_ = logger.Handler().Handle(context.Background(), record)
+}
+
+func cloneToolResultEnvelope(env *resultv2.ToolResultEnvelope) *resultv2.ToolResultEnvelope {
+	if env == nil {
+		return nil
+	}
+	clone := *env
+	clone.StructuredContent = append(json.RawMessage(nil), env.StructuredContent...)
+	clone.Content = append([]resultv2.ContentItem(nil), env.Content...)
+	clone.Artifacts = append([]resultv2.ArtifactRef(nil), env.Artifacts...)
+	clone.Redactions = append([]resultv2.Redaction(nil), env.Redactions...)
+	clone.Provenance.GrantIDs = append([]string(nil), env.Provenance.GrantIDs...)
+	clone.Provenance.Sources = append([]resultv2.SourceRef(nil), env.Provenance.Sources...)
+	if env.Error != nil {
+		errCopy := *env.Error
+		clone.Error = &errCopy
+	}
+	return &clone
+}
+
+func applyEnvelopeToToolActivity(activity *ToolActivity, env *resultv2.ToolResultEnvelope) {
+	if activity == nil || env == nil {
+		return
+	}
+	activity.Origin = env.Labels.Origin
+	activity.RuntimeKind = env.Provenance.RuntimeKind
+	activity.ProducerID = env.Provenance.ProducerID
+	activity.Executor = env.Labels.Executor
+	activity.Integrity = env.Labels.Integrity
+	activity.InstructionAuthority = env.Labels.InstructionAuthority
+	activity.Sensitivity = env.Labels.Sensitivity
+	activity.Redacted = len(env.Redactions) > 0
+	activity.GrantIDs = append([]string(nil), env.Provenance.GrantIDs...)
 }
 
 func errorKindOf(err error) llm.ErrorKind {

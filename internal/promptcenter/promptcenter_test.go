@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+
+	"github.com/longyisang/emoagent/internal/tool/resultv2"
 )
 
 func TestDefaultCatalogLoadsMVPComponents(t *testing.T) {
@@ -82,6 +84,34 @@ func TestDynamicComponentBuildsHashAndMetadata(t *testing.T) {
 	}
 	if metadata["persona_key"] != "default" {
 		t.Fatalf("metadata = %#v", metadata)
+	}
+}
+
+func TestMemoryPromptDynamicComponentAddsDataOnlyProvenance(t *testing.T) {
+	component := MemoryPromptDynamicComponent("remember this", map[string]any{
+		"prompt_chars":           13,
+		"instruction_authority":  resultv2.InstructionHostControl,
+		"can_host_control":       true,
+		"caller_supplied_marker": "kept",
+	})
+
+	if component.ComponentID != ComponentMemoryPromptBlock || component.Source != SourceMemoryDynamic || !component.Dynamic {
+		t.Fatalf("component identity = %#v", component)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(component.MetadataJSON), &metadata); err != nil {
+		t.Fatalf("metadata json: %v", err)
+	}
+	if metadata["producer_kind"] != resultv2.ProducerMemory ||
+		metadata["origin"] != resultv2.OriginMemoryAuthority ||
+		metadata["instruction_authority"] != resultv2.InstructionDataOnly {
+		t.Fatalf("memory provenance metadata = %#v", metadata)
+	}
+	if metadata["can_host_control"] != false {
+		t.Fatalf("can_host_control = %#v, want false", metadata["can_host_control"])
+	}
+	if metadata["caller_supplied_marker"] != "kept" || metadata["prompt_chars"] != float64(13) {
+		t.Fatalf("caller metadata = %#v", metadata)
 	}
 }
 

@@ -1,11 +1,13 @@
 package chat
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/protocol"
+	"github.com/longyisang/emoagent/internal/tool/resultv2"
 	"github.com/longyisang/emoagent/internal/turn"
 )
 
@@ -110,5 +112,51 @@ func TestOutboundEventToWSMessagePreservesReplaySummaryPayload(t *testing.T) {
 
 	if msg.Payload["content_bytes"] == nil || msg.Payload["content_hash"] != "sha256:abc" {
 		t.Fatalf("payload = %#v, want replay summary", msg.Payload)
+	}
+}
+
+func TestWSAdapterRoundTripsToolProvenanceLabelsWithoutSandboxProfile(t *testing.T) {
+	event := turn.OutboundEvent{
+		Type: turn.EventToolCallEnd,
+		Tool: &turn.ToolActivity{
+			ID:                   "tool-1",
+			Name:                 "bash",
+			Status:               "success",
+			Origin:               resultv2.OriginSystemGenerated,
+			RuntimeKind:          resultv2.RuntimeManagedHostProcess,
+			ProducerID:           "emoagent.builtin",
+			Executor:             resultv2.ExecutorManagedHost,
+			Integrity:            resultv2.IntegrityHostVerified,
+			InstructionAuthority: resultv2.InstructionDataOnly,
+			Sensitivity:          resultv2.SensitivityInternal,
+			GrantIDs:             []string{"grant-1"},
+		},
+	}
+
+	msg := outboundEventToWSMessage(event)
+	if msg.Tool == nil ||
+		msg.Tool.RuntimeKind != resultv2.RuntimeManagedHostProcess ||
+		msg.Tool.ProducerID != "emoagent.builtin" ||
+		msg.Tool.Executor != resultv2.ExecutorManagedHost ||
+		msg.Tool.InstructionAuthority != resultv2.InstructionDataOnly ||
+		len(msg.Tool.GrantIDs) != 1 {
+		t.Fatalf("message tool = %#v", msg.Tool)
+	}
+	raw, err := json.Marshal(msg.Tool)
+	if err != nil {
+		t.Fatalf("Marshal tool: %v", err)
+	}
+	if strings.Contains(string(raw), "sandbox_profile") {
+		t.Fatalf("WS tool exposed sandbox profile: %s", raw)
+	}
+
+	roundTrip := wsMessageToOutboundEvent(msg)
+	if roundTrip.Tool == nil ||
+		roundTrip.Tool.RuntimeKind != resultv2.RuntimeManagedHostProcess ||
+		roundTrip.Tool.Executor != resultv2.ExecutorManagedHost ||
+		roundTrip.Tool.Integrity != resultv2.IntegrityHostVerified ||
+		roundTrip.Tool.InstructionAuthority != resultv2.InstructionDataOnly ||
+		len(roundTrip.Tool.GrantIDs) != 1 {
+		t.Fatalf("round trip tool = %#v", roundTrip.Tool)
 	}
 }

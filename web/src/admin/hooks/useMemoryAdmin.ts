@@ -8,6 +8,7 @@ import {
   loadMemoryFeatures,
   loadMemorySegments,
   loadNaturalMemoryLatest,
+  loadPluginDiagnostics,
   runNaturalMemory,
   saveMemoryConfig,
   saveMemoryFeatures,
@@ -25,6 +26,7 @@ export function useMemoryAdmin({ setStatus, showError }: MemoryAdminOptions) {
   const [memoryJobs, setMemoryJobs] = useState<AnyRecord[]>([]);
   const [memorySegments, setMemorySegments] = useState<AnyRecord[]>([]);
   const [configIssues, setConfigIssues] = useState<AnyRecord[]>([]);
+  const [pluginDiagnostics, setPluginDiagnostics] = useState<AnyRecord>({});
   const [naturalMemoryLatest, setNaturalMemoryLatest] = useState<AnyRecord>({});
   const [privacyDraft, setPrivacyDraft] = useState('{}');
   const [retentionDraft, setRetentionDraft] = useState('{}');
@@ -50,6 +52,10 @@ export function useMemoryAdmin({ setStatus, showError }: MemoryAdminOptions) {
 
   const reloadConfigIssues = useCallback(async () => {
     setConfigIssues(await loadConfigIssues());
+  }, []);
+
+  const reloadPluginDiagnostics = useCallback(async () => {
+    setPluginDiagnostics(await loadPluginDiagnostics());
   }, []);
 
   const reloadMemorySurfaces = useCallback(async () => {
@@ -154,6 +160,7 @@ export function useMemoryAdmin({ setStatus, showError }: MemoryAdminOptions) {
     memoryJobs,
     memorySegments,
     configIssues,
+    pluginDiagnostics,
     naturalMemoryLatest,
     privacyDraft,
     setPrivacyDraft,
@@ -161,6 +168,7 @@ export function useMemoryAdmin({ setStatus, showError }: MemoryAdminOptions) {
     setRetentionDraft,
     reloadEffectiveConfig,
     reloadConfigIssues,
+    reloadPluginDiagnostics,
     reloadMemorySurfaces,
     reloadNaturalLatest,
     patchMemoryDraft,
@@ -182,11 +190,13 @@ export function useMemoryAdmin({ setStatus, showError }: MemoryAdminOptions) {
     memoryJobs,
     memorySegments,
     configIssues,
+    pluginDiagnostics,
     naturalMemoryLatest,
     privacyDraft,
     retentionDraft,
     reloadEffectiveConfig,
     reloadConfigIssues,
+    reloadPluginDiagnostics,
     reloadMemorySurfaces,
     reloadNaturalLatest,
     patchMemoryDraft,

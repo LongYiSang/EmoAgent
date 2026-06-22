@@ -119,6 +119,10 @@ export async function loadConfigIssues(): Promise<AnyRecord[]> {
   return data.issues || [];
 }
 
+export async function loadPluginDiagnostics(): Promise<AnyRecord> {
+  return requestJSON<AnyRecord>('/api/plugins/diagnostics');
+}
+
 export async function saveMemoryConfig(memory: AnyRecord): Promise<AnyRecord> {
   return requestJSON<AnyRecord>('/api/memory/config', { method: 'PUT', body: { memory } });
 }

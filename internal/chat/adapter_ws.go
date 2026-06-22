@@ -65,14 +65,23 @@ func outboundEventToWSMessage(event turn.OutboundEvent) WSMessage {
 	}
 	if event.Tool != nil {
 		msg.Tool = &ToolActivity{
-			ID:          event.Tool.ID,
-			Name:        event.Tool.Name,
-			Status:      event.Tool.Status,
-			DurationMS:  event.Tool.DurationMS,
-			Preview:     event.Tool.Preview,
-			Size:        event.Tool.Size,
-			Hash:        event.Tool.Hash,
-			IsTruncated: event.Tool.IsTruncated,
+			ID:                   event.Tool.ID,
+			Name:                 event.Tool.Name,
+			Status:               event.Tool.Status,
+			DurationMS:           event.Tool.DurationMS,
+			Preview:              event.Tool.Preview,
+			Size:                 event.Tool.Size,
+			Hash:                 event.Tool.Hash,
+			IsTruncated:          event.Tool.IsTruncated,
+			Origin:               event.Tool.Origin,
+			RuntimeKind:          event.Tool.RuntimeKind,
+			ProducerID:           event.Tool.ProducerID,
+			Executor:             event.Tool.Executor,
+			Integrity:            event.Tool.Integrity,
+			InstructionAuthority: event.Tool.InstructionAuthority,
+			Sensitivity:          event.Tool.Sensitivity,
+			Redacted:             event.Tool.Redacted,
+			GrantIDs:             append([]string(nil), event.Tool.GrantIDs...),
 		}
 	}
 	if event.Reasoning != nil {
@@ -101,14 +110,23 @@ func wsMessageToOutboundEvent(msg WSMessage) turn.OutboundEvent {
 	}
 	if msg.Tool != nil {
 		event.Tool = &turn.ToolActivity{
-			ID:          msg.Tool.ID,
-			Name:        msg.Tool.Name,
-			Status:      msg.Tool.Status,
-			DurationMS:  msg.Tool.DurationMS,
-			Preview:     msg.Tool.Preview,
-			Size:        msg.Tool.Size,
-			Hash:        msg.Tool.Hash,
-			IsTruncated: msg.Tool.IsTruncated,
+			ID:                   msg.Tool.ID,
+			Name:                 msg.Tool.Name,
+			Status:               msg.Tool.Status,
+			DurationMS:           msg.Tool.DurationMS,
+			Preview:              msg.Tool.Preview,
+			Size:                 msg.Tool.Size,
+			Hash:                 msg.Tool.Hash,
+			IsTruncated:          msg.Tool.IsTruncated,
+			Origin:               msg.Tool.Origin,
+			RuntimeKind:          msg.Tool.RuntimeKind,
+			ProducerID:           msg.Tool.ProducerID,
+			Executor:             msg.Tool.Executor,
+			Integrity:            msg.Tool.Integrity,
+			InstructionAuthority: msg.Tool.InstructionAuthority,
+			Sensitivity:          msg.Tool.Sensitivity,
+			Redacted:             msg.Tool.Redacted,
+			GrantIDs:             append([]string(nil), msg.Tool.GrantIDs...),
 		}
 	}
 	if msg.Reasoning != nil {

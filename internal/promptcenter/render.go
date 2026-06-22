@@ -1,6 +1,10 @@
 package promptcenter
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/longyisang/emoagent/internal/tool/resultv2"
+)
 
 func BuildRenderSnapshot(input RenderSnapshot, options ...SnapshotRenderOptions) (RenderSnapshot, error) {
 	renderedText := input.RenderedText
@@ -34,6 +38,22 @@ func DynamicComponent(id, sectionName, source, text string, metadata map[string]
 		}
 	}
 	return component
+}
+
+func MemoryPromptDynamicComponent(text string, metadata map[string]any) RenderComponent {
+	return DynamicComponent(ComponentMemoryPromptBlock, "memory_context", SourceMemoryDynamic, text, memoryPromptMetadata(metadata))
+}
+
+func memoryPromptMetadata(metadata map[string]any) map[string]any {
+	out := make(map[string]any, len(metadata)+4)
+	for key, value := range metadata {
+		out[key] = value
+	}
+	out["producer_kind"] = resultv2.ProducerMemory
+	out["origin"] = resultv2.OriginMemoryAuthority
+	out["instruction_authority"] = resultv2.InstructionDataOnly
+	out["can_host_control"] = false
+	return out
 }
 
 func RenderComponentFromResolved(resolved ResolvedPrompt) RenderComponent {

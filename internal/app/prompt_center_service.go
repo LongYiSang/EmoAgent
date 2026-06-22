@@ -244,7 +244,7 @@ func (s *PromptCenterService) previewFullEmotionPrompt(ctx context.Context, req 
 		}
 		if memoryBlock != "" {
 			assembled.System += "\n\n" + memoryBlock
-			assembled.PromptComponents = append(assembled.PromptComponents, promptcenter.DynamicComponent(promptcenter.ComponentMemoryPromptBlock, "memory_context", promptcenter.SourceMemoryDynamic, memoryBlock, map[string]any{
+			assembled.PromptComponents = append(assembled.PromptComponents, promptcenter.MemoryPromptDynamicComponent(memoryBlock, map[string]any{
 				"preview":      true,
 				"prompt_chars": len([]rune(memoryBlock)),
 			}))

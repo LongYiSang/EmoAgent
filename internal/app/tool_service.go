@@ -1,6 +1,7 @@
 package app
 
 import (
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"os"
@@ -43,7 +44,11 @@ func (s *ToolService) EnsureRegistry() error {
 		}
 		s.infra.Environment = runtimeenv.BuildEnvironmentFacts(runtime.GOOS, projectRoot, cfg.Bash)
 		s.registry = tool.NewRegistry()
-		builtin.RegisterAllWithFacts(s.registry, cfg, projectRoot, s.infra.Environment, s.infra.Logger)
+		var sqlDB = (*sql.DB)(nil)
+		if s.infra.DB != nil {
+			sqlDB = s.infra.DB.SqlDB()
+		}
+		builtin.RegisterAllWithFactsAndDB(s.registry, cfg, projectRoot, s.infra.Environment, s.infra.Logger, sqlDB)
 		s.infra.Logger.Info("tool registry initialized", "tools", len(s.registry.Specs()))
 	} else if s.infra.Environment.OS == "" {
 		projectRoot := s.infra.ProjectRoot

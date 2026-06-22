@@ -43,14 +43,23 @@ type WSMessage struct {
 
 // ToolActivity is the compact, UI-safe description of a live tool call.
 type ToolActivity struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Status      string `json:"status"`
-	DurationMS  int64  `json:"duration_ms,omitempty"`
-	Preview     string `json:"preview,omitempty"`
-	Size        int    `json:"size,omitempty"`
-	Hash        string `json:"hash,omitempty"`
-	IsTruncated bool   `json:"is_truncated,omitempty"`
+	ID                   string   `json:"id"`
+	Name                 string   `json:"name"`
+	Status               string   `json:"status"`
+	DurationMS           int64    `json:"duration_ms,omitempty"`
+	Preview              string   `json:"preview,omitempty"`
+	Size                 int      `json:"size,omitempty"`
+	Hash                 string   `json:"hash,omitempty"`
+	IsTruncated          bool     `json:"is_truncated,omitempty"`
+	Origin               string   `json:"origin,omitempty"`
+	RuntimeKind          string   `json:"runtime_kind,omitempty"`
+	ProducerID           string   `json:"producer_id,omitempty"`
+	Executor             string   `json:"executor,omitempty"`
+	Integrity            string   `json:"integrity,omitempty"`
+	InstructionAuthority string   `json:"instruction_authority,omitempty"`
+	Sensitivity          string   `json:"sensitivity,omitempty"`
+	Redacted             bool     `json:"redacted,omitempty"`
+	GrantIDs             []string `json:"grant_ids,omitempty"`
 }
 
 // ReasoningActivity is the UI-safe description of a model thinking block.

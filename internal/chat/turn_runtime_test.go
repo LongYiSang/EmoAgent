@@ -3,6 +3,7 @@ package chat
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -18,6 +19,7 @@ import (
 	"github.com/longyisang/emoagent/internal/media"
 	"github.com/longyisang/emoagent/internal/promptcenter"
 	"github.com/longyisang/emoagent/internal/protocol"
+	"github.com/longyisang/emoagent/internal/tool/resultv2"
 	"github.com/longyisang/emoagent/internal/turn"
 )
 
@@ -229,6 +231,23 @@ func TestTurnRuntimeAsyncAgentAffectReadsMoodAndEnqueuesAfterOutput(t *testing.T
 		if !component.Dynamic {
 			t.Fatalf("snapshot component %s = %#v, want dynamic component", id, component)
 		}
+	}
+	memoryComponent := findRenderComponent(snapshot.Components, promptcenter.ComponentMemoryPromptBlock)
+	if memoryComponent.Source != promptcenter.SourceMemoryDynamic {
+		t.Fatalf("memory component source = %q, want %q", memoryComponent.Source, promptcenter.SourceMemoryDynamic)
+	}
+	var memoryMetadata map[string]any
+	if err := json.Unmarshal([]byte(memoryComponent.MetadataJSON), &memoryMetadata); err != nil {
+		t.Fatalf("memory metadata json: %v", err)
+	}
+	if memoryMetadata["producer_kind"] != resultv2.ProducerMemory ||
+		memoryMetadata["origin"] != resultv2.OriginMemoryAuthority ||
+		memoryMetadata["instruction_authority"] != resultv2.InstructionDataOnly ||
+		memoryMetadata["can_host_control"] != false {
+		t.Fatalf("memory metadata = %#v, want data-only memory provenance", memoryMetadata)
+	}
+	if strings.Contains(fakeLLM.lastRequest.System, "instruction_authority") || strings.Contains(fakeLLM.lastRequest.System, "can_host_control") {
+		t.Fatalf("system prompt leaked structured memory provenance metadata:\n%s", fakeLLM.lastRequest.System)
 	}
 }
 

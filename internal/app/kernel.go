@@ -42,6 +42,7 @@ type Services struct {
 	Memory       *MemoryService
 	Media        *MediaService
 	Tools        *ToolService
+	Resource     *ResourceService
 	Plugins      *PluginService
 	Work         *WorkService
 	Chat         *ChatService
@@ -68,6 +69,7 @@ func newServices(infra *Infra) *Services {
 	services.Memory = &MemoryService{infra: infra, config: services.Config, sidecar: services.Sidecar}
 	services.Media = &MediaService{infra: infra}
 	services.Tools = &ToolService{infra: infra}
+	services.Resource = &ResourceService{infra: infra}
 	services.Config.tools = services.Tools
 	services.Plugins = &PluginService{infra: infra, tools: services.Tools, agentAffect: services.AgentAffect, agentRuntime: services.AgentRuntime}
 	services.AgentAffect.plugins = services.Plugins

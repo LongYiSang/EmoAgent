@@ -525,7 +525,7 @@ func extraSystemRenderComponents(tc *turn.TurnContext, memoryBlock, agentAffectB
 		if snapshot, ok := tc.Diagnostics["memory_prompt_snapshot"].(*memoryPromptSnapshot); ok && snapshot != nil {
 			components = append(components, memoryPromptRenderComponent(snapshot))
 		} else {
-			components = append(components, promptcenter.DynamicComponent(promptcenter.ComponentMemoryPromptBlock, "memory_context", promptcenter.SourceMemoryDynamic, memoryBlock, map[string]any{
+			components = append(components, promptcenter.MemoryPromptDynamicComponent(memoryBlock, map[string]any{
 				"prompt_chars": len([]rune(memoryBlock)),
 			}))
 		}
