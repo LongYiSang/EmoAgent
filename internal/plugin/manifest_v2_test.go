@@ -41,6 +41,37 @@ hooks:
 	}
 }
 
+func TestDecodeManifestV2YAMLValidManagedPythonProcess(t *testing.T) {
+	data := []byte(`
+schema_version: emoagent.plugin.v0.2
+id: com.example.echo
+name: Echo Plugin
+version: 0.1.0
+emoagent_version: ">=0.2.0"
+runtime:
+  kind: managed_python_process
+  entry: main.py
+access:
+  tier: runtime_safe
+  capabilities:
+    - turn.read
+hooks:
+  - name: after_turn_end
+    mode: observe
+    failure_policy: fail_open
+    priority: 100
+    timeout_ms: 200
+`)
+
+	manifest, err := DecodeManifestV2YAML(data, ManifestValidationOptions{MaxTimeoutMS: 1000})
+	if err != nil {
+		t.Fatalf("DecodeManifestV2YAML: %v", err)
+	}
+	if manifest.Runtime.Kind != RuntimeManagedPythonProcess {
+		t.Fatalf("runtime.kind = %q, want managed_python_process", manifest.Runtime.Kind)
+	}
+}
+
 func TestDecodeManifestV2YAMLRejectsUnknownField(t *testing.T) {
 	data := []byte(`
 schema_version: emoagent.plugin.v0.2

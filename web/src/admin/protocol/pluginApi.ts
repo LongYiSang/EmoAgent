@@ -2,10 +2,93 @@ import { requestJSON, type AnyRecord } from '../../shared/lib/api';
 
 export type PluginRuntimeStatus = {
   plugin_id?: string;
+  runtime_kind?: string;
   status?: string;
   last_error?: string;
   restart_count?: number;
   stderr_tail?: string;
+  python_executable_path?: string;
+  python_executable_source?: string;
+  python_executable_available?: boolean;
+  dependency_env_dir?: string;
+  pid?: number;
+  process_guard_kind?: string;
+  process_guard_attached?: boolean;
+  process_guard_error?: string;
+};
+
+export type PluginTrustAcknowledgement = {
+  plugin_id?: string;
+  version?: string;
+  package_digest?: string;
+  manifest_digest?: string;
+  signature_status?: string;
+  publisher_id?: string;
+  default_tool_exposure?: string;
+  default_invocation_policy?: string;
+  target_user_grant_hash?: string;
+  dependency_lock_digest?: string;
+  ack_nonce?: string;
+  ack_issued_at?: string;
+  user_action?: string;
+  reasons?: string[];
+};
+
+export type PluginTrustReview = {
+  required?: boolean;
+  reasons?: string[];
+  acknowledgement?: PluginTrustAcknowledgement;
+};
+
+export type PluginTrustAcceptance = {
+  trust_level?: string;
+  accepted_at?: string;
+  acknowledgement_hash?: string;
+  reasons?: string[];
+  default_tool_exposure?: string;
+  default_invocation_policy?: string;
+};
+
+export type PluginDependencyPackageSummary = {
+  name?: string;
+  kind?: string;
+  path?: string;
+  sha256?: string;
+};
+
+export type PluginDependencySummary = {
+  present?: boolean;
+  lock_digest?: string;
+  package_count?: number;
+  packages?: PluginDependencyPackageSummary[];
+};
+
+export type PluginHostAPIPolicy = {
+  manifest_capabilities?: string[];
+  user_granted_capabilities?: string[];
+  host_allowed_capabilities?: string[];
+  effective_capabilities?: string[];
+  host_policy_mode?: string;
+};
+
+export type PluginToolPolicyEntry = {
+  name?: string;
+  host_exposure?: string;
+  host_invocation?: string;
+  self_reported_scope?: string;
+  self_reported_permission?: string;
+};
+
+export type PluginToolPolicy = {
+  default_exposure?: string;
+  default_invocation?: string;
+  registered_tools?: PluginToolPolicyEntry[];
+};
+
+export type PluginHookPolicy = {
+  allow_active_hooks?: boolean;
+  observe_hooks?: string[];
+  active_hooks?: string[];
 };
 
 export type PluginSummary = {
@@ -22,6 +105,13 @@ export type PluginSummary = {
   manifest_digest?: string;
   signature_status?: string;
   publisher_id?: string;
+  trust_level?: string;
+  trust_acceptance?: PluginTrustAcceptance;
+  trust_review?: PluginTrustReview;
+  dependency_summary?: PluginDependencySummary;
+  host_api_policy?: PluginHostAPIPolicy;
+  tool_policy?: PluginToolPolicy;
+  hook_policy?: PluginHookPolicy;
   source_type?: string;
   source_ref?: string;
   installed_at?: string;
@@ -38,8 +128,12 @@ export async function loadPlugins(): Promise<PluginSummary[]> {
   return data.plugins || [];
 }
 
-export async function loadPlugin(id: string): Promise<PluginSummary> {
-  return requestJSON<PluginSummary>(`/api/plugins/${encodeURIComponent(id)}`);
+export async function loadPlugin(id: string, version?: string, userGrantJSON?: string): Promise<PluginSummary> {
+  const query = new URLSearchParams();
+  if (version) query.set('version', version);
+  if (userGrantJSON) query.set('user_grant_json', userGrantJSON);
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  return requestJSON<PluginSummary>(`/api/plugins/${encodeURIComponent(id)}${suffix}`);
 }
 
 export async function installLocalPlugin(path: string): Promise<PluginSummary> {
@@ -50,10 +144,14 @@ export async function installGitHubPlugin(owner: string, repo: string, tag: stri
   return requestJSON<PluginSummary>('/api/plugins/install/github-release', { method: 'POST', body: { owner, repo, tag, asset } });
 }
 
-export async function enablePlugin(id: string, userGrantJSON: string): Promise<PluginSummary> {
+export async function enablePlugin(id: string, userGrantJSON: string, version?: string, trustAcknowledgement?: PluginTrustAcknowledgement): Promise<PluginSummary> {
   return requestJSON<PluginSummary>(`/api/plugins/${encodeURIComponent(id)}/enable`, {
     method: 'POST',
-    body: { user_grant_json: userGrantJSON || '{}' },
+    body: {
+      user_grant_json: userGrantJSON || '{}',
+      ...(version ? { version } : {}),
+      ...(trustAcknowledgement ? { trust_acknowledgement: trustAcknowledgement } : {}),
+    },
   });
 }
 

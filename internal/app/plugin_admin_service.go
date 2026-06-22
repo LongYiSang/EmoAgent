@@ -39,6 +39,22 @@ func (a *App) GetPlugin(ctx context.Context, pluginID string) (plugin.AdminPlugi
 	return services.Plugins.GetPlugin(ctx, pluginID)
 }
 
+func (a *App) GetPluginVersion(ctx context.Context, pluginID, version string) (plugin.AdminPluginSummary, error) {
+	services, err := a.services()
+	if err != nil {
+		return plugin.AdminPluginSummary{}, err
+	}
+	return services.Plugins.GetPluginVersion(ctx, pluginID, version)
+}
+
+func (a *App) GetPluginVersionForGrant(ctx context.Context, pluginID, version, userGrantJSON string) (plugin.AdminPluginSummary, error) {
+	services, err := a.services()
+	if err != nil {
+		return plugin.AdminPluginSummary{}, err
+	}
+	return services.Plugins.GetPluginVersionForGrant(ctx, pluginID, version, userGrantJSON)
+}
+
 func (a *App) EnablePlugin(ctx context.Context, pluginID string, req plugin.AdminPluginEnableRequest) (plugin.AdminPluginSummary, error) {
 	services, err := a.services()
 	if err != nil {
@@ -77,6 +93,14 @@ func (a *App) PluginLogs(ctx context.Context, pluginID string) (plugin.AdminPlug
 		return plugin.AdminPluginLogs{}, err
 	}
 	return services.Plugins.PluginLogs(ctx, pluginID)
+}
+
+func (a *App) PluginDiagnostics(ctx context.Context) (plugin.AdminPluginDiagnostics, error) {
+	services, err := a.services()
+	if err != nil {
+		return plugin.AdminPluginDiagnostics{}, err
+	}
+	return services.Plugins.PluginDiagnostics(ctx)
 }
 
 func (a *App) ListPluginAccessEvents(ctx context.Context, pluginID string, limit int) ([]storage.PluginAccessEvent, error) {

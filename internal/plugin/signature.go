@@ -86,6 +86,9 @@ func VerifyReleaseDescriptor(descriptor PluginReleaseDescriptor, publishers Trus
 	if descriptor.ManifestDigest != manifestDigest {
 		return SignatureStatusDigestMismatch, fmt.Errorf("manifest digest mismatch")
 	}
+	if packageDigest != "" && strings.TrimSpace(descriptor.PackageDigest) == "" {
+		return SignatureStatusDigestMismatch, fmt.Errorf("package_digest is required for packaged plugin signatures")
+	}
 	if descriptor.PackageDigest != "" && packageDigest != "" && descriptor.PackageDigest != packageDigest {
 		return SignatureStatusDigestMismatch, fmt.Errorf("package digest mismatch")
 	}

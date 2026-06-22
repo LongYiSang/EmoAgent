@@ -28,11 +28,47 @@ type PluginInstallation struct {
 }
 
 type PluginEnabledState struct {
-	PluginID      string `json:"plugin_id"`
-	Version       string `json:"version"`
-	Enabled       bool   `json:"enabled"`
-	UserGrantJSON string `json:"user_grant_json"`
-	UpdatedAt     string `json:"updated_at"`
+	PluginID                 string `json:"plugin_id"`
+	Version                  string `json:"version"`
+	Enabled                  bool   `json:"enabled"`
+	UserGrantJSON            string `json:"user_grant_json"`
+	TrustLevel               string `json:"trust_level"`
+	TrustAcceptedAt          string `json:"trust_accepted_at"`
+	TrustAcknowledgementHash string `json:"trust_ack_hash"`
+	TrustReviewReasonsJSON   string `json:"trust_review_reasons_json"`
+	DefaultToolExposure      string `json:"default_tool_exposure"`
+	DefaultInvocationPolicy  string `json:"default_invocation_policy"`
+	UpdatedAt                string `json:"updated_at"`
+}
+
+type PluginTrustAcceptanceRecord struct {
+	TrustLevel              string
+	AcceptedAt              string
+	AcknowledgementHash     string
+	ReviewReasonsJSON       string
+	DefaultToolExposure     string
+	DefaultInvocationPolicy string
+}
+
+type PluginTrustAcceptanceHistoryRecord struct {
+	ID                      string `json:"id"`
+	PluginID                string `json:"plugin_id"`
+	Version                 string `json:"version"`
+	TrustLevel              string `json:"trust_level"`
+	AcceptedAt              string `json:"accepted_at"`
+	AcknowledgementHash     string `json:"trust_ack_hash"`
+	ReviewReasonsJSON       string `json:"trust_review_reasons_json"`
+	DefaultToolExposure     string `json:"default_tool_exposure"`
+	DefaultInvocationPolicy string `json:"default_invocation_policy"`
+	UserGrantHash           string `json:"user_grant_hash"`
+	HostPolicyFingerprint   string `json:"host_policy_fingerprint"`
+	DependencyLockDigest    string `json:"dependency_lock_digest"`
+	PackageDigest           string `json:"package_digest"`
+	ManifestDigest          string `json:"manifest_digest"`
+	SignatureStatus         string `json:"signature_status"`
+	PublisherID             string `json:"publisher_id"`
+	SourceType              string `json:"source_type"`
+	CreatedAt               string `json:"created_at"`
 }
 
 type PluginRuntimeRecord struct {
@@ -217,6 +253,10 @@ func scanPluginInstallation(row scanner) (PluginInstallation, error) {
 }
 
 func (d *DB) SetPluginEnabled(ctx context.Context, pluginID, version string, enabled bool, grantJSON string) error {
+	return d.SetPluginEnabledWithTrust(ctx, pluginID, version, enabled, grantJSON, PluginTrustAcceptanceRecord{})
+}
+
+func (d *DB) SetPluginEnabledWithTrust(ctx context.Context, pluginID, version string, enabled bool, grantJSON string, trust PluginTrustAcceptanceRecord) error {
 	if strings.TrimSpace(pluginID) == "" {
 		return fmt.Errorf("plugin_id is required")
 	}
@@ -229,22 +269,52 @@ func (d *DB) SetPluginEnabled(ctx context.Context, pluginID, version string, ena
 	if !json.Valid([]byte(grantJSON)) {
 		return fmt.Errorf("user_grant_json must be valid JSON")
 	}
+	if !enabled {
+		trust = PluginTrustAcceptanceRecord{}
+	}
+	if trust.ReviewReasonsJSON == "" {
+		trust.ReviewReasonsJSON = "[]"
+	}
+	if !json.Valid([]byte(trust.ReviewReasonsJSON)) {
+		return fmt.Errorf("trust_review_reasons_json must be valid JSON")
+	}
 	now := d.nowText()
+	trustAcceptedAt := ""
+	if enabled && strings.TrimSpace(trust.TrustLevel) != "" {
+		trustAcceptedAt = trust.AcceptedAt
+		if trustAcceptedAt == "" {
+			trustAcceptedAt = now
+		}
+	}
 	_, err := d.db.ExecContext(ctx, `
-		INSERT INTO plugin_enabled_state (plugin_id, version, enabled, user_grant_json, updated_at)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO plugin_enabled_state (
+			plugin_id, version, enabled, user_grant_json,
+			trust_level, trust_accepted_at, trust_ack_hash, trust_review_reasons_json,
+			default_tool_exposure, default_invocation_policy, updated_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(plugin_id) DO UPDATE SET
 			version = excluded.version,
 			enabled = excluded.enabled,
 			user_grant_json = excluded.user_grant_json,
+			trust_level = excluded.trust_level,
+			trust_accepted_at = excluded.trust_accepted_at,
+			trust_ack_hash = excluded.trust_ack_hash,
+			trust_review_reasons_json = excluded.trust_review_reasons_json,
+			default_tool_exposure = excluded.default_tool_exposure,
+			default_invocation_policy = excluded.default_invocation_policy,
 			updated_at = excluded.updated_at
-	`, pluginID, version, boolInt(enabled), grantJSON, now)
+	`, pluginID, version, boolInt(enabled), grantJSON,
+		trust.TrustLevel, trustAcceptedAt, trust.AcknowledgementHash, trust.ReviewReasonsJSON,
+		trust.DefaultToolExposure, trust.DefaultInvocationPolicy, now)
 	return err
 }
 
 func (d *DB) GetPluginEnabledState(ctx context.Context, pluginID string) (*PluginEnabledState, error) {
 	row := d.db.QueryRowContext(ctx, `
-		SELECT plugin_id, version, enabled, user_grant_json, updated_at
+		SELECT plugin_id, version, enabled, user_grant_json,
+		       trust_level, trust_accepted_at, trust_ack_hash, trust_review_reasons_json,
+		       default_tool_exposure, default_invocation_policy, updated_at
 		FROM plugin_enabled_state
 		WHERE plugin_id = ?
 	`, pluginID)
@@ -260,7 +330,9 @@ func (d *DB) GetPluginEnabledState(ctx context.Context, pluginID string) (*Plugi
 
 func (d *DB) ListPluginEnabledStates(ctx context.Context) ([]PluginEnabledState, error) {
 	rows, err := d.db.QueryContext(ctx, `
-		SELECT plugin_id, version, enabled, user_grant_json, updated_at
+		SELECT plugin_id, version, enabled, user_grant_json,
+		       trust_level, trust_accepted_at, trust_ack_hash, trust_review_reasons_json,
+		       default_tool_exposure, default_invocation_policy, updated_at
 		FROM plugin_enabled_state
 		ORDER BY plugin_id
 	`)
@@ -283,9 +355,111 @@ func (d *DB) ListPluginEnabledStates(ctx context.Context) ([]PluginEnabledState,
 func scanPluginEnabledState(row scanner) (PluginEnabledState, error) {
 	var record PluginEnabledState
 	var enabled int
-	err := row.Scan(&record.PluginID, &record.Version, &enabled, &record.UserGrantJSON, &record.UpdatedAt)
+	err := row.Scan(
+		&record.PluginID,
+		&record.Version,
+		&enabled,
+		&record.UserGrantJSON,
+		&record.TrustLevel,
+		&record.TrustAcceptedAt,
+		&record.TrustAcknowledgementHash,
+		&record.TrustReviewReasonsJSON,
+		&record.DefaultToolExposure,
+		&record.DefaultInvocationPolicy,
+		&record.UpdatedAt,
+	)
 	record.Enabled = enabled != 0
 	return record, err
+}
+
+func (d *DB) RecordPluginTrustAcceptance(ctx context.Context, record PluginTrustAcceptanceHistoryRecord) error {
+	if strings.TrimSpace(record.PluginID) == "" {
+		return fmt.Errorf("plugin_id is required")
+	}
+	if strings.TrimSpace(record.Version) == "" {
+		return fmt.Errorf("version is required")
+	}
+	if strings.TrimSpace(record.TrustLevel) == "" {
+		return fmt.Errorf("trust_level is required")
+	}
+	if strings.TrimSpace(record.AcknowledgementHash) == "" {
+		return fmt.Errorf("trust_ack_hash is required")
+	}
+	if record.ReviewReasonsJSON == "" {
+		record.ReviewReasonsJSON = "[]"
+	}
+	if !json.Valid([]byte(record.ReviewReasonsJSON)) {
+		return fmt.Errorf("trust_review_reasons_json must be valid JSON")
+	}
+	if record.ID == "" {
+		record.ID = uuid.NewString()
+	}
+	now := d.nowText()
+	if record.AcceptedAt == "" {
+		record.AcceptedAt = now
+	}
+	_, err := d.db.ExecContext(ctx, `
+		INSERT INTO plugin_trust_acceptance_history (
+			id, plugin_id, version, trust_level, accepted_at, trust_ack_hash,
+			trust_review_reasons_json, default_tool_exposure, default_invocation_policy,
+			user_grant_hash, host_policy_fingerprint, dependency_lock_digest,
+			package_digest, manifest_digest, signature_status, publisher_id, source_type, created_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, record.ID, record.PluginID, record.Version, record.TrustLevel, record.AcceptedAt, record.AcknowledgementHash,
+		record.ReviewReasonsJSON, record.DefaultToolExposure, record.DefaultInvocationPolicy,
+		record.UserGrantHash, record.HostPolicyFingerprint, record.DependencyLockDigest,
+		record.PackageDigest, record.ManifestDigest, record.SignatureStatus, record.PublisherID, record.SourceType, now)
+	return err
+}
+
+func (d *DB) ListPluginTrustAcceptanceHistory(ctx context.Context, pluginID string, limit int) ([]PluginTrustAcceptanceHistoryRecord, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT id, plugin_id, version, trust_level, accepted_at, trust_ack_hash,
+		       trust_review_reasons_json, default_tool_exposure, default_invocation_policy,
+		       user_grant_hash, host_policy_fingerprint, dependency_lock_digest,
+		       package_digest, manifest_digest, signature_status, publisher_id, source_type, created_at
+		FROM plugin_trust_acceptance_history
+		WHERE plugin_id = ?
+		ORDER BY accepted_at DESC, created_at DESC
+		LIMIT ?
+	`, pluginID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var records []PluginTrustAcceptanceHistoryRecord
+	for rows.Next() {
+		var record PluginTrustAcceptanceHistoryRecord
+		if err := rows.Scan(
+			&record.ID,
+			&record.PluginID,
+			&record.Version,
+			&record.TrustLevel,
+			&record.AcceptedAt,
+			&record.AcknowledgementHash,
+			&record.ReviewReasonsJSON,
+			&record.DefaultToolExposure,
+			&record.DefaultInvocationPolicy,
+			&record.UserGrantHash,
+			&record.HostPolicyFingerprint,
+			&record.DependencyLockDigest,
+			&record.PackageDigest,
+			&record.ManifestDigest,
+			&record.SignatureStatus,
+			&record.PublisherID,
+			&record.SourceType,
+			&record.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, rows.Err()
 }
 
 func (d *DB) UpsertPluginRuntimeRecord(ctx context.Context, record PluginRuntimeRecord) error {
@@ -296,6 +470,17 @@ func (d *DB) UpsertPluginRuntimeRecord(ctx context.Context, record PluginRuntime
 		record.Status = "stopped"
 	}
 	now := d.nowText()
+	switch record.Status {
+	case "running":
+		if strings.TrimSpace(record.LastStartedAt) == "" {
+			record.LastStartedAt = now
+		}
+		record.LastStoppedAt = ""
+	case "stopped":
+		if strings.TrimSpace(record.LastStoppedAt) == "" {
+			record.LastStoppedAt = now
+		}
+	}
 	_, err := d.db.ExecContext(ctx, `
 		INSERT INTO plugin_runtime_records (
 			plugin_id, version, runtime_kind, status, pid, last_started_at,
@@ -307,7 +492,7 @@ func (d *DB) UpsertPluginRuntimeRecord(ctx context.Context, record PluginRuntime
 			runtime_kind = excluded.runtime_kind,
 			status = excluded.status,
 			pid = excluded.pid,
-			last_started_at = excluded.last_started_at,
+			last_started_at = COALESCE(excluded.last_started_at, plugin_runtime_records.last_started_at),
 			last_stopped_at = excluded.last_stopped_at,
 			last_error = excluded.last_error,
 			restart_count = excluded.restart_count,

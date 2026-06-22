@@ -57,6 +57,15 @@ func (r *PluginRegistry) Get(id string) (Manifest, bool) {
 	return manifest, ok
 }
 
+func (r *PluginRegistry) Unregister(id string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.manifests, id)
+}
+
 func (r *PluginRegistry) List() []Manifest {
 	if r == nil {
 		return nil

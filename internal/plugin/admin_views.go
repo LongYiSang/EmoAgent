@@ -25,6 +25,13 @@ type AdminPluginSummary struct {
 	ManifestDigest     string                     `json:"manifest_digest"`
 	SignatureStatus    string                     `json:"signature_status"`
 	PublisherID        string                     `json:"publisher_id"`
+	TrustLevel         PluginTrustLevel           `json:"trust_level"`
+	TrustAcceptance    PluginTrustAcceptance      `json:"trust_acceptance"`
+	TrustReview        PluginTrustReview          `json:"trust_review"`
+	DependencySummary  DependencyLockSummary      `json:"dependency_summary"`
+	HostAPIPolicy      PluginHostAPIPolicySummary `json:"host_api_policy"`
+	ToolPolicy         PluginToolPolicySummary    `json:"tool_policy"`
+	HookPolicy         PluginHookPolicySummary    `json:"hook_policy"`
 	SourceType         string                     `json:"source_type"`
 	SourceRef          string                     `json:"source_ref"`
 	InstalledAt        string                     `json:"installed_at"`
@@ -58,13 +65,27 @@ type AdminGitHubInstallRequest struct {
 }
 
 type AdminPluginEnableRequest struct {
-	Version       string `json:"version"`
-	UserGrantJSON string `json:"user_grant_json"`
+	Version              string                      `json:"version"`
+	UserGrantJSON        string                      `json:"user_grant_json"`
+	TrustAcknowledgement *PluginTrustAcknowledgement `json:"trust_acknowledgement,omitempty"`
 }
 
 type AdminPluginLogs struct {
 	PluginID   string `json:"plugin_id"`
 	StderrTail string `json:"stderr_tail"`
+}
+
+type AdminPluginDiagnostics struct {
+	Status string                       `json:"status"`
+	Checks []AdminPluginDiagnosticCheck `json:"checks"`
+}
+
+type AdminPluginDiagnosticCheck struct {
+	ID      string         `json:"id"`
+	Label   string         `json:"label"`
+	Status  string         `json:"status"`
+	Message string         `json:"message"`
+	Details map[string]any `json:"details,omitempty"`
 }
 
 type AdminPluginAccessEvents struct {

@@ -153,6 +153,14 @@ func TestPluginRegistryRegistersAndRejectsDuplicate(t *testing.T) {
 	if list := registry.List(); len(list) != 1 || list[0].ID != manifest.ID {
 		t.Fatalf("List = %#v, want one manifest", list)
 	}
+
+	registry.Unregister(manifest.ID)
+	if _, ok := registry.Get(manifest.ID); ok {
+		t.Fatalf("Get after Unregister returned manifest")
+	}
+	if err := registry.Register(manifest, ManifestValidationOptions{MaxTimeoutMS: 1000}); err != nil {
+		t.Fatalf("Register after Unregister: %v", err)
+	}
 }
 
 func TestHookRegistrarRequiresDeclaredHookAndCapability(t *testing.T) {
@@ -263,6 +271,47 @@ func TestHookBusDispatchesPriorityAndAudits(t *testing.T) {
 	}
 	if !audited {
 		t.Fatalf("journal events = %#v, want plugin_invocation done", snapshot.Events)
+	}
+}
+
+func TestHookBusUnregisterPluginRemovesOnlyThatPluginHooks(t *testing.T) {
+	bus := NewHookBus(HookBusConfig{DefaultTimeout: 50 * time.Millisecond, MaxTimeout: time.Second}, nil)
+	for _, registered := range []RegisteredHook{
+		{
+			PluginID:      "com.example.a",
+			Hook:          HookAfterTurnEnd,
+			Mode:          HookModeObserve,
+			FailurePolicy: FailurePolicyFailClosed,
+			Handler: func(context.Context, HookContext) (HookResult, error) {
+				return HookResult{Annotations: map[string]any{"a": true}}, nil
+			},
+		},
+		{
+			PluginID:      "com.example.b",
+			Hook:          HookAfterTurnEnd,
+			Mode:          HookModeObserve,
+			FailurePolicy: FailurePolicyFailClosed,
+			Handler: func(context.Context, HookContext) (HookResult, error) {
+				return HookResult{Annotations: map[string]any{"b": true}}, nil
+			},
+		},
+	} {
+		if err := bus.Register(registered); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+	}
+
+	bus.UnregisterPlugin("com.example.a")
+
+	result, err := bus.Dispatch(context.Background(), HookAfterTurnEnd, HookContext{})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if _, ok := result.Annotations["a"]; ok {
+		t.Fatalf("plugin A annotation still present after unregister: %#v", result.Annotations)
+	}
+	if result.Annotations["b"] != true {
+		t.Fatalf("plugin B annotation missing after unregister: %#v", result.Annotations)
 	}
 }
 

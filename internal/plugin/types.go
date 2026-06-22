@@ -22,10 +22,11 @@ type PatchType string
 type PatchOperation string
 
 const (
-	RuntimeBuiltin       RuntimeKind = "builtin"
-	RuntimeProcess       RuntimeKind = "process"
-	RuntimePythonProcess RuntimeKind = "python_process"
-	RuntimeContainer     RuntimeKind = "container"
+	RuntimeBuiltin              RuntimeKind = "builtin"
+	RuntimeProcess              RuntimeKind = "process"
+	RuntimePythonProcess        RuntimeKind = "python_process"
+	RuntimeManagedPythonProcess RuntimeKind = "managed_python_process"
+	RuntimeContainer            RuntimeKind = "container"
 )
 
 const (
@@ -173,7 +174,7 @@ func (m Manifest) Validate(options ManifestValidationOptions) error {
 		return fmt.Errorf("emoagent_version must be a semver range, got %q", m.EmoAgentVersion)
 	}
 	switch m.Runtime {
-	case RuntimeBuiltin, RuntimeProcess, RuntimePythonProcess, RuntimeContainer:
+	case RuntimeBuiltin, RuntimeProcess, RuntimePythonProcess, RuntimeManagedPythonProcess, RuntimeContainer:
 	default:
 		return fmt.Errorf("runtime %q is unsupported", m.Runtime)
 	}

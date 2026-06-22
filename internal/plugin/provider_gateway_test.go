@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/longyisang/emoagent/internal/config"
@@ -16,7 +17,7 @@ func TestProviderGatewayThroughFacadeBrokerRecordsUsage(t *testing.T) {
 	manifest := facadeTestManifest([]Capability{CapabilityProviderGenerate})
 	manifest.Provider.DefaultProviderID = "fake-provider"
 	manifest.Provider.DefaultModel = "fake-model"
-	if err := db.SetPluginEnabled(ctx, manifest.ID, manifest.Version, true, `{"tier":"runtime_safe"}`); err != nil {
+	if err := db.SetPluginEnabled(ctx, manifest.ID, manifest.Version, true, facadeTestGrant(CapabilityProviderGenerate)); err != nil {
 		t.Fatalf("SetPluginEnabled: %v", err)
 	}
 	fake := &fakePluginLLMClient{}
@@ -79,6 +80,18 @@ func TestProviderGatewayRecordsUsageOnError(t *testing.T) {
 	}
 }
 
+func TestProviderGatewayGenerateRawRejectsUnknownFields(t *testing.T) {
+	gateway := NewProviderGateway(nil, config.PluginProviderGatewayConfig{Enabled: true}, func(context.Context, string) (llm.Client, error) {
+		t.Fatal("resolver should not be called for invalid provider.generate params")
+		return nil, nil
+	})
+
+	_, err := gateway.GenerateRaw(t.Context(), "com.example.echo", json.RawMessage(`{"provider_id":"fake","model":"fake","unexpected":true}`))
+	if err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("GenerateRaw error = %v, want unknown field", err)
+	}
+}
+
 func TestProviderGatewayRejectsDisallowedRequestedProvider(t *testing.T) {
 	db := openPluginTestDB(t)
 	manifest := facadeTestManifest([]Capability{CapabilityProviderGenerate})
@@ -90,6 +103,22 @@ func TestProviderGatewayRejectsDisallowedRequestedProvider(t *testing.T) {
 	gateway.AddPlugin(manifest)
 
 	_, err := gateway.Generate(t.Context(), manifest.ID, PluginGenerateRequest{ProviderID: "blocked-provider", Model: "fake-model"})
+	if err == nil || !strings.Contains(err.Error(), "not allowed") {
+		t.Fatalf("Generate error = %v, want not allowed", err)
+	}
+}
+
+func TestProviderGatewayRejectsDisallowedRequestedModel(t *testing.T) {
+	db := openPluginTestDB(t)
+	manifest := facadeTestManifest([]Capability{CapabilityProviderGenerate})
+	manifest.Provider.AllowedModels = []string{"allowed-model"}
+	gateway := NewProviderGateway(db, config.PluginProviderGatewayConfig{Enabled: true}, func(context.Context, string) (llm.Client, error) {
+		t.Fatal("resolver should not be called for disallowed model")
+		return nil, nil
+	})
+	gateway.AddPlugin(manifest)
+
+	_, err := gateway.Generate(t.Context(), manifest.ID, PluginGenerateRequest{ProviderID: "allowed-provider", Model: "blocked-model"})
 	if err == nil || !strings.Contains(err.Error(), "not allowed") {
 		t.Fatalf("Generate error = %v, want not allowed", err)
 	}
@@ -119,6 +148,49 @@ func TestProviderGatewayUsesFallbackWhenNoDefaults(t *testing.T) {
 	}
 }
 
+func TestProviderGatewayConcurrentGenerateAndRemovePlugin(t *testing.T) {
+	ctx := context.Background()
+	manifest := facadeTestManifest([]Capability{CapabilityProviderGenerate})
+	manifest.Provider.AllowedProviderIDs = []string{"fake-provider"}
+	manifest.Provider.AllowedModels = []string{"fake-model"}
+	gateway := NewProviderGateway(nil, config.PluginProviderGatewayConfig{Enabled: true}, func(context.Context, string) (llm.Client, error) {
+		return statelessPluginLLMClient{}, nil
+	})
+	gateway.AddPlugin(manifest)
+
+	errCh := make(chan error, 1600)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				_, err := gateway.Generate(ctx, manifest.ID, PluginGenerateRequest{
+					ProviderID: "fake-provider",
+					Model:      "fake-model",
+					Messages:   []llm.Message{{Role: llm.RoleUser, Content: "hello"}},
+				})
+				if err != nil {
+					errCh <- err
+				}
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for j := 0; j < 200; j++ {
+			gateway.RemovePlugin(manifest.ID)
+			gateway.AddPlugin(manifest)
+		}
+	}()
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatalf("Generate: %v", err)
+	}
+}
+
 type fakePluginLLMClient struct {
 	lastRequest llm.ChatRequest
 }
@@ -135,4 +207,19 @@ func (f *fakePluginLLMClient) Chat(_ context.Context, req llm.ChatRequest) (*llm
 
 func (f *fakePluginLLMClient) ChatStream(ctx context.Context, req llm.ChatRequest, cb llm.StreamCallback) (*llm.ChatResponse, error) {
 	return f.Chat(ctx, req)
+}
+
+type statelessPluginLLMClient struct{}
+
+func (statelessPluginLLMClient) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	return &llm.ChatResponse{
+		Content:    "fake response",
+		Model:      req.Model,
+		Usage:      llm.Usage{InputTokens: 1, OutputTokens: 1},
+		StopReason: "end_turn",
+	}, nil
+}
+
+func (c statelessPluginLLMClient) ChatStream(ctx context.Context, req llm.ChatRequest, cb llm.StreamCallback) (*llm.ChatResponse, error) {
+	return c.Chat(ctx, req)
 }

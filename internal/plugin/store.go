@@ -48,6 +48,37 @@ func (s *PluginStore) WorkspaceDir(pluginID string) (string, error) {
 	return s.scopedDir("workspaces", pluginID)
 }
 
+func (s *PluginStore) DependencyEnvDir(pluginID, version string) (string, error) {
+	if s == nil {
+		return "", fmt.Errorf("plugin store is nil")
+	}
+	if !validPluginID(pluginID) {
+		return "", fmt.Errorf("invalid plugin id %q", pluginID)
+	}
+	if !validSemver(version) {
+		return "", fmt.Errorf("invalid plugin version %q", version)
+	}
+	return filepath.Join(s.RootDir, "dependencies", pluginID, version), nil
+}
+
+func (s *PluginStore) PrivatePythonRuntimeDir() (string, error) {
+	if s == nil {
+		return "", fmt.Errorf("plugin store is nil")
+	}
+	if strings.TrimSpace(s.RootDir) == "" {
+		return "", fmt.Errorf("plugin store root_dir is required")
+	}
+	return filepath.Join(s.RootDir, "runtime", "python"), nil
+}
+
+func (s *PluginStore) PrivatePythonExecutablePath(goos string) (string, error) {
+	dir, err := s.PrivatePythonRuntimeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, privatePythonExecutableName(goos)), nil
+}
+
 func (s *PluginStore) scopedDir(kind, pluginID string) (string, error) {
 	if s == nil {
 		return "", fmt.Errorf("plugin store is nil")
@@ -88,4 +119,15 @@ func (s *PluginStore) PrepareRuntimeDirs(pluginID string) error {
 		}
 	}
 	return nil
+}
+
+func (s *PluginStore) PrepareDependencyEnvDir(pluginID, version string) (string, error) {
+	dir, err := s.DependencyEnvDir(pluginID, version)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return dir, nil
 }

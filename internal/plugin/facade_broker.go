@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/longyisang/emoagent/internal/storage"
@@ -17,7 +18,13 @@ type FacadeBroker struct {
 	provider *ProviderGateway
 	store    *PluginStore
 
-	manifests map[string]ManifestV2
+	mu         sync.RWMutex
+	manifests  map[string]ManifestV2
+	hostPolicy FacadeHostPolicy
+}
+
+type FacadeHostPolicy struct {
+	AllowedCapabilities []Capability
 }
 
 type PluginFacadeStorage interface {
@@ -37,13 +44,36 @@ func (b *FacadeBroker) SetStore(store *PluginStore) {
 	}
 }
 
+func (b *FacadeBroker) SetHostPolicy(policy FacadeHostPolicy) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.hostPolicy = policy
+}
+
 func (b *FacadeBroker) AddPlugin(manifest ManifestV2) {
 	if b == nil {
 		return
 	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.manifests[manifest.ID] = manifest
 	if b.provider != nil {
 		b.provider.AddPlugin(manifest)
+	}
+}
+
+func (b *FacadeBroker) RemovePlugin(pluginID string) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.manifests, pluginID)
+	if b.provider != nil {
+		b.provider.RemovePlugin(pluginID)
 	}
 }
 
@@ -79,7 +109,7 @@ func (b *FacadeBroker) authorize(ctx context.Context, pluginID string, capabilit
 	if b == nil {
 		return fmt.Errorf("facade broker is nil")
 	}
-	manifest, ok := b.manifests[pluginID]
+	manifest, ok := b.manifest(pluginID)
 	if !ok {
 		return fmt.Errorf("plugin %q is not registered", pluginID)
 	}
@@ -93,11 +123,17 @@ func (b *FacadeBroker) authorize(ctx context.Context, pluginID string, capabilit
 	if state == nil || !state.Enabled {
 		return fmt.Errorf("plugin %q is not enabled", pluginID)
 	}
+	if strings.TrimSpace(state.Version) != "" && strings.TrimSpace(manifest.Version) != "" && state.Version != manifest.Version {
+		return fmt.Errorf("plugin %q active version %q does not match registered manifest version %q", pluginID, state.Version, manifest.Version)
+	}
 	if requiresCapability {
 		if err := NewAuthorizer(manifest.CompatManifest()).Require(capability); err != nil {
 			return err
 		}
-		if err := grantAllows(state.UserGrantJSON, manifest.Access.Tier, capability); err != nil {
+		if err := grantAllows(state.UserGrantJSON, manifest, capability); err != nil {
+			return err
+		}
+		if err := b.hostPolicyAllows(capability); err != nil {
 			return err
 		}
 	}
@@ -107,7 +143,10 @@ func (b *FacadeBroker) authorize(ctx context.Context, pluginID string, capabilit
 func (b *FacadeBroker) dispatch(ctx context.Context, pluginID string, method string, params json.RawMessage) (json.RawMessage, error) {
 	switch method {
 	case "plugin.info":
-		manifest := b.manifests[pluginID]
+		manifest, ok := b.manifest(pluginID)
+		if !ok {
+			return nil, fmt.Errorf("plugin %q is not registered", pluginID)
+		}
 		return marshalRaw(map[string]any{
 			"id":           manifest.ID,
 			"name":         manifest.Name,
@@ -322,6 +361,16 @@ func (b *FacadeBroker) dispatch(ctx context.Context, pluginID string, method str
 	}
 }
 
+func (b *FacadeBroker) manifest(pluginID string) (ManifestV2, bool) {
+	if b == nil {
+		return ManifestV2{}, false
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	manifest, ok := b.manifests[pluginID]
+	return manifest, ok
+}
+
 func (b *FacadeBroker) pluginFilePath(pluginID, rel string) (string, error) {
 	if b == nil || b.store == nil {
 		return "", fmt.Errorf("plugin file store is not configured")
@@ -379,22 +428,13 @@ func capabilityForFacadeMethod(method string) (Capability, bool) {
 	}
 }
 
-func grantAllows(raw string, manifestTier AccessTier, capability Capability) error {
-	if strings.TrimSpace(raw) == "" {
-		raw = "{}"
-	}
-	var grant struct {
-		Tier         AccessTier   `json:"tier"`
-		Capabilities []Capability `json:"capabilities"`
-	}
-	if err := json.Unmarshal([]byte(raw), &grant); err != nil {
-		return fmt.Errorf("invalid user grant: %w", err)
-	}
-	if grant.Tier != "" && accessTierRank(grant.Tier) < accessTierRank(manifestTier) {
-		return fmt.Errorf("%w: grant tier %s is lower than manifest tier %s", ErrCapabilityDenied, grant.Tier, manifestTier)
+func grantAllows(raw string, manifest ManifestV2, capability Capability) error {
+	grant, err := ValidateUserGrantForManifest(raw, manifest)
+	if err != nil {
+		return err
 	}
 	if len(grant.Capabilities) == 0 {
-		return nil
+		return fmt.Errorf("%w: user grant lacks %s", ErrCapabilityDenied, capability)
 	}
 	for _, allowed := range grant.Capabilities {
 		if allowed == capability {
@@ -404,19 +444,22 @@ func grantAllows(raw string, manifestTier AccessTier, capability Capability) err
 	return fmt.Errorf("%w: user grant lacks %s", ErrCapabilityDenied, capability)
 }
 
-func accessTierRank(tier AccessTier) int {
-	switch tier {
-	case AccessTierRuntimeSafe:
-		return 1
-	case AccessTierUserContext:
-		return 2
-	case AccessTierWorkspace:
-		return 3
-	case AccessTierTrusted:
-		return 4
-	default:
-		return 0
+func (b *FacadeBroker) hostPolicyAllows(capability Capability) error {
+	if b == nil {
+		return fmt.Errorf("facade broker is nil")
 	}
+	b.mu.RLock()
+	allowed := append([]Capability(nil), b.hostPolicy.AllowedCapabilities...)
+	b.mu.RUnlock()
+	if len(allowed) == 0 {
+		return nil
+	}
+	for _, candidate := range allowed {
+		if candidate == capability {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: host policy lacks %s", ErrCapabilityDenied, capability)
 }
 
 func (b *FacadeBroker) recordAccess(ctx context.Context, event storage.PluginAccessEvent) error {

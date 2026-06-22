@@ -87,6 +87,33 @@ func (b *HookBus) Register(hook RegisteredHook) error {
 	return nil
 }
 
+func (b *HookBus) UnregisterPlugin(pluginID string) {
+	if b == nil {
+		return
+	}
+	pluginID = strings.TrimSpace(pluginID)
+	if pluginID == "" {
+		return
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	for hook, registered := range b.hooks {
+		kept := registered[:0]
+		for _, reg := range registered {
+			if reg.PluginID != pluginID {
+				kept = append(kept, reg)
+			}
+		}
+		if len(kept) == 0 {
+			delete(b.hooks, hook)
+			continue
+		}
+		b.hooks[hook] = kept
+	}
+}
+
 func (b *HookBus) Dispatch(ctx context.Context, hook HookName, hc HookContext) (HookResult, error) {
 	if b == nil {
 		return HookResult{}, nil

@@ -115,12 +115,27 @@ func (i *PluginInstaller) InstallFromGitHubRelease(ctx context.Context, owner, r
 	if err := temp.Close(); err != nil {
 		return InstallResult{}, err
 	}
-	result, err := i.InstallFromZip(ctx, tempPath)
+	data, err := os.ReadFile(tempPath)
 	if err != nil {
 		return InstallResult{}, err
 	}
-	result.SourceType = "github_release"
-	result.SourceRef = url
+	packageDigest := sha256Digest(data)
+	tempDir, err := os.MkdirTemp("", "emoagent-plugin-release-*")
+	if err != nil {
+		return InstallResult{}, err
+	}
+	defer os.RemoveAll(tempDir)
+	if err := extractZip(data, tempDir); err != nil {
+		return InstallResult{}, err
+	}
+	descriptor, descriptorFound, err := readReleaseDescriptor(tempPath+".sig.yaml", filepath.Join(tempDir, "emo_plugin.signature.yaml"))
+	if err != nil {
+		return InstallResult{}, err
+	}
+	result, err := i.installFromPreparedDir(ctx, tempDir, "github_release", url, packageDigest, descriptor, descriptorFound)
+	if err != nil {
+		return InstallResult{}, err
+	}
 	return result, nil
 }
 
@@ -146,6 +161,9 @@ func (i *PluginInstaller) installFromPreparedDir(ctx context.Context, sourceDir,
 	}
 	signatureStatus, publisherID, err := i.verifyInstallSignature(descriptor, descriptorFound, manifest.ID, manifest.Version, packageDigest, manifestDigest, sourceType)
 	if err != nil {
+		return InstallResult{}, err
+	}
+	if err := i.enforceTrustBlocklist(packageDigest, manifestDigest, publisherID); err != nil {
 		return InstallResult{}, err
 	}
 	storePath, err := i.Store.PackageDir(manifest.ID, manifest.Version)
@@ -215,6 +233,48 @@ func (i *PluginInstaller) verifyInstallSignature(descriptor PluginReleaseDescrip
 		return status, descriptor.PublisherID, err
 	}
 	return status, descriptor.PublisherID, nil
+}
+
+func (i *PluginInstaller) enforceTrustBlocklist(packageDigest, manifestDigest, publisherID string) error {
+	if i == nil {
+		return nil
+	}
+	if digestBlocked(packageDigest, i.Config.BlockedPackageDigests) {
+		return fmt.Errorf("blocked package digest: %s", packageDigest)
+	}
+	if digestBlocked(manifestDigest, i.Config.BlockedManifestDigests) {
+		return fmt.Errorf("blocked manifest digest: %s", manifestDigest)
+	}
+	if publisherBlocked(publisherID, i.Config.BlockedPublishers) {
+		return fmt.Errorf("blocked publisher: %s", publisherID)
+	}
+	return nil
+}
+
+func digestBlocked(digest string, blocked []string) bool {
+	digest = strings.TrimSpace(digest)
+	if digest == "" {
+		return false
+	}
+	for _, candidate := range blocked {
+		if strings.TrimSpace(candidate) == digest {
+			return true
+		}
+	}
+	return false
+}
+
+func publisherBlocked(publisherID string, blocked []string) bool {
+	publisherID = strings.TrimSpace(publisherID)
+	if publisherID == "" {
+		return false
+	}
+	for _, candidate := range blocked {
+		if strings.TrimSpace(candidate) == publisherID {
+			return true
+		}
+	}
+	return false
 }
 
 func readReleaseDescriptor(paths ...string) (PluginReleaseDescriptor, bool, error) {

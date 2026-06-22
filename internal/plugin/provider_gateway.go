@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/longyisang/emoagent/internal/config"
@@ -18,6 +19,7 @@ type ProviderGateway struct {
 	resolver ProviderClientResolver
 	fallback ProviderModelFallbackResolver
 
+	mu        sync.RWMutex
 	manifests map[string]ManifestV2
 }
 
@@ -60,10 +62,21 @@ func (g *ProviderGateway) AddPlugin(manifest ManifestV2) {
 	if g == nil {
 		return
 	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	if g.manifests == nil {
 		g.manifests = map[string]ManifestV2{}
 	}
 	g.manifests[manifest.ID] = manifest
+}
+
+func (g *ProviderGateway) RemovePlugin(pluginID string) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.manifests, pluginID)
 }
 
 func (g *ProviderGateway) Generate(ctx context.Context, pluginID string, req PluginGenerateRequest) (PluginGenerateResponse, error) {
@@ -145,7 +158,9 @@ func (g *ProviderGateway) GenerateRaw(ctx context.Context, pluginID string, para
 	if len(params) == 0 {
 		params = json.RawMessage("{}")
 	}
-	if err := json.Unmarshal(params, &req); err != nil {
+	decoder := json.NewDecoder(strings.NewReader(string(params)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		return nil, fmt.Errorf("decode provider.generate params: %w", err)
 	}
 	resp, err := g.Generate(ctx, pluginID, req)
@@ -158,7 +173,7 @@ func (g *ProviderGateway) GenerateRaw(ctx context.Context, pluginID string, para
 func (g *ProviderGateway) resolveProviderModel(ctx context.Context, pluginID string, req PluginGenerateRequest) (string, string, error) {
 	providerID := strings.TrimSpace(req.ProviderID)
 	model := strings.TrimSpace(req.Model)
-	if manifest, ok := g.manifests[pluginID]; ok {
+	if manifest, ok := g.manifest(pluginID); ok {
 		if req.ProviderID != "" && len(manifest.Provider.AllowedProviderIDs) > 0 && !providerStringAllowed(manifest.Provider.AllowedProviderIDs, req.ProviderID) {
 			return "", "", fmt.Errorf("provider_id %q is not allowed for plugin %s", req.ProviderID, pluginID)
 		}
@@ -199,6 +214,16 @@ func (g *ProviderGateway) resolveProviderModel(ctx context.Context, pluginID str
 		return providerID, "", fmt.Errorf("model is required")
 	}
 	return providerID, model, nil
+}
+
+func (g *ProviderGateway) manifest(pluginID string) (ManifestV2, bool) {
+	if g == nil {
+		return ManifestV2{}, false
+	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	manifest, ok := g.manifests[pluginID]
+	return manifest, ok
 }
 
 func providerStringAllowed(values []string, target string) bool {

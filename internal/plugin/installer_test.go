@@ -2,9 +2,12 @@ package plugin
 
 import (
 	"archive/zip"
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,6 +103,72 @@ func TestPluginInstallerInstallFromDirectoryAllowsUnsignedDev(t *testing.T) {
 	}
 }
 
+func TestPluginInstallerRejectsBlockedPackageAndPublisher(t *testing.T) {
+	dir := t.TempDir()
+	pluginDir := filepath.Join(dir, "plugin")
+	writeExamplePlugin(t, pluginDir)
+	zipPath := filepath.Join(dir, "echo.zip")
+	writeZip(t, zipPath, map[string]string{
+		manifestFileName: readFileString(t, filepath.Join(pluginDir, manifestFileName)),
+		"main.py":        "print('ok')\n",
+	})
+	zipRaw, err := os.ReadFile(zipPath)
+	if err != nil {
+		t.Fatalf("read zip: %v", err)
+	}
+	store, err := NewPluginStore(filepath.Join(dir, "blocked-package-store"))
+	if err != nil {
+		t.Fatalf("NewPluginStore: %v", err)
+	}
+	installer := NewPluginInstaller(store, config.PluginInstallerConfig{
+		AllowUnsignedDev:      true,
+		BlockedPackageDigests: []string{sha256Digest(zipRaw)},
+	})
+	_, err = installer.InstallFromZip(t.Context(), zipPath)
+	if err == nil || !strings.Contains(err.Error(), "blocked package digest") {
+		t.Fatalf("InstallFromZip blocked package error = %v", err)
+	}
+
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	trustedPath := filepath.Join(dir, "publishers.yaml")
+	if err := os.WriteFile(trustedPath, []byte(`
+publishers:
+  - id: example
+    display_name: Example
+    public_keys:
+      - id: main
+        algorithm: ed25519
+        public_key_base64: `+base64.StdEncoding.EncodeToString(publicKey)+`
+`), 0o644); err != nil {
+		t.Fatalf("write trusted publishers: %v", err)
+	}
+	descriptor := PluginReleaseDescriptor{
+		PluginID:       "com.example.echo",
+		Version:        "0.1.0",
+		PackageDigest:  sha256Digest(zipRaw),
+		ManifestDigest: sha256Digest([]byte(readFileString(t, filepath.Join(pluginDir, manifestFileName)))),
+		PublisherID:    "example",
+		KeyID:          "main",
+	}
+	writeSignedDescriptor(t, zipPath+".sig.yaml", descriptor, privateKey)
+	publisherStore, err := NewPluginStore(filepath.Join(dir, "blocked-publisher-store"))
+	if err != nil {
+		t.Fatalf("NewPluginStore publisher: %v", err)
+	}
+	publisherInstaller := NewPluginInstaller(publisherStore, config.PluginInstallerConfig{
+		RequireSignature:      true,
+		TrustedPublishersPath: trustedPath,
+		BlockedPublishers:     []string{"example"},
+	})
+	_, err = publisherInstaller.InstallFromZip(t.Context(), zipPath)
+	if err == nil || !strings.Contains(err.Error(), "blocked publisher") {
+		t.Fatalf("InstallFromZip blocked publisher error = %v", err)
+	}
+}
+
 func TestPluginInstallerRejectsDigestMismatch(t *testing.T) {
 	dir := t.TempDir()
 	pluginDir := filepath.Join(dir, "plugin")
@@ -146,6 +215,88 @@ publishers:
 	}
 }
 
+func TestPluginInstallerRejectsZipSignatureWithoutPackageDigest(t *testing.T) {
+	dir := t.TempDir()
+	pluginDir := filepath.Join(dir, "plugin")
+	writeExamplePlugin(t, pluginDir)
+	zipPath := filepath.Join(dir, "echo.zip")
+	writeZip(t, zipPath, map[string]string{
+		manifestFileName: readFileString(t, filepath.Join(pluginDir, manifestFileName)),
+		"main.py":        "print('ok')\n",
+	})
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	trustedPath := filepath.Join(dir, "publishers.yaml")
+	if err := os.WriteFile(trustedPath, []byte(`
+publishers:
+  - id: example
+    display_name: Example
+    public_keys:
+      - id: main
+        algorithm: ed25519
+        public_key_base64: `+base64.StdEncoding.EncodeToString(publicKey)+`
+`), 0o644); err != nil {
+		t.Fatalf("write trusted publishers: %v", err)
+	}
+	descriptor := PluginReleaseDescriptor{
+		PluginID:       "com.example.echo",
+		Version:        "0.1.0",
+		ManifestDigest: sha256Digest([]byte(readFileString(t, filepath.Join(pluginDir, manifestFileName)))),
+		PublisherID:    "example",
+		KeyID:          "main",
+	}
+	writeSignedDescriptor(t, zipPath+".sig.yaml", descriptor, privateKey)
+	store, _ := NewPluginStore(filepath.Join(dir, "store"))
+	installer := NewPluginInstaller(store, config.PluginInstallerConfig{
+		RequireSignature:      true,
+		TrustedPublishersPath: trustedPath,
+	})
+
+	_, err = installer.InstallFromZip(t.Context(), zipPath)
+	if err == nil || !strings.Contains(err.Error(), "package_digest is required") {
+		t.Fatalf("InstallFromZip error = %v, want package_digest required", err)
+	}
+}
+
+func TestPluginInstallerGitHubReleaseRequiresSignatureEvenWhenUnsignedDevAllowed(t *testing.T) {
+	dir := t.TempDir()
+	pluginDir := filepath.Join(dir, "plugin")
+	writeExamplePlugin(t, pluginDir)
+	zipPath := filepath.Join(dir, "echo.zip")
+	writeZip(t, zipPath, map[string]string{
+		manifestFileName: readFileString(t, filepath.Join(pluginDir, manifestFileName)),
+		"main.py":        "print('ok')\n",
+	})
+	zipRaw, err := os.ReadFile(zipPath)
+	if err != nil {
+		t.Fatalf("read zip: %v", err)
+	}
+	store, _ := NewPluginStore(filepath.Join(dir, "store"))
+	installer := NewPluginInstaller(store, config.PluginInstallerConfig{
+		GithubEnabled:    true,
+		RequireSignature: true,
+		AllowUnsignedDev: true,
+	})
+	installer.Client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() != "https://github.com/example/repo/releases/download/v0.1.0/echo.zip" {
+			t.Fatalf("unexpected release URL %s", req.URL.String())
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader(zipRaw)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})}
+
+	_, err = installer.InstallFromGitHubRelease(t.Context(), "example", "repo", "v0.1.0", "echo.zip")
+	if err == nil || !strings.Contains(err.Error(), "plugin signature is required") {
+		t.Fatalf("InstallFromGitHubRelease error = %v, want required signature", err)
+	}
+}
+
 func TestPluginInstallerRejectsZipSlip(t *testing.T) {
 	dir := t.TempDir()
 	zipPath := filepath.Join(dir, "bad.zip")
@@ -159,6 +310,12 @@ func TestPluginInstallerRejectsZipSlip(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "unsafe") {
 		t.Fatalf("InstallFromZip error = %v, want unsafe zip path", err)
 	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func TestPluginStoreRejectsDuplicateImmutablePackage(t *testing.T) {

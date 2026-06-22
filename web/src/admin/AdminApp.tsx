@@ -147,7 +147,7 @@ export function AdminApp() {
       case 'retention':
         return <RetentionTab effectiveConfig={memory.effectiveConfig} retentionDraft={memory.retentionDraft} setRetentionDraft={memory.setRetentionDraft} saveRetention={memory.saveRetention} />;
       case 'diagnostics':
-        return <DiagnosticsTab effectiveConfig={memory.effectiveConfig} configIssues={memory.configIssues} reloadEffectiveConfig={memory.reloadEffectiveConfig} reloadConfigIssues={memory.reloadConfigIssues} validateEffectiveConfig={memory.validateEffectiveConfig} />;
+        return <DiagnosticsTab effectiveConfig={memory.effectiveConfig} configIssues={memory.configIssues} pluginDiagnostics={memory.pluginDiagnostics} reloadEffectiveConfig={memory.reloadEffectiveConfig} reloadConfigIssues={memory.reloadConfigIssues} reloadPluginDiagnostics={memory.reloadPluginDiagnostics} validateEffectiveConfig={memory.validateEffectiveConfig} />;
       default:
         return null;
     }

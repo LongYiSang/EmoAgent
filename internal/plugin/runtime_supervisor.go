@@ -4,19 +4,34 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/tool"
+	"github.com/longyisang/emoagent/internal/tool/resultv2"
 )
 
 type RuntimeStatus struct {
-	PluginID     string `json:"plugin_id"`
-	Status       string `json:"status"`
-	LastError    string `json:"last_error,omitempty"`
-	RestartCount int    `json:"restart_count"`
-	StderrTail   string `json:"stderr_tail,omitempty"`
+	PluginID                  string      `json:"plugin_id"`
+	Version                   string      `json:"version,omitempty"`
+	RuntimeKind               RuntimeKind `json:"runtime_kind,omitempty"`
+	Status                    string      `json:"status"`
+	LastError                 string      `json:"last_error,omitempty"`
+	RestartCount              int         `json:"restart_count"`
+	StderrTail                string      `json:"stderr_tail,omitempty"`
+	PythonExecutablePath      string      `json:"python_executable_path,omitempty"`
+	PythonExecutableSource    string      `json:"python_executable_source,omitempty"`
+	PythonExecutableAvailable *bool       `json:"python_executable_available,omitempty"`
+	DependencyEnvDir          string      `json:"dependency_env_dir,omitempty"`
+	PID                       int         `json:"pid,omitempty"`
+	ProcessGuardKind          string      `json:"process_guard_kind,omitempty"`
+	ProcessGuardAttached      bool        `json:"process_guard_attached,omitempty"`
+	ProcessGuardError         string      `json:"process_guard_error,omitempty"`
 }
 
 type RuntimeSupervisor struct {
@@ -26,6 +41,7 @@ type RuntimeSupervisor struct {
 	hostHandlerFor    func(string) JSONRPCHandler
 	enabled           func(context.Context, string) bool
 	blockedEnvNames   []string
+	blockedEnvNamesFn func() []string
 	additionalEnvVars []string
 
 	mu       sync.Mutex
@@ -34,12 +50,33 @@ type RuntimeSupervisor struct {
 }
 
 type supervisedRuntime struct {
-	manifest     ManifestV2
-	runtime      *ProcessRuntime
-	tools        []ProcessToolSpec
-	status       string
-	lastError    string
-	restartCount int
+	manifest                  ManifestV2
+	runtime                   *ProcessRuntime
+	tools                     []ProcessToolSpec
+	status                    string
+	lastError                 string
+	restartCount              int
+	runtimeKind               RuntimeKind
+	pythonExecutablePath      string
+	pythonExecutableSource    string
+	pythonExecutableAvailable *bool
+	dependencyEnvDir          string
+	pid                       int
+	processGuardKind          string
+	processGuardAttached      bool
+	processGuardError         string
+}
+
+const (
+	PythonExecutableSourcePrivate      = "private_python_executable"
+	PythonExecutableSourceStorePrivate = "store_private_runtime"
+	PythonExecutableSourceLegacy       = "legacy_python_executable"
+)
+
+type pythonExecutableDiagnostics struct {
+	path      string
+	source    string
+	available *bool
 }
 
 type InitializeRequest struct {
@@ -55,11 +92,12 @@ type InitializeResponse struct {
 }
 
 type ProcessToolSpec struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	Parameters  json.RawMessage `json:"parameters"`
-	Scope       tool.Scope      `json:"scope"`
-	Permission  tool.Permission `json:"permission"`
+	Name        string                 `json:"name"`
+	Description string                 `json:"description"`
+	Parameters  json.RawMessage        `json:"parameters"`
+	Scope       tool.Scope             `json:"scope"`
+	Permission  tool.Permission        `json:"permission"`
+	Trust       resultv2.ContentLabels `json:"trust,omitempty"`
 }
 
 type hookInvokeRequest struct {
@@ -96,12 +134,24 @@ func (s *RuntimeSupervisor) SetHostHandlerForPlugin(handler func(string) JSONRPC
 
 func (s *RuntimeSupervisor) SetBlockedEnvNames(values []string) {
 	if s != nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
 		s.blockedEnvNames = append([]string(nil), values...)
+	}
+}
+
+func (s *RuntimeSupervisor) SetBlockedEnvNamesProvider(fn func() []string) {
+	if s != nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.blockedEnvNamesFn = fn
 	}
 }
 
 func (s *RuntimeSupervisor) SetAdditionalEnvVars(values []string) {
 	if s != nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
 		s.additionalEnvVars = append([]string(nil), values...)
 	}
 }
@@ -115,29 +165,56 @@ func (s *RuntimeSupervisor) AddPlugin(manifest ManifestV2) {
 	s.plugins[manifest.ID] = manifest
 }
 
+func (s *RuntimeSupervisor) RemovePlugin(pluginID string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.plugins, pluginID)
+}
+
 func (s *RuntimeSupervisor) EnsureReady(ctx context.Context, pluginID string) (*ProcessRuntime, error) {
 	if s == nil {
 		return nil, fmt.Errorf("runtime supervisor is nil")
 	}
-	s.mu.Lock()
-	existing := s.runtimes[pluginID]
-	if existing != nil && existing.runtime != nil && existing.status == "running" {
-		runtime := existing.runtime
-		s.mu.Unlock()
-		return runtime, nil
-	}
-	manifest, ok := s.plugins[pluginID]
-	s.mu.Unlock()
-	if !ok {
-		return nil, fmt.Errorf("plugin %q is not registered with supervisor", pluginID)
-	}
 	if s.enabled != nil && !s.enabled(ctx, pluginID) {
 		return nil, fmt.Errorf("plugin %q is disabled", pluginID)
+	}
+	s.mu.Lock()
+	existing := s.runtimes[pluginID]
+	manifest, ok := s.plugins[pluginID]
+	if existing != nil && existing.runtime != nil && existing.status == "running" {
+		if !ok {
+			runtime := existing.runtime
+			delete(s.runtimes, pluginID)
+			s.mu.Unlock()
+			_ = runtime.Stop(context.Background())
+			return nil, fmt.Errorf("plugin %q is not registered with supervisor", pluginID)
+		}
+		if manifest.Version != "" && existing.manifest.Version != "" && manifest.Version != existing.manifest.Version {
+			runtime := existing.runtime
+			delete(s.runtimes, pluginID)
+			s.mu.Unlock()
+			if err := runtime.Stop(context.Background()); err != nil {
+				s.recordRuntimeError(pluginID, err)
+				return nil, err
+			}
+		} else {
+			runtime := existing.runtime
+			s.mu.Unlock()
+			return runtime, nil
+		}
+	} else {
+		s.mu.Unlock()
+	}
+	if !ok {
+		return nil, fmt.Errorf("plugin %q is not registered with supervisor", pluginID)
 	}
 	if !s.cfg.ProcessEnabled {
 		return nil, fmt.Errorf("plugin process runtime is disabled")
 	}
-	if manifest.Runtime.Kind != RuntimePythonProcess && manifest.Runtime.Kind != RuntimeProcess {
+	if manifest.Runtime.Kind != RuntimeManagedPythonProcess && manifest.Runtime.Kind != RuntimePythonProcess && manifest.Runtime.Kind != RuntimeProcess {
 		return nil, fmt.Errorf("plugin runtime kind %q cannot be launched as process", manifest.Runtime.Kind)
 	}
 	runtime, err := s.startRuntime(ctx, manifest)
@@ -168,14 +245,24 @@ func (s *RuntimeSupervisor) startRuntime(ctx context.Context, manifest ManifestV
 	if err := s.store.PrepareRuntimeDirs(manifest.ID); err != nil {
 		return nil, err
 	}
-	python := s.cfg.PythonExecutable
-	if python == "" {
-		python = "python3"
+	dependencyEnvDir := ""
+	if manifest.Runtime.Kind == RuntimeManagedPythonProcess {
+		provisionResult, err := ProvisionPluginDependencies(s.store, manifest)
+		if err != nil {
+			return nil, err
+		}
+		dependencyEnvDir = provisionResult.DependencyEnvDir
 	}
+	pythonDiag, err := s.resolvePythonExecutable(manifest.Runtime.Kind)
+	if err != nil {
+		return nil, err
+	}
+	python := pythonDiag.path
 	handler := s.hostHandler
 	if s.hostHandlerFor != nil {
 		handler = s.hostHandlerFor(manifest.ID)
 	}
+	blockedEnvNames, additionalEnvVars := s.launchEnvSnapshot()
 	runtime, err := StartProcessRuntime(ctx, ProcessLaunchConfig{
 		PluginID:          manifest.ID,
 		Version:           manifest.Version,
@@ -185,11 +272,16 @@ func (s *RuntimeSupervisor) startRuntime(ctx context.Context, manifest ManifestV
 		StateDir:          stateDir,
 		CacheDir:          cacheDir,
 		RunDir:            runDir,
+		DependencyEnvDir:  dependencyEnvDir,
+		ManagedPython:     manifest.Runtime.Kind == RuntimeManagedPythonProcess,
 		StartupTimeout:    time.Duration(s.cfg.StartupTimeoutMS) * time.Millisecond,
 		ShutdownTimeout:   time.Duration(s.cfg.ShutdownTimeoutMS) * time.Millisecond,
 		MaxStderrBytes:    s.cfg.MaxStderrBytes,
-		BlockedEnvNames:   append([]string(nil), s.blockedEnvNames...),
-		AdditionalEnvVars: append([]string(nil), s.additionalEnvVars...),
+		MaxProcesses:      s.cfg.MaxProcesses,
+		MemoryBytes:       int64(s.cfg.MemoryMB) << 20,
+		CPUQuota:          s.cfg.CPUs,
+		BlockedEnvNames:   blockedEnvNames,
+		AdditionalEnvVars: additionalEnvVars,
 		OnProtocolError: func(err error) {
 			s.recordRuntimeError(manifest.ID, fmt.Errorf("plugin protocol error: %w", err))
 		},
@@ -221,13 +313,90 @@ func (s *RuntimeSupervisor) startRuntime(ctx context.Context, manifest ManifestV
 		restarts = previous.restartCount + 1
 	}
 	s.runtimes[manifest.ID] = &supervisedRuntime{
-		manifest:     manifest,
-		runtime:      runtime,
-		tools:        initResp.Tools,
-		status:       "running",
-		restartCount: restarts,
+		manifest:                  manifest,
+		runtime:                   runtime,
+		tools:                     initResp.Tools,
+		status:                    "running",
+		restartCount:              restarts,
+		runtimeKind:               manifest.Runtime.Kind,
+		pythonExecutablePath:      pythonDiag.path,
+		pythonExecutableSource:    pythonDiag.source,
+		pythonExecutableAvailable: cloneBoolPtr(pythonDiag.available),
+		dependencyEnvDir:          dependencyEnvDir,
 	}
+	applyProcessRuntimeDiagnosticsToRecord(s.runtimes[manifest.ID], runtime)
 	return runtime, nil
+}
+
+func (s *RuntimeSupervisor) pythonExecutableFor(kind RuntimeKind) (string, error) {
+	diag, err := s.resolvePythonExecutable(kind)
+	if err != nil {
+		return "", err
+	}
+	return diag.path, nil
+}
+
+func (s *RuntimeSupervisor) launchEnvSnapshot() ([]string, []string) {
+	s.mu.Lock()
+	blocked := append([]string(nil), s.blockedEnvNames...)
+	provider := s.blockedEnvNamesFn
+	additional := append([]string(nil), s.additionalEnvVars...)
+	s.mu.Unlock()
+	if provider != nil {
+		blocked = append(blocked, provider()...)
+	}
+	return blocked, additional
+}
+
+func (s *RuntimeSupervisor) resolvePythonExecutable(kind RuntimeKind) (pythonExecutableDiagnostics, error) {
+	switch kind {
+	case RuntimeManagedPythonProcess:
+		python := strings.TrimSpace(s.cfg.PrivatePythonExecutable)
+		if python != "" {
+			diag := pythonExecutableDiagnostics{path: python, source: PythonExecutableSourcePrivate, available: boolPtr(false)}
+			if !filepath.IsAbs(python) {
+				return diag, fmt.Errorf("private_python_executable must be an absolute path")
+			}
+			if _, err := os.Stat(python); err != nil {
+				return diag, fmt.Errorf("managed python runtime unavailable at %q: %w", python, err)
+			}
+			diag.available = boolPtr(true)
+			return diag, nil
+		}
+		python, err := s.defaultPrivatePythonExecutable()
+		diag := pythonExecutableDiagnostics{path: python, source: PythonExecutableSourceStorePrivate, available: boolPtr(false)}
+		if err != nil {
+			return diag, err
+		}
+		if _, err := os.Stat(python); err != nil {
+			return diag, fmt.Errorf("managed python runtime unavailable at %q: %w", python, err)
+		}
+		diag.available = boolPtr(true)
+		return diag, nil
+	case RuntimePythonProcess, RuntimeProcess:
+		python := strings.TrimSpace(s.cfg.PythonExecutable)
+		diag := pythonExecutableDiagnostics{path: python, source: PythonExecutableSourceLegacy}
+		if python == "" {
+			return diag, fmt.Errorf("python_executable is required for legacy python_process")
+		}
+		return diag, nil
+	default:
+		return pythonExecutableDiagnostics{}, fmt.Errorf("plugin runtime kind %q cannot be launched as process", kind)
+	}
+}
+
+func (s *RuntimeSupervisor) defaultPrivatePythonExecutable() (string, error) {
+	if s == nil || s.store == nil || strings.TrimSpace(s.store.RootDir) == "" {
+		return "", fmt.Errorf("managed python runtime unavailable: plugin store is not configured")
+	}
+	return filepath.Join(s.store.RootDir, "runtime", "python", privatePythonExecutableName(runtime.GOOS)), nil
+}
+
+func privatePythonExecutableName(goos string) string {
+	if strings.EqualFold(goos, "windows") {
+		return "python.exe"
+	}
+	return "python"
 }
 
 func (s *RuntimeSupervisor) InvokeHook(ctx context.Context, pluginID string, hook HookName, hc HookContext) (HookResult, error) {
@@ -299,19 +468,45 @@ func (s *RuntimeSupervisor) Status(pluginID string) RuntimeStatus {
 		return RuntimeStatus{PluginID: pluginID, Status: "stopped"}
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	record := s.runtimes[pluginID]
 	if record == nil {
-		return RuntimeStatus{PluginID: pluginID, Status: "stopped"}
+		manifest, ok := s.plugins[pluginID]
+		s.mu.Unlock()
+		status := RuntimeStatus{PluginID: pluginID, Version: manifest.Version, Status: "stopped"}
+		if ok {
+			status.RuntimeKind = manifest.Runtime.Kind
+			applyPythonDiagnostics(&status, s.pythonDiagnosticsForKind(manifest.Runtime.Kind))
+			status.DependencyEnvDir = s.dependencyEnvDirForManifest(manifest)
+		}
+		return status
 	}
 	status := RuntimeStatus{
-		PluginID:     pluginID,
-		Status:       record.status,
-		LastError:    record.lastError,
-		RestartCount: record.restartCount,
+		PluginID:                  pluginID,
+		Version:                   record.manifest.Version,
+		RuntimeKind:               firstRuntimeKind(record.runtimeKind, record.manifest.Runtime.Kind),
+		Status:                    record.status,
+		LastError:                 record.lastError,
+		RestartCount:              record.restartCount,
+		PythonExecutablePath:      record.pythonExecutablePath,
+		PythonExecutableSource:    record.pythonExecutableSource,
+		PythonExecutableAvailable: cloneBoolPtr(record.pythonExecutableAvailable),
+		DependencyEnvDir:          record.dependencyEnvDir,
+		PID:                       record.pid,
+		ProcessGuardKind:          record.processGuardKind,
+		ProcessGuardAttached:      record.processGuardAttached,
+		ProcessGuardError:         record.processGuardError,
 	}
 	if record.runtime != nil {
+		applyProcessRuntimeDiagnosticsToRecord(record, record.runtime)
+		status.PID = record.pid
+		status.ProcessGuardKind = record.processGuardKind
+		status.ProcessGuardAttached = record.processGuardAttached
+		status.ProcessGuardError = record.processGuardError
 		status.StderrTail = record.runtime.StderrTail()
+	}
+	s.mu.Unlock()
+	if status.PythonExecutablePath == "" && status.RuntimeKind != "" {
+		applyPythonDiagnostics(&status, s.pythonDiagnosticsForKind(status.RuntimeKind))
 	}
 	return status
 }
@@ -330,6 +525,7 @@ func (s *RuntimeSupervisor) Tools(pluginID string) []ProcessToolSpec {
 }
 
 func (s *RuntimeSupervisor) recordRuntimeError(pluginID string, err error) {
+	runtimeKind, diag := s.diagnosticsForPlugin(pluginID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	record := s.runtimes[pluginID]
@@ -339,4 +535,102 @@ func (s *RuntimeSupervisor) recordRuntimeError(pluginID string, err error) {
 	}
 	record.status = "failed"
 	record.lastError = err.Error()
+	if record.runtime != nil {
+		applyProcessRuntimeDiagnosticsToRecord(record, record.runtime)
+	}
+	if runtimeKind != "" {
+		record.runtimeKind = runtimeKind
+	}
+	if diag.path != "" || diag.source != "" || diag.available != nil {
+		record.pythonExecutablePath = diag.path
+		record.pythonExecutableSource = diag.source
+		record.pythonExecutableAvailable = cloneBoolPtr(diag.available)
+	}
+}
+
+func (s *RuntimeSupervisor) diagnosticsForPlugin(pluginID string) (RuntimeKind, pythonExecutableDiagnostics) {
+	if s == nil {
+		return "", pythonExecutableDiagnostics{}
+	}
+	s.mu.Lock()
+	record := s.runtimes[pluginID]
+	manifest, ok := s.plugins[pluginID]
+	runtimeKind := RuntimeKind("")
+	diag := pythonExecutableDiagnostics{}
+	if record != nil {
+		runtimeKind = firstRuntimeKind(record.runtimeKind, record.manifest.Runtime.Kind)
+		diag = pythonExecutableDiagnostics{
+			path:      record.pythonExecutablePath,
+			source:    record.pythonExecutableSource,
+			available: cloneBoolPtr(record.pythonExecutableAvailable),
+		}
+	}
+	if runtimeKind == "" && ok {
+		runtimeKind = manifest.Runtime.Kind
+	}
+	s.mu.Unlock()
+	if (diag.path != "" || diag.source != "" || diag.available != nil) || runtimeKind == "" {
+		return runtimeKind, diag
+	}
+	return runtimeKind, s.pythonDiagnosticsForKind(runtimeKind)
+}
+
+func (s *RuntimeSupervisor) pythonDiagnosticsForKind(kind RuntimeKind) pythonExecutableDiagnostics {
+	diag, _ := s.resolvePythonExecutable(kind)
+	return diag
+}
+
+func (s *RuntimeSupervisor) dependencyEnvDirForManifest(manifest ManifestV2) string {
+	if s == nil || s.store == nil {
+		return ""
+	}
+	if manifest.Runtime.Kind != RuntimeManagedPythonProcess {
+		return ""
+	}
+	dir, err := s.store.DependencyEnvDir(manifest.ID, manifest.Version)
+	if err != nil {
+		return ""
+	}
+	return dir
+}
+
+func applyPythonDiagnostics(status *RuntimeStatus, diag pythonExecutableDiagnostics) {
+	if status == nil {
+		return
+	}
+	status.PythonExecutablePath = diag.path
+	status.PythonExecutableSource = diag.source
+	status.PythonExecutableAvailable = cloneBoolPtr(diag.available)
+}
+
+func firstRuntimeKind(values ...RuntimeKind) RuntimeKind {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func boolPtr(value bool) *bool {
+	return &value
+}
+
+func cloneBoolPtr(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+func applyProcessRuntimeDiagnosticsToRecord(record *supervisedRuntime, runtime *ProcessRuntime) {
+	if record == nil || runtime == nil {
+		return
+	}
+	record.pid = runtime.PID()
+	snapshot := runtime.ProcessGuardSnapshot()
+	record.processGuardKind = snapshot.Kind
+	record.processGuardAttached = snapshot.Attached
+	record.processGuardError = snapshot.Error
 }

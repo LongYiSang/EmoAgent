@@ -53,7 +53,7 @@ func TestSDKExamplePluginInstallEnableHookToolProviderAudit(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("UpsertPluginInstallation: %v", err)
 	}
-	if err := db.SetPluginEnabled(ctx, result.PluginID, result.Version, true, `{"tier":"runtime_safe"}`); err != nil {
+	if err := db.SetPluginEnabled(ctx, result.PluginID, result.Version, true, facadeTestGrant(CapabilityPluginKV, CapabilityProviderGenerate)); err != nil {
 		t.Fatalf("SetPluginEnabled: %v", err)
 	}
 
@@ -115,7 +115,25 @@ func TestSDKExamplePluginInstallEnableHookToolProviderAudit(t *testing.T) {
 
 	dispatcher := tool.NewDispatcher(toolRegistry, tool.MinimalSchemaValidator{}, nil)
 	call := tool.Call{ID: "call-1", Name: "plugin.com.example.echo.provider_ping", Input: json.RawMessage(`{"text":"hello"}`)}
-	toolResult := dispatcher.Execute(ctx, call, tool.PermReadOnly)
+	toolResult := dispatcher.Execute(ctx, call, tool.PermApprovedDestructive)
+	if !toolResult.IsError || !toolResult.NeedsApproval {
+		t.Fatalf("tool result = %#v, want approval before plugin execution", toolResult)
+	}
+
+	binding, err := tool.BuildApprovalBinding(call, "approval-sdk-provider", tool.ApprovalKindDestructiveWrite)
+	if err != nil {
+		t.Fatalf("BuildApprovalBinding: %v", err)
+	}
+	approvedCtx := tool.WithApproval(ctx, tool.ApprovalContext{
+		RequestID:           binding.RequestID,
+		ApprovalKind:        binding.ApprovalKind,
+		AllowToolCall:       true,
+		AllowDestructive:    true,
+		ToolName:            binding.ToolName,
+		NormalizedInputHash: binding.NormalizedInputHash,
+		PathDigest:          binding.PathDigest,
+	})
+	toolResult = dispatcher.Execute(approvedCtx, call, tool.PermApprovedDestructive)
 	if toolResult.IsError || !strings.Contains(string(toolResult.Content), "fake response") {
 		t.Fatalf("tool result = %#v", toolResult)
 	}

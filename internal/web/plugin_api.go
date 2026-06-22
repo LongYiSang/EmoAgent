@@ -23,8 +23,17 @@ type PluginAdminApp interface {
 	RestartPlugin(context.Context, string) (plugin.AdminPluginSummary, error)
 	DeletePlugin(context.Context, string) error
 	PluginLogs(context.Context, string) (plugin.AdminPluginLogs, error)
+	PluginDiagnostics(context.Context) (plugin.AdminPluginDiagnostics, error)
 	ListPluginAccessEvents(context.Context, string, int) ([]storage.PluginAccessEvent, error)
 	ListPluginProviderUsage(context.Context, string, int) ([]storage.PluginProviderUsage, error)
+}
+
+type PluginAdminVersionApp interface {
+	GetPluginVersion(context.Context, string, string) (plugin.AdminPluginSummary, error)
+}
+
+type PluginAdminVersionGrantPreviewApp interface {
+	GetPluginVersionForGrant(context.Context, string, string, string) (plugin.AdminPluginSummary, error)
 }
 
 func (h *APIHandler) pluginAdminApp(w http.ResponseWriter) (PluginAdminApp, bool) {
@@ -52,6 +61,36 @@ func (h *APIHandler) HandleListPlugins(w http.ResponseWriter, r *http.Request) {
 func (h *APIHandler) HandleGetPlugin(w http.ResponseWriter, r *http.Request) {
 	app, ok := h.pluginAdminApp(w)
 	if !ok {
+		return
+	}
+	version := strings.TrimSpace(r.URL.Query().Get("version"))
+	if version != "" {
+		userGrantJSON := strings.TrimSpace(r.URL.Query().Get("user_grant_json"))
+		if userGrantJSON != "" {
+			grantPreviewApp, ok := any(app).(PluginAdminVersionGrantPreviewApp)
+			if !ok {
+				writeError(w, http.StatusNotImplemented, "plugin version grant preview API is not available")
+				return
+			}
+			summary, err := grantPreviewApp.GetPluginVersionForGrant(r.Context(), r.PathValue("id"), version, userGrantJSON)
+			if err != nil {
+				h.writePluginError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, summary)
+			return
+		}
+		versionApp, ok := any(app).(PluginAdminVersionApp)
+		if !ok {
+			writeError(w, http.StatusNotImplemented, "plugin version detail API is not available")
+			return
+		}
+		summary, err := versionApp.GetPluginVersion(r.Context(), r.PathValue("id"), version)
+		if err != nil {
+			h.writePluginError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, summary)
 		return
 	}
 	summary, err := app.GetPlugin(r.Context(), r.PathValue("id"))
@@ -180,6 +219,19 @@ func (h *APIHandler) HandlePluginLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, logs)
+}
+
+func (h *APIHandler) HandlePluginDiagnostics(w http.ResponseWriter, r *http.Request) {
+	app, ok := h.pluginAdminApp(w)
+	if !ok {
+		return
+	}
+	diagnostics, err := app.PluginDiagnostics(r.Context())
+	if err != nil {
+		h.writePluginError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, diagnostics)
 }
 
 func (h *APIHandler) HandlePluginAccessEvents(w http.ResponseWriter, r *http.Request) {

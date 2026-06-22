@@ -16,7 +16,7 @@ type BootstrapOptions = {
   agents: Pick<AgentAdmin, 'reloadAgents'>;
   personas: Pick<PersonaAdmin, 'reloadPersonas' | 'reloadProgressDefaults'>;
   chatSettings: Pick<ChatSettingsAdmin, 'reloadChatSettings'>;
-  memory: Pick<MemoryAdmin, 'reloadEffectiveConfig' | 'reloadMemorySurfaces' | 'reloadConfigIssues' | 'reloadNaturalLatest'>;
+  memory: Pick<MemoryAdmin, 'reloadEffectiveConfig' | 'reloadMemorySurfaces' | 'reloadConfigIssues' | 'reloadPluginDiagnostics' | 'reloadNaturalLatest'>;
   agentAffect: Pick<AgentAffectAdmin, 'reloadAgentAffect'>;
   promptCenter: Pick<PromptCenterAdmin, 'reloadPromptCenter'>;
   webSearch: Pick<WebSearchAdmin, 'reloadWebSearchConfig'>;
@@ -117,6 +117,7 @@ export function useAdminBootstrap(activeTab: TabID, { providers, agents, persona
             await Promise.all([
               loadEffectiveConfig(),
               loadOnce('config-issues', loaders.memory.reloadConfigIssues),
+              loadOnce('plugin-diagnostics', loaders.memory.reloadPluginDiagnostics),
             ]);
             break;
         }

@@ -88,11 +88,11 @@ func (m ManifestV2) Validate(options ManifestValidationOptions) error {
 		return err
 	}
 	switch m.Runtime.Kind {
-	case RuntimeBuiltin, RuntimeProcess, RuntimePythonProcess, RuntimeContainer:
+	case RuntimeBuiltin, RuntimeProcess, RuntimePythonProcess, RuntimeManagedPythonProcess, RuntimeContainer:
 	default:
 		return fmt.Errorf("runtime.kind %q is unsupported", m.Runtime.Kind)
 	}
-	if m.Runtime.Kind == RuntimePythonProcess {
+	if m.Runtime.Kind == RuntimePythonProcess || m.Runtime.Kind == RuntimeManagedPythonProcess {
 		if err := validateRelativeEntry(m.Runtime.Entry); err != nil {
 			return fmt.Errorf("runtime.entry: %w", err)
 		}
