@@ -68,7 +68,7 @@ func TestDiagnosticsTabShowsPluginRuntimeDiagnostics(t *testing.T) {
 		t.Fatalf("read DiagnosticsTab: %v", err)
 	}
 	tabText := string(tabRaw)
-	for _, want := range []string{"Plugin Runtime", "Private Python", "Self-test", "Dependency install", "Job Object", "plugin logs", "repair", "非安全沙箱"} {
+	for _, want := range []string{"Plugin Runtime", "Python Toolchain", "uv environments", "Job Object", "plugin logs", "repair", "非安全沙箱"} {
 		if !strings.Contains(tabText, want) {
 			t.Fatalf("DiagnosticsTab missing %q", want)
 		}

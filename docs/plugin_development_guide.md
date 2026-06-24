@@ -16,7 +16,7 @@
 2. `chat.turn_pipeline.enabled: true`，且 turn pipeline rollout 或 allow list 命中。
 3. 插件已安装并启用。
 4. `plugins.runtime.process_enabled: true`。
-5. 运行环境能启动宿主私有 Python；默认位置是 `plugins.store.root_dir/runtime/python/python(.exe)`，也可通过 `plugins.runtime.private_python_executable` 配置绝对路径。
+5. `python_toolchain.enabled: true`，并配置用户自行安装的 CPython 3.12 `python.exe` 与 `uv.exe` 绝对路径。
 
 当前面向第三方插件的稳定路径是 Python stdio JSON-RPC 插件。`container` 只做 mount plan 校验，不执行容器。`builtin` 是仓库内 Go 插件使用的内部路径。
 
@@ -66,6 +66,22 @@ plugins:
     enabled: true
 ```
 
+`python_toolchain` 是 managed Python runtime 的统一解释器/uv 配置：
+
+```yaml
+python_toolchain:
+  enabled: true
+  python_executable: C:\Python312\python.exe
+  uv_executable: C:\Users\you\.local\bin\uv.exe
+  required_python: "3.12"
+  minimum_uv_version: "0.11.0"
+  environment_root: data/python-envs
+  cache_dir: data/uv-cache
+  default_index: https://pypi.org/simple
+  sync_timeout_seconds: 600
+  use_system_certificates: true
+```
+
 插件作者通常只需要知道这些影响：
 
 | 配置 | 影响 |
@@ -73,9 +89,9 @@ plugins:
 | `enabled` | 总运行时开关。为 `false` 时插件管理 API/UI 仍可用，但 hook/tool 不会运行。 |
 | `default_timeout_ms` / `max_timeout_ms` | hook 默认超时和 manifest `hooks[].timeout_ms` 上限。 |
 | `store.root_dir` | 安装包、state/cache/run/workspace 目录根路径。 |
-| `runtime.private_python_executable` | `managed_python_process` 的宿主私有 Python 绝对路径；未配置时使用 `store.root_dir/runtime/python/python(.exe)`。 |
-| `runtime.private_python_artifact_path` / `runtime.private_python_artifact_sha256` | 本地 Host-private Python zip artifact 和对应 `sha256:<64 hex>`；宿主会校验后安装到 `store.root_dir/runtime/python`。 |
-| `runtime.python_executable` | 仅用于 legacy/dev `python_process` / `process` 的显式 Python 路径。 |
+| `python_toolchain.python_executable` / `python_toolchain.uv_executable` | `managed_python_process` 使用的 CPython 3.12 与 uv 绝对路径。宿主只验证和调用，不下载、不切换 Python。 |
+| `python_toolchain.environment_root` / `python_toolchain.cache_dir` | Sidecar 和 managed 插件的独立 uv 环境与 uv cache 根目录。 |
+| `runtime.python_executable` | 仅用于 legacy/dev `python_process` / `process` 的显式 Python 路径，不作为 managed fallback。 |
 | `runtime.max_stderr_bytes` | 插件 stderr tail 保留上限。 |
 | `installer.allow_unsigned_dev` | 开发本地目录/zip 可无签名安装。 |
 | `installer.require_signature` | 要求签名时，非 dev unsigned 包会安装失败。 |
@@ -86,7 +102,7 @@ plugins:
 
 `plugins.rollout_percent` 和 `plugins.fail_closed_hooks` 当前有配置字段和校验，但本次审阅未看到它们接入 HookBus 运行行为。插件作者应以 manifest 中每个 hook 的 `failure_policy` 作为当前实际失败策略来源。
 
-若 `managed_python_process` 状态显示启动失败，先确认宿主私有 Python 是否存在于 `plugins.store.root_dir/runtime/python/python(.exe)`，配置本地 `private_python_artifact_path` + `private_python_artifact_sha256` 让宿主安装，或把 `plugins.runtime.private_python_executable` 配成绝对路径。artifact 校验只说明宿主解释器 artifact 的来源/完整性符合本机配置，不会提升插件 trust/tier/capability。`plugins.runtime.python_executable` 只用于 legacy/dev 进程运行时，不作为 managed 默认值。
+`plugins.runtime.private_python_executable` 仅作为旧配置迁移来源；新配置为空时会映射到 `python_toolchain.python_executable`。`plugins.runtime.private_python_artifact_path` / `private_python_artifact_sha256` 不再支持。`plugins.runtime.python_executable` 只用于 legacy/dev 进程运行时，不作为 managed 默认值。
 
 ## 从零跑通示例插件
 
@@ -94,7 +110,7 @@ plugins:
 
 1. 在 `config.yaml` 中设置 `plugins.enabled: true`。
 2. 确认 `chat.turn_pipeline.enabled: true`，并让当前 persona/session 命中 `chat.turn_pipeline.rollout_percent` 或 allow list。默认仓库配置里 rollout 是 100。
-3. 确认宿主私有 Python 可用；如果使用 legacy/dev `python_process`，再显式配置 `plugins.runtime.python_executable`。
+3. 在管理界面或配置文件中设置 Python Toolchain，并用 Probe 确认 CPython 3.12 与 uv 可用；如果使用 legacy/dev `python_process`，再显式配置 `plugins.runtime.python_executable`。
 4. 重启 EmoAgent 宿主，让插件 host 和 Python runtime 配置生效。
 5. 打开 `/plugins.html`，或调用 `/api/plugins/install/local` 安装 `D:\Dev\Project\Agent\EmoAgent\sdk\python\examples\echo_plugin`。
 6. 启用 `com.example.echo`。UI 默认 grant `{}` 不会授予 facade capability；如果插件需要调用 Host API，请填下文启用 API 示例里的 `user_grant_json.capabilities`。
@@ -111,6 +127,14 @@ plugins:
 my_plugin/
   emo_plugin.yaml
   main.py
+```
+
+如果 `runtime.kind` 是 `managed_python_process`，还必须包含：
+
+```text
+my_plugin/
+  pyproject.toml
+  uv.lock
 ```
 
 可参考 `sdk/python/examples/echo_plugin`。
@@ -642,11 +666,11 @@ signature_base64: ...
 Python process 启动方式：
 
 ```text
-managed_python_process: <private Python runtime> <runtime.entry>
+managed_python_process: <uv environment python> <runtime.entry>
 python_process/process: <plugins.runtime.python_executable> <runtime.entry>
 ```
 
-`runtime.entry` 总是相对安装包目录解析。当前 `managed_python_process`、`process` 和 `python_process` 都由 Python process supervisor 启动，因此都需要一个可执行的 Python 入口文件。
+`runtime.entry` 总是相对安装包目录解析。当前 `managed_python_process`、`process` 和 `python_process` 都由 Python process supervisor 启动，因此都需要一个可执行的 Python 入口文件。managed 插件的环境 Python 来自 `python_toolchain` 配置下的独立 uv env；普通运行阶段不会隐式执行 uv。
 
 工作目录是安装后的 immutable package 目录。宿主注入环境变量：
 
@@ -657,29 +681,19 @@ EMO_PLUGIN_ROOT
 EMO_PLUGIN_STATE_DIR
 EMO_PLUGIN_CACHE_DIR
 EMO_PLUGIN_RUN_DIR
-EMO_PLUGIN_DEPS_DIR
 PYTHONUNBUFFERED=1
 ```
 
-`managed_python_process` 会把 `EMO_PLUGIN_DEPS_DIR` 加入 `PYTHONPATH`，顺序在宿主 audit shim 之后、宿主 SDK 路径之前。managed runtime 不继承宿主进程的 `PYTHONPATH`。
+`managed_python_process` 不继承宿主进程的 `PYTHONPATH`。宿主只额外加入仓库 SDK 路径和 audit shim。
 
-如果插件包根目录包含 `emo_dependencies.lock.json`，宿主会在插件 `initialize` 前安装其中声明的本地依赖 artifact。当前只支持包内相对路径的 `python_module_zip`，并要求每个 artifact 带 `sha256:<64 hex>`：
+managed 插件包必须携带 `pyproject.toml` 与 `uv.lock`。安装阶段只校验这两个文件存在；环境同步只发生在安装、更新、配置或 Repair/Sync 阶段，由宿主执行：
 
-```json
-{
-  "version": 1,
-  "packages": [
-    {
-      "name": "depmod",
-      "kind": "python_module_zip",
-      "path": "deps/depmod.zip",
-      "sha256": "sha256:<64 hex>"
-    }
-  ]
-}
+```text
+uv lock --check --project <plugin package>
+uv sync --locked --no-dev --project <plugin package>
 ```
 
-宿主会校验 zip digest、拒绝逃逸路径和 zip-slip 条目，然后解压到 `plugins.store.root_dir/dependencies/<plugin_id>/<version>`。锁文件 digest 匹配时会跳过重装。该机制不运行 pip、不联网、不解析依赖树，也不会提升插件 trust、tier 或 capability。
+用户机器不会自动更新插件 `uv.lock`。`emo_dependencies.lock.json` 的本地 zip 依赖格式不再是 managed runtime 路径。
 
 开发环境下，宿主还会把仓库的 `sdk/python` 加进 `PYTHONPATH`，所以示例插件可以直接 `from emoagent_plugin import ...`。
 
@@ -734,9 +748,9 @@ type BuiltinPlugin interface {
 | 现象 | 优先检查 |
 | --- | --- |
 | 插件能安装但不执行 | `plugins.enabled` 是否为 `true`；当前 session/persona 是否命中 `chat.turn_pipeline` rollout 或 allow list；插件是否已启用。 |
-| 启用后状态是 stopped 或 start failed | `/api/plugins/{id}/status` 和 `/api/plugins/{id}/logs`；确认 managed 私有 Python 或 legacy `plugins.runtime.python_executable` 能执行。 |
-| Windows 上启动失败，提示找不到 Python | managed 插件检查 `plugins.store.root_dir/runtime/python/python.exe`、本地 private Python artifact 配置，或 `plugins.runtime.private_python_executable` 绝对路径；legacy/dev 插件才检查 `plugins.runtime.python_executable`。 |
-| 依赖模块 import 失败 | 检查 `emo_dependencies.lock.json`、artifact 相对路径和 `sha256` 是否匹配；宿主只安装本地 `python_module_zip`，不会运行 pip、联网或继承宿主 `PYTHONPATH`。 |
+| 启用后状态是 stopped 或 start failed | `/api/plugins/{id}/status` 和 `/api/plugins/{id}/logs`；确认 Python Toolchain Probe 成功，插件 uv environment 是 `ready`。 |
+| Windows 上启动失败，提示找不到 Python | managed 插件检查 `python_toolchain.python_executable`、`python_toolchain.uv_executable` 和该插件环境状态；legacy/dev 插件才检查 `plugins.runtime.python_executable`。 |
+| 依赖模块 import 失败 | 检查插件 `pyproject.toml` / `uv.lock` 是否包含依赖，执行 Repair/Sync 后确认环境状态为 `ready`。 |
 | stdout 协议错误 | Python 插件不要向 stdout 打普通日志；普通日志写 stderr，或使用 `ctx.log(...)`。 |
 | `import emoagent_plugin` 失败 | 仓库内运行时会注入 `sdk/python`；独立插件开发时需要把 SDK 源码放入 `PYTHONPATH` 或随包携带。 |
 | 安装失败，提示 manifest decode/unknown field | `emo_plugin.yaml` 使用严格字段；删除未知字段并检查 `schema_version`、`runtime.entry`、capability、hook 名。 |

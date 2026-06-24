@@ -52,6 +52,15 @@ func (s *SidecarService) Start(ctx context.Context) (sidecarruntime.Status, erro
 			return status, nil
 		}
 	}
+	rawSpec, _, err := s.config.service().BuildSidecarSpec(ctx)
+	if err != nil {
+		return sidecarruntime.Status{}, err
+	}
+	if rawSpec.Enabled && rawSpec.Managed {
+		if _, err := s.config.EnsureSidecarEnvironment(ctx); err != nil {
+			return sidecarruntime.Status{}, fmt.Errorf("prepare sidecar environment: %w", err)
+		}
+	}
 	spec, issues, err := s.config.BuildSidecarSpec(ctx)
 	if err != nil {
 		return sidecarruntime.Status{}, err

@@ -35,6 +35,13 @@ func BuildIssues(seed *config.Config, providers []ProviderEffective, memoryCore 
 	}
 	issues = append(issues, buildAgentAffectIssues(seed.AgentAffect)...)
 	issues = append(issues, buildWebSearchIssues(seed.WebSearch)...)
+	if err := seed.PythonToolchain.Validate(); err != nil {
+		issues = append(issues, ConfigIssue{
+			Path:     "python_toolchain",
+			Severity: "error",
+			Message:  err.Error(),
+		})
+	}
 
 	if !seed.Memory.Enabled {
 		if seed.Memory.Retrieval.Enabled {

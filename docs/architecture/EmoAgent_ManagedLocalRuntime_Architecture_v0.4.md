@@ -1029,7 +1029,7 @@ Resource:
 5. Third-party tool defaults to Work + Ask.
 6. Active hooks default off.
 7. Job Object governs lifecycle/resources.
-8. Private Python and per-plugin env govern compatibility/dependencies.
+8. External CPython 3.12 + uv toolchain and per-owner uv env govern compatibility/dependencies.
 9. Host Resource Broker governs built-in host operations.
 10. Plugin/web/file/memory results are data_only.
 11. No Docker/WSL2/AppContainer prerequisite for normal users.

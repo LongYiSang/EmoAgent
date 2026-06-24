@@ -50,7 +50,6 @@ func DefaultSpec() Spec {
 		Port:                 8765,
 		URL:                  "http://127.0.0.1:8765",
 		WorkingDir:           "../EmoAgent-MemoryCore/sidecar",
-		Command:              []string{"uv", "run", "python", "-m", "memorycore_sidecar.server"},
 		ConfigPath:           "./data/runtime/sidecar.generated.toml",
 		StartupTimeout:       15 * time.Second,
 		ShutdownTimeout:      5 * time.Second,
@@ -94,7 +93,7 @@ func (s Spec) Validate() error {
 func (s Spec) CommandArgs() []string {
 	command := append([]string(nil), s.Command...)
 	if len(command) == 0 {
-		command = append([]string(nil), DefaultSpec().Command...)
+		return nil
 	}
 	adapter := s.Adapter
 	if adapter == "" {

@@ -134,6 +134,18 @@ func TestDefaultConfig(t *testing.T) {
 	if !cfg.Plugins.Runtime.FailClosedIfUnavailable {
 		t.Fatalf("default plugins.runtime should fail closed when runtime unavailable: %#v", cfg.Plugins.Runtime)
 	}
+	if cfg.PythonToolchain.Enabled ||
+		cfg.PythonToolchain.PythonExecutable != "" ||
+		cfg.PythonToolchain.UVExecutable != "" ||
+		cfg.PythonToolchain.RequiredPython != "3.12" ||
+		cfg.PythonToolchain.MinimumUVVersion != "0.11.0" ||
+		cfg.PythonToolchain.EnvironmentRoot != "data/python-envs" ||
+		cfg.PythonToolchain.CacheDir != "data/uv-cache" ||
+		cfg.PythonToolchain.DefaultIndex != "https://pypi.org/simple" ||
+		cfg.PythonToolchain.SyncTimeoutSeconds != 600 ||
+		!cfg.PythonToolchain.UseSystemCertificates {
+		t.Fatalf("default python_toolchain = %#v", cfg.PythonToolchain)
+	}
 	if !cfg.Plugins.Installer.GithubEnabled || !cfg.Plugins.Installer.RequireSignature || !cfg.Plugins.Installer.AllowUnsignedDev {
 		t.Fatalf("default plugins.installer = %#v", cfg.Plugins.Installer)
 	}
@@ -1112,12 +1124,15 @@ plugins:
 	if cfg.Plugins.Runtime.PrivatePythonExecutable != "C:/EmoAgent/runtime/python/python.exe" {
 		t.Fatalf("private_python_executable = %q", cfg.Plugins.Runtime.PrivatePythonExecutable)
 	}
+	if cfg.PythonToolchain.PythonExecutable != "C:/EmoAgent/runtime/python/python.exe" {
+		t.Fatalf("python_toolchain.python_executable = %q, want migrated private executable", cfg.PythonToolchain.PythonExecutable)
+	}
 	if cfg.Plugins.Runtime.PythonExecutable != "" {
 		t.Fatalf("python_executable default = %q, want empty", cfg.Plugins.Runtime.PythonExecutable)
 	}
 }
 
-func TestLoadPluginRuntimePrivatePythonProvisioningConfig(t *testing.T) {
+func TestLoadPluginRuntimePrivatePythonProvisioningConfigRejected(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(path, []byte(`
@@ -1129,15 +1144,81 @@ plugins:
 		t.Fatalf("write config: %v", err)
 	}
 
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "private_python_artifact_path is no longer supported") {
+		t.Fatalf("Load error = %v, want unsupported private artifact", err)
+	}
+}
+
+func TestLoadPythonToolchainConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+python_toolchain:
+  enabled: true
+  python_executable: C:/Python312/python.exe
+  uv_executable: C:/Users/me/.local/bin/uv.exe
+  required_python: "3.12"
+  minimum_uv_version: "0.11.1"
+  environment_root: data/custom-python-envs
+  cache_dir: data/custom-uv-cache
+  default_index: https://example.test/simple
+  sync_timeout_seconds: 120
+  use_system_certificates: false
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Plugins.Runtime.PrivatePythonArtifactPath != "./runtime/python-embed.zip" {
-		t.Fatalf("private_python_artifact_path = %q", cfg.Plugins.Runtime.PrivatePythonArtifactPath)
+	got := cfg.PythonToolchain
+	if !got.Enabled ||
+		got.PythonExecutable != "C:/Python312/python.exe" ||
+		got.UVExecutable != "C:/Users/me/.local/bin/uv.exe" ||
+		got.RequiredPython != "3.12" ||
+		got.MinimumUVVersion != "0.11.1" ||
+		got.EnvironmentRoot != "data/custom-python-envs" ||
+		got.CacheDir != "data/custom-uv-cache" ||
+		got.DefaultIndex != "https://example.test/simple" ||
+		got.SyncTimeoutSeconds != 120 ||
+		got.UseSystemCertificates {
+		t.Fatalf("python_toolchain = %#v", got)
 	}
-	if cfg.Plugins.Runtime.PrivatePythonArtifactSHA256 != "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
-		t.Fatalf("private_python_artifact_sha256 = %q", cfg.Plugins.Runtime.PrivatePythonArtifactSHA256)
+}
+
+func TestLoadPythonToolchainRejectsRelativeExecutablesWhenEnabled(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+python_toolchain:
+  enabled: true
+  python_executable: python
+  uv_executable: uv
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "python_toolchain.python_executable must be an absolute path") {
+		t.Fatalf("Load error = %v, want absolute python path", err)
+	}
+}
+
+func TestLoadPythonToolchainRejectsInvalidMinimumUVVersion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+python_toolchain:
+  minimum_uv_version: latest
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "python_toolchain.minimum_uv_version must be a dotted numeric version") {
+		t.Fatalf("Load error = %v, want invalid minimum_uv_version", err)
 	}
 }
 
@@ -1175,8 +1256,8 @@ plugins:
 	}
 
 	_, err := Load(path)
-	if err == nil || !strings.Contains(err.Error(), "private_python_artifact_sha256 is required") {
-		t.Fatalf("Load error = %v, want checksum required", err)
+	if err == nil || !strings.Contains(err.Error(), "private_python_artifact_path is no longer supported") {
+		t.Fatalf("Load error = %v, want unsupported private artifact", err)
 	}
 }
 
@@ -1193,8 +1274,8 @@ plugins:
 	}
 
 	_, err := Load(path)
-	if err == nil || !strings.Contains(err.Error(), "private_python_artifact_sha256 must be sha256") {
-		t.Fatalf("Load error = %v, want invalid checksum", err)
+	if err == nil || !strings.Contains(err.Error(), "private_python_artifact_path is no longer supported") {
+		t.Fatalf("Load error = %v, want unsupported private artifact", err)
 	}
 }
 
@@ -1210,8 +1291,8 @@ plugins:
 	}
 
 	_, err := Load(path)
-	if err == nil || !strings.Contains(err.Error(), "private_python_artifact_path is required") {
-		t.Fatalf("Load error = %v, want artifact path required", err)
+	if err == nil || !strings.Contains(err.Error(), "private_python_artifact_path is no longer supported") {
+		t.Fatalf("Load error = %v, want unsupported private artifact", err)
 	}
 }
 
@@ -1229,8 +1310,8 @@ plugins:
 	}
 
 	_, err := Load(path)
-	if err == nil || !strings.Contains(err.Error(), "private_python_executable cannot be combined") {
-		t.Fatalf("Load error = %v, want explicit executable conflict", err)
+	if err == nil || !strings.Contains(err.Error(), "private_python_artifact_path is no longer supported") {
+		t.Fatalf("Load error = %v, want unsupported private artifact", err)
 	}
 }
 

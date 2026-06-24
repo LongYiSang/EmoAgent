@@ -56,6 +56,8 @@ func applyRuntimeSetting(cfg *config.Config, setting storage.RuntimeSetting) err
 		return overlayJSONSetting(&cfg.Memory.AgentAffect, setting)
 	case "agent_affect":
 		return overlayJSONSetting(&cfg.AgentAffect, setting)
+	case "python_toolchain":
+		return overlayJSONSetting(&cfg.PythonToolchain, setting)
 	case "websearch":
 		return overlayJSONSetting(&cfg.WebSearch, setting)
 	default:

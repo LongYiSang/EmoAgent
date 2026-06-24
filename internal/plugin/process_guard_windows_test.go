@@ -24,12 +24,12 @@ func TestProcessRuntimeStopTerminatesWindowsChildProcessTree(t *testing.T) {
 	store, manifest := writeProcessPluginPackage(t, childProcessPythonPluginSource())
 	manifest.Runtime.Kind = RuntimeManagedPythonProcess
 	supervisor := NewRuntimeSupervisor(store, config.PluginRuntimeConfig{
-		ProcessEnabled:          true,
-		PrivatePythonExecutable: python,
-		StartupTimeoutMS:        3000,
-		ShutdownTimeoutMS:       100,
-		MaxStderrBytes:          8192,
+		ProcessEnabled:    true,
+		StartupTimeoutMS:  3000,
+		ShutdownTimeoutMS: 100,
+		MaxStderrBytes:    8192,
 	}, nil)
+	setTestManagedPythonEnvironment(t, supervisor, python)
 	supervisor.AddPlugin(manifest)
 
 	if _, err := supervisor.EnsureReady(t.Context(), manifest.ID); err != nil {

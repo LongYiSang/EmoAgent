@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -1352,8 +1351,8 @@ func TestPluginServiceDoesNotRecordTrustAcceptanceHistoryWhenProcessRegistration
 		Version:       installed.Version,
 		UserGrantJSON: `{"tier":"runtime_safe","capabilities":["turn.read","tool.register","provider.generate"]}`,
 	})
-	if err == nil || !strings.Contains(err.Error(), "managed python runtime unavailable") {
-		t.Fatalf("EnablePlugin error = %v, want managed python runtime unavailable", err)
+	if err == nil || !strings.Contains(err.Error(), "python toolchain is not configured") {
+		t.Fatalf("EnablePlugin error = %v, want missing python toolchain", err)
 	}
 	history, err := db.ListPluginTrustAcceptanceHistory(ctx, installed.PluginID, 10)
 	if err != nil {
@@ -1485,25 +1484,25 @@ func TestPluginServiceDiagnosticsSummarizeRuntimeCloseoutChecks(t *testing.T) {
 		t.Fatalf("PluginDiagnostics: %v", err)
 	}
 	if diagnostics.Status != "warning" {
-		t.Fatalf("diagnostics status = %q, want warning because private python runtime is missing", diagnostics.Status)
+		t.Fatalf("diagnostics status = %q, want warning because a legacy dependency lock is present", diagnostics.Status)
 	}
 	checks := map[string]plugin.AdminPluginDiagnosticCheck{}
 	for _, check := range diagnostics.Checks {
 		checks[check.ID] = check
 	}
-	for _, id := range []string{"private_python", "python_self_test", "process_guard", "dependency_install", "plugin_logs", "repair"} {
+	for _, id := range []string{"python_toolchain", "python_environments", "process_guard", "uv_project", "plugin_logs", "repair"} {
 		if checks[id].ID == "" {
 			t.Fatalf("diagnostics missing %q in %#v", id, diagnostics.Checks)
 		}
 	}
-	if checks["private_python"].Status != "warning" || !strings.Contains(checks["private_python"].Message, "not available") {
-		t.Fatalf("private python diagnostic = %#v, want missing runtime warning", checks["private_python"])
+	if checks["python_toolchain"].Status != "ok" || !strings.Contains(checks["python_toolchain"].Message, "no managed Python plugin") {
+		t.Fatalf("python toolchain diagnostic = %#v, want no managed plugin ok", checks["python_toolchain"])
 	}
-	if checks["python_self_test"].Status != "warning" || !strings.Contains(checks["python_self_test"].Message, "unavailable") {
-		t.Fatalf("self-test diagnostic = %#v, want unavailable warning", checks["python_self_test"])
+	if checks["python_environments"].Status != "ok" {
+		t.Fatalf("environment diagnostic = %#v, want ok", checks["python_environments"])
 	}
-	if checks["dependency_install"].Status != "ok" || !strings.Contains(checks["dependency_install"].Message, "1 locked package") {
-		t.Fatalf("dependency diagnostic = %#v, want one locked package", checks["dependency_install"])
+	if checks["uv_project"].Status != "warning" || checks["uv_project"].Details["legacy_locks"] != 1 {
+		t.Fatalf("uv project diagnostic = %#v, want one legacy lock warning", checks["uv_project"])
 	}
 	if !strings.Contains(checks["repair"].Message, installed.PluginID) {
 		t.Fatalf("repair diagnostic = %#v, want plugin id", checks["repair"])
@@ -1788,6 +1787,7 @@ func TestPluginServiceConfigureFailClosesEnabledProcessPluginRuntimeUnavailable(
 	if err := os.WriteFile(filepath.Join(packageDir, "main.py"), []byte("print('should not start')\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile main.py: %v", err)
 	}
+	writeAdminMinimalUVProject(t, packageDir)
 	manifestJSON, err := json.Marshal(manifest)
 	if err != nil {
 		t.Fatalf("Marshal manifest: %v", err)
@@ -1821,8 +1821,8 @@ func TestPluginServiceConfigureFailClosesEnabledProcessPluginRuntimeUnavailable(
 	err = service.Configure(ctx, nil, nil)
 	if err == nil ||
 		!strings.Contains(err.Error(), manifest.ID) ||
-		!strings.Contains(err.Error(), "managed python runtime unavailable") {
-		t.Fatalf("Configure error = %v, want fail-closed managed python runtime unavailable for %s", err, manifest.ID)
+		!strings.Contains(err.Error(), "python toolchain is not configured") {
+		t.Fatalf("Configure error = %v, want fail-closed missing python toolchain for %s", err, manifest.ID)
 	}
 }
 
@@ -2033,40 +2033,6 @@ func TestPluginServiceProcessEnvUsesSDKPathWithoutInheritedPythonPath(t *testing
 	}
 }
 
-func TestPluginServiceEnsureRuntimeProvisionsPrivatePythonArtifact(t *testing.T) {
-	dir := t.TempDir()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	db, err := storage.Open(filepath.Join(dir, "app.db"), logger)
-	if err != nil {
-		t.Fatalf("Open DB: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	artifactPath := filepath.Join(dir, "python-runtime.zip")
-	writePrivatePythonArtifactZip(t, artifactPath)
-	artifactDigest := testSHA256Digest(readFileBytes(t, artifactPath))
-
-	cfg := config.DefaultConfig()
-	cfg.Plugins.Store.RootDir = filepath.Join(dir, "store")
-	cfg.Plugins.Runtime.PrivatePythonArtifactPath = artifactPath
-	cfg.Plugins.Runtime.PrivatePythonArtifactSHA256 = artifactDigest
-	service := &PluginService{
-		infra: &Infra{
-			Config:      cfg,
-			DB:          db,
-			Logger:      logger,
-			ProjectRoot: dir,
-		},
-	}
-
-	if err := service.ensureRuntimeLocked(); err != nil {
-		t.Fatalf("ensureRuntimeLocked: %v", err)
-	}
-	expected := filepath.Join(cfg.Plugins.Store.RootDir, "runtime", "python", privatePythonExecutableNameForTest())
-	if _, err := os.Stat(expected); err != nil {
-		t.Fatalf("private python executable stat: %v", err)
-	}
-}
-
 func openPluginServiceTestDB(t *testing.T) *storage.DB {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -2076,28 +2042,6 @@ func openPluginServiceTestDB(t *testing.T) *storage.DB {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db
-}
-
-func writePrivatePythonArtifactZip(t *testing.T, path string) {
-	t.Helper()
-	out, err := os.Create(path)
-	if err != nil {
-		t.Fatalf("Create zip: %v", err)
-	}
-	archive := zip.NewWriter(out)
-	writer, err := archive.Create(privatePythonExecutableNameForTest())
-	if err != nil {
-		t.Fatalf("Create zip entry: %v", err)
-	}
-	if _, err := writer.Write([]byte("private python")); err != nil {
-		t.Fatalf("Write zip entry: %v", err)
-	}
-	if err := archive.Close(); err != nil {
-		t.Fatalf("Close zip: %v", err)
-	}
-	if err := out.Close(); err != nil {
-		t.Fatalf("Close zip file: %v", err)
-	}
 }
 
 func writeAdminDependencyLock(t *testing.T, packageDir, moduleSource string) string {
@@ -2154,13 +2098,6 @@ func readFileBytes(t *testing.T, path string) []byte {
 func testSHA256Digest(data []byte) string {
 	sum := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(sum[:])
-}
-
-func privatePythonExecutableNameForTest() string {
-	if runtime.GOOS == "windows" {
-		return "python.exe"
-	}
-	return "python"
 }
 
 func writeAdminFixturePlugin(t *testing.T, root string) string {
@@ -2363,7 +2300,6 @@ func newManagedProviderPluginAdminService(t *testing.T, dir string) *PluginServi
 	cfg.Plugins.Installer.AllowUnsignedDev = true
 	cfg.Plugins.Installer.RequireSignature = true
 	cfg.Plugins.Runtime.PythonExecutable = filepath.Join(dir, "legacy-python-must-not-be-used")
-	cfg.Plugins.Runtime.PrivatePythonExecutable = findPythonForAppTest(t)
 	cfg.Plugins.Runtime.StartupTimeoutMS = 3000
 	cfg.Plugins.Runtime.ShutdownTimeoutMS = 1000
 	cfg.Plugins.Runtime.MaxStderrBytes = 4096
@@ -2387,6 +2323,13 @@ func attachAdminFakeProviderGateway(t *testing.T, service *PluginService, client
 	if err := service.ensureRuntimeLocked(); err != nil {
 		t.Fatalf("ensureRuntimeLocked: %v", err)
 	}
+	python := findPythonForAppTest(t)
+	service.supervisor.SetManagedPythonEnvironmentResolver(func(_ context.Context, manifest plugin.ManifestV2) (plugin.ManagedPythonEnvironment, error) {
+		return plugin.ManagedPythonEnvironment{
+			PythonExecutable: python,
+			EnvironmentDir:   filepath.Join(service.infra.ProjectRoot, "test-python-envs", manifest.ID, manifest.Version),
+		}, nil
+	})
 	gateway := plugin.NewProviderGateway(service.infra.DB, config.PluginProviderGatewayConfig{Enabled: true}, func(_ context.Context, providerID string) (llm.Client, error) {
 		if providerID != "fake" {
 			return nil, fmt.Errorf("providerID = %q, want fake", providerID)
@@ -2483,11 +2426,14 @@ func assertManagedProviderRuntime(t *testing.T, service *PluginService, wantVers
 	if status.RuntimeKind != plugin.RuntimeManagedPythonProcess || status.Version != wantVersion || status.Status != "running" {
 		t.Fatalf("runtime status = %#v, want managed running version %s", status, wantVersion)
 	}
-	if status.PythonExecutableSource != plugin.PythonExecutableSourcePrivate {
-		t.Fatalf("python source = %q, want %q", status.PythonExecutableSource, plugin.PythonExecutableSourcePrivate)
+	if status.PythonExecutableSource != plugin.PythonExecutableSourceToolchainUV {
+		t.Fatalf("python source = %q, want %q", status.PythonExecutableSource, plugin.PythonExecutableSourceToolchainUV)
 	}
-	if status.PythonExecutablePath != service.infra.Config.Plugins.Runtime.PrivatePythonExecutable {
-		t.Fatalf("python path = %q, want private executable %q", status.PythonExecutablePath, service.infra.Config.Plugins.Runtime.PrivatePythonExecutable)
+	if status.PythonExecutablePath == "" || filepath.Base(status.PythonExecutablePath) == "legacy-python-must-not-be-used" {
+		t.Fatalf("python path = %q, want resolver-provided environment python", status.PythonExecutablePath)
+	}
+	if status.PythonEnvironmentDir == "" || !strings.Contains(status.PythonEnvironmentDir, wantVersion) {
+		t.Fatalf("python environment dir = %q, want version %s", status.PythonEnvironmentDir, wantVersion)
 	}
 	if status.PythonExecutableAvailable == nil || !*status.PythonExecutableAvailable {
 		t.Fatalf("python available = %#v, want true", status.PythonExecutableAvailable)
@@ -2619,7 +2565,24 @@ hooks:
 	if err := os.WriteFile(filepath.Join(dir, "main.py"), []byte(source), 0o644); err != nil {
 		t.Fatalf("write main.py: %v", err)
 	}
+	writeAdminMinimalUVProject(t, dir)
 	return dir
+}
+
+func writeAdminMinimalUVProject(t *testing.T, dir string) {
+	t.Helper()
+	pyproject := `[project]
+name = "emoagent-test-plugin"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+`
+	if err := os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte(pyproject), 0o644); err != nil {
+		t.Fatalf("write pyproject.toml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "uv.lock"), []byte("# test lock placeholder\n"), 0o644); err != nil {
+		t.Fatalf("write uv.lock: %v", err)
+	}
 }
 
 func adminProcessPluginSource(toolName, annotation string) string {

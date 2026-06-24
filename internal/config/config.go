@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,26 +14,27 @@ import (
 )
 
 type Config struct {
-	Server        ServerConfig        `yaml:"server"`
-	Time          TimeConfig          `yaml:"time"`
-	Chat          ChatConfig          `yaml:"chat"`
-	Context       ContextConfig       `yaml:"context"`
-	Work          WorkConfig          `yaml:"work"`
-	PromptCenter  PromptCenterConfig  `yaml:"prompt_center" json:"prompt_center"`
-	HostResources HostResourcesConfig `yaml:"host_resources" json:"host_resources"`
-	LLMProviders  []LLMProvider       `yaml:"llm_providers"`
-	AgentConfigs  []AgentConfig       `yaml:"agent_configs"`
-	Agent         AgentRuntimeConfig  `yaml:"agent"`
-	AgentAffect   AgentAffectConfig   `yaml:"agent_affect" json:"agent_affect"`
-	Memory        MemoryConfig        `yaml:"memory"`
-	Media         MediaConfig         `yaml:"media" json:"media"`
-	DB            DBConfig            `yaml:"db"`
-	Log           LogConfig           `yaml:"log"`
-	Personas      PersonasConfig      `yaml:"personas"`
-	WebSearch     WebSearchConfig     `yaml:"websearch"`
-	WebFetch      WebFetchConfig      `yaml:"webfetch"`
-	Bash          BashConfig          `yaml:"bash"`
-	Plugins       PluginsConfig       `yaml:"plugins"`
+	Server          ServerConfig          `yaml:"server"`
+	Time            TimeConfig            `yaml:"time"`
+	Chat            ChatConfig            `yaml:"chat"`
+	Context         ContextConfig         `yaml:"context"`
+	Work            WorkConfig            `yaml:"work"`
+	PromptCenter    PromptCenterConfig    `yaml:"prompt_center" json:"prompt_center"`
+	HostResources   HostResourcesConfig   `yaml:"host_resources" json:"host_resources"`
+	LLMProviders    []LLMProvider         `yaml:"llm_providers"`
+	AgentConfigs    []AgentConfig         `yaml:"agent_configs"`
+	Agent           AgentRuntimeConfig    `yaml:"agent"`
+	AgentAffect     AgentAffectConfig     `yaml:"agent_affect" json:"agent_affect"`
+	Memory          MemoryConfig          `yaml:"memory"`
+	Media           MediaConfig           `yaml:"media" json:"media"`
+	DB              DBConfig              `yaml:"db"`
+	Log             LogConfig             `yaml:"log"`
+	Personas        PersonasConfig        `yaml:"personas"`
+	WebSearch       WebSearchConfig       `yaml:"websearch"`
+	WebFetch        WebFetchConfig        `yaml:"webfetch"`
+	Bash            BashConfig            `yaml:"bash"`
+	Plugins         PluginsConfig         `yaml:"plugins"`
+	PythonToolchain PythonToolchainConfig `yaml:"python_toolchain" json:"python_toolchain"`
 }
 
 func (c *Config) UnmarshalYAML(value *yaml.Node) error {
@@ -65,6 +68,7 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		"webfetch":           {},
 		"bash":               {},
 		"plugins":            {},
+		"python_toolchain":   {},
 	}
 	for i := 0; i < len(value.Content); i += 2 {
 		key := strings.TrimSpace(value.Content[i].Value)
@@ -576,9 +580,29 @@ func (c *BashConfig) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
+func (c *PythonToolchainConfig) UnmarshalYAML(value *yaml.Node) error {
+	if err := decodeKnownPluginMapping(value, "python_toolchain", map[string]struct{}{
+		"enabled":                 {},
+		"python_executable":       {},
+		"uv_executable":           {},
+		"required_python":         {},
+		"minimum_uv_version":      {},
+		"environment_root":        {},
+		"cache_dir":               {},
+		"default_index":           {},
+		"sync_timeout_seconds":    {},
+		"use_system_certificates": {},
+	}, (*rawPythonToolchainConfig)(c)); err != nil {
+		return err
+	}
+	c.useSystemCertificatesSet = yamlMappingHasKey(value, "use_system_certificates")
+	return nil
+}
+
 type rawHostResourcesConfig HostResourcesConfig
 type rawHostResourceRoot HostResourceRoot
 type rawBashConfig BashConfig
+type rawPythonToolchainConfig PythonToolchainConfig
 
 type BashConfig struct {
 	Enabled               bool    `yaml:"enabled" json:"enabled"`
@@ -590,6 +614,20 @@ type BashConfig struct {
 	MaxProcesses          int     `yaml:"max_processes" json:"max_processes"`
 	MemoryMB              int     `yaml:"memory_mb" json:"memory_mb"`
 	CPUs                  float64 `yaml:"cpus" json:"cpus"`
+}
+
+type PythonToolchainConfig struct {
+	Enabled                  bool   `yaml:"enabled" json:"enabled"`
+	PythonExecutable         string `yaml:"python_executable" json:"python_executable"`
+	UVExecutable             string `yaml:"uv_executable" json:"uv_executable"`
+	RequiredPython           string `yaml:"required_python" json:"required_python"`
+	MinimumUVVersion         string `yaml:"minimum_uv_version" json:"minimum_uv_version"`
+	EnvironmentRoot          string `yaml:"environment_root" json:"environment_root"`
+	CacheDir                 string `yaml:"cache_dir" json:"cache_dir"`
+	DefaultIndex             string `yaml:"default_index" json:"default_index"`
+	SyncTimeoutSeconds       int    `yaml:"sync_timeout_seconds" json:"sync_timeout_seconds"`
+	UseSystemCertificates    bool   `yaml:"use_system_certificates" json:"use_system_certificates"`
+	useSystemCertificatesSet bool
 }
 
 type PluginsConfig struct {
@@ -943,6 +981,113 @@ func (c *PluginRuntimeConfig) applyDefaults() {
 	}
 }
 
+func (c *PythonToolchainConfig) applyDefaults() {
+	if c.RequiredPython == "" {
+		c.RequiredPython = "3.12"
+	}
+	if c.MinimumUVVersion == "" {
+		c.MinimumUVVersion = "0.11.0"
+	}
+	if c.EnvironmentRoot == "" {
+		c.EnvironmentRoot = "data/python-envs"
+	}
+	if c.CacheDir == "" {
+		c.CacheDir = "data/uv-cache"
+	}
+	if c.DefaultIndex == "" {
+		c.DefaultIndex = "https://pypi.org/simple"
+	}
+	if c.SyncTimeoutSeconds == 0 {
+		c.SyncTimeoutSeconds = 600
+	}
+	if !c.useSystemCertificatesSet {
+		c.UseSystemCertificates = true
+	}
+}
+
+func (c *PythonToolchainConfig) ApplyRuntimeDefaults() {
+	c.applyDefaults()
+}
+
+func (c PythonToolchainConfig) Validate() error {
+	if strings.TrimSpace(c.RequiredPython) == "" {
+		return fmt.Errorf("python_toolchain.required_python is required")
+	}
+	if strings.TrimSpace(c.RequiredPython) != "3.12" {
+		return fmt.Errorf("python_toolchain.required_python must be 3.12")
+	}
+	if strings.TrimSpace(c.MinimumUVVersion) == "" {
+		return fmt.Errorf("python_toolchain.minimum_uv_version is required")
+	}
+	if !validDottedVersion(c.MinimumUVVersion) {
+		return fmt.Errorf("python_toolchain.minimum_uv_version must be a dotted numeric version")
+	}
+	if strings.TrimSpace(c.EnvironmentRoot) == "" {
+		return fmt.Errorf("python_toolchain.environment_root is required")
+	}
+	if strings.TrimSpace(c.CacheDir) == "" {
+		return fmt.Errorf("python_toolchain.cache_dir is required")
+	}
+	if strings.TrimSpace(c.DefaultIndex) == "" {
+		return fmt.Errorf("python_toolchain.default_index is required")
+	}
+	if c.SyncTimeoutSeconds <= 0 {
+		return fmt.Errorf("python_toolchain.sync_timeout_seconds must be > 0")
+	}
+	if c.Enabled || strings.TrimSpace(c.PythonExecutable) != "" {
+		if err := validateConfiguredExecutablePath("python_toolchain.python_executable", c.PythonExecutable); err != nil {
+			return err
+		}
+	}
+	if c.Enabled || strings.TrimSpace(c.UVExecutable) != "" {
+		if err := validateConfiguredExecutablePath("python_toolchain.uv_executable", c.UVExecutable); err != nil {
+			return err
+		}
+	}
+	if c.Enabled && strings.TrimSpace(c.UVExecutable) == "" {
+		return fmt.Errorf("python_toolchain.uv_executable is required when python_toolchain.enabled=true")
+	}
+	return nil
+}
+
+func validDottedVersion(value string) bool {
+	parts := strings.Split(strings.TrimSpace(value), ".")
+	if len(parts) < 2 || len(parts) > 3 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		if _, err := strconv.Atoi(part); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func validateConfiguredExecutablePath(name, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fmt.Errorf("%s is required when python_toolchain.enabled=true", name)
+	}
+	if !filepath.IsAbs(value) {
+		return fmt.Errorf("%s must be an absolute path", name)
+	}
+	base := strings.ToLower(filepath.Base(value))
+	switch name {
+	case "python_toolchain.python_executable":
+		if base != "python.exe" && base != "python" {
+			return fmt.Errorf("%s must point to python.exe", name)
+		}
+	case "python_toolchain.uv_executable":
+		if base != "uv.exe" && base != "uv" {
+			return fmt.Errorf("%s must point to uv.exe", name)
+		}
+	}
+	return nil
+}
+
 func (c *PluginInstallerConfig) applyDefaults(store PluginStoreConfig) {
 	if !c.githubEnabledSet {
 		c.GithubEnabled = true
@@ -1039,18 +1184,8 @@ func (c PluginsConfig) Validate(turnPipeline TurnPipelineConfig) error {
 	}
 	artifactPath := strings.TrimSpace(c.Runtime.PrivatePythonArtifactPath)
 	artifactSHA256 := strings.TrimSpace(c.Runtime.PrivatePythonArtifactSHA256)
-	if artifactPath != "" {
-		if strings.TrimSpace(c.Runtime.PrivatePythonExecutable) != "" {
-			return fmt.Errorf("runtime.private_python_executable cannot be combined with private_python_artifact_path")
-		}
-		if artifactSHA256 == "" {
-			return fmt.Errorf("runtime.private_python_artifact_sha256 is required when private_python_artifact_path is set")
-		}
-		if !validSHA256Digest(artifactSHA256) {
-			return fmt.Errorf("runtime.private_python_artifact_sha256 must be sha256:<64 hex chars>")
-		}
-	} else if artifactSHA256 != "" {
-		return fmt.Errorf("runtime.private_python_artifact_path is required when private_python_artifact_sha256 is set")
+	if artifactPath != "" || artifactSHA256 != "" {
+		return fmt.Errorf("runtime.private_python_artifact_path is no longer supported; configure python_toolchain.python_executable and python_toolchain.uv_executable")
 	}
 	switch c.Runtime.DefaultKind {
 	case "", "managed_python_process", "python_process", "process_dev", "process", "container":
@@ -1765,11 +1900,21 @@ func DefaultConfig() *Config {
 				IncludePayload: false,
 			},
 		},
+		PythonToolchain: PythonToolchainConfig{
+			RequiredPython:        "3.12",
+			MinimumUVVersion:      "0.11.0",
+			EnvironmentRoot:       "data/python-envs",
+			CacheDir:              "data/uv-cache",
+			DefaultIndex:          "https://pypi.org/simple",
+			SyncTimeoutSeconds:    600,
+			UseSystemCertificates: true,
+		},
 	}
 	cfg.Work.ApplyDefaults()
 	cfg.HostResources.applyDefaults()
 	cfg.Bash.applyDefaults()
 	cfg.Plugins.applyDefaults()
+	cfg.PythonToolchain.applyDefaults()
 	return cfg
 }
 
@@ -1813,6 +1958,8 @@ func Load(path string) (*Config, error) {
 	cfg.Memory.NaturalMemory.applyDefaults()
 	cfg.applyTimezoneDefaults(explicitMemoryExtractionTimezone, memoryExtractionTimezone)
 	cfg.Plugins.applyDefaults()
+	cfg.PythonToolchain.applyDefaults()
+	cfg.applyPythonToolchainLegacyMigration()
 	for i := range cfg.LLMProviders {
 		provider, err := cfg.LLMProviders[i].WithPresetDefaults()
 		if err != nil {
@@ -1826,6 +1973,15 @@ func Load(path string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func (c *Config) applyPythonToolchainLegacyMigration() {
+	if c == nil {
+		return
+	}
+	if strings.TrimSpace(c.PythonToolchain.PythonExecutable) == "" {
+		c.PythonToolchain.PythonExecutable = strings.TrimSpace(c.Plugins.Runtime.PrivatePythonExecutable)
+	}
 }
 
 func (c *TurnPipelineConfig) applyDefaults() {
@@ -1904,6 +2060,9 @@ func (c *Config) Validate() error {
 	}
 	if err := c.Plugins.Validate(c.Chat.TurnPipeline); err != nil {
 		return fmt.Errorf("plugins: %w", err)
+	}
+	if err := c.PythonToolchain.Validate(); err != nil {
+		return err
 	}
 	if err := c.HostResources.Validate(); err != nil {
 		return err

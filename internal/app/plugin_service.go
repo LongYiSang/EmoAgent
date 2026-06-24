@@ -15,9 +15,11 @@ import (
 	"time"
 
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/configcenter"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/plugin"
 	"github.com/longyisang/emoagent/internal/processguard"
+	"github.com/longyisang/emoagent/internal/pytoolchain"
 	"github.com/longyisang/emoagent/internal/storage"
 	"github.com/longyisang/emoagent/internal/tool"
 	"github.com/longyisang/emoagent/internal/turn"
@@ -111,21 +113,13 @@ func (s *PluginService) ensureRuntimeLocked() error {
 	if err != nil {
 		return err
 	}
-	runtimeCfg := s.infra.Config.Plugins.Runtime
-	if strings.TrimSpace(runtimeCfg.PrivatePythonArtifactPath) != "" {
-		if !filepath.IsAbs(runtimeCfg.PrivatePythonArtifactPath) && strings.TrimSpace(s.infra.ProjectRoot) != "" {
-			runtimeCfg.PrivatePythonArtifactPath = filepath.Join(s.infra.ProjectRoot, runtimeCfg.PrivatePythonArtifactPath)
-		}
-		if _, err := plugin.ProvisionPrivatePythonRuntime(store, runtimeCfg); err != nil {
-			return err
-		}
-	}
 	providerGateway := plugin.NewProviderGateway(s.infra.DB, s.infra.Config.Plugins.ProviderGateway, s.providerClient)
 	providerGateway.SetFallbackResolver(s.providerGatewayFallback)
 	facadeBroker := plugin.NewFacadeBroker(s.infra.DB, providerGateway)
 	facadeBroker.SetStore(store)
 	facadeBroker.SetHostPolicy(s.pluginFacadeHostPolicy())
 	supervisor := plugin.NewRuntimeSupervisor(store, s.infra.Config.Plugins.Runtime, nil)
+	supervisor.SetManagedPythonEnvironmentResolver(s.prepareManagedPluginEnvironment)
 	supervisor.SetHostHandlerForPlugin(s.hostRPCHandlerForPlugin)
 	supervisor.SetEnabledChecker(s.isPluginEnabled)
 	supervisor.SetBlockedEnvNames(s.pluginBlockedEnvNames())
@@ -174,6 +168,55 @@ func (s *PluginService) pluginProcessEnv() []string {
 		return nil
 	}
 	return []string{"PYTHONPATH=" + sdkPath}
+}
+
+func (s *PluginService) prepareManagedPluginEnvironment(ctx context.Context, manifest plugin.ManifestV2) (plugin.ManagedPythonEnvironment, error) {
+	if s == nil || s.infra == nil || s.store == nil {
+		return plugin.ManagedPythonEnvironment{}, fmt.Errorf("plugin runtime is not configured")
+	}
+	packageDir, err := s.store.PackageDir(manifest.ID, manifest.Version)
+	if err != nil {
+		return plugin.ManagedPythonEnvironment{}, err
+	}
+	if err := plugin.ValidateManagedPythonProject(packageDir); err != nil {
+		return plugin.ManagedPythonEnvironment{}, err
+	}
+	effective, err := configcenter.NewService(s.infra.Config, s.infra.DB).BuildEffective(ctx)
+	if err != nil {
+		return plugin.ManagedPythonEnvironment{}, err
+	}
+	toolchainCfg := effective.PythonToolchain
+	if !toolchainCfg.Enabled {
+		return plugin.ManagedPythonEnvironment{}, fmt.Errorf("python toolchain is not configured")
+	}
+	probe, err := pytoolchain.NewManager(toolchainCfg).Probe(ctx)
+	if err != nil {
+		return plugin.ManagedPythonEnvironment{}, fmt.Errorf("python toolchain probe: %w", err)
+	}
+	envRoot := strings.TrimSpace(toolchainCfg.EnvironmentRoot)
+	if envRoot == "" {
+		envRoot = "data/python-envs"
+	}
+	envRoot = resolvePluginStoreRoot(s.infra.ProjectRoot, envRoot)
+	owner := pytoolchain.EnvironmentOwner{
+		Kind:       pytoolchain.OwnerPlugin,
+		ID:         manifest.ID,
+		Version:    manifest.Version,
+		ProjectDir: packageDir,
+		EnvDir:     filepath.Join(envRoot, "plugins", manifest.ID, manifest.Version),
+	}
+	manager := pytoolchain.NewEnvironmentManager(toolchainCfg, pytoolchain.EnvironmentManagerOptions{Toolchain: probe})
+	status, err := manager.Ensure(ctx, owner)
+	if err != nil {
+		return plugin.ManagedPythonEnvironment{}, err
+	}
+	if status.State != pytoolchain.EnvReady || status.Marker == nil || strings.TrimSpace(status.Marker.EnvironmentPython) == "" {
+		return plugin.ManagedPythonEnvironment{}, fmt.Errorf("plugin environment is %s: %s", status.State, status.Reason)
+	}
+	return plugin.ManagedPythonEnvironment{
+		PythonExecutable: status.Marker.EnvironmentPython,
+		EnvironmentDir:   owner.EnvDir,
+	}, nil
 }
 
 func (s *PluginService) pluginBlockedEnvNames() []string {
@@ -1361,116 +1404,97 @@ func (s *PluginService) PluginDiagnostics(ctx context.Context) (plugin.AdminPlug
 	for _, installation := range installations {
 		summaries = append(summaries, s.summaryForInstallation(ctx, installation))
 	}
-	privatePython := s.privatePythonDiagnosticCheck()
 	checks := []plugin.AdminPluginDiagnosticCheck{
-		privatePython,
-		s.privatePythonSelfTestDiagnosticCheck(ctx, privatePython),
+		s.pythonToolchainDiagnosticCheck(ctx, summaries),
+		s.pythonEnvironmentDiagnosticCheck(ctx, summaries),
 		s.processGuardDiagnosticCheck(),
-		dependencyInstallDiagnosticCheck(summaries),
+		uvProjectDiagnosticCheck(summaries),
 		pluginLogsDiagnosticCheck(summaries),
 		pluginRepairDiagnosticCheck(summaries),
 	}
 	return plugin.AdminPluginDiagnostics{Status: diagnosticOverallStatus(checks), Checks: checks}, nil
 }
 
-func (s *PluginService) privatePythonDiagnosticCheck() plugin.AdminPluginDiagnosticCheck {
+func (s *PluginService) pythonToolchainDiagnosticCheck(ctx context.Context, summaries []plugin.AdminPluginSummary) plugin.AdminPluginDiagnosticCheck {
+	managedCount := managedPythonSummaryCount(summaries)
 	check := plugin.AdminPluginDiagnosticCheck{
-		ID:     "private_python",
-		Label:  "Private Python",
-		Status: "warning",
+		ID:     "python_toolchain",
+		Label:  "Python Toolchain",
+		Status: "ok",
 		Details: map[string]any{
-			"source": "store_private_runtime",
+			"managed_python_plugins": managedCount,
 		},
 	}
-	runtimeCfg := s.infra.Config.Plugins.Runtime
-	path := strings.TrimSpace(runtimeCfg.PrivatePythonExecutable)
-	if path != "" {
-		check.Details["source"] = plugin.PythonExecutableSourcePrivate
-		check.Details["path"] = path
-		if !filepath.IsAbs(path) {
-			check.Status = "error"
-			check.Message = "configured private Python executable must be an absolute path"
+	if s == nil || s.infra == nil {
+		check.Status = "error"
+		check.Message = "plugin service is not configured"
+		return check
+	}
+	effective, err := configcenter.NewService(s.infra.Config, s.infra.DB).BuildEffective(ctx)
+	if err != nil {
+		check.Status = "error"
+		check.Message = "load python toolchain config: " + err.Error()
+		return check
+	}
+	cfg := effective.PythonToolchain
+	check.Details["enabled"] = cfg.Enabled
+	check.Details["python_executable"] = cfg.PythonExecutable
+	check.Details["uv_executable"] = cfg.UVExecutable
+	if !cfg.Enabled {
+		if managedCount == 0 {
+			check.Message = "no managed Python plugin requires a configured toolchain"
 			return check
 		}
-		if _, err := os.Stat(path); err == nil {
-			check.Status = "ok"
-			check.Message = "configured private Python executable is available"
-		} else {
-			check.Status = "error"
-			check.Message = "configured private Python executable is not available"
-		}
+		check.Status = "warning"
+		check.Message = "python toolchain is not configured"
 		return check
 	}
-	if strings.TrimSpace(runtimeCfg.PrivatePythonArtifactPath) != "" {
-		artifactPath := runtimeCfg.PrivatePythonArtifactPath
-		if !filepath.IsAbs(artifactPath) && strings.TrimSpace(s.infra.ProjectRoot) != "" {
-			artifactPath = filepath.Join(s.infra.ProjectRoot, artifactPath)
-		}
-		check.Details["source"] = "private_python_artifact"
-		check.Details["artifact_path"] = artifactPath
-		check.Details["artifact_sha256"] = runtimeCfg.PrivatePythonArtifactSHA256
-		if _, err := os.Stat(artifactPath); err == nil {
-			check.Status = "ok"
-			check.Message = "private Python artifact is configured"
-		} else {
-			check.Status = "warning"
-			check.Message = "private Python artifact is configured but not available"
-		}
+	probe, err := pytoolchain.NewManager(cfg).Probe(ctx)
+	if err != nil {
+		check.Status = "error"
+		check.Message = "python toolchain probe failed: " + err.Error()
 		return check
 	}
-	if s.store != nil {
-		if storePath, err := s.store.PrivatePythonExecutablePath(runtime.GOOS); err == nil {
-			check.Details["path"] = storePath
-			if _, statErr := os.Stat(storePath); statErr == nil {
-				check.Status = "ok"
-				check.Message = "store private Python runtime is available"
-				return check
-			}
-		}
-	}
-	check.Message = "store private Python runtime is not available"
+	check.Details["python_version"] = probe.Python.Version
+	check.Details["python_architecture"] = probe.Python.Architecture
+	check.Details["uv_version"] = probe.UV.Version
+	check.Message = fmt.Sprintf("CPython %s and uv %s are available", probe.Python.Version, probe.UV.Version)
 	return check
 }
 
-func (s *PluginService) privatePythonSelfTestDiagnosticCheck(ctx context.Context, privatePython plugin.AdminPluginDiagnosticCheck) plugin.AdminPluginDiagnosticCheck {
+func (s *PluginService) pythonEnvironmentDiagnosticCheck(ctx context.Context, summaries []plugin.AdminPluginSummary) plugin.AdminPluginDiagnosticCheck {
 	check := plugin.AdminPluginDiagnosticCheck{
-		ID:      "python_self_test",
-		Label:   "Private Python self-test",
-		Status:  "warning",
-		Message: "private Python self-test is unavailable until the private runtime is available",
-		Details: map[string]any{},
+		ID:     "python_environments",
+		Label:  "uv environments",
+		Status: "ok",
+		Details: map[string]any{
+			"managed_python_plugins": managedPythonSummaryCount(summaries),
+		},
 	}
-	if privatePython.Details != nil {
-		for key, value := range privatePython.Details {
-			check.Details[key] = value
-		}
-	}
-	if privatePython.Status != "ok" {
-		return check
-	}
-	path, _ := check.Details["path"].(string)
-	if strings.TrimSpace(path) == "" {
-		check.Message = "private Python self-test is unavailable because no executable path was reported"
-		return check
-	}
-	timeout := 3 * time.Second
-	if s != nil && s.infra != nil && s.infra.Config != nil && s.infra.Config.Plugins.Runtime.StartupTimeoutMS > 0 {
-		timeout = time.Duration(s.infra.Config.Plugins.Runtime.StartupTimeoutMS) * time.Millisecond
-	}
-	result, err := plugin.SelfTestPrivatePythonRuntime(ctx, path, timeout)
-	check.Details["duration_ms"] = result.DurationMS
-	check.Details["isolated"] = result.Isolated
-	check.Details["safe_path"] = result.SafePath
-	check.Details["secret_env_seen"] = result.SecretEnvSeen
-	check.Details["process_guard_kind"] = result.ProcessGuardKind
-	check.Details["process_guard_attached"] = result.ProcessGuardAttached
+	service := &ConfigService{infra: s.infra}
+	environments, err := service.ListPythonEnvironments(ctx)
 	if err != nil {
-		check.Status = "error"
-		check.Message = "private Python self-test failed: " + err.Error()
+		check.Status = "warning"
+		check.Message = "python environment status unavailable: " + err.Error()
 		return check
 	}
-	check.Status = "ok"
-	check.Message = "private Python self-test passed with isolated safe path"
+	states := map[string]int{}
+	for _, environment := range environments {
+		if environment.Owner.Kind != pytoolchain.OwnerPlugin {
+			continue
+		}
+		states[string(environment.Status.State)]++
+	}
+	check.Details["states"] = states
+	environmentCount := 0
+	for _, count := range states {
+		environmentCount += count
+	}
+	check.Details["environment_count"] = environmentCount
+	if states[string(pytoolchain.EnvBroken)] > 0 {
+		check.Status = "warning"
+	}
+	check.Message = fmt.Sprintf("%d managed plugin uv environment(s)", environmentCount)
 	return check
 }
 
@@ -1510,18 +1534,38 @@ func (s *PluginService) processGuardDiagnosticCheck() plugin.AdminPluginDiagnost
 	}
 }
 
-func dependencyInstallDiagnosticCheck(summaries []plugin.AdminPluginSummary) plugin.AdminPluginDiagnosticCheck {
-	var lockedPackages int
+func uvProjectDiagnosticCheck(summaries []plugin.AdminPluginSummary) plugin.AdminPluginDiagnosticCheck {
+	var uvProjects int
+	var legacyLocks int
 	for _, summary := range summaries {
-		lockedPackages += summary.DependencySummary.PackageCount
+		if summary.DependencySummary.Format == "uv" {
+			uvProjects++
+		}
+		if summary.DependencySummary.LegacyDependency {
+			legacyLocks++
+		}
+	}
+	status := "ok"
+	if legacyLocks > 0 {
+		status = "warning"
 	}
 	return plugin.AdminPluginDiagnosticCheck{
-		ID:      "dependency_install",
-		Label:   "Dependency install",
-		Status:  "ok",
-		Message: fmt.Sprintf("%d locked package(s) across %d installed plugin version(s)", lockedPackages, len(summaries)),
-		Details: map[string]any{"locked_packages": lockedPackages, "installed_versions": len(summaries)},
+		ID:      "uv_project",
+		Label:   "uv project",
+		Status:  status,
+		Message: fmt.Sprintf("%d managed uv project(s) across %d installed plugin version(s)", uvProjects, len(summaries)),
+		Details: map[string]any{"uv_projects": uvProjects, "legacy_locks": legacyLocks, "installed_versions": len(summaries)},
 	}
+}
+
+func managedPythonSummaryCount(summaries []plugin.AdminPluginSummary) int {
+	count := 0
+	for _, summary := range summaries {
+		if summary.RuntimeKind == plugin.RuntimeManagedPythonProcess {
+			count++
+		}
+	}
+	return count
 }
 
 func pluginLogsDiagnosticCheck(summaries []plugin.AdminPluginSummary) plugin.AdminPluginDiagnosticCheck {

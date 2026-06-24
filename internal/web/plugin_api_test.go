@@ -462,11 +462,11 @@ func TestPluginAdminAPIStatusIncludesRuntimeDiagnostics(t *testing.T) {
 			PluginID:                  "com.example.echo",
 			RuntimeKind:               plugin.RuntimeManagedPythonProcess,
 			Status:                    "failed",
-			LastError:                 "managed python runtime unavailable",
-			PythonExecutablePath:      "data/plugins/runtime/python/python.exe",
-			PythonExecutableSource:    "store_private_runtime",
+			LastError:                 "managed python environment unavailable",
+			PythonExecutablePath:      "data/python-envs/plugins/com.example.echo/0.1.0/Scripts/python.exe",
+			PythonExecutableSource:    plugin.PythonExecutableSourceToolchainUV,
 			PythonExecutableAvailable: &available,
-			DependencyEnvDir:          "data/plugins/dependencies/com.example.echo/0.1.0",
+			PythonEnvironmentDir:      "data/python-envs/plugins/com.example.echo/0.1.0",
 			PID:                       1234,
 			ProcessGuardKind:          "windows_job_object",
 			ProcessGuardAttached:      true,
@@ -486,11 +486,11 @@ func TestPluginAdminAPIStatusIncludesRuntimeDiagnostics(t *testing.T) {
 		t.Fatalf("decode status: %v", err)
 	}
 	if status.RuntimeKind != plugin.RuntimeManagedPythonProcess ||
-		status.PythonExecutablePath != "data/plugins/runtime/python/python.exe" ||
-		status.PythonExecutableSource != "store_private_runtime" ||
+		status.PythonExecutablePath != "data/python-envs/plugins/com.example.echo/0.1.0/Scripts/python.exe" ||
+		status.PythonExecutableSource != plugin.PythonExecutableSourceToolchainUV ||
 		status.PythonExecutableAvailable == nil ||
 		*status.PythonExecutableAvailable ||
-		status.DependencyEnvDir != "data/plugins/dependencies/com.example.echo/0.1.0" ||
+		status.PythonEnvironmentDir != "data/python-envs/plugins/com.example.echo/0.1.0" ||
 		status.PID != 1234 ||
 		status.ProcessGuardKind != "windows_job_object" ||
 		!status.ProcessGuardAttached {
@@ -511,7 +511,7 @@ func TestPluginAdminAPIStatusIncludesRuntimeDiagnostics(t *testing.T) {
 	if len(listResp.Plugins) != 1 ||
 		listResp.Plugins[0].RuntimeStatus.PythonExecutableAvailable == nil ||
 		*listResp.Plugins[0].RuntimeStatus.PythonExecutableAvailable ||
-		listResp.Plugins[0].RuntimeStatus.DependencyEnvDir != "data/plugins/dependencies/com.example.echo/0.1.0" ||
+		listResp.Plugins[0].RuntimeStatus.PythonEnvironmentDir != "data/python-envs/plugins/com.example.echo/0.1.0" ||
 		listResp.Plugins[0].RuntimeStatus.PID != 1234 ||
 		listResp.Plugins[0].RuntimeStatus.ProcessGuardKind != "windows_job_object" ||
 		!listResp.Plugins[0].RuntimeStatus.ProcessGuardAttached {
@@ -523,10 +523,10 @@ func TestPluginAdminAPIDiagnostics(t *testing.T) {
 	app := &pluginAPIApp{diagnostics: plugin.AdminPluginDiagnostics{
 		Status: "warning",
 		Checks: []plugin.AdminPluginDiagnosticCheck{
-			{ID: "private_python", Status: "warning", Label: "Private Python", Message: "store runtime missing"},
-			{ID: "python_self_test", Status: "warning", Label: "Private Python self-test", Message: "self-test unavailable"},
+			{ID: "python_toolchain", Status: "warning", Label: "Python Toolchain", Message: "toolchain missing"},
+			{ID: "python_environments", Status: "warning", Label: "uv environments", Message: "environment missing"},
 			{ID: "process_guard", Status: "ok", Label: "Job Object / ProcessGuard", Message: "windows_job_object"},
-			{ID: "dependency_install", Status: "ok", Label: "Dependency install", Message: "1 package"},
+			{ID: "uv_project", Status: "ok", Label: "uv project", Message: "1 project"},
 			{ID: "plugin_logs", Status: "ok", Label: "Plugin logs", Message: "bounded stderr"},
 			{ID: "repair", Status: "ok", Label: "Repair", Message: "manual reinstall available"},
 		},
@@ -550,7 +550,7 @@ func TestPluginAdminAPIDiagnostics(t *testing.T) {
 	for _, check := range got.Checks {
 		ids = append(ids, check.ID)
 	}
-	if strings.Join(ids, ",") != "private_python,python_self_test,process_guard,dependency_install,plugin_logs,repair" {
+	if strings.Join(ids, ",") != "python_toolchain,python_environments,process_guard,uv_project,plugin_logs,repair" {
 		t.Fatalf("diagnostic check ids = %q", strings.Join(ids, ","))
 	}
 }

@@ -23,10 +23,14 @@ type DependencyProvisionResult struct {
 }
 
 type DependencyLockSummary struct {
-	Present      bool                       `json:"present"`
-	LockDigest   string                     `json:"lock_digest,omitempty"`
-	PackageCount int                        `json:"package_count"`
-	Packages     []DependencyPackageSummary `json:"packages,omitempty"`
+	Present          bool                       `json:"present"`
+	Format           string                     `json:"format,omitempty"`
+	LockDigest       string                     `json:"lock_digest,omitempty"`
+	UVLockDigest     string                     `json:"uv_lock_digest,omitempty"`
+	PyprojectDigest  string                     `json:"pyproject_digest,omitempty"`
+	PackageCount     int                        `json:"package_count"`
+	Packages         []DependencyPackageSummary `json:"packages,omitempty"`
+	LegacyDependency bool                       `json:"legacy_dependency,omitempty"`
 }
 
 type DependencyPackageSummary struct {
@@ -145,6 +149,9 @@ func DependencyLockSummaryForPackage(store *PluginStore, manifest ManifestV2) (D
 	if err != nil {
 		return DependencyLockSummary{}, err
 	}
+	if manifest.Runtime.Kind == RuntimeManagedPythonProcess {
+		return managedPythonProjectSummary(packageDir)
+	}
 	lockRaw, err := os.ReadFile(filepath.Join(packageDir, dependencyLockFileName))
 	if os.IsNotExist(err) {
 		return DependencyLockSummary{}, nil
@@ -166,10 +173,31 @@ func DependencyLockSummaryForPackage(store *PluginStore, manifest ManifestV2) (D
 		})
 	}
 	return DependencyLockSummary{
-		Present:      true,
-		LockDigest:   sha256Digest(lockRaw),
-		PackageCount: len(lock.Packages),
-		Packages:     packages,
+		Present:          true,
+		Format:           "emo_dependencies.lock.json",
+		LockDigest:       sha256Digest(lockRaw),
+		PackageCount:     len(lock.Packages),
+		Packages:         packages,
+		LegacyDependency: true,
+	}, nil
+}
+
+func managedPythonProjectSummary(packageDir string) (DependencyLockSummary, error) {
+	pyprojectRaw, err := os.ReadFile(filepath.Join(packageDir, "pyproject.toml"))
+	if err != nil {
+		return DependencyLockSummary{}, err
+	}
+	lockRaw, err := os.ReadFile(filepath.Join(packageDir, "uv.lock"))
+	if err != nil {
+		return DependencyLockSummary{}, err
+	}
+	lockDigest := sha256Digest(lockRaw)
+	return DependencyLockSummary{
+		Present:         true,
+		Format:          "uv",
+		LockDigest:      lockDigest,
+		UVLockDigest:    lockDigest,
+		PyprojectDigest: sha256Digest(pyprojectRaw),
 	}, nil
 }
 

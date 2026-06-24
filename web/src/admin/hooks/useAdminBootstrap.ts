@@ -8,6 +8,7 @@ import type { SidecarAdmin } from './useSidecarAdmin';
 import type { AgentAffectAdmin } from './useAgentAffectAdmin';
 import type { PromptCenterAdmin } from './usePromptCenterAdmin';
 import type { WebSearchAdmin } from './useWebSearchAdmin';
+import type { PythonToolchainAdmin } from './usePythonToolchainAdmin';
 import type { AdminStatusControls } from './useAdminStatus';
 import type { TabID } from '../lib/adminData';
 
@@ -20,15 +21,16 @@ type BootstrapOptions = {
   agentAffect: Pick<AgentAffectAdmin, 'reloadAgentAffect'>;
   promptCenter: Pick<PromptCenterAdmin, 'reloadPromptCenter'>;
   webSearch: Pick<WebSearchAdmin, 'reloadWebSearchConfig'>;
+  pythonToolchain: Pick<PythonToolchainAdmin, 'reloadPythonToolchainSurfaces'>;
   sidecar: Pick<SidecarAdmin, 'reloadSidecar'>;
   status: Pick<AdminStatusControls, 'showError'>;
 };
 
-export function useAdminBootstrap(activeTab: TabID, { providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, webSearch, sidecar, status }: BootstrapOptions) {
+export function useAdminBootstrap(activeTab: TabID, { providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, webSearch, pythonToolchain, sidecar, status }: BootstrapOptions) {
   const loadedResourcesRef = useRef(new Set<string>());
   const resourceRequestsRef = useRef(new Map<string, Promise<void>>());
-  const loadersRef = useRef({ providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, webSearch, sidecar, status });
-  loadersRef.current = { providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, webSearch, sidecar, status };
+  const loadersRef = useRef({ providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, webSearch, pythonToolchain, sidecar, status });
+  loadersRef.current = { providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, webSearch, pythonToolchain, sidecar, status };
 
   useEffect(() => {
     let cancelled = false;
@@ -98,6 +100,9 @@ export function useAdminBootstrap(activeTab: TabID, { providers, agents, persona
             break;
           case 'websearch-pipeline':
             await loadOnce('websearch-config', loaders.webSearch.reloadWebSearchConfig);
+            break;
+          case 'python-toolchain':
+            await loadOnce('python-toolchain', loaders.pythonToolchain.reloadPythonToolchainSurfaces);
             break;
           case 'pipelines':
             await Promise.all([loadEffectiveConfig(), loadProviderBasics()]);

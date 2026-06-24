@@ -15,12 +15,13 @@ func TestManagedCommandArgsUseLoopbackAndGeneratedConfig(t *testing.T) {
 	spec := DefaultSpec()
 	spec.Enabled = true
 	spec.Managed = true
+	spec.Command = []string{`D:\EmoAgent\data\python-envs\memory-sidecar\Scripts\python.exe`, "-I", "-P", "-u", "-m", "memorycore_sidecar.server"}
 	spec.ConfigPath = `D:\Dev\Project\Agent\EmoAgent\data\runtime\sidecar.generated.toml`
 
 	args := spec.CommandArgs()
 	got := strings.Join(args, " ")
 	for _, want := range []string{
-		"uv run python -m memorycore_sidecar.server",
+		`D:\EmoAgent\data\python-envs\memory-sidecar\Scripts\python.exe -I -P -u -m memorycore_sidecar.server`,
 		"--adapter trivium",
 		`--config D:\Dev\Project\Agent\EmoAgent\data\runtime\sidecar.generated.toml`,
 		"--host 127.0.0.1",
@@ -29,6 +30,16 @@ func TestManagedCommandArgsUseLoopbackAndGeneratedConfig(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("CommandArgs = %q, want %q", got, want)
 		}
+	}
+}
+
+func TestManagedDefaultSpecHasNoProductionUVRunFallback(t *testing.T) {
+	spec := DefaultSpec()
+	spec.Enabled = true
+	spec.Managed = true
+
+	if args := spec.CommandArgs(); len(args) != 0 {
+		t.Fatalf("CommandArgs = %#v, want empty until environment python is injected", args)
 	}
 }
 

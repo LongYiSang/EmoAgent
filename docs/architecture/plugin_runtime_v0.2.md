@@ -37,7 +37,7 @@ Python process plugins are launched as:
 <python_executable> <runtime.entry>
 ```
 
-For `managed_python_process`, `<python_executable>` is either an explicit `plugins.runtime.private_python_executable` absolute path or the Host-owned store path `plugins.store.root_dir/runtime/python/python(.exe)`. If `plugins.runtime.private_python_artifact_path` and `plugins.runtime.private_python_artifact_sha256` are configured, the Host verifies the local zip artifact and installs it to the store path before creating the runtime supervisor. This runtime artifact provenance is separate from plugin package signatures and does not change plugin trust, access tier, grants, or tool policy.
+For `managed_python_process`, `<python_executable>` is the Python inside the plugin's uv environment. The Host obtains the base toolchain from explicit `python_toolchain.python_executable` and `python_toolchain.uv_executable` absolute paths, verifies CPython 3.12 and the minimum uv version, and then syncs each managed plugin environment from the package-local `pyproject.toml` and `uv.lock`. The Host does not download, install, unpack, or silently fall back to another Python interpreter.
 
 The working directory is the immutable package directory. The plugin receives a filtered inherited host environment plus Host-injected runtime variables:
 
@@ -48,13 +48,12 @@ EMO_PLUGIN_ROOT
 EMO_PLUGIN_STATE_DIR
 EMO_PLUGIN_CACHE_DIR
 EMO_PLUGIN_RUN_DIR
-EMO_PLUGIN_DEPS_DIR
 PYTHONUNBUFFERED=1
 ```
 
-For `managed_python_process`, the Host prepares a version-scoped dependency directory at `dependencies/<plugin_id>/<version>` under the plugin store and adds it to `PYTHONPATH` after the Host audit shim. When a package includes `emo_dependencies.lock.json`, the Host verifies package-local `python_module_zip` artifacts by SHA-256 and extracts them into that dependency directory before process initialization. A matching lock digest marker skips reinstall. The dependency directory and lock digest are operational dependency provenance, not a sandbox, permission source, package trust upgrade, or malicious-plugin containment.
+For `managed_python_process`, the package must contain `pyproject.toml` and `uv.lock`. The Host runs `uv lock --check` and `uv sync --locked --no-dev` only during install/update/configuration/repair phases, never implicitly during normal hook/tool execution. Each plugin version gets an independent uv environment under `python_toolchain.environment_root`.
 
-Managed Python processes do not inherit the host process `PYTHONPATH`; the process path is built from the audit shim, the version-scoped dependency env, and Host-configured SDK paths. Legacy `python_process` / `process` keeps its explicit `python_executable` behavior.
+Managed Python processes do not inherit the host process `PYTHONPATH`; the process path is built from the audit shim and Host-configured SDK paths. Legacy `python_process` / `process` keeps its explicit `python_executable` behavior and is not a fallback for managed plugins.
 
 Inherited environment variables whose names contain `API_KEY`, `SECRET`, `TOKEN`, or `PASSWORD` are stripped. Configured provider `api_key_env` names from static config and SQLite are also stripped, including non-standard names. Provider API keys are never passed intentionally to plugin processes. This filtering is a host process hygiene step, not a sandbox boundary.
 

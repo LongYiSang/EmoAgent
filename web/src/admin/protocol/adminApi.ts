@@ -119,6 +119,33 @@ export async function loadConfigIssues(): Promise<AnyRecord[]> {
   return data.issues || [];
 }
 
+export async function loadPythonToolchain(): Promise<AnyRecord> {
+  return requestJSON<AnyRecord>('/api/python-toolchain');
+}
+
+export async function savePythonToolchain(pythonToolchain: AnyRecord): Promise<AnyRecord> {
+  return requestJSON<AnyRecord>('/api/python-toolchain', { method: 'PUT', body: { python_toolchain: pythonToolchain } });
+}
+
+export async function probePythonToolchain(pythonToolchain: AnyRecord): Promise<AnyRecord> {
+  return requestJSON<AnyRecord>('/api/python-toolchain/probe', { method: 'POST', body: { python_toolchain: pythonToolchain } });
+}
+
+export async function loadPythonEnvironments(): Promise<AnyRecord[]> {
+  const data = await requestJSON<{ environments?: AnyRecord[] }>('/api/python-toolchain/environments');
+  return data.environments || [];
+}
+
+export async function pythonEnvironmentAction(environment: AnyRecord, action: 'sync' | 'repair'): Promise<AnyRecord> {
+  const owner = environment.owner && typeof environment.owner === 'object' ? environment.owner as AnyRecord : {};
+  const kind = encodeURIComponent(String(owner.kind || ''));
+  const id = encodeURIComponent(String(owner.id || ''));
+  const version = String(owner.version || '');
+  const suffix = version ? `?version=${encodeURIComponent(version)}` : '';
+  const data = await requestJSON<{ environment?: AnyRecord }>(`/api/python-toolchain/environments/${kind}/${id}/${action}${suffix}`, { method: 'POST' });
+  return data.environment || {};
+}
+
 export async function loadPluginDiagnostics(): Promise<AnyRecord> {
   return requestJSON<AnyRecord>('/api/plugins/diagnostics');
 }

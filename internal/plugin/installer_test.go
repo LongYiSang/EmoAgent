@@ -103,6 +103,43 @@ func TestPluginInstallerInstallFromDirectoryAllowsUnsignedDev(t *testing.T) {
 	}
 }
 
+func TestPluginInstallerManagedPythonRequiresUVProject(t *testing.T) {
+	dir := t.TempDir()
+	pluginDir := filepath.Join(dir, "managed-plugin")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll plugin: %v", err)
+	}
+	manifest := `schema_version: emoagent.plugin.v0.2
+id: com.example.managed
+name: Managed
+version: 0.1.0
+emoagent_version: ">=0.2.0"
+runtime:
+  kind: managed_python_process
+  entry: main.py
+access:
+  tier: runtime_safe
+  capabilities:
+    - turn.read
+`
+	if err := os.WriteFile(filepath.Join(pluginDir, manifestFileName), []byte(manifest), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginDir, "main.py"), []byte("print('ok')\n"), 0o644); err != nil {
+		t.Fatalf("write main.py: %v", err)
+	}
+	store, err := NewPluginStore(filepath.Join(dir, "store"))
+	if err != nil {
+		t.Fatalf("NewPluginStore: %v", err)
+	}
+	installer := NewPluginInstaller(store, config.PluginInstallerConfig{AllowUnsignedDev: true})
+
+	_, err = installer.InstallFromDirectory(t.Context(), pluginDir)
+	if err == nil || !strings.Contains(err.Error(), "managed python plugin package missing pyproject.toml") {
+		t.Fatalf("InstallFromDirectory error = %v, want missing pyproject", err)
+	}
+}
+
 func TestPluginInstallerRejectsBlockedPackageAndPublisher(t *testing.T) {
 	dir := t.TempDir()
 	pluginDir := filepath.Join(dir, "plugin")

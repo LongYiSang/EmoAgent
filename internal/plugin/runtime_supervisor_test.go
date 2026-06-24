@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -544,12 +543,12 @@ func TestRuntimeSupervisorAcceptsManagedPythonProcess(t *testing.T) {
 	store, manifest := writeProcessPluginPackage(t, normalPythonPluginSource())
 	manifest.Runtime.Kind = RuntimeManagedPythonProcess
 	supervisor := NewRuntimeSupervisor(store, config.PluginRuntimeConfig{
-		ProcessEnabled:          true,
-		PrivatePythonExecutable: python,
-		StartupTimeoutMS:        3000,
-		ShutdownTimeoutMS:       1000,
-		MaxStderrBytes:          8192,
+		ProcessEnabled:    true,
+		StartupTimeoutMS:  3000,
+		ShutdownTimeoutMS: 1000,
+		MaxStderrBytes:    8192,
 	}, nil)
+	setTestManagedPythonEnvironment(t, supervisor, python)
 	supervisor.AddPlugin(manifest)
 	t.Cleanup(func() { _ = supervisor.StopAll(context.Background()) })
 
@@ -562,9 +561,9 @@ func TestRuntimeSupervisorAcceptsManagedPythonProcess(t *testing.T) {
 	}
 }
 
-func TestRuntimeSupervisorManagedPythonUsesPerPluginDependencyEnv(t *testing.T) {
+func TestRuntimeSupervisorManagedPythonDoesNotUseLegacyDependencyEnv(t *testing.T) {
 	python := findPythonForTest(t)
-	store, manifest := writeProcessPluginPackage(t, dependencyImportPythonPluginSource())
+	store, manifest := writeProcessPluginPackage(t, normalPythonPluginSource())
 	manifest.Runtime.Kind = RuntimeManagedPythonProcess
 	depDir := filepath.Join(store.RootDir, "dependencies", manifest.ID, manifest.Version)
 	if err := os.MkdirAll(depDir, 0o755); err != nil {
@@ -574,24 +573,24 @@ func TestRuntimeSupervisorManagedPythonUsesPerPluginDependencyEnv(t *testing.T) 
 		t.Fatalf("write dependency module: %v", err)
 	}
 	supervisor := NewRuntimeSupervisor(store, config.PluginRuntimeConfig{
-		ProcessEnabled:          true,
-		PrivatePythonExecutable: python,
-		StartupTimeoutMS:        3000,
-		ShutdownTimeoutMS:       1000,
-		MaxStderrBytes:          8192,
+		ProcessEnabled:    true,
+		StartupTimeoutMS:  3000,
+		ShutdownTimeoutMS: 1000,
+		MaxStderrBytes:    8192,
 	}, nil)
+	envDir := setTestManagedPythonEnvironment(t, supervisor, python)
 	supervisor.AddPlugin(manifest)
 	t.Cleanup(func() { _ = supervisor.StopAll(context.Background()) })
 
 	if _, err := supervisor.EnsureReady(t.Context(), manifest.ID); err != nil {
 		t.Fatalf("EnsureReady: %v", err)
 	}
-	result, err := supervisor.InvokeHook(t.Context(), manifest.ID, HookAfterTurnEnd, HookContext{})
-	if err != nil {
-		t.Fatalf("InvokeHook: %v", err)
+	status := supervisor.Status(manifest.ID)
+	if status.DependencyEnvDir != "" {
+		t.Fatalf("dependency env dir = %q, want empty", status.DependencyEnvDir)
 	}
-	if result.Annotations["dependency"] != "dependency-ready" {
-		t.Fatalf("hook annotations = %#v, want dependency-ready", result.Annotations)
+	if status.PythonEnvironmentDir != envDir {
+		t.Fatalf("python environment dir = %q, want %q", status.PythonEnvironmentDir, envDir)
 	}
 }
 
@@ -604,12 +603,12 @@ func TestRuntimeSupervisorManagedPythonUsesIsolatedHostBootstrap(t *testing.T) {
 	store, manifest := writeProcessPluginPackage(t, bootstrapProbePythonPluginSource())
 	manifest.Runtime.Kind = RuntimeManagedPythonProcess
 	supervisor := NewRuntimeSupervisor(store, config.PluginRuntimeConfig{
-		ProcessEnabled:          true,
-		PrivatePythonExecutable: python,
-		StartupTimeoutMS:        3000,
-		ShutdownTimeoutMS:       1000,
-		MaxStderrBytes:          8192,
+		ProcessEnabled:    true,
+		StartupTimeoutMS:  3000,
+		ShutdownTimeoutMS: 1000,
+		MaxStderrBytes:    8192,
 	}, nil)
+	setTestManagedPythonEnvironment(t, supervisor, python)
 	supervisor.SetAdditionalEnvVars([]string{"EMO_TEST_INHERITED_PYTHONPATH=" + inheritedPythonPath})
 	supervisor.AddPlugin(manifest)
 	t.Cleanup(func() { _ = supervisor.StopAll(context.Background()) })
@@ -641,12 +640,12 @@ func TestRuntimeSupervisorManagedPythonDoesNotInheritHostSensitiveEnv(t *testing
 	store, manifest := writeProcessPluginPackage(t, envLeakProbePythonPluginSource())
 	manifest.Runtime.Kind = RuntimeManagedPythonProcess
 	supervisor := NewRuntimeSupervisor(store, config.PluginRuntimeConfig{
-		ProcessEnabled:          true,
-		PrivatePythonExecutable: python,
-		StartupTimeoutMS:        3000,
-		ShutdownTimeoutMS:       1000,
-		MaxStderrBytes:          8192,
+		ProcessEnabled:    true,
+		StartupTimeoutMS:  3000,
+		ShutdownTimeoutMS: 1000,
+		MaxStderrBytes:    8192,
 	}, nil)
+	setTestManagedPythonEnvironment(t, supervisor, python)
 	supervisor.AddPlugin(manifest)
 	t.Cleanup(func() { _ = supervisor.StopAll(context.Background()) })
 
@@ -661,7 +660,7 @@ func TestRuntimeSupervisorManagedPythonDoesNotInheritHostSensitiveEnv(t *testing
 	}
 }
 
-func TestRuntimeSupervisorManagedPythonRequiresPrivatePythonExecutable(t *testing.T) {
+func TestRuntimeSupervisorManagedPythonRequiresEnvironmentResolver(t *testing.T) {
 	store, manifest := writeProcessPluginPackage(t, normalPythonPluginSource())
 	manifest.Runtime.Kind = RuntimeManagedPythonProcess
 	supervisor := NewRuntimeSupervisor(store, config.PluginRuntimeConfig{
@@ -674,12 +673,12 @@ func TestRuntimeSupervisorManagedPythonRequiresPrivatePythonExecutable(t *testin
 	supervisor.AddPlugin(manifest)
 
 	_, err := supervisor.EnsureReady(t.Context(), manifest.ID)
-	if err == nil || !strings.Contains(err.Error(), "managed python runtime unavailable") {
-		t.Fatalf("EnsureReady error = %v, want managed python runtime unavailable", err)
+	if err == nil || !strings.Contains(err.Error(), "Python Toolchain uv environment resolver") {
+		t.Fatalf("EnsureReady error = %v, want missing environment resolver", err)
 	}
 	status := supervisor.Status(manifest.ID)
-	if status.Status != "failed" || !strings.Contains(status.LastError, "managed python runtime unavailable") {
-		t.Fatalf("status = %#v, want failed private python status", status)
+	if status.Status != "failed" || !strings.Contains(status.LastError, "Python Toolchain uv environment resolver") {
+		t.Fatalf("status = %#v, want failed toolchain resolver status", status)
 	}
 }
 
@@ -697,25 +696,24 @@ func TestRuntimeSupervisorStatusReportsManagedPythonDiagnostics(t *testing.T) {
 
 	_, err := supervisor.EnsureReady(t.Context(), manifest.ID)
 	if err == nil {
-		t.Fatal("EnsureReady error = nil, want missing managed private Python")
+		t.Fatal("EnsureReady error = nil, want missing managed environment resolver")
 	}
 	status := supervisor.Status(manifest.ID)
 	if status.RuntimeKind != RuntimeManagedPythonProcess {
 		t.Fatalf("runtime kind = %q, want %q", status.RuntimeKind, RuntimeManagedPythonProcess)
 	}
-	if status.PythonExecutableSource != "store_private_runtime" {
-		t.Fatalf("python source = %q, want store_private_runtime", status.PythonExecutableSource)
+	if status.PythonExecutableSource != PythonExecutableSourceToolchainUV {
+		t.Fatalf("python source = %q, want %q", status.PythonExecutableSource, PythonExecutableSourceToolchainUV)
 	}
-	expectedPath := filepath.Join(store.RootDir, "runtime", "python", privatePythonExecutableName(runtime.GOOS))
-	if status.PythonExecutablePath != expectedPath {
-		t.Fatalf("python path = %q, want %q", status.PythonExecutablePath, expectedPath)
+	if status.PythonExecutablePath != "" {
+		t.Fatalf("python path = %q, want empty before resolver", status.PythonExecutablePath)
 	}
 	if status.PythonExecutableAvailable == nil || *status.PythonExecutableAvailable {
 		t.Fatalf("python available = %#v, want false", status.PythonExecutableAvailable)
 	}
 }
 
-func TestRuntimeSupervisorStatusReportsDependencyEnvBeforeStart(t *testing.T) {
+func TestRuntimeSupervisorStatusDoesNotReportLegacyDependencyEnvBeforeStart(t *testing.T) {
 	store, manifest := writeProcessPluginPackage(t, normalPythonPluginSource())
 	manifest.Runtime.Kind = RuntimeManagedPythonProcess
 	supervisor := NewRuntimeSupervisor(store, config.PluginRuntimeConfig{
@@ -727,9 +725,8 @@ func TestRuntimeSupervisorStatusReportsDependencyEnvBeforeStart(t *testing.T) {
 	supervisor.AddPlugin(manifest)
 
 	status := supervisor.Status(manifest.ID)
-	expected := filepath.Join(store.RootDir, "dependencies", manifest.ID, manifest.Version)
-	if status.DependencyEnvDir != expected {
-		t.Fatalf("dependency env dir = %q, want %q", status.DependencyEnvDir, expected)
+	if status.DependencyEnvDir != "" {
+		t.Fatalf("dependency env dir = %q, want empty", status.DependencyEnvDir)
 	}
 }
 
@@ -754,12 +751,12 @@ func TestRuntimeSupervisorStatusReportsProcessGuardDiagnostics(t *testing.T) {
 	store, manifest := writeProcessPluginPackage(t, normalPythonPluginSource())
 	manifest.Runtime.Kind = RuntimeManagedPythonProcess
 	supervisor := NewRuntimeSupervisor(store, config.PluginRuntimeConfig{
-		ProcessEnabled:          true,
-		PrivatePythonExecutable: python,
-		StartupTimeoutMS:        3000,
-		ShutdownTimeoutMS:       1000,
-		MaxStderrBytes:          8192,
+		ProcessEnabled:    true,
+		StartupTimeoutMS:  3000,
+		ShutdownTimeoutMS: 1000,
+		MaxStderrBytes:    8192,
 	}, nil)
+	setTestManagedPythonEnvironment(t, supervisor, python)
 	supervisor.AddPlugin(manifest)
 	t.Cleanup(func() { _ = supervisor.StopAll(context.Background()) })
 
@@ -770,8 +767,8 @@ func TestRuntimeSupervisorStatusReportsProcessGuardDiagnostics(t *testing.T) {
 	if status.PID <= 0 {
 		t.Fatalf("pid = %d, want process pid", status.PID)
 	}
-	if status.DependencyEnvDir == "" {
-		t.Fatalf("dependency env dir = empty in %#v", status)
+	if status.PythonEnvironmentDir == "" {
+		t.Fatalf("python environment dir = empty in %#v", status)
 	}
 	if strings.TrimSpace(status.ProcessGuardKind) == "" {
 		t.Fatalf("process guard kind = empty in %#v", status)
@@ -781,55 +778,33 @@ func TestRuntimeSupervisorStatusReportsProcessGuardDiagnostics(t *testing.T) {
 	}
 }
 
-func TestRuntimeSupervisorManagedPythonRejectsPathSearchExecutable(t *testing.T) {
+func TestRuntimeSupervisorManagedPythonRejectsRelativeResolverExecutable(t *testing.T) {
 	store, manifest := writeProcessPluginPackage(t, normalPythonPluginSource())
 	manifest.Runtime.Kind = RuntimeManagedPythonProcess
 	supervisor := NewRuntimeSupervisor(store, config.PluginRuntimeConfig{
-		ProcessEnabled:          true,
-		PrivatePythonExecutable: "python",
-		StartupTimeoutMS:        3000,
-		ShutdownTimeoutMS:       1000,
-		MaxStderrBytes:          8192,
+		ProcessEnabled:    true,
+		StartupTimeoutMS:  3000,
+		ShutdownTimeoutMS: 1000,
+		MaxStderrBytes:    8192,
 	}, nil)
+	supervisor.SetManagedPythonEnvironmentResolver(func(context.Context, ManifestV2) (ManagedPythonEnvironment, error) {
+		return ManagedPythonEnvironment{PythonExecutable: "python", EnvironmentDir: filepath.Join(t.TempDir(), "env")}, nil
+	})
 	supervisor.AddPlugin(manifest)
 
 	_, err := supervisor.EnsureReady(t.Context(), manifest.ID)
-	if err == nil || !strings.Contains(err.Error(), "private_python_executable must be an absolute path") {
-		t.Fatalf("EnsureReady error = %v, want absolute private python path required", err)
+	if err == nil || !strings.Contains(err.Error(), "managed python environment executable must be an absolute path") {
+		t.Fatalf("EnsureReady error = %v, want absolute environment python path required", err)
 	}
 }
 
-func TestRuntimeSupervisorManagedPythonUsesStorePrivateRuntimeLocator(t *testing.T) {
-	python := findPythonForTest(t)
+func TestRuntimeSupervisorManagedPythonExecutableLookupDoesNotUseStorePrivateRuntime(t *testing.T) {
 	store, _ := writeProcessPluginPackage(t, normalPythonPluginSource())
-	exeName := "python"
-	if runtime.GOOS == "windows" {
-		exeName = "python.exe"
-	}
-	privatePython := filepath.Join(store.RootDir, "runtime", "python", exeName)
-	if err := os.MkdirAll(filepath.Dir(privatePython), 0o755); err != nil {
-		t.Fatalf("MkdirAll private python: %v", err)
-	}
-	if err := os.WriteFile(privatePython, []byte("placeholder"), 0o644); err != nil {
-		t.Fatalf("write private python placeholder: %v", err)
-	}
 	supervisor := NewRuntimeSupervisor(store, config.PluginRuntimeConfig{ProcessEnabled: true}, nil)
 
 	got, err := supervisor.pythonExecutableFor(RuntimeManagedPythonProcess)
-	if err != nil {
-		t.Fatalf("pythonExecutableFor: %v", err)
-	}
-	if got != privatePython {
-		t.Fatalf("python executable = %q, want store private runtime %q", got, privatePython)
-	}
-
-	supervisor.cfg.PrivatePythonExecutable = python
-	got, err = supervisor.pythonExecutableFor(RuntimeManagedPythonProcess)
-	if err != nil {
-		t.Fatalf("pythonExecutableFor override: %v", err)
-	}
-	if got != python {
-		t.Fatalf("override executable = %q, want %q", got, python)
+	if err == nil || got != "" || !strings.Contains(err.Error(), "Python Toolchain uv environment resolver") {
+		t.Fatalf("pythonExecutableFor = %q, %v; want resolver error", got, err)
 	}
 }
 
@@ -931,14 +906,10 @@ func TestProcessRuntimeAuditGuardReportsSocketAndDirectDatabaseDenials(t *testin
 	}
 }
 
-func TestRuntimeSupervisorManagedPythonStorePrivateRuntimeAuditGuardSmoke(t *testing.T) {
-	artifactPath := strings.TrimSpace(os.Getenv("EMO_TEST_PRIVATE_PYTHON_ARTIFACT"))
-	if artifactPath == "" {
-		t.Skip("set EMO_TEST_PRIVATE_PYTHON_ARTIFACT and EMO_TEST_PRIVATE_PYTHON_SHA256 to smoke a real store-private Python runtime")
-	}
-	expectedDigest := strings.TrimSpace(os.Getenv("EMO_TEST_PRIVATE_PYTHON_SHA256"))
-	if expectedDigest == "" {
-		t.Fatal("EMO_TEST_PRIVATE_PYTHON_SHA256 is required when EMO_TEST_PRIVATE_PYTHON_ARTIFACT is set")
+func TestRuntimeSupervisorManagedPythonToolchainResolverAuditGuardSmoke(t *testing.T) {
+	python := strings.TrimSpace(os.Getenv("EMO_TEST_PYTHON_TOOLCHAIN_PYTHON"))
+	if python == "" {
+		python = findPythonForTest(t)
 	}
 	dbPath := filepath.Join(t.TempDir(), "memory.db")
 	if err := os.WriteFile(dbPath, []byte("secret"), 0o644); err != nil {
@@ -946,12 +917,6 @@ func TestRuntimeSupervisorManagedPythonStorePrivateRuntimeAuditGuardSmoke(t *tes
 	}
 	store, manifest := writeProcessPluginPackage(t, auditGuardProbePythonPluginSource())
 	manifest.Runtime.Kind = RuntimeManagedPythonProcess
-	if _, err := ProvisionPrivatePythonRuntime(store, config.PluginRuntimeConfig{
-		PrivatePythonArtifactPath:   artifactPath,
-		PrivatePythonArtifactSHA256: expectedDigest,
-	}); err != nil {
-		t.Fatalf("ProvisionPrivatePythonRuntime: %v", err)
-	}
 	supervisor := NewRuntimeSupervisor(store, config.PluginRuntimeConfig{
 		ProcessEnabled:    true,
 		PythonExecutable:  "legacy-python-must-not-be-used",
@@ -959,6 +924,7 @@ func TestRuntimeSupervisorManagedPythonStorePrivateRuntimeAuditGuardSmoke(t *tes
 		ShutdownTimeoutMS: 100,
 		MaxStderrBytes:    8192,
 	}, nil)
+	envDir := setTestManagedPythonEnvironment(t, supervisor, python)
 	supervisor.SetBlockedEnvNames([]string{"PATH", "PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"})
 	supervisor.SetAdditionalEnvVars([]string{"HOST_DB_PATH=" + dbPath})
 	supervisor.AddPlugin(manifest)
@@ -972,35 +938,14 @@ func TestRuntimeSupervisorManagedPythonStorePrivateRuntimeAuditGuardSmoke(t *tes
 		t.Fatalf("security annotations = %#v", result.Annotations)
 	}
 	status := supervisor.Status(manifest.ID)
-	expectedPython := filepath.Join(store.RootDir, "runtime", "python", privatePythonExecutableName(runtime.GOOS))
-	if status.PythonExecutableSource != PythonExecutableSourceStorePrivate || status.PythonExecutablePath != expectedPython {
-		t.Fatalf("runtime python diagnostics = %#v, want store-private %s", status, expectedPython)
+	if status.PythonExecutableSource != PythonExecutableSourceToolchainUV || status.PythonExecutablePath != python {
+		t.Fatalf("runtime python diagnostics = %#v, want toolchain python %s", status, python)
 	}
 	if status.PythonExecutableAvailable == nil || !*status.PythonExecutableAvailable {
 		t.Fatalf("python available = %#v, want true", status.PythonExecutableAvailable)
 	}
-}
-
-func TestSelfTestPrivatePythonRuntimeUsesIsolatedSafePathAndProcessGuard(t *testing.T) {
-	python := findPythonForTest(t)
-	requirePythonIsolatedSafePathSupport(t, python)
-	t.Setenv("EMO_SELFTEST_API_KEY", "secret")
-
-	result, err := SelfTestPrivatePythonRuntime(t.Context(), python, 3*time.Second)
-	if err != nil {
-		t.Fatalf("SelfTestPrivatePythonRuntime: %v", err)
-	}
-	if !result.Isolated || !result.SafePath {
-		t.Fatalf("self-test flags = %#v, want isolated safe path", result)
-	}
-	if result.SecretEnvSeen {
-		t.Fatalf("self-test inherited sensitive env: %#v", result)
-	}
-	if strings.TrimSpace(result.ProcessGuardKind) == "" {
-		t.Fatalf("process guard kind = empty in %#v", result)
-	}
-	if runtime.GOOS == "windows" && !result.ProcessGuardAttached {
-		t.Fatalf("process guard attached = false in %#v", result)
+	if status.PythonEnvironmentDir != envDir {
+		t.Fatalf("python env dir = %q, want %q", status.PythonEnvironmentDir, envDir)
 	}
 }
 
@@ -1356,6 +1301,15 @@ func findPythonForTest(t *testing.T) string {
 	}
 	t.Skip("python executable not found")
 	return ""
+}
+
+func setTestManagedPythonEnvironment(t *testing.T, supervisor *RuntimeSupervisor, python string) string {
+	t.Helper()
+	envDir := filepath.Join(t.TempDir(), "managed-python-env")
+	supervisor.SetManagedPythonEnvironmentResolver(func(context.Context, ManifestV2) (ManagedPythonEnvironment, error) {
+		return ManagedPythonEnvironment{PythonExecutable: python, EnvironmentDir: envDir}, nil
+	})
+	return envDir
 }
 
 func requirePythonIsolatedSafePathSupport(t *testing.T, python string) {

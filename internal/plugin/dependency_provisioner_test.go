@@ -1,14 +1,13 @@
 package plugin
 
 import (
+	"archive/zip"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/longyisang/emoagent/internal/config"
 )
 
 func TestProvisionPluginDependenciesFromLockInstallsZipArtifacts(t *testing.T) {
@@ -77,6 +76,32 @@ func TestDependencyLockSummaryReportsMissingLock(t *testing.T) {
 	}
 	if summary.Present || summary.LockDigest != "" || summary.PackageCount != 0 || len(summary.Packages) != 0 {
 		t.Fatalf("summary without lock = %#v, want empty absent summary", summary)
+	}
+}
+
+func TestDependencyLockSummaryReportsManagedUVProject(t *testing.T) {
+	store, manifest := writeProcessPluginPackage(t, normalPythonPluginSource())
+	manifest.Runtime.Kind = RuntimeManagedPythonProcess
+	packageDir, err := store.PackageDir(manifest.ID, manifest.Version)
+	if err != nil {
+		t.Fatalf("PackageDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(packageDir, "pyproject.toml"), []byte("[project]\nname=\"test\"\nversion=\"0.1.0\"\n"), 0o644); err != nil {
+		t.Fatalf("write pyproject: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(packageDir, "uv.lock"), []byte("lock-v1"), 0o644); err != nil {
+		t.Fatalf("write uv.lock: %v", err)
+	}
+
+	summary, err := DependencyLockSummaryForPackage(store, manifest)
+	if err != nil {
+		t.Fatalf("DependencyLockSummaryForPackage: %v", err)
+	}
+	if !summary.Present || summary.Format != "uv" || summary.LockDigest == "" || summary.UVLockDigest != summary.LockDigest || summary.PyprojectDigest == "" {
+		t.Fatalf("summary = %#v, want uv digests", summary)
+	}
+	if summary.LegacyDependency || summary.PackageCount != 0 || len(summary.Packages) != 0 {
+		t.Fatalf("summary legacy fields = %#v", summary)
 	}
 }
 
@@ -218,40 +243,6 @@ func TestProvisionPluginDependenciesRejectsUnsafeArtifactPathKeepsExistingEnv(t 
 	}
 }
 
-func TestRuntimeSupervisorManagedPythonInstallsLockedDependenciesBeforeInitialize(t *testing.T) {
-	python := findPythonForTest(t)
-	store, manifest := writeProcessPluginPackage(t, dependencyImportPythonPluginSource())
-	manifest.Runtime.Kind = RuntimeManagedPythonProcess
-	packageDir, err := store.PackageDir(manifest.ID, manifest.Version)
-	if err != nil {
-		t.Fatalf("PackageDir: %v", err)
-	}
-	writeDependencyZip(t, filepath.Join(packageDir, "deps", "depmod.zip"), map[string]string{
-		"depmod.py": `VALUE = "lock-installed"`,
-	})
-	writeDependencyLock(t, packageDir, "deps/depmod.zip")
-	supervisor := NewRuntimeSupervisor(store, config.PluginRuntimeConfig{
-		ProcessEnabled:          true,
-		PrivatePythonExecutable: python,
-		StartupTimeoutMS:        3000,
-		ShutdownTimeoutMS:       1000,
-		MaxStderrBytes:          8192,
-	}, nil)
-	supervisor.AddPlugin(manifest)
-	t.Cleanup(func() { _ = supervisor.StopAll(t.Context()) })
-
-	if _, err := supervisor.EnsureReady(t.Context(), manifest.ID); err != nil {
-		t.Fatalf("EnsureReady: %v", err)
-	}
-	result, err := supervisor.InvokeHook(t.Context(), manifest.ID, HookAfterTurnEnd, HookContext{})
-	if err != nil {
-		t.Fatalf("InvokeHook: %v", err)
-	}
-	if result.Annotations["dependency"] != "lock-installed" {
-		t.Fatalf("hook annotations = %#v, want lock-installed dependency", result.Annotations)
-	}
-}
-
 func writeDependencyLock(t *testing.T, packageDir, artifactRel string) {
 	t.Helper()
 	data := readFileBytes(t, filepath.Join(packageDir, filepath.FromSlash(artifactRel)))
@@ -275,7 +266,31 @@ func writeDependencyZip(t *testing.T, path string, files map[string]string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("MkdirAll dependency zip dir: %v", err)
 	}
-	writePrivatePythonRuntimeZip(t, path, files)
+	writeZipFiles(t, path, files)
+}
+
+func writeZipFiles(t *testing.T, path string, files map[string]string) {
+	t.Helper()
+	out, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("Create zip: %v", err)
+	}
+	archive := zip.NewWriter(out)
+	for name, content := range files {
+		writer, err := archive.Create(name)
+		if err != nil {
+			t.Fatalf("Create zip entry: %v", err)
+		}
+		if _, err := writer.Write([]byte(content)); err != nil {
+			t.Fatalf("Write zip entry: %v", err)
+		}
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatalf("Close zip: %v", err)
+	}
+	if err := out.Close(); err != nil {
+		t.Fatalf("Close zip file: %v", err)
+	}
 }
 
 func writeExistingDependencyEnv(t *testing.T, store *PluginStore, manifest ManifestV2, content string) string {
@@ -292,4 +307,13 @@ func writeExistingDependencyEnv(t *testing.T, store *PluginStore, manifest Manif
 		t.Fatalf("write existing dependency: %v", err)
 	}
 	return depFile
+}
+
+func readFileBytes(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile %s: %v", path, err)
+	}
+	return data
 }

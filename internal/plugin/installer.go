@@ -155,6 +155,11 @@ func (i *PluginInstaller) installFromPreparedDir(ctx context.Context, sourceDir,
 	if err != nil {
 		return InstallResult{}, err
 	}
+	if manifest.Runtime.Kind == RuntimeManagedPythonProcess {
+		if err := ValidateManagedPythonProject(sourceDir); err != nil {
+			return InstallResult{}, err
+		}
+	}
 	manifestJSON, err := json.Marshal(manifest)
 	if err != nil {
 		return InstallResult{}, err
@@ -209,6 +214,27 @@ func (i *PluginInstaller) installFromPreparedDir(ctx context.Context, sourceDir,
 		PublisherID:     publisherID,
 		StorePath:       storePath,
 	}, ctx.Err()
+}
+
+func ValidateManagedPythonProject(packageDir string) error {
+	if _, err := os.Stat(filepath.Join(packageDir, dependencyLockFileName)); err == nil {
+		return fmt.Errorf("managed python plugin package uses legacy %s; use pyproject.toml and uv.lock", dependencyLockFileName)
+	} else if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, name := range []string{"pyproject.toml", "uv.lock"} {
+		info, err := os.Stat(filepath.Join(packageDir, name))
+		if err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("managed python plugin package missing %s", name)
+			}
+			return err
+		}
+		if info.IsDir() {
+			return fmt.Errorf("managed python plugin package %s is a directory", name)
+		}
+	}
+	return nil
 }
 
 func (i *PluginInstaller) verifyInstallSignature(descriptor PluginReleaseDescriptor, found bool, pluginID, version, packageDigest, manifestDigest, sourceType string) (string, string, error) {

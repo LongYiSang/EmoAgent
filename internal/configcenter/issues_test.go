@@ -73,3 +73,12 @@ func TestBuildIssuesRejectsNegativeMemoryPipelineMaxTokens(t *testing.T) {
 
 	requireConfigIssue(t, issues, "memory.provider_bindings.extraction.max_tokens")
 }
+
+func TestBuildIssuesRejectsInvalidPythonToolchain(t *testing.T) {
+	seed := config.DefaultConfig()
+	seed.PythonToolchain.MinimumUVVersion = "latest"
+
+	issues := BuildIssues(seed, nil, nil)
+
+	requireConfigIssue(t, issues, "python_toolchain")
+}

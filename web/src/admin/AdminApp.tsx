@@ -11,6 +11,7 @@ import { useSidecarAdmin } from './hooks/useSidecarAdmin';
 import { useAgentAffectAdmin } from './hooks/useAgentAffectAdmin';
 import { usePromptCenterAdmin } from './hooks/usePromptCenterAdmin';
 import { useWebSearchAdmin } from './hooks/useWebSearchAdmin';
+import { usePythonToolchainAdmin } from './hooks/usePythonToolchainAdmin';
 import { useAdminBootstrap } from './hooks/useAdminBootstrap';
 import { tabs, type TabID } from './lib/adminData';
 import '../styles.css';
@@ -23,6 +24,7 @@ const MemoryCoreTab = lazy(() => import('./tabs/MemoryCoreTab'));
 const AgentAffectTab = lazy(() => import('./tabs/AgentAffectTab'));
 const PromptCenterTab = lazy(() => import('./tabs/PromptCenterTab'));
 const WebSearchPipelineTab = lazy(() => import('./tabs/WebSearchPipelineTab'));
+const PythonToolchainTab = lazy(() => import('./tabs/PythonToolchainTab'));
 const PipelinesTab = lazy(() => import('./tabs/PipelinesTab'));
 const RetrievalTab = lazy(() => import('./tabs/RetrievalTab'));
 const SidecarTab = lazy(() => import('./tabs/SidecarTab'));
@@ -42,8 +44,9 @@ export function AdminApp() {
   const agentAffect = useAgentAffectAdmin(status);
   const promptCenter = usePromptCenterAdmin(status);
   const webSearch = useWebSearchAdmin(status);
+  const pythonToolchain = usePythonToolchainAdmin(status);
 
-  useAdminBootstrap(tab, { providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, webSearch, sidecar, status });
+  useAdminBootstrap(tab, { providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, webSearch, pythonToolchain, sidecar, status });
 
   function renderActiveTab() {
     switch (tab) {
@@ -136,6 +139,8 @@ export function AdminApp() {
         return <PromptCenterTab {...promptCenter} agents={agents.agents} activeAgentID={agents.activeAgentID} />;
       case 'websearch-pipeline':
         return <WebSearchPipelineTab {...webSearch} />;
+      case 'python-toolchain':
+        return <PythonToolchainTab {...pythonToolchain} />;
       case 'pipelines':
         return <PipelinesTab providers={providers.providers} memoryDraft={memory.memoryDraft} updateMemoryPath={memory.updateMemoryPath} savePipelines={memory.savePipelines} />;
       case 'retrieval-mirror':

@@ -15,6 +15,7 @@ import (
 	"github.com/longyisang/emoagent/internal/media"
 	"github.com/longyisang/emoagent/internal/memoryhost"
 	"github.com/longyisang/emoagent/internal/protocol"
+	"github.com/longyisang/emoagent/internal/pytoolchain"
 	sidecarruntime "github.com/longyisang/emoagent/internal/sidecar"
 	"github.com/longyisang/emoagent/internal/storage"
 	"github.com/longyisang/emoagent/internal/web"
@@ -199,6 +200,54 @@ func (a *App) GetAgentAffectConfig(ctx context.Context) (configcenter.AgentAffec
 		return configcenter.AgentAffectConfigResponse{}, err
 	}
 	return services.Config.GetAgentAffectConfig(ctx)
+}
+
+func (a *App) GetPythonToolchainConfig(ctx context.Context) (config.PythonToolchainConfig, error) {
+	services, err := a.services()
+	if err != nil {
+		return config.PythonToolchainConfig{}, err
+	}
+	return services.Config.GetPythonToolchainConfig(ctx)
+}
+
+func (a *App) ProbePythonToolchain(ctx context.Context, cfg config.PythonToolchainConfig) (pytoolchain.ProbeResult, error) {
+	services, err := a.services()
+	if err != nil {
+		return pytoolchain.ProbeResult{}, err
+	}
+	return services.Config.ProbePythonToolchain(ctx, cfg)
+}
+
+func (a *App) UpdatePythonToolchainConfig(ctx context.Context, cfg config.PythonToolchainConfig) (configcenter.EffectiveConfig, error) {
+	services, err := a.services()
+	if err != nil {
+		return configcenter.EffectiveConfig{}, err
+	}
+	return services.Config.UpdatePythonToolchainConfig(ctx, cfg)
+}
+
+func (a *App) ListPythonEnvironments(ctx context.Context) ([]pytoolchain.EnvironmentSummary, error) {
+	services, err := a.services()
+	if err != nil {
+		return nil, err
+	}
+	return services.Config.ListPythonEnvironments(ctx)
+}
+
+func (a *App) SyncPythonEnvironment(ctx context.Context, kind, id, version string) (pytoolchain.EnvironmentSummary, error) {
+	services, err := a.services()
+	if err != nil {
+		return pytoolchain.EnvironmentSummary{}, err
+	}
+	return services.Config.SyncPythonEnvironment(ctx, kind, id, version)
+}
+
+func (a *App) RepairPythonEnvironment(ctx context.Context, kind, id, version string) (pytoolchain.EnvironmentSummary, error) {
+	services, err := a.services()
+	if err != nil {
+		return pytoolchain.EnvironmentSummary{}, err
+	}
+	return services.Config.RepairPythonEnvironment(ctx, kind, id, version)
 }
 
 func (a *App) UpdateAgentAffectConfig(ctx context.Context, cfg config.AgentAffectConfig) (configcenter.EffectiveConfig, error) {

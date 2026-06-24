@@ -122,6 +122,58 @@ func TestBuildEffectiveIncludesRootWebSearch(t *testing.T) {
 	}
 }
 
+func TestUpdatePythonToolchainConfigStoresRuntimeSetting(t *testing.T) {
+	db := openConfigCenterDB(t)
+	svc := NewService(config.DefaultConfig(), db)
+	cfg := config.PythonToolchainConfig{
+		Enabled:               true,
+		PythonExecutable:      `C:\Python312\python.exe`,
+		UVExecutable:          `C:\Users\me\.local\bin\uv.exe`,
+		RequiredPython:        "3.12",
+		MinimumUVVersion:      "0.11.0",
+		EnvironmentRoot:       `C:\envs`,
+		CacheDir:              `C:\cache`,
+		DefaultIndex:          "https://pypi.org/simple",
+		SyncTimeoutSeconds:    600,
+		UseSystemCertificates: false,
+	}
+
+	effective, err := svc.UpdatePythonToolchainConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("UpdatePythonToolchainConfig: %v", err)
+	}
+	if !effective.PythonToolchain.Enabled || effective.PythonToolchain.UseSystemCertificates {
+		t.Fatalf("effective python_toolchain = %#v", effective.PythonToolchain)
+	}
+	setting, ok, err := db.GetRuntimeSetting("python_toolchain", "config")
+	if err != nil {
+		t.Fatalf("GetRuntimeSetting: %v", err)
+	}
+	if !ok || !strings.Contains(setting.ValueJSON, `"use_system_certificates":false`) {
+		t.Fatalf("runtime setting = %#v ok=%v", setting, ok)
+	}
+}
+
+func TestUpdatePythonToolchainConfigRejectsInvalidVersion(t *testing.T) {
+	db := openConfigCenterDB(t)
+	svc := NewService(config.DefaultConfig(), db)
+	_, err := svc.UpdatePythonToolchainConfig(context.Background(), config.PythonToolchainConfig{
+		Enabled:            true,
+		PythonExecutable:   `C:\Python312\python.exe`,
+		UVExecutable:       `C:\Users\me\.local\bin\uv.exe`,
+		RequiredPython:     "3.12",
+		MinimumUVVersion:   "soon",
+		EnvironmentRoot:    `C:\envs`,
+		CacheDir:           `C:\cache`,
+		DefaultIndex:       "https://pypi.org/simple",
+		SyncTimeoutSeconds: 600,
+	})
+	var validation *ValidationError
+	if !errors.As(err, &validation) || len(validation.Issues) == 0 || validation.Issues[0].Path != "python_toolchain" {
+		t.Fatalf("error = %#v, want python_toolchain validation", err)
+	}
+}
+
 func TestBuildEffectiveReportsMissingProviderEnv(t *testing.T) {
 	db := openConfigCenterDB(t)
 	if err := db.UpsertLLMProvider(config.LLMProvider{

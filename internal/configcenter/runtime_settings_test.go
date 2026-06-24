@@ -58,3 +58,29 @@ func TestApplyRuntimeSettingsSupportsRootAgentAffect(t *testing.T) {
 		t.Fatalf("root agent_affect runtime setting mutated memory.agent_affect: %#v", effective.Memory.AgentAffect)
 	}
 }
+
+func TestApplyRuntimeSettingsSupportsPythonToolchain(t *testing.T) {
+	seed := config.DefaultConfig()
+
+	effective, issues := ApplyRuntimeSettings(seed, []storage.RuntimeSetting{
+		{Namespace: "python_toolchain", Key: "config", ValueJSON: `{"enabled":true,"python_executable":"C:/Python312/python.exe","uv_executable":"C:/Users/me/.local/bin/uv.exe","minimum_uv_version":"0.11.1"}`},
+	})
+	if len(issues) != 0 {
+		t.Fatalf("issues = %#v, want none", issues)
+	}
+	if !effective.PythonToolchain.Enabled {
+		t.Fatalf("python_toolchain.enabled = false, want true")
+	}
+	if effective.PythonToolchain.PythonExecutable != "C:/Python312/python.exe" {
+		t.Fatalf("python_executable = %q", effective.PythonToolchain.PythonExecutable)
+	}
+	if effective.PythonToolchain.UVExecutable != "C:/Users/me/.local/bin/uv.exe" {
+		t.Fatalf("uv_executable = %q", effective.PythonToolchain.UVExecutable)
+	}
+	if effective.PythonToolchain.MinimumUVVersion != "0.11.1" {
+		t.Fatalf("minimum_uv_version = %q", effective.PythonToolchain.MinimumUVVersion)
+	}
+	if effective.PythonToolchain.RequiredPython != "3.12" {
+		t.Fatalf("required_python = %q, want default 3.12", effective.PythonToolchain.RequiredPython)
+	}
+}

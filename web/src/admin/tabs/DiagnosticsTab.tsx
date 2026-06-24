@@ -37,7 +37,7 @@ export default memo(function DiagnosticsTab({ effectiveConfig, configIssues, plu
             <strong>Plugin Runtime</strong>
             <span className={classNames('badge', pluginDiagnostics.status === 'error' && 'warn')}>{String(pluginDiagnostics.status || 'unknown')}</span>
           </div>
-          <p className="meta">Private Python、Self-test、Dependency install、Job Object / ProcessGuard、plugin logs 和 repair 只表示本机托管运行诊断；第三方插件仍是当前用户权限下的本地代码，非安全沙箱。</p>
+          <p className="meta">Python Toolchain、uv environments、Job Object / ProcessGuard、plugin logs 和 repair 只表示本机托管运行诊断；第三方插件仍是当前用户权限下的本地代码，非安全沙箱。</p>
           <div className="grid compact">
             {checks.map(check => (
               <div className="field" key={String(check.id || check.label)}>

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +31,7 @@ type RuntimeStatus struct {
 	PythonExecutablePath      string      `json:"python_executable_path,omitempty"`
 	PythonExecutableSource    string      `json:"python_executable_source,omitempty"`
 	PythonExecutableAvailable *bool       `json:"python_executable_available,omitempty"`
+	PythonEnvironmentDir      string      `json:"python_environment_dir,omitempty"`
 	DependencyEnvDir          string      `json:"dependency_env_dir,omitempty"`
 	PID                       int         `json:"pid,omitempty"`
 	ProcessGuardKind          string      `json:"process_guard_kind,omitempty"`
@@ -45,6 +45,7 @@ type RuntimeSupervisor struct {
 	hostHandler       JSONRPCHandler
 	hostHandlerFor    func(string) JSONRPCHandler
 	enabled           func(context.Context, string) bool
+	managedEnv        func(context.Context, ManifestV2) (ManagedPythonEnvironment, error)
 	blockedEnvNames   []string
 	blockedEnvNamesFn func() []string
 	additionalEnvVars []string
@@ -89,6 +90,7 @@ type runtimeSlot struct {
 	pythonExecutablePath      string
 	pythonExecutableSource    string
 	pythonExecutableAvailable *bool
+	pythonEnvironmentDir      string
 	dependencyEnvDir          string
 	pid                       int
 	processGuardKind          string
@@ -103,14 +105,19 @@ type runtimeStartResult struct {
 	pythonExecutablePath      string
 	pythonExecutableSource    string
 	pythonExecutableAvailable *bool
+	pythonEnvironmentDir      string
 	dependencyEnvDir          string
 }
 
 const (
-	PythonExecutableSourcePrivate      = "private_python_executable"
-	PythonExecutableSourceStorePrivate = "store_private_runtime"
-	PythonExecutableSourceLegacy       = "legacy_python_executable"
+	PythonExecutableSourceToolchainUV = "python_toolchain_uv_environment"
+	PythonExecutableSourceLegacy      = "legacy_python_executable"
 )
+
+type ManagedPythonEnvironment struct {
+	PythonExecutable string
+	EnvironmentDir   string
+}
 
 const (
 	runtimeReaperInterval      = 30 * time.Second
@@ -195,6 +202,14 @@ func NewRuntimeSupervisor(store *PluginStore, cfg config.PluginRuntimeConfig, ha
 func (s *RuntimeSupervisor) SetEnabledChecker(checker func(context.Context, string) bool) {
 	if s != nil {
 		s.enabled = checker
+	}
+}
+
+func (s *RuntimeSupervisor) SetManagedPythonEnvironmentResolver(resolver func(context.Context, ManifestV2) (ManagedPythonEnvironment, error)) {
+	if s != nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.managedEnv = resolver
 	}
 }
 
@@ -490,6 +505,7 @@ func (s *RuntimeSupervisor) completeRuntimeStart(pluginID string, slot *runtimeS
 	slot.pythonExecutablePath = result.pythonExecutablePath
 	slot.pythonExecutableSource = result.pythonExecutableSource
 	slot.pythonExecutableAvailable = cloneBoolPtr(result.pythonExecutableAvailable)
+	slot.pythonEnvironmentDir = result.pythonEnvironmentDir
 	slot.dependencyEnvDir = result.dependencyEnvDir
 	applyProcessRuntimeDiagnosticsToRecord(slot, result.runtime)
 	closeRuntimeSlotReadyLocked(slot)
@@ -613,16 +629,33 @@ func (s *RuntimeSupervisor) startRuntime(ctx context.Context, manifest ManifestV
 		return nil, err
 	}
 	dependencyEnvDir := ""
+	pythonEnvironmentDir := ""
+	var pythonDiag pythonExecutableDiagnostics
 	if manifest.Runtime.Kind == RuntimeManagedPythonProcess {
-		provisionResult, err := ProvisionPluginDependencies(s.store, manifest)
+		envResolver := s.managedEnvironmentResolver()
+		if envResolver != nil {
+			env, err := envResolver(ctx, manifest)
+			if err != nil {
+				return nil, err
+			}
+			pythonDiag = pythonExecutableDiagnostics{path: strings.TrimSpace(env.PythonExecutable), source: PythonExecutableSourceToolchainUV, available: boolPtr(false)}
+			if !filepath.IsAbs(pythonDiag.path) {
+				return nil, fmt.Errorf("managed python environment executable must be an absolute path")
+			}
+			if _, err := os.Stat(pythonDiag.path); err != nil {
+				return nil, fmt.Errorf("managed python environment unavailable at %q: %w", pythonDiag.path, err)
+			}
+			pythonDiag.available = boolPtr(true)
+			pythonEnvironmentDir = strings.TrimSpace(env.EnvironmentDir)
+		} else {
+			return nil, fmt.Errorf("managed python runtime requires a Python Toolchain uv environment resolver")
+		}
+	} else {
+		var err error
+		pythonDiag, err = s.resolvePythonExecutable(manifest.Runtime.Kind)
 		if err != nil {
 			return nil, err
 		}
-		dependencyEnvDir = provisionResult.DependencyEnvDir
-	}
-	pythonDiag, err := s.resolvePythonExecutable(manifest.Runtime.Kind)
-	if err != nil {
-		return nil, err
 	}
 	python := pythonDiag.path
 	handler := s.hostHandler
@@ -679,8 +712,18 @@ func (s *RuntimeSupervisor) startRuntime(ctx context.Context, manifest ManifestV
 		pythonExecutablePath:      pythonDiag.path,
 		pythonExecutableSource:    pythonDiag.source,
 		pythonExecutableAvailable: cloneBoolPtr(pythonDiag.available),
+		pythonEnvironmentDir:      pythonEnvironmentDir,
 		dependencyEnvDir:          dependencyEnvDir,
 	}, nil
+}
+
+func (s *RuntimeSupervisor) managedEnvironmentResolver() func(context.Context, ManifestV2) (ManagedPythonEnvironment, error) {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.managedEnv
 }
 
 func (s *RuntimeSupervisor) pythonExecutableFor(kind RuntimeKind) (string, error) {
@@ -706,28 +749,7 @@ func (s *RuntimeSupervisor) launchEnvSnapshot() ([]string, []string) {
 func (s *RuntimeSupervisor) resolvePythonExecutable(kind RuntimeKind) (pythonExecutableDiagnostics, error) {
 	switch kind {
 	case RuntimeManagedPythonProcess:
-		python := strings.TrimSpace(s.cfg.PrivatePythonExecutable)
-		if python != "" {
-			diag := pythonExecutableDiagnostics{path: python, source: PythonExecutableSourcePrivate, available: boolPtr(false)}
-			if !filepath.IsAbs(python) {
-				return diag, fmt.Errorf("private_python_executable must be an absolute path")
-			}
-			if _, err := os.Stat(python); err != nil {
-				return diag, fmt.Errorf("managed python runtime unavailable at %q: %w", python, err)
-			}
-			diag.available = boolPtr(true)
-			return diag, nil
-		}
-		python, err := s.defaultPrivatePythonExecutable()
-		diag := pythonExecutableDiagnostics{path: python, source: PythonExecutableSourceStorePrivate, available: boolPtr(false)}
-		if err != nil {
-			return diag, err
-		}
-		if _, err := os.Stat(python); err != nil {
-			return diag, fmt.Errorf("managed python runtime unavailable at %q: %w", python, err)
-		}
-		diag.available = boolPtr(true)
-		return diag, nil
+		return pythonExecutableDiagnostics{source: PythonExecutableSourceToolchainUV, available: boolPtr(false)}, fmt.Errorf("managed python runtime requires a Python Toolchain uv environment resolver")
 	case RuntimePythonProcess, RuntimeProcess:
 		python := strings.TrimSpace(s.cfg.PythonExecutable)
 		diag := pythonExecutableDiagnostics{path: python, source: PythonExecutableSourceLegacy}
@@ -738,20 +760,6 @@ func (s *RuntimeSupervisor) resolvePythonExecutable(kind RuntimeKind) (pythonExe
 	default:
 		return pythonExecutableDiagnostics{}, fmt.Errorf("plugin runtime kind %q cannot be launched as process", kind)
 	}
-}
-
-func (s *RuntimeSupervisor) defaultPrivatePythonExecutable() (string, error) {
-	if s == nil || s.store == nil || strings.TrimSpace(s.store.RootDir) == "" {
-		return "", fmt.Errorf("managed python runtime unavailable: plugin store is not configured")
-	}
-	return filepath.Join(s.store.RootDir, "runtime", "python", privatePythonExecutableName(runtime.GOOS)), nil
-}
-
-func privatePythonExecutableName(goos string) string {
-	if strings.EqualFold(goos, "windows") {
-		return "python.exe"
-	}
-	return "python"
 }
 
 func (s *RuntimeSupervisor) InvokeHook(ctx context.Context, pluginID string, hook HookName, hc HookContext) (HookResult, error) {
@@ -954,6 +962,7 @@ func (s *RuntimeSupervisor) Status(pluginID string) RuntimeStatus {
 		PythonExecutablePath:      record.pythonExecutablePath,
 		PythonExecutableSource:    record.pythonExecutableSource,
 		PythonExecutableAvailable: cloneBoolPtr(record.pythonExecutableAvailable),
+		PythonEnvironmentDir:      record.pythonEnvironmentDir,
 		DependencyEnvDir:          record.dependencyEnvDir,
 		PID:                       record.pid,
 		ProcessGuardKind:          record.processGuardKind,
@@ -1062,14 +1071,7 @@ func (s *RuntimeSupervisor) dependencyEnvDirForManifest(manifest ManifestV2) str
 	if s == nil || s.store == nil {
 		return ""
 	}
-	if manifest.Runtime.Kind != RuntimeManagedPythonProcess {
-		return ""
-	}
-	dir, err := s.store.DependencyEnvDir(manifest.ID, manifest.Version)
-	if err != nil {
-		return ""
-	}
-	return dir
+	return ""
 }
 
 func applyPythonDiagnostics(status *RuntimeStatus, diag pythonExecutableDiagnostics) {

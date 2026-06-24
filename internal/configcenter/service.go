@@ -26,15 +26,16 @@ type Service struct {
 }
 
 type EffectiveConfig struct {
-	AgentAffect            config.AgentAffectConfig `json:"agent_affect"`
-	Memory                 config.MemoryConfig      `json:"memory"`
-	WebSearch              config.WebSearchConfig   `json:"websearch"`
-	WebSearchRuntime       WebSearchRuntimeStatus   `json:"websearch_runtime"`
-	Providers              []ProviderEffective      `json:"providers"`
-	RuntimeSettings        []storage.RuntimeSetting `json:"runtime_settings"`
-	MemoryCore             *MemoryCoreEffective     `json:"memory_core,omitempty"`
-	SidecarGeneratedConfig string                   `json:"sidecar_generated_config,omitempty"`
-	Issues                 []ConfigIssue            `json:"issues"`
+	AgentAffect            config.AgentAffectConfig     `json:"agent_affect"`
+	Memory                 config.MemoryConfig          `json:"memory"`
+	WebSearch              config.WebSearchConfig       `json:"websearch"`
+	PythonToolchain        config.PythonToolchainConfig `json:"python_toolchain"`
+	WebSearchRuntime       WebSearchRuntimeStatus       `json:"websearch_runtime"`
+	Providers              []ProviderEffective          `json:"providers"`
+	RuntimeSettings        []storage.RuntimeSetting     `json:"runtime_settings"`
+	MemoryCore             *MemoryCoreEffective         `json:"memory_core,omitempty"`
+	SidecarGeneratedConfig string                       `json:"sidecar_generated_config,omitempty"`
+	Issues                 []ConfigIssue                `json:"issues"`
 }
 
 type MemoryCoreOpenConfig struct {
@@ -178,6 +179,7 @@ func (s *Service) BuildEffective(ctx context.Context) (EffectiveConfig, error) {
 		AgentAffect:     runtimeCfg.AgentAffect,
 		Memory:          runtimeCfg.Memory,
 		WebSearch:       runtimeCfg.WebSearch,
+		PythonToolchain: runtimeCfg.PythonToolchain,
 		Providers:       s.providerEffective(providers),
 		RuntimeSettings: runtimeSettings,
 	}
@@ -322,6 +324,53 @@ func (s *Service) validateWebSearchConfigUpdate(ctx context.Context, next storag
 	allIssues := append([]ConfigIssue{}, runtimeIssues...)
 	allIssues = append(allIssues, BuildIssues(&runtimeCfg, s.providerEffective(providers), nil)...)
 	issues := filterIssuesByPathPrefix(allIssues, "websearch")
+	issues = dedupeIssues(issues)
+	if hasBlockingIssues(issues) {
+		return &ValidationError{Issues: issues}
+	}
+	return nil
+}
+
+func (s *Service) UpdatePythonToolchainConfig(ctx context.Context, cfg config.PythonToolchainConfig) (EffectiveConfig, error) {
+	if s.DB == nil {
+		return EffectiveConfig{}, fmt.Errorf("runtime settings database is not configured")
+	}
+	payload, err := json.Marshal(cfg)
+	if err != nil {
+		return EffectiveConfig{}, err
+	}
+	if err := s.validatePythonToolchainConfigUpdate(ctx, storage.RuntimeSetting{
+		Namespace: "python_toolchain",
+		Key:       "config",
+		ValueJSON: string(payload),
+		Source:    "ui",
+	}); err != nil {
+		return EffectiveConfig{}, err
+	}
+	if err := s.DB.UpsertRuntimeSetting("python_toolchain", "config", string(payload), "ui"); err != nil {
+		return EffectiveConfig{}, err
+	}
+	return s.BuildEffective(ctx)
+}
+
+func (s *Service) validatePythonToolchainConfigUpdate(ctx context.Context, next storage.RuntimeSetting) error {
+	seed := s.Seed
+	if seed == nil {
+		seed = config.DefaultConfig()
+	}
+	current, err := s.runtimeSettings()
+	if err != nil {
+		return err
+	}
+	settings := replaceRuntimeSetting(current, next)
+	runtimeCfg, runtimeIssues := ApplyRuntimeSettings(seed, settings)
+	providers, err := s.providers(ctx, &runtimeCfg)
+	if err != nil {
+		return err
+	}
+	allIssues := append([]ConfigIssue{}, runtimeIssues...)
+	allIssues = append(allIssues, BuildIssues(&runtimeCfg, s.providerEffective(providers), nil)...)
+	issues := filterIssuesByPathPrefix(allIssues, "python_toolchain")
 	issues = dedupeIssues(issues)
 	if hasBlockingIssues(issues) {
 		return &ValidationError{Issues: issues}
