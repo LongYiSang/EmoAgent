@@ -490,6 +490,41 @@ func TestInitMemorySidecarFailOpenDisablesMirror(t *testing.T) {
 	}
 }
 
+func TestInitManagedMemorySidecarFailOpenReportsEnvironmentIssue(t *testing.T) {
+	dir := t.TempDir()
+	memoryDBPath := filepath.Join(dir, "memory.db")
+	memoryConfigPath := writeAppMemoryCoreConfigWithSidecar(t, dir, memoryDBPath)
+	configPath := writeAppInitConfigWithMemorySidecar(t, dir, true, memoryConfigPath, `
+  sidecar:
+    enabled: true
+    managed: true
+    adapter: fake
+    fail_open: true
+`)
+
+	a := New()
+	t.Cleanup(func() { _ = a.Shutdown() })
+	if err := a.Init(context.Background(), configPath); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if testMemoryHost(a) == nil {
+		t.Fatal("Memory host = nil, want initialized fallback host")
+	}
+	status, err := a.GetSidecarStatus(context.Background())
+	if err != nil {
+		t.Fatalf("GetSidecarStatus: %v", err)
+	}
+	if status.State != sidecarruntime.StateDegraded {
+		t.Fatalf("sidecar state = %s, want degraded; status=%#v", status.State, status)
+	}
+	if !strings.Contains(status.Error, "python toolchain") {
+		t.Fatalf("sidecar error = %q, want python toolchain environment issue", status.Error)
+	}
+	if strings.Contains(status.Error, "sidecar command is required") {
+		t.Fatalf("sidecar error hid environment issue: %q", status.Error)
+	}
+}
+
 func TestInitMemorySidecarFailClosedReturnsError(t *testing.T) {
 	dir := t.TempDir()
 	memoryDBPath := filepath.Join(dir, "memory.db")

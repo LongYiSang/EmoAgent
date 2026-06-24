@@ -81,7 +81,7 @@ func (s *Supervisor) Start(ctx context.Context) (Status, error) {
 	if len(args) == 0 {
 		return s.degradeOrError(fmt.Errorf("sidecar command is required"))
 	}
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	cmd := exec.Command(args[0], args[1:]...)
 	if s.spec.WorkingDir != "" {
 		cmd.Dir = s.spec.WorkingDir
 	}

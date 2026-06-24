@@ -8,6 +8,7 @@ import (
 
 	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/configcenter"
 	"github.com/longyisang/emoagent/internal/memoryhost"
 	"github.com/longyisang/emoagent/internal/storage"
 )
@@ -74,6 +75,13 @@ func memoryExtractionWorkerConfig(cfg config.MemoryExtractionConfig, workerIndex
 		MirrorSyncLimit:           cfg.MirrorSync.Limit,
 		FailExtractionOnSyncError: cfg.MirrorSync.FailExtractionOnSyncError,
 	}
+}
+
+func memoryExtractionConfigForBackground(cfg config.MemoryExtractionConfig, memoryCore *configcenter.MemoryCoreEffective) config.MemoryExtractionConfig {
+	if memoryCore != nil && !memoryCore.Mirror.Enabled {
+		cfg.MirrorSync.PeriodicEnabled = false
+	}
+	return cfg
 }
 
 func memoryExtractionIdleSchedulerConfig(cfg config.MemoryExtractionConfig) memoryhost.IdleExtractionSchedulerConfig {

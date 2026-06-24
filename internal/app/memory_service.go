@@ -22,6 +22,7 @@ type MemoryService struct {
 	config      *ConfigService
 	sidecar     *SidecarService
 	host        *memoryhost.Host
+	memoryCore  *configcenter.MemoryCoreEffective
 	natural     *memoryhost.NaturalMemoryRunner
 	manualRules *memoryhost.ManualRules
 }
@@ -59,12 +60,10 @@ func (s *MemoryService) Open(ctx context.Context) error {
 		s.infra.Logger.Warn("sidecar config issue", "path", issue.Path, "message", issue.Message)
 	}
 	if sidecarSpec.Enabled {
-		supervisor := sidecarruntime.NewSupervisor(sidecarSpec, s.infra.Logger)
-		status, err := supervisor.Start(ctx)
+		status, err := s.sidecar.Start(ctx)
 		if err != nil {
 			return fmt.Errorf("start sidecar: %w", err)
 		}
-		s.sidecar.SetSupervisor(supervisor)
 		sidecarStatus = &status
 	}
 	memoryOpen, err := s.config.BuildMemoryCoreOpenConfig(ctx, sidecarStatus)
@@ -84,13 +83,15 @@ func (s *MemoryService) Open(ctx context.Context) error {
 	}
 	memoryHost.ConfigureExtractionPolicy(memoryExtractionHostConfig(memoryOpen.Memory.Extraction))
 	s.host = memoryHost
+	s.memoryCore = memoryOpen.MemoryCore
 	s.manualRules = manualRules
 	s.writeRuntimeSnapshot(memoryOpen.Memory, memoryOpen.MemoryCore, sidecarStatus)
 	return nil
 }
 
 func (s *MemoryService) StartBackground(ctx context.Context) {
-	startMemoryExtractionBackground(ctx, s.host, s.infra.DB, s.infra.Logger, s.infra.Config.Memory.Extraction)
+	extraction := memoryExtractionConfigForBackground(s.infra.Config.Memory.Extraction, s.memoryCore)
+	startMemoryExtractionBackground(ctx, s.host, s.infra.DB, s.infra.Logger, extraction)
 	s.natural = startNaturalMemoryBackground(ctx, s.host, s.infra.Logger, s.infra.Config.Memory.NaturalMemory)
 }
 

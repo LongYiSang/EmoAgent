@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -243,6 +244,48 @@ func TestManagerProbeAppliesTimeout(t *testing.T) {
 	_, _ = manager.Probe(context.Background())
 }
 
+func TestManagerProbeUVBindingUsesUniqueTempEnvPerProbe(t *testing.T) {
+	base := t.TempDir()
+	runner := &concurrentProbeRunner{}
+	cfg := config.PythonToolchainConfig{
+		Enabled:            true,
+		PythonExecutable:   "C:/Python312/python.exe",
+		UVExecutable:       "C:/Users/me/.local/bin/uv.exe",
+		RequiredPython:     "3.12",
+		MinimumUVVersion:   "0.11.0",
+		EnvironmentRoot:    "data/python-envs",
+		CacheDir:           "data/uv-cache",
+		DefaultIndex:       "https://pypi.org/simple",
+		SyncTimeoutSeconds: 2,
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := NewManager(cfg, WithRunner(runner), WithProcessArchitecture("AMD64"), WithTempDir(base)).Probe(context.Background())
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("Probe: %v", err)
+		}
+	}
+
+	targets := runner.venvTargets()
+	if len(targets) != 2 {
+		t.Fatalf("uv venv targets = %#v, want 2", targets)
+	}
+	if targets[0] == targets[1] {
+		t.Fatalf("uv binding probe reused temp env %q", targets[0])
+	}
+}
+
 func TestManagerDefaultsPreserveDisabledSystemCertificates(t *testing.T) {
 	manager := NewManager(config.PythonToolchainConfig{
 		PythonExecutable: "C:/Python312/python.exe",
@@ -328,4 +371,35 @@ func envHas(env []string, want string) bool {
 		}
 	}
 	return false
+}
+
+type concurrentProbeRunner struct {
+	mu      sync.Mutex
+	targets []string
+}
+
+func (r *concurrentProbeRunner) Run(_ context.Context, cmd Command) CommandResult {
+	joined := strings.Join(append([]string{cmd.Path}, cmd.Args...), " ")
+	switch {
+	case strings.Contains(joined, "python.exe -I -P -c"):
+		return CommandResult{Stdout: `{"implementation":"CPython","version":"3.12.11","major":3,"minor":12,"patch":11,"architecture":"AMD64","executable":"C:/Python312/python.exe","prefix":"C:/Python312","isolated":true,"safe_path":true}`, ExitCode: 0}
+	case strings.Contains(joined, "uv.exe --version"):
+		return CommandResult{Stdout: "uv 0.11.9", ExitCode: 0}
+	case strings.Contains(joined, "uv.exe venv"):
+		if len(cmd.Args) < 2 {
+			return CommandResult{Stderr: "missing venv target", ExitCode: 1}
+		}
+		r.mu.Lock()
+		r.targets = append(r.targets, cmd.Args[1])
+		r.mu.Unlock()
+		return CommandResult{Stdout: "Using CPython 3.12.11", ExitCode: 0}
+	default:
+		return CommandResult{Stderr: "unexpected command: " + joined, ExitCode: 1}
+	}
+}
+
+func (r *concurrentProbeRunner) venvTargets() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.targets...)
 }

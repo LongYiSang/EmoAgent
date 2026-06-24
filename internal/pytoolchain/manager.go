@@ -254,8 +254,15 @@ func (m *Manager) probeUVBinding(ctx context.Context) error {
 	if envRoot == "" {
 		envRoot = filepath.Join(filepath.Dir(strings.TrimSpace(m.cfg.PythonExecutable)), ".emoagent-probe")
 	}
-	targetEnv := filepath.Join(envRoot, "toolchain-probe-venv")
-	defer os.RemoveAll(targetEnv)
+	if err := os.MkdirAll(envRoot, 0o755); err != nil {
+		return fmt.Errorf("create uv python binding probe root: %w", err)
+	}
+	probeDir, err := os.MkdirTemp(envRoot, "toolchain-probe-*")
+	if err != nil {
+		return fmt.Errorf("create uv python binding probe dir: %w", err)
+	}
+	defer os.RemoveAll(probeDir)
+	targetEnv := filepath.Join(probeDir, "venv")
 	result := m.runner.Run(ctx, Command{
 		Path:    strings.TrimSpace(m.cfg.UVExecutable),
 		Args:    []string{"venv", targetEnv, "--python", strings.TrimSpace(m.cfg.PythonExecutable)},
@@ -272,7 +279,7 @@ func (m *Manager) probeUVBinding(ctx context.Context) error {
 	if runtime.GOOS != "windows" {
 		envPython = filepath.Join(targetEnv, "bin", "python")
 	}
-	_, err := m.probePython(ctx, envPython)
+	_, err = m.probePython(ctx, envPython)
 	return err
 }
 

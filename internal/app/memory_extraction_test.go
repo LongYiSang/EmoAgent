@@ -6,6 +6,7 @@ import (
 
 	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/configcenter"
 )
 
 func TestMemoryExtractionHostConfigMapsTriggerPolicy(t *testing.T) {
@@ -82,5 +83,21 @@ func TestMemoryExtractionBackgroundConfigsMapDurations(t *testing.T) {
 	}
 	if idleCfg.MinEpisodeCount != 1 || idleCfg.MaxSegmentsPerSweep != 3 || !idleCfg.IncludeActiveSegments || !idleCfg.IncludeFinalizedSegments {
 		t.Fatalf("idle scan config = %#v", idleCfg)
+	}
+}
+
+func TestMemoryExtractionBackgroundDisablesPeriodicMirrorWhenEffectiveMirrorDisabled(t *testing.T) {
+	cfg := config.MemoryExtractionConfig{
+		MirrorSync: config.MemoryExtractionMirrorConfig{
+			PeriodicEnabled: true,
+		},
+	}
+
+	got := memoryExtractionConfigForBackground(cfg, &configcenter.MemoryCoreEffective{
+		Mirror: configcenter.MemoryCoreMirrorEffective{Enabled: false},
+	})
+
+	if got.MirrorSync.PeriodicEnabled {
+		t.Fatalf("PeriodicEnabled = true, want false when effective mirror is disabled")
 	}
 }
