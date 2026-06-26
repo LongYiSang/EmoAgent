@@ -309,15 +309,17 @@ INSERT INTO agent_affect_evaluations (
     input_mode, input_text, input_summary, context_window_policy_json, context_window_snapshot_json,
     before_state_id, before_state_json,
     llm_provider, llm_model, llm_thinking_enabled, prompt_version, prompt_hash, prompt_snapshot, response_json,
+    appraisal_json, context_strategy, prompt_chars, estimated_input_tokens, actual_input_tokens, actual_output_tokens, prompt_truncated, budget_report_json,
     proposed_delta_json, clamped_delta_json, predicted_state_json,
     mood_description, mood_reason, prompt_mood_text, cause_summary, visible_cause_summary, confidence, clamp_notes_json, status, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `, eval.ID, eval.PersonaID, nilIfEmpty(eval.SessionID), nilIfEmpty(eval.TurnID), nilIfEmpty(eval.BatchID), eval.MoodOwnerScope, eval.MoodOwnerID,
 		eval.Trigger.TriggerType, nilIfEmpty(eval.Trigger.CustomType), nilIfEmpty(eval.Trigger.CustomTypeDesc), eval.Trigger.SourceKind, nilIfEmpty(eval.Trigger.SourceRefType),
 		nilIfEmpty(eval.Trigger.SourceRefID), nilIfEmpty(eval.Trigger.SourceRefHash), nilIfEmpty(eval.Trigger.PluginID),
 		defaultString(eval.Input.Mode, "raw"), nilIfEmpty(eval.Input.Text), nilIfEmpty(eval.Input.Summary), defaultString(eval.ContextWindowPolicyJSON, "{}"), nilIfEmpty(eval.ContextWindowSnapshotJSON),
 		nilIfEmpty(eval.BeforeStateID), defaultString(eval.BeforeStateJSON, "{}"),
 		nilIfEmpty(eval.LLMProvider), nilIfEmpty(eval.LLMModel), boolInt(eval.LLMThinkingEnabled), defaultString(eval.PromptVersion, "agent_affect_v2.prompt.v1"), eval.PromptHash, nilIfEmpty(eval.PromptSnapshot), nilIfEmpty(eval.ResponseJSON),
+		mustJSON(eval.Appraisal), defaultString(eval.ContextStrategy, ""), eval.PromptChars, eval.EstimatedInputTokens, eval.ActualInputTokens, eval.ActualOutputTokens, boolInt(eval.PromptTruncated), defaultString(eval.BudgetReportJSON, "{}"),
 		mustJSON(eval.ProposedDelta), mustJSON(eval.ClampedDelta), mustJSON(eval.PredictedState),
 		eval.MoodDescription, eval.MoodReason, eval.PromptMoodText, eval.CauseSummary, eval.VisibleCauseSummary, eval.Confidence, mustJSON(eval.ClampNotes), defaultString(eval.Status, EvaluationStatusPreview), dbTime(eval.CreatedAt),
 	)
@@ -344,15 +346,17 @@ func insertEvent(ctx context.Context, exec sqlExecer, event AffectEventRecord) e
 	_, err := exec.ExecContext(ctx, `
 INSERT INTO agent_affect_events (
     id, persona_id, session_id, turn_id, batch_id, mood_owner_scope, mood_owner_id, evaluation_id, trigger_type, custom_type, plugin_id,
+    source_kind, source_ref_type, source_ref_id, source_ref_hash,
     before_state_id, after_state_id,
     proposed_delta_json, clamped_delta_json, committed_delta_json,
-    label_before, label_after, mood_description, mood_reason, prompt_mood_text, cause_summary, significance, confidence, committed_by, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    label_before, label_after, mood_description, mood_reason, prompt_mood_text, cause_summary, cause_code, affect_tags_json, significance, confidence, committed_by, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `, event.ID, event.PersonaID, nilIfEmpty(event.SessionID), nilIfEmpty(event.TurnID), nilIfEmpty(event.BatchID), event.MoodOwnerScope, event.MoodOwnerID, nilIfEmpty(event.EvaluationID),
 		event.Trigger.TriggerType, nilIfEmpty(event.Trigger.CustomType), nilIfEmpty(event.Trigger.PluginID),
+		defaultString(event.SourceKind, event.Trigger.SourceKind), defaultString(event.SourceRefType, event.Trigger.SourceRefType), defaultString(event.SourceRefID, event.Trigger.SourceRefID), defaultString(event.SourceRefHash, event.Trigger.SourceRefHash),
 		nilIfEmpty(event.BeforeStateID), nilIfEmpty(event.AfterStateID),
 		mustJSON(event.ProposedDelta), mustJSON(event.ClampedDelta), mustJSON(event.CommittedDelta),
-		nilIfEmpty(event.LabelBefore), nilIfEmpty(event.LabelAfter), event.MoodDescription, event.MoodReason, event.PromptMoodText, event.CauseSummary, event.Significance, event.Confidence, defaultString(event.CommittedBy, "core"), dbTime(event.CreatedAt),
+		nilIfEmpty(event.LabelBefore), nilIfEmpty(event.LabelAfter), event.MoodDescription, event.MoodReason, event.PromptMoodText, event.CauseSummary, defaultString(event.CauseCode, ""), mustJSON(event.AffectTags), event.Significance, event.Confidence, defaultString(event.CommittedBy, "core"), dbTime(event.CreatedAt),
 	)
 	if err != nil {
 		return fmt.Errorf("insert affect event: %w", err)
@@ -404,6 +408,8 @@ SELECT id, persona_id, COALESCE(session_id, ''), COALESCE(turn_id, ''), COALESCE
        COALESCE(mood_owner_scope, ''), COALESCE(mood_owner_id, ''),
        trigger_type, COALESCE(custom_type, ''), source_kind,
        input_mode, COALESCE(input_text, ''), COALESCE(input_summary, ''),
+       COALESCE(llm_provider, ''), COALESCE(llm_model, ''), llm_thinking_enabled, prompt_version, prompt_hash,
+       appraisal_json, context_strategy, prompt_chars, estimated_input_tokens, actual_input_tokens, actual_output_tokens, prompt_truncated, budget_report_json,
        mood_description, mood_reason, prompt_mood_text, cause_summary, visible_cause_summary,
        proposed_delta_json, clamped_delta_json, predicted_state_json, confidence, status, created_at
 FROM agent_affect_evaluations
@@ -418,18 +424,24 @@ LIMIT ?
 	var out []AffectEvaluationRecord
 	for rows.Next() {
 		var rec AffectEvaluationRecord
-		var proposed, clamped, predicted string
+		var proposed, clamped, predicted, appraisal string
 		var createdAt string
+		var thinking, truncated int
 		if err := rows.Scan(
 			&rec.ID, &rec.PersonaID, &rec.SessionID, &rec.TurnID,
 			&rec.BatchID, &rec.MoodOwnerScope, &rec.MoodOwnerID,
 			&rec.Trigger.TriggerType, &rec.Trigger.CustomType, &rec.Trigger.SourceKind,
 			&rec.Input.Mode, &rec.Input.Text, &rec.Input.Summary,
+			&rec.LLMProvider, &rec.LLMModel, &thinking, &rec.PromptVersion, &rec.PromptHash,
+			&appraisal, &rec.ContextStrategy, &rec.PromptChars, &rec.EstimatedInputTokens, &rec.ActualInputTokens, &rec.ActualOutputTokens, &truncated, &rec.BudgetReportJSON,
 			&rec.MoodDescription, &rec.MoodReason, &rec.PromptMoodText, &rec.CauseSummary, &rec.VisibleCauseSummary,
 			&proposed, &clamped, &predicted, &rec.Confidence, &rec.Status, &createdAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan affect evaluation: %w", err)
 		}
+		rec.LLMThinkingEnabled = thinking != 0
+		rec.PromptTruncated = truncated != 0
+		_ = json.Unmarshal([]byte(appraisal), &rec.Appraisal)
 		_ = json.Unmarshal([]byte(proposed), &rec.ProposedDelta)
 		_ = json.Unmarshal([]byte(clamped), &rec.ClampedDelta)
 		_ = json.Unmarshal([]byte(predicted), &rec.PredictedState)
@@ -450,10 +462,11 @@ func (s *SQLiteStore) ListRecentEvents(ctx context.Context, q RecentEventsQuery)
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, persona_id, COALESCE(session_id, ''), COALESCE(turn_id, ''), COALESCE(batch_id, ''), COALESCE(mood_owner_scope, ''), COALESCE(mood_owner_id, ''), COALESCE(evaluation_id, ''),
        trigger_type, COALESCE(custom_type, ''), COALESCE(plugin_id, ''),
+       source_kind, source_ref_type, source_ref_id, source_ref_hash,
        COALESCE(before_state_id, ''), COALESCE(after_state_id, ''),
        proposed_delta_json, clamped_delta_json, committed_delta_json,
        COALESCE(label_before, ''), COALESCE(label_after, ''),
-       mood_description, mood_reason, prompt_mood_text, cause_summary, significance, confidence, committed_by, created_at
+       mood_description, mood_reason, prompt_mood_text, cause_summary, cause_code, affect_tags_json, significance, confidence, committed_by, created_at
 FROM agent_affect_events
 WHERE persona_id = ? AND (? = '' OR COALESCE(session_id, '') = ?)
 ORDER BY created_at DESC
@@ -466,26 +479,72 @@ LIMIT ?
 	var out []AffectEventRecord
 	for rows.Next() {
 		var rec AffectEventRecord
-		var proposed, clamped, committed string
+		var proposed, clamped, committed, tags string
 		var createdAt string
 		if err := rows.Scan(
 			&rec.ID, &rec.PersonaID, &rec.SessionID, &rec.TurnID, &rec.BatchID, &rec.MoodOwnerScope, &rec.MoodOwnerID, &rec.EvaluationID,
 			&rec.Trigger.TriggerType, &rec.Trigger.CustomType, &rec.Trigger.PluginID,
+			&rec.SourceKind, &rec.SourceRefType, &rec.SourceRefID, &rec.SourceRefHash,
 			&rec.BeforeStateID, &rec.AfterStateID,
 			&proposed, &clamped, &committed,
 			&rec.LabelBefore, &rec.LabelAfter,
-			&rec.MoodDescription, &rec.MoodReason, &rec.PromptMoodText, &rec.CauseSummary, &rec.Significance, &rec.Confidence, &rec.CommittedBy, &createdAt,
+			&rec.MoodDescription, &rec.MoodReason, &rec.PromptMoodText, &rec.CauseSummary, &rec.CauseCode, &tags, &rec.Significance, &rec.Confidence, &rec.CommittedBy, &createdAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan affect event: %w", err)
 		}
+		rec.Trigger.SourceKind = rec.SourceKind
+		rec.Trigger.SourceRefType = rec.SourceRefType
+		rec.Trigger.SourceRefID = rec.SourceRefID
+		rec.Trigger.SourceRefHash = rec.SourceRefHash
 		_ = json.Unmarshal([]byte(proposed), &rec.ProposedDelta)
 		_ = json.Unmarshal([]byte(clamped), &rec.ClampedDelta)
 		_ = json.Unmarshal([]byte(committed), &rec.CommittedDelta)
+		_ = json.Unmarshal([]byte(tags), &rec.AffectTags)
 		rec.CreatedAt = parseDBTime(createdAt)
 		out = append(out, rec)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate affect events: %w", err)
+	}
+	return out, nil
+}
+
+func (s *SQLiteStore) ListAffectiveEpisodeCandidates(ctx context.Context, q AffectEpisodeQuery) ([]AffectEpisodeSummary, error) {
+	limit := q.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT cause_code, cause_summary, affect_tags_json, significance, created_at
+FROM agent_affect_events
+WHERE persona_id = ?
+  AND mood_owner_scope = ?
+  AND mood_owner_id = ?
+  AND visibility_status = 'visible'
+  AND COALESCE(cause_summary, '') <> ''
+ORDER BY created_at DESC
+LIMIT ?
+`, q.PersonaID, q.MoodOwnerScope, q.MoodOwnerID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list affective episode candidates: %w", err)
+	}
+	defer rows.Close()
+	var out []AffectEpisodeSummary
+	now := time.Now().UTC()
+	for rows.Next() {
+		var item AffectEpisodeSummary
+		var tagsJSON, createdAt string
+		if err := rows.Scan(&item.CauseCode, &item.Summary, &tagsJSON, &item.Significance, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan affective episode candidate: %w", err)
+		}
+		_ = json.Unmarshal([]byte(tagsJSON), &item.Tags)
+		if t := parseDBTime(createdAt); !t.IsZero() && now.After(t) {
+			item.AgeSeconds = int64(now.Sub(t).Seconds())
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate affective episode candidates: %w", err)
 	}
 	return out, nil
 }

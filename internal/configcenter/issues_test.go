@@ -82,3 +82,12 @@ func TestBuildIssuesRejectsInvalidPythonToolchain(t *testing.T) {
 
 	requireConfigIssue(t, issues, "python_toolchain")
 }
+
+func TestBuildIssuesWarnsDeprecatedAgentAffectPreviousEvaluations(t *testing.T) {
+	seed := config.DefaultConfig()
+	seed.AgentAffect.Context.IncludePreviousEvaluations = true
+
+	issues := BuildIssues(seed, nil, nil)
+
+	requireConfigIssue(t, issues, "agent_affect.context.include_previous_evaluations")
+}

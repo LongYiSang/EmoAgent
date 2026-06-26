@@ -51,11 +51,13 @@ export default memo(function AgentAffectTab({
   const moodVector = field<AnyRecord>(mood, 'vector', {});
   const evaluator = field<AnyRecord>(configDraft, 'evaluator', {});
   const stateConfig = field<AnyRecord>(configDraft, 'state', {});
+  const contextConfig = field<AnyRecord>(configDraft, 'context', {});
   const promptConfig = field<AnyRecord>(configDraft, 'prompt', {});
   const asyncConfig = field<AnyRecord>(configDraft, 'async', {});
   const batchConfig = field<AnyRecord>(asyncConfig, 'batch', {});
   const evaluations = arrayField<AnyRecord>(history, 'evaluations');
   const events = arrayField<AnyRecord>(history, 'events');
+  const latestEvaluation = evaluations[0] || {};
   const queueJobs = arrayField<AnyRecord>(queueStatus, 'jobs');
   const queueBatches = arrayField<AnyRecord>(queueStatus, 'batches');
   const latestBatch = field<AnyRecord>(queueStatus, 'latest_batch', {});
@@ -118,15 +120,12 @@ export default memo(function AgentAffectTab({
           </select>
         </div>
         <div className="field">
-          <label>Context Mode</label>
-          <select value={stringField(field(configDraft, 'context', {}), 'mode') || 'raw_window'} onChange={event => updateConfigPath(['context', 'mode'], event.target.value)}>
-            <option value="none">none</option>
-            <option value="raw_window">raw_window</option>
-            <option value="summary_window">summary_window</option>
-            <option value="mixed">mixed</option>
+          <label>Context Strategy</label>
+          <select value={stringField(contextConfig, 'strategy') || 'checkpoint_trace_v1'} onChange={event => updateConfigPath(['context', 'strategy'], event.target.value)}>
+            <option value="checkpoint_trace_v1">checkpoint_trace_v1</option>
           </select>
         </div>
-        <label className="check"><input type="checkbox" checked={boolField(field(configDraft, 'context', {}), 'store_raw_inputs')} onChange={event => updateConfigPath(['context', 'store_raw_inputs'], event.target.checked)} /> 保存 raw input_text</label>
+        <label className="check"><input type="checkbox" checked={boolField(contextConfig, 'store_raw_inputs')} onChange={event => updateConfigPath(['context', 'store_raw_inputs'], event.target.checked)} /> 保留 raw 输入审计</label>
         <label className="check"><input type="checkbox" checked={boolField(promptConfig, 'include_mood_block')} onChange={event => updateConfigPath(['prompt', 'include_mood_block'], event.target.checked)} /> 注入 prompt mood block</label>
         <div className="field">
           <label>Prompt Mode</label>
@@ -141,6 +140,27 @@ export default memo(function AgentAffectTab({
         <label className="check"><input type="checkbox" checked={boolField(batchConfig, 'enabled')} onChange={event => updateConfigPath(['async', 'batch', 'enabled'], event.target.checked)} /> 批量合并</label>
         <div className="field"><label>Batch Max Jobs</label><input type="number" min="1" value={String(field(batchConfig, 'max_jobs', 6))} onChange={event => updateConfigPath(['async', 'batch', 'max_jobs'], toInt(event.target.value))} /></div>
       </div>
+
+      <details className="slot" open>
+        <summary className="slot-head">
+          <strong>Checkpoint / Budget</strong>
+          <span className="badge">{numberField(contextConfig, 'max_input_tokens') || 2800} input tokens</span>
+        </summary>
+        <div className="grid compact">
+          <div className="field"><label>Max Input Tokens</label><input type="number" min="1" value={String(field(contextConfig, 'max_input_tokens', 2800))} onChange={event => updateConfigPath(['context', 'max_input_tokens'], toInt(event.target.value))} /></div>
+          <div className="field"><label>Budget Safety Margin</label><input type="number" min="0.1" max="1" step="0.01" value={String(field(contextConfig, 'budget_safety_margin', 0.85))} onChange={event => updateConfigPath(['context', 'budget_safety_margin'], toFloat(event.target.value))} /></div>
+          <div className="field"><label>User Chars / Turn</label><input type="number" min="1" value={String(field(contextConfig, 'max_user_chars_per_turn', 700))} onChange={event => updateConfigPath(['context', 'max_user_chars_per_turn'], toInt(event.target.value))} /></div>
+          <div className="field"><label>Assistant Chars / Turn</label><input type="number" min="1" value={String(field(contextConfig, 'max_assistant_chars_per_turn', 900))} onChange={event => updateConfigPath(['context', 'max_assistant_chars_per_turn'], toInt(event.target.value))} /></div>
+          <div className="field"><label>Memory Context Chars</label><input type="number" min="0" value={String(field(contextConfig, 'max_memory_context_chars', 600))} onChange={event => updateConfigPath(['context', 'max_memory_context_chars'], toInt(event.target.value))} /></div>
+          <div className="field"><label>Cause Summary Chars</label><input type="number" min="1" value={String(field(contextConfig, 'cause_summary_max_chars', 120))} onChange={event => updateConfigPath(['context', 'cause_summary_max_chars'], toInt(event.target.value))} /></div>
+          <div className="field"><label>Trace Max Items</label><input type="number" min="1" value={String(field(stateConfig, 'cause_stack_max_items', 5))} onChange={event => updateConfigPath(['state', 'cause_stack_max_items'], toInt(event.target.value))} /></div>
+          <div className="field"><label>State Half-life Seconds</label><input type="number" min="0" value={String(field(stateConfig, 'decay_half_life_seconds', 1800))} onChange={event => updateConfigPath(['state', 'decay_half_life_seconds'], toInt(event.target.value))} /></div>
+          <div className="field"><label>Cause Half-life Seconds</label><input type="number" min="0" value={String(field(stateConfig, 'cause_half_life_seconds', 3600))} onChange={event => updateConfigPath(['state', 'cause_half_life_seconds'], toInt(event.target.value))} /></div>
+          <label className="check"><input type="checkbox" checked={boolField(contextConfig, 'affective_episode_enabled')} onChange={event => updateConfigPath(['context', 'affective_episode_enabled'], event.target.checked)} /> Sparse episodes</label>
+          <div className="field"><label>Episode Top K</label><input type="number" min="0" max="2" value={String(field(contextConfig, 'affective_episode_top_k', 2))} onChange={event => updateConfigPath(['context', 'affective_episode_top_k'], toInt(event.target.value))} /></div>
+          <div className="field"><label>Episode Max Chars</label><input type="number" min="1" value={String(field(contextConfig, 'affective_episode_max_chars', 160))} onChange={event => updateConfigPath(['context', 'affective_episode_max_chars'], toInt(event.target.value))} /></div>
+        </div>
+      </details>
 
       <details className="slot" open>
         <summary className="slot-head">
@@ -233,6 +253,9 @@ export default memo(function AgentAffectTab({
           <span>Latest batch</span><b>{stringField(latestBatch, 'id') || '—'}</b>
           <span>Batch job count</span><b>{numberField(latestBatch, 'job_count')}</b>
           <span>Last worker error</span><b>{stringField(latestBatch, 'error_message') || '—'}</b>
+          <span>Latest prompt</span><b>{numberField(latestEvaluation, 'prompt_chars')} chars / est {numberField(latestEvaluation, 'estimated_input_tokens')} tokens</b>
+          <span>Latest usage</span><b>in {numberField(latestEvaluation, 'actual_input_tokens')} / out {numberField(latestEvaluation, 'actual_output_tokens')}</b>
+          <span>Truncated</span><b>{String(boolField(latestEvaluation, 'prompt_truncated'))}</b>
         </div>
         <div className="grid two-col">
           <div className="timeline-list">
@@ -336,11 +359,15 @@ export default memo(function AgentAffectTab({
 });
 
 function HistoryRow({ item, kind }: { item: AnyRecord; kind: string }) {
+  const usage = kind === 'evaluation'
+    ? `prompt=${numberField(item, 'prompt_chars')} est=${numberField(item, 'estimated_input_tokens')} in=${numberField(item, 'actual_input_tokens')} out=${numberField(item, 'actual_output_tokens')} truncated=${String(boolField(item, 'prompt_truncated'))}`
+    : `significance=${numberField(item, 'significance').toFixed(3)} cause=${stringField(item, 'cause_code') || '-'}`;
   return (
     <div className="timeline-item">
       <b>{kind}: {stringField(item, 'status') || stringField(item, 'committed_by') || '-'}</b>
       <span>{formatTime(field(item, 'created_at', ''))}</span>
       <span>{stringField(item, 'cause_summary') || stringField(field(item, 'trigger', {}), 'trigger_type')}</span>
+      <span>{usage}</span>
     </div>
   );
 }

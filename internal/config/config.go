@@ -143,8 +143,13 @@ type AgentAffectConfig struct {
 }
 
 type AgentAffectStateConfig struct {
-	Scope              string `yaml:"scope" json:"scope"`
-	RecentContextScope string `yaml:"recent_context_scope" json:"recent_context_scope"`
+	Scope                string  `yaml:"scope" json:"scope"`
+	RecentContextScope   string  `yaml:"recent_context_scope" json:"recent_context_scope"`
+	DecayEnabled         bool    `yaml:"decay_enabled" json:"decay_enabled"`
+	DecayHalfLifeSeconds int     `yaml:"decay_half_life_seconds" json:"decay_half_life_seconds"`
+	CauseStackMaxItems   int     `yaml:"cause_stack_max_items" json:"cause_stack_max_items"`
+	CauseHalfLifeSeconds int     `yaml:"cause_half_life_seconds" json:"cause_half_life_seconds"`
+	CauseMinWeight       float64 `yaml:"cause_min_weight" json:"cause_min_weight"`
 }
 
 type AgentAffectAsyncConfig struct {
@@ -185,14 +190,26 @@ type AgentAffectEvaluatorConfig struct {
 }
 
 type AgentAffectContextConfig struct {
-	Mode                       string `yaml:"mode" json:"mode"`
-	RawKeepLastRequests        int    `yaml:"raw_keep_last_requests" json:"raw_keep_last_requests"`
-	RawKeepLastTokens          int    `yaml:"raw_keep_last_tokens" json:"raw_keep_last_tokens"`
-	IncludePreviousEvaluations bool   `yaml:"include_previous_evaluations" json:"include_previous_evaluations"`
-	PreviousEvaluationKeepLast int    `yaml:"previous_evaluation_keep_last" json:"previous_evaluation_keep_last"`
-	SummaryEnabled             bool   `yaml:"summary_enabled" json:"summary_enabled"`
-	StoreRawInputs             bool   `yaml:"store_raw_inputs" json:"store_raw_inputs"`
-	StorePromptSnapshot        bool   `yaml:"store_prompt_snapshot" json:"store_prompt_snapshot"`
+	Mode                           string  `yaml:"mode" json:"mode"`
+	RawKeepLastRequests            int     `yaml:"raw_keep_last_requests" json:"raw_keep_last_requests"`
+	RawKeepLastTokens              int     `yaml:"raw_keep_last_tokens" json:"raw_keep_last_tokens"`
+	IncludePreviousEvaluations     bool    `yaml:"include_previous_evaluations" json:"include_previous_evaluations"`
+	PreviousEvaluationKeepLast     int     `yaml:"previous_evaluation_keep_last" json:"previous_evaluation_keep_last"`
+	SummaryEnabled                 bool    `yaml:"summary_enabled" json:"summary_enabled"`
+	StoreRawInputs                 bool    `yaml:"store_raw_inputs" json:"store_raw_inputs"`
+	StorePromptSnapshot            bool    `yaml:"store_prompt_snapshot" json:"store_prompt_snapshot"`
+	Strategy                       string  `yaml:"strategy" json:"strategy"`
+	MaxInputTokens                 int     `yaml:"max_input_tokens" json:"max_input_tokens"`
+	BudgetSafetyMargin             float64 `yaml:"budget_safety_margin" json:"budget_safety_margin"`
+	MaxUserCharsPerTurn            int     `yaml:"max_user_chars_per_turn" json:"max_user_chars_per_turn"`
+	MaxAssistantCharsPerTurn       int     `yaml:"max_assistant_chars_per_turn" json:"max_assistant_chars_per_turn"`
+	MaxMemoryContextChars          int     `yaml:"max_memory_context_chars" json:"max_memory_context_chars"`
+	CauseSummaryMaxChars           int     `yaml:"cause_summary_max_chars" json:"cause_summary_max_chars"`
+	AffectiveEpisodeEnabled        bool    `yaml:"affective_episode_enabled" json:"affective_episode_enabled"`
+	AffectiveEpisodeCandidateLimit int     `yaml:"affective_episode_candidate_limit" json:"affective_episode_candidate_limit"`
+	AffectiveEpisodeTopK           int     `yaml:"affective_episode_top_k" json:"affective_episode_top_k"`
+	AffectiveEpisodeMaxChars       int     `yaml:"affective_episode_max_chars" json:"affective_episode_max_chars"`
+	AffectiveEpisodeMinScore       float64 `yaml:"affective_episode_min_score" json:"affective_episode_min_score"`
 }
 
 type AgentAffectDimensionsConfig struct {
@@ -1642,8 +1659,13 @@ func DefaultConfig() *Config {
 			UpdateMode:     "async_after_reply",
 			StorageEnabled: true,
 			State: AgentAffectStateConfig{
-				Scope:              "persona",
-				RecentContextScope: "persona",
+				Scope:                "persona",
+				RecentContextScope:   "persona",
+				DecayEnabled:         true,
+				DecayHalfLifeSeconds: 1800,
+				CauseStackMaxItems:   5,
+				CauseHalfLifeSeconds: 3600,
+				CauseMinWeight:       0.05,
 			},
 			Async: AgentAffectAsyncConfig{
 				Enabled:               true,
@@ -1667,19 +1689,32 @@ func DefaultConfig() *Config {
 			},
 			Evaluator: AgentAffectEvaluatorConfig{
 				Mode:            "llm",
+				ReasoningEffort: "minimal",
 				TimeoutMS:       30000,
-				MaxOutputTokens: 4096,
-				Temperature:     0.2,
+				MaxOutputTokens: 512,
+				Temperature:     0,
 			},
 			Context: AgentAffectContextConfig{
-				Mode:                       "raw_window",
-				RawKeepLastRequests:        20,
-				RawKeepLastTokens:          12000,
-				IncludePreviousEvaluations: true,
-				PreviousEvaluationKeepLast: 30,
-				SummaryEnabled:             false,
-				StoreRawInputs:             true,
-				StorePromptSnapshot:        false,
+				Mode:                           "raw_window",
+				RawKeepLastRequests:            20,
+				RawKeepLastTokens:              12000,
+				IncludePreviousEvaluations:     false,
+				PreviousEvaluationKeepLast:     30,
+				SummaryEnabled:                 false,
+				StoreRawInputs:                 false,
+				StorePromptSnapshot:            false,
+				Strategy:                       "checkpoint_trace_v1",
+				MaxInputTokens:                 2800,
+				BudgetSafetyMargin:             0.85,
+				MaxUserCharsPerTurn:            700,
+				MaxAssistantCharsPerTurn:       900,
+				MaxMemoryContextChars:          600,
+				CauseSummaryMaxChars:           120,
+				AffectiveEpisodeEnabled:        false,
+				AffectiveEpisodeCandidateLimit: 100,
+				AffectiveEpisodeTopK:           2,
+				AffectiveEpisodeMaxChars:       160,
+				AffectiveEpisodeMinScore:       0.35,
 			},
 			Externalization: AgentAffectExternalizationConfig{
 				Attachment: ExternalizedDimensionConfig{

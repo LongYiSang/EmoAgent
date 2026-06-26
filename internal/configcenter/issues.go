@@ -334,6 +334,34 @@ func buildAgentAffectIssues(cfg config.AgentAffectConfig) []ConfigIssue {
 			Message:  "agent_affect.context.mode must be none, raw_window, summary_window, or mixed",
 		})
 	}
+	switch strings.TrimSpace(cfg.Context.Strategy) {
+	case "", "checkpoint_trace_v1":
+	default:
+		issues = append(issues, ConfigIssue{
+			Path:     "agent_affect.context.strategy",
+			Severity: "error",
+			Message:  "agent_affect.context.strategy must be checkpoint_trace_v1",
+		})
+	}
+	if cfg.Context.IncludePreviousEvaluations {
+		issues = append(issues, ConfigIssue{
+			Path:     "agent_affect.context.include_previous_evaluations",
+			Severity: "warning",
+			Message:  "previous evaluations are deprecated and ignored by checkpoint_trace_v1 online prompts",
+		})
+	}
+	if cfg.Context.MaxInputTokens <= 0 {
+		issues = append(issues, ConfigIssue{Path: "agent_affect.context.max_input_tokens", Severity: "error", Message: "max_input_tokens must be > 0"})
+	}
+	if cfg.Context.BudgetSafetyMargin <= 0 || cfg.Context.BudgetSafetyMargin > 1 {
+		issues = append(issues, ConfigIssue{Path: "agent_affect.context.budget_safety_margin", Severity: "error", Message: "budget_safety_margin must be > 0 and <= 1"})
+	}
+	if cfg.State.DecayHalfLifeSeconds < 0 || cfg.State.CauseHalfLifeSeconds < 0 {
+		issues = append(issues, ConfigIssue{Path: "agent_affect.state.decay", Severity: "error", Message: "decay half-life values must be >= 0"})
+	}
+	if cfg.State.CauseStackMaxItems <= 0 {
+		issues = append(issues, ConfigIssue{Path: "agent_affect.state.cause_stack_max_items", Severity: "error", Message: "cause_stack_max_items must be > 0"})
+	}
 	if cfg.Limits.PluginDeltaMultiplier < 0 {
 		issues = append(issues, ConfigIssue{Path: "agent_affect.limits.plugin_delta_multiplier", Severity: "error", Message: "plugin_delta_multiplier must be >= 0"})
 	}

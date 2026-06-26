@@ -196,7 +196,7 @@ func TestEvaluateMoodImpactPreviewDoesNotCommitState(t *testing.T) {
 	}
 }
 
-func TestStoreRawInputsFalsePreventsInputTextPersistence(t *testing.T) {
+func TestStoreRawInputsFalsePreventsInputTextAndSummaryPersistence(t *testing.T) {
 	cfg := config.DefaultConfig().AgentAffect
 	cfg.Enabled = true
 	cfg.Context.StoreRawInputs = false
@@ -222,8 +222,14 @@ func TestStoreRawInputsFalsePreventsInputTextPersistence(t *testing.T) {
 	if inputText != "" {
 		t.Fatalf("input_text persisted = %q, want empty", inputText)
 	}
-	if inputSummary != "safe summary" {
-		t.Fatalf("input_summary = %q, want safe summary", inputSummary)
+	if inputSummary != "" {
+		t.Fatalf("input_summary persisted = %q, want empty", inputSummary)
+	}
+}
+
+func TestSignificanceZeroDeltaIsZero(t *testing.T) {
+	if got := significance(MoodVector{}); got != 0 {
+		t.Fatalf("significance(zero) = %v, want 0", got)
 	}
 }
 
@@ -475,5 +481,79 @@ func TestPluginAPISubmitAuditsPluginWrite(t *testing.T) {
 	}
 	if !strings.Contains(writes[0].RequestJSON, "plugin signal") {
 		t.Fatalf("plugin write request_json missing summary: %s", writes[0].RequestJSON)
+	}
+}
+
+func TestRetrieveAffectiveEpisodesUsesVisibleOwnerEventsAndSkipsActiveCauses(t *testing.T) {
+	cfg := config.DefaultConfig().AgentAffect
+	cfg.Enabled = true
+	cfg.Context.AffectiveEpisodeEnabled = true
+	cfg.Context.AffectiveEpisodeTopK = 2
+	cfg.Context.AffectiveEpisodeMinScore = 0.1
+	rt, _ := newTestRuntime(t, cfg, fakeEvaluator{})
+	mood := MoodSnapshot{
+		PersonaID:      "default",
+		MoodOwnerScope: "persona",
+		MoodOwnerID:    "persona:default",
+		CauseStack:     []CauseContributor{{Kind: "active_duplicate", Summary: "already active", Weight: 0.8}},
+	}
+	for _, event := range []AffectEventRecord{
+		{
+			ID:             "event-relevant",
+			PersonaID:      "default",
+			MoodOwnerScope: "persona",
+			MoodOwnerID:    "persona:default",
+			Trigger:        TriggerDescriptor{TriggerType: "user_message"},
+			CauseSummary:   "用户纠正了命名并解释偏好",
+			CauseCode:      "naming_correction",
+			AffectTags:     []string{"correction", "naming"},
+			Significance:   0.4,
+			Confidence:     0.8,
+			CommittedBy:    "core",
+			CreatedAt:      rt.now(),
+		},
+		{
+			ID:             "event-duplicate",
+			PersonaID:      "default",
+			MoodOwnerScope: "persona",
+			MoodOwnerID:    "persona:default",
+			Trigger:        TriggerDescriptor{TriggerType: "user_message"},
+			CauseSummary:   "duplicate active cause",
+			CauseCode:      "active_duplicate",
+			AffectTags:     []string{"duplicate"},
+			Significance:   1,
+			Confidence:     0.8,
+			CommittedBy:    "core",
+			CreatedAt:      rt.now(),
+		},
+		{
+			ID:             "event-other-owner",
+			PersonaID:      "default",
+			MoodOwnerScope: "persona",
+			MoodOwnerID:    "persona:other",
+			Trigger:        TriggerDescriptor{TriggerType: "user_message"},
+			CauseSummary:   "用户纠正了命名",
+			CauseCode:      "other_owner",
+			Significance:   1,
+			Confidence:     0.8,
+			CommittedBy:    "core",
+			CreatedAt:      rt.now(),
+		},
+	} {
+		if err := rt.store.InsertEvent(context.Background(), event); err != nil {
+			t.Fatalf("InsertEvent %s: %v", event.ID, err)
+		}
+	}
+
+	episodes := rt.retrieveAffectiveEpisodes(context.Background(), mood, AffectEventBatch{
+		TurnCount: 1,
+		Turns:     []CompactAffectTurn{{Ordinal: 1, User: "用户再次纠正命名偏好"}},
+	})
+
+	if len(episodes) != 1 {
+		t.Fatalf("episodes = %#v, want one relevant episode", episodes)
+	}
+	if episodes[0].CauseCode != "naming_correction" || strings.Contains(episodes[0].Summary, "secret") {
+		t.Fatalf("episode = %#v, want safe relevant event", episodes[0])
 	}
 }

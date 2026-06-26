@@ -1256,6 +1256,10 @@ CREATE INDEX IF NOT EXISTS idx_plugin_trust_acceptance_history_plugin_time
 		Version: 32,
 		SQL:     `SELECT 1;`,
 	},
+	{
+		Version: 33,
+		SQL:     `SELECT 1;`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.
@@ -1313,6 +1317,9 @@ func ApplySchemaRepairs(db *sql.DB) error {
 		return err
 	}
 	if err := ensureRuntimeSettingsSchema(db); err != nil {
+		return err
+	}
+	if err := ensureAgentAffectSchema(db); err != nil {
 		return err
 	}
 	if err := ensureLLMProvidersSchema(db); err != nil {
@@ -1388,6 +1395,56 @@ func ensureHostResourceChangeSetSchema(db *sql.DB) error {
 	}
 	if _, err := db.Exec(hostResourceChangeSetIndexSQL); err != nil {
 		return fmt.Errorf("ensure host resource changeset indexes: %w", err)
+	}
+	return nil
+}
+
+func ensureAgentAffectSchema(db *sql.DB) error {
+	profileColumns, err := tableColumns(db, "agent_affect_profiles")
+	if err != nil {
+		return fmt.Errorf("read agent_affect_profiles columns: %w", err)
+	}
+	if len(profileColumns) == 0 {
+		for _, migration := range migrations {
+			if migration.Version < 20 || migration.Version > 23 {
+				continue
+			}
+			if _, err := db.Exec(migration.SQL); err != nil {
+				return fmt.Errorf("bootstrap agent affect migration %d: %w", migration.Version, err)
+			}
+		}
+	}
+	repairs := map[string][]struct {
+		name string
+		sql  string
+	}{
+		"agent_affect_evaluations": {
+			{"appraisal_json", "ALTER TABLE agent_affect_evaluations ADD COLUMN appraisal_json TEXT NOT NULL DEFAULT '{}'"},
+			{"context_strategy", "ALTER TABLE agent_affect_evaluations ADD COLUMN context_strategy TEXT NOT NULL DEFAULT ''"},
+			{"prompt_chars", "ALTER TABLE agent_affect_evaluations ADD COLUMN prompt_chars INTEGER NOT NULL DEFAULT 0"},
+			{"estimated_input_tokens", "ALTER TABLE agent_affect_evaluations ADD COLUMN estimated_input_tokens INTEGER NOT NULL DEFAULT 0"},
+			{"actual_input_tokens", "ALTER TABLE agent_affect_evaluations ADD COLUMN actual_input_tokens INTEGER NOT NULL DEFAULT 0"},
+			{"actual_output_tokens", "ALTER TABLE agent_affect_evaluations ADD COLUMN actual_output_tokens INTEGER NOT NULL DEFAULT 0"},
+			{"prompt_truncated", "ALTER TABLE agent_affect_evaluations ADD COLUMN prompt_truncated INTEGER NOT NULL DEFAULT 0"},
+			{"budget_report_json", "ALTER TABLE agent_affect_evaluations ADD COLUMN budget_report_json TEXT NOT NULL DEFAULT '{}'"},
+		},
+		"agent_affect_events": {
+			{"source_kind", "ALTER TABLE agent_affect_events ADD COLUMN source_kind TEXT NOT NULL DEFAULT ''"},
+			{"source_ref_type", "ALTER TABLE agent_affect_events ADD COLUMN source_ref_type TEXT NOT NULL DEFAULT ''"},
+			{"source_ref_id", "ALTER TABLE agent_affect_events ADD COLUMN source_ref_id TEXT NOT NULL DEFAULT ''"},
+			{"source_ref_hash", "ALTER TABLE agent_affect_events ADD COLUMN source_ref_hash TEXT NOT NULL DEFAULT ''"},
+			{"cause_code", "ALTER TABLE agent_affect_events ADD COLUMN cause_code TEXT NOT NULL DEFAULT ''"},
+			{"affect_tags_json", "ALTER TABLE agent_affect_events ADD COLUMN affect_tags_json TEXT NOT NULL DEFAULT '[]'"},
+		},
+	}
+	if err := ensureTableColumns(db, repairs); err != nil {
+		return fmt.Errorf("repair agent affect schema: %w", err)
+	}
+	if _, err := db.Exec(`
+CREATE INDEX IF NOT EXISTS idx_agent_affect_events_owner_significance_time
+    ON agent_affect_events(persona_id, mood_owner_scope, mood_owner_id, significance DESC, created_at DESC);
+`); err != nil {
+		return fmt.Errorf("ensure agent affect indexes: %w", err)
 	}
 	return nil
 }

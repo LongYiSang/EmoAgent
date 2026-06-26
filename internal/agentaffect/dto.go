@@ -50,9 +50,12 @@ func (v MoodVector) IsZero() bool {
 }
 
 type CauseContributor struct {
-	Kind    string  `json:"kind"`
-	Summary string  `json:"summary"`
-	Weight  float64 `json:"weight"`
+	Kind       string             `json:"kind"`
+	Summary    string             `json:"summary"`
+	Weight     float64            `json:"weight"`
+	Confidence float64            `json:"confidence,omitempty"`
+	Delta      map[string]float64 `json:"delta,omitempty"`
+	OccurredAt time.Time          `json:"occurred_at,omitempty"`
 }
 
 type MoodSnapshot struct {
@@ -184,6 +187,9 @@ type LLMEvaluationRequest struct {
 	TurnID               string
 	PersonaAffectProfile AffectProfile
 	CurrentMood          MoodSnapshot
+	StateCheckpoint      AffectStateCheckpoint
+	EventBatch           AffectEventBatch
+	AffectiveEpisodes    []AffectEpisodeSummary
 	Trigger              TriggerDescriptor
 	Input                MoodImpactInput
 	MemoryPromptBlock    string
@@ -191,16 +197,102 @@ type LLMEvaluationRequest struct {
 	PromptPolicy         any
 }
 
+type AffectAppraisal struct {
+	EventSignificance  float64 `json:"event_significance"`
+	Novelty            float64 `json:"novelty"`
+	GoalRelevance      float64 `json:"goal_relevance"`
+	RelationshipImpact float64 `json:"relationship_impact"`
+	BoundaryImpact     float64 `json:"boundary_impact"`
+	Uncertainty        float64 `json:"uncertainty"`
+}
+
+type AffectCauseProposal struct {
+	Code           string   `json:"code"`
+	Summary        string   `json:"summary"`
+	VisibleSummary string   `json:"visible_summary"`
+	Tags           []string `json:"tags,omitempty"`
+}
+
+type PromptCause struct {
+	Code       string             `json:"code"`
+	Summary    string             `json:"summary"`
+	Weight     float64            `json:"weight"`
+	Confidence float64            `json:"confidence,omitempty"`
+	Delta      map[string]float64 `json:"delta,omitempty"`
+	AgeSeconds int64              `json:"age_seconds,omitempty"`
+}
+
+type AffectStateCheckpoint struct {
+	Vector       MoodVector    `json:"vector"`
+	Label        string        `json:"label"`
+	Confidence   float64       `json:"confidence"`
+	AgeSeconds   int64         `json:"age_seconds"`
+	ActiveCauses []PromptCause `json:"active_causes,omitempty"`
+}
+
+type CompactAffectTurn struct {
+	Ordinal   int    `json:"ordinal"`
+	User      string `json:"user,omitempty"`
+	Assistant string `json:"assistant,omitempty"`
+}
+
+type AffectEventBatch struct {
+	TurnCount     int                 `json:"turn_count"`
+	Turns         []CompactAffectTurn `json:"turns"`
+	MemoryContext []string            `json:"memory_context,omitempty"`
+}
+
+type AffectEpisodeSummary struct {
+	CauseCode    string   `json:"cause_code,omitempty"`
+	Summary      string   `json:"summary"`
+	Tags         []string `json:"tags,omitempty"`
+	Significance float64  `json:"significance"`
+	AgeSeconds   int64    `json:"age_seconds,omitempty"`
+	Score        float64  `json:"score,omitempty"`
+}
+
+type PromptBudgetReport struct {
+	Strategy             string         `json:"strategy"`
+	PromptChars          int            `json:"prompt_chars"`
+	EstimatedInputTokens int            `json:"estimated_input_tokens"`
+	LimitTokens          int            `json:"limit_tokens"`
+	Truncated            bool           `json:"truncated"`
+	DroppedSections      []string       `json:"dropped_sections,omitempty"`
+	SectionEstimates     map[string]int `json:"section_estimates"`
+	TraceItemCount       int            `json:"trace_item_count"`
+	EpisodeCount         int            `json:"episode_count"`
+	TurnCount            int            `json:"turn_count"`
+}
+
+type LLMUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+}
+
 type LLMEvaluationResult struct {
 	Delta               MoodVector
+	Appraisal           AffectAppraisal
+	HasAppraisal        bool
+	Cause               AffectCauseProposal
 	Label               string
 	MoodDescription     string
 	MoodReason          string
 	PromptMoodText      string
 	CauseSummary        string
 	VisibleCauseSummary string
+	AffectTags          []string
 	Confidence          float64
 	RawResponseJSON     string
+	PromptVersion       string
+	PromptHash          string
+	PromptSnapshot      string
+	ContextStrategy     string
+	BudgetReport        PromptBudgetReport
+	Usage               LLMUsage
+	LLMProvider         string
+	LLMModel            string
+	LLMThinkingEnabled  bool
+	LatencyMS           int64
 	Fallback            bool
 	Status              string
 }
@@ -226,6 +318,14 @@ type AffectEvaluationRecord struct {
 	PromptHash                string            `json:"prompt_hash,omitempty"`
 	PromptSnapshot            string            `json:"prompt_snapshot,omitempty"`
 	ResponseJSON              string            `json:"response_json,omitempty"`
+	Appraisal                 AffectAppraisal   `json:"appraisal,omitempty"`
+	ContextStrategy           string            `json:"context_strategy,omitempty"`
+	PromptChars               int               `json:"prompt_chars,omitempty"`
+	EstimatedInputTokens      int               `json:"estimated_input_tokens,omitempty"`
+	ActualInputTokens         int               `json:"actual_input_tokens,omitempty"`
+	ActualOutputTokens        int               `json:"actual_output_tokens,omitempty"`
+	PromptTruncated           bool              `json:"prompt_truncated,omitempty"`
+	BudgetReportJSON          string            `json:"budget_report_json,omitempty"`
 	ProposedDelta             MoodVector        `json:"proposed_delta"`
 	ClampedDelta              MoodVector        `json:"clamped_delta"`
 	PredictedState            MoodVector        `json:"predicted_state"`
@@ -250,6 +350,10 @@ type AffectEventRecord struct {
 	MoodOwnerID     string            `json:"mood_owner_id,omitempty"`
 	EvaluationID    string            `json:"evaluation_id,omitempty"`
 	Trigger         TriggerDescriptor `json:"trigger"`
+	SourceKind      string            `json:"source_kind,omitempty"`
+	SourceRefType   string            `json:"source_ref_type,omitempty"`
+	SourceRefID     string            `json:"source_ref_id,omitempty"`
+	SourceRefHash   string            `json:"source_ref_hash,omitempty"`
 	BeforeStateID   string            `json:"before_state_id,omitempty"`
 	AfterStateID    string            `json:"after_state_id,omitempty"`
 	ProposedDelta   MoodVector        `json:"proposed_delta"`
@@ -261,6 +365,8 @@ type AffectEventRecord struct {
 	MoodReason      string            `json:"mood_reason,omitempty"`
 	PromptMoodText  string            `json:"prompt_mood_text,omitempty"`
 	CauseSummary    string            `json:"cause_summary,omitempty"`
+	CauseCode       string            `json:"cause_code,omitempty"`
+	AffectTags      []string          `json:"affect_tags,omitempty"`
 	Significance    float64           `json:"significance"`
 	Confidence      float64           `json:"confidence"`
 	CommittedBy     string            `json:"committed_by"`
@@ -294,6 +400,13 @@ type RecentEventsQuery struct {
 	PersonaID string
 	SessionID string
 	Limit     int
+}
+
+type AffectEpisodeQuery struct {
+	PersonaID      string
+	MoodOwnerScope string
+	MoodOwnerID    string
+	Limit          int
 }
 
 type PluginWritesQuery struct {
@@ -496,6 +609,7 @@ type MarkBatchFailedRequest struct {
 	FinishedAt   time.Time
 	Retry        bool
 	RetryAt      time.Time
+	ClearRaw     bool
 }
 
 type SupersedePendingJobsRequest struct {

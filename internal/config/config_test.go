@@ -200,17 +200,26 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.AgentAffect.Context.RawKeepLastTokens != 12000 {
 		t.Errorf("default agent_affect.context.raw_keep_last_tokens = %d, want 12000", cfg.AgentAffect.Context.RawKeepLastTokens)
 	}
-	if !cfg.AgentAffect.Context.IncludePreviousEvaluations {
-		t.Error("default agent_affect.context.include_previous_evaluations = false, want true")
+	if cfg.AgentAffect.Context.IncludePreviousEvaluations {
+		t.Error("default agent_affect.context.include_previous_evaluations = true, want false")
 	}
 	if cfg.AgentAffect.Context.SummaryEnabled {
 		t.Error("default agent_affect.context.summary_enabled = true, want false")
 	}
-	if !cfg.AgentAffect.Context.StoreRawInputs {
-		t.Error("default agent_affect.context.store_raw_inputs = false, want true")
+	if cfg.AgentAffect.Context.StoreRawInputs {
+		t.Error("default agent_affect.context.store_raw_inputs = true, want false")
 	}
 	if cfg.AgentAffect.Context.StorePromptSnapshot {
 		t.Error("default agent_affect.context.store_prompt_snapshot = true, want false")
+	}
+	if cfg.AgentAffect.Context.Strategy != "checkpoint_trace_v1" || cfg.AgentAffect.Context.MaxInputTokens != 2800 || cfg.AgentAffect.Context.MaxMemoryContextChars != 600 {
+		t.Fatalf("default agent_affect.context budget = %#v", cfg.AgentAffect.Context)
+	}
+	if !cfg.AgentAffect.State.DecayEnabled || cfg.AgentAffect.State.DecayHalfLifeSeconds != 1800 || cfg.AgentAffect.State.CauseStackMaxItems != 5 {
+		t.Fatalf("default agent_affect.state checkpoint settings = %#v", cfg.AgentAffect.State)
+	}
+	if cfg.AgentAffect.Evaluator.MaxOutputTokens != 512 || cfg.AgentAffect.Evaluator.Temperature != 0 || cfg.AgentAffect.Evaluator.ReasoningEffort != "minimal" {
+		t.Fatalf("default agent_affect.evaluator cost settings = %#v", cfg.AgentAffect.Evaluator)
 	}
 	if !cfg.AgentAffect.Externalization.Attachment.Enabled {
 		t.Error("default agent_affect.externalization.attachment.enabled = false, want true")

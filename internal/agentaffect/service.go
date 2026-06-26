@@ -301,6 +301,7 @@ func (r *Runtime) ResetMood(ctx context.Context, req ResetMoodRequest) (ResetMoo
 	after.PromptMoodText = buildPromptMoodTextFallback(after.MoodDescription, after.MoodReason)
 	after.CauseSummary = defaultString(req.Reason, "Manual reset to baseline.")
 	after.VisibleCauseSummary = ""
+	after.CauseStack = nil
 	after.UpdatedAt = r.now()
 	event := AffectEventRecord{
 		ID:              uuid.NewString(),
@@ -381,25 +382,30 @@ func (r *Runtime) evaluate(ctx context.Context, req EvaluateMoodImpactRequest, c
 		mood := baselineSnapshot(req.PersonaID, req.SessionID, r.now())
 		return evaluationState{before: mood, predicted: mood, after: mood, noChange: true, status: EvaluationStatusPreview}, nil
 	}
-	before, err := r.currentMood(ctx, req.PersonaID, req.SessionID)
+	before, profile, err := r.effectiveMood(ctx, req.PersonaID, req.SessionID)
 	if err != nil {
 		return evaluationState{}, err
 	}
-	profile := r.profileForPrompt(ctx, req.PersonaID)
-	recent, _ := r.recentEvaluations(ctx, req.PersonaID, req.SessionID)
+	eventBatch := eventBatchFromInput(r.cfg, req.Input, req.MemoryPromptBlock)
 	result, err := r.evaluator.Evaluate(ctx, LLMEvaluationRequest{
 		PersonaID:            req.PersonaID,
 		SessionID:            req.SessionID,
 		TurnID:               req.TurnID,
 		PersonaAffectProfile: profile,
 		CurrentMood:          before,
+		StateCheckpoint:      checkpointFromMood(r.cfg, before, r.now()),
+		EventBatch:           eventBatch,
+		AffectiveEpisodes:    r.retrieveAffectiveEpisodes(ctx, before, eventBatch),
 		Trigger:              req.Trigger,
 		Input:                req.Input,
 		MemoryPromptBlock:    req.MemoryPromptBlock,
-		Recent:               recent,
 	})
 	if err != nil {
-		return evaluationState{}, err
+		if commit {
+			return evaluationState{}, err
+		}
+		fallback := NoChangeResult(err.Error(), EvaluationStatusFailed)
+		return r.applyEvaluationResult(ctx, req, before, fallback, false)
 	}
 	return r.applyEvaluationResult(ctx, req, before, result, commit)
 }
@@ -413,6 +419,9 @@ func (r *Runtime) applyEvaluationResult(ctx context.Context, req EvaluateMoodImp
 	if status == "" {
 		status = EvaluationStatusPreview
 	}
+	if commit && status == EvaluationStatusFailed {
+		return evaluationState{}, fmt.Errorf("agent affect evaluator failed")
+	}
 	clamped := ClampMoodDelta(r.cfg, before.Vector, result.Delta, ClampOptions{CommittedBy: "core"})
 	predicted := before
 	predicted.StateID = ""
@@ -424,36 +433,51 @@ func (r *Runtime) applyEvaluationResult(ctx context.Context, req EvaluateMoodImp
 	predicted.PromptMoodText = result.PromptMoodText
 	predicted.CauseSummary = result.CauseSummary
 	predicted.VisibleCauseSummary = result.VisibleCauseSummary
+	predicted.CauseStack = updateCauseTrace(r.cfg, before.CauseStack, result, clamped.ClampedDelta, r.now())
 	predicted.UpdatedAt = r.now()
 	evalID := uuid.NewString()
 	if r.cfg.StorageEnabled && r.store != nil {
 		record := AffectEvaluationRecord{
-			ID:                      evalID,
-			PersonaID:               req.PersonaID,
-			SessionID:               req.SessionID,
-			TurnID:                  req.TurnID,
-			BatchID:                 req.BatchID,
-			MoodOwnerScope:          before.MoodOwnerScope,
-			MoodOwnerID:             before.MoodOwnerID,
-			Trigger:                 normalizeTrigger(req.Trigger),
-			Input:                   r.storageInput(req.Input),
-			ContextWindowPolicyJSON: "{}",
-			BeforeStateID:           before.StateID,
-			BeforeStateJSON:         mustJSON(before),
-			PromptVersion:           "agent_affect_v2.prompt.v1",
-			ResponseJSON:            result.RawResponseJSON,
-			ProposedDelta:           result.Delta,
-			ClampedDelta:            clamped.ClampedDelta,
-			PredictedState:          predicted.Vector,
-			MoodDescription:         result.MoodDescription,
-			MoodReason:              result.MoodReason,
-			PromptMoodText:          result.PromptMoodText,
-			CauseSummary:            result.CauseSummary,
-			VisibleCauseSummary:     result.VisibleCauseSummary,
-			Confidence:              result.Confidence,
-			ClampNotes:              clamped.Notes,
-			Status:                  status,
-			CreatedAt:               r.now(),
+			ID:                        evalID,
+			PersonaID:                 req.PersonaID,
+			SessionID:                 req.SessionID,
+			TurnID:                    req.TurnID,
+			BatchID:                   req.BatchID,
+			MoodOwnerScope:            before.MoodOwnerScope,
+			MoodOwnerID:               before.MoodOwnerID,
+			Trigger:                   normalizeTrigger(req.Trigger),
+			Input:                     r.storageInput(req.Input),
+			ContextWindowPolicyJSON:   "{}",
+			ContextWindowSnapshotJSON: mustJSON(result.BudgetReport),
+			BeforeStateID:             before.StateID,
+			BeforeStateJSON:           mustJSON(before),
+			LLMProvider:               result.LLMProvider,
+			LLMModel:                  result.LLMModel,
+			LLMThinkingEnabled:        result.LLMThinkingEnabled,
+			PromptVersion:             defaultString(result.PromptVersion, agentAffectPromptVersion),
+			PromptHash:                result.PromptHash,
+			PromptSnapshot:            result.PromptSnapshot,
+			ResponseJSON:              result.RawResponseJSON,
+			Appraisal:                 result.Appraisal,
+			ContextStrategy:           result.ContextStrategy,
+			PromptChars:               result.BudgetReport.PromptChars,
+			EstimatedInputTokens:      result.BudgetReport.EstimatedInputTokens,
+			ActualInputTokens:         result.Usage.InputTokens,
+			ActualOutputTokens:        result.Usage.OutputTokens,
+			PromptTruncated:           result.BudgetReport.Truncated,
+			BudgetReportJSON:          mustJSON(result.BudgetReport),
+			ProposedDelta:             result.Delta,
+			ClampedDelta:              clamped.ClampedDelta,
+			PredictedState:            predicted.Vector,
+			MoodDescription:           result.MoodDescription,
+			MoodReason:                result.MoodReason,
+			PromptMoodText:            result.PromptMoodText,
+			CauseSummary:              result.CauseSummary,
+			VisibleCauseSummary:       result.VisibleCauseSummary,
+			Confidence:                result.Confidence,
+			ClampNotes:                clamped.Notes,
+			Status:                    status,
+			CreatedAt:                 r.now(),
 		}
 		if err := r.store.InsertEvaluation(ctx, record); err != nil {
 			return evaluationState{}, err
@@ -491,6 +515,10 @@ func (r *Runtime) applyEvaluationResult(ctx context.Context, req EvaluateMoodImp
 			MoodOwnerID:     before.MoodOwnerID,
 			EvaluationID:    evalID,
 			Trigger:         normalizeTrigger(req.Trigger),
+			SourceKind:      req.Trigger.SourceKind,
+			SourceRefType:   req.Trigger.SourceRefType,
+			SourceRefID:     req.Trigger.SourceRefID,
+			SourceRefHash:   req.Trigger.SourceRefHash,
 			BeforeStateID:   before.StateID,
 			AfterStateID:    after.StateID,
 			ProposedDelta:   result.Delta,
@@ -502,7 +530,9 @@ func (r *Runtime) applyEvaluationResult(ctx context.Context, req EvaluateMoodImp
 			MoodReason:      after.MoodReason,
 			PromptMoodText:  after.PromptMoodText,
 			CauseSummary:    after.CauseSummary,
-			Significance:    significance(clamped.ClampedDelta),
+			CauseCode:       result.Cause.Code,
+			AffectTags:      result.AffectTags,
+			Significance:    resultSignificance(result, clamped.ClampedDelta),
 			Confidence:      after.Confidence,
 			CommittedBy:     "core",
 			CreatedAt:       r.now(),
@@ -553,15 +583,13 @@ func (r *Runtime) currentMood(ctx context.Context, personaID string, sessionID s
 	return mood, nil
 }
 
-func (r *Runtime) recentEvaluations(ctx context.Context, personaID string, sessionID string) ([]AffectEvaluationRecord, error) {
-	if !r.cfg.Context.IncludePreviousEvaluations || r.store == nil {
-		return nil, nil
+func (r *Runtime) effectiveMood(ctx context.Context, personaID string, sessionID string) (MoodSnapshot, AffectProfile, error) {
+	mood, err := r.currentMood(ctx, personaID, sessionID)
+	if err != nil {
+		return MoodSnapshot{}, AffectProfile{}, err
 	}
-	limit := r.cfg.Context.PreviousEvaluationKeepLast
-	if limit <= 0 {
-		limit = 30
-	}
-	return r.store.ListRecentEvaluations(ctx, RecentEvaluationsQuery{PersonaID: personaID, SessionID: sessionID, Limit: limit})
+	profile := r.profileForPrompt(ctx, personaID)
+	return applyStateDecay(r.cfg, mood, profile.Baseline, r.now()), profile, nil
 }
 
 func (r *Runtime) profileForPrompt(ctx context.Context, personaID string) AffectProfile {
@@ -642,6 +670,7 @@ func (r *Runtime) storageInput(input MoodImpactInput) MoodImpactInput {
 	input = normalizeInput(input)
 	if !r.cfg.Context.StoreRawInputs {
 		input.Text = ""
+		input.Summary = ""
 	}
 	return input
 }
@@ -682,9 +711,16 @@ func significance(delta MoodVector) float64 {
 		return 1
 	}
 	if max == 0 {
-		return 0.5
+		return 0
 	}
 	return max
+}
+
+func resultSignificance(result LLMEvaluationResult, delta MoodVector) float64 {
+	if result.HasAppraisal {
+		return clamp01(result.Appraisal.EventSignificance)
+	}
+	return significance(delta)
 }
 
 func deltaBetween(before MoodVector, after MoodVector) MoodVector {

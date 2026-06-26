@@ -151,24 +151,43 @@ agent:
 agent_affect:
   enabled: false
   storage_enabled: true
+  state:
+    scope: persona
+    decay_enabled: true
+    decay_half_life_seconds: 1800
+    cause_stack_max_items: 5
+    cause_half_life_seconds: 3600
+    cause_min_weight: 0.05
   evaluator:
     mode: llm
     provider_id: deepseek
     model: deepseek-v4-flash
-    thinking_enabled: true
-    reasoning_effort: medium
-    temperature: 0.2
+    thinking_enabled: false
+    reasoning_effort: minimal
+    temperature: 0
     timeout_ms: 30000
-    max_output_tokens: 4096
+    max_output_tokens: 512
     store_hidden_thinking: false
   context:
+    strategy: checkpoint_trace_v1
     mode: raw_window
     raw_keep_last_requests: 20
     raw_keep_last_tokens: 12000
-    include_previous_evaluations: true
+    include_previous_evaluations: false
     previous_evaluation_keep_last: 30
     summary_enabled: false
-    store_raw_inputs: true
+    max_input_tokens: 2800
+    budget_safety_margin: 0.85
+    max_user_chars_per_turn: 700
+    max_assistant_chars_per_turn: 900
+    max_memory_context_chars: 600
+    cause_summary_max_chars: 120
+    affective_episode_enabled: false
+    affective_episode_candidate_limit: 100
+    affective_episode_top_k: 2
+    affective_episode_max_chars: 160
+    affective_episode_min_score: 0.35
+    store_raw_inputs: false
     store_prompt_snapshot: false
   externalization:
     attachment:

@@ -262,6 +262,15 @@ WHERE id = ?
 `, AffectBatchStatusDone, nilIfEmpty(req.EvaluationID), nilIfEmpty(req.EventID), dbTime(finishedAt), req.BatchID); err != nil {
 		return fmt.Errorf("mark affect batch done: %w", err)
 	}
+	if req.ClearRaw {
+		if _, err := tx.ExecContext(ctx, `
+UPDATE agent_affect_job_batches
+SET batch_input_summary = '', context_window_snapshot_json = NULL
+WHERE id = ?
+`, req.BatchID); err != nil {
+			return fmt.Errorf("clear affect batch raw summary: %w", err)
+		}
+	}
 	updateSQL := `
 UPDATE agent_affect_jobs
 SET status = ?, result_evaluation_id = ?, result_event_id = ?, finished_at = ?, error_message = NULL
@@ -272,7 +281,7 @@ WHERE batch_id = ?
 		updateSQL = `
 UPDATE agent_affect_jobs
 SET status = ?, result_evaluation_id = ?, result_event_id = ?, finished_at = ?, error_message = NULL,
-    user_text = NULL, assistant_text = NULL, memory_prompt_block = NULL
+    user_text = NULL, assistant_text = NULL, input_summary = NULL, memory_prompt_block = NULL
 WHERE batch_id = ?
 `
 	}
@@ -322,12 +331,30 @@ WHERE batch_id = ? AND attempts >= max_attempts
 			return fmt.Errorf("mark exhausted affect jobs failed: %w", err)
 		}
 	} else {
-		if _, err := tx.ExecContext(ctx, `
+		updateSQL := `
 UPDATE agent_affect_jobs
 SET status = ?, error_message = ?, finished_at = ?
 WHERE batch_id = ?
-`, AffectJobStatusFailed, req.ErrorMessage, dbTime(finishedAt), req.BatchID); err != nil {
+`
+		if req.ClearRaw {
+			updateSQL = `
+UPDATE agent_affect_jobs
+SET status = ?, error_message = ?, finished_at = ?,
+    user_text = NULL, assistant_text = NULL, input_summary = NULL, memory_prompt_block = NULL
+WHERE batch_id = ?
+`
+		}
+		if _, err := tx.ExecContext(ctx, updateSQL, AffectJobStatusFailed, req.ErrorMessage, dbTime(finishedAt), req.BatchID); err != nil {
 			return fmt.Errorf("mark affect jobs failed: %w", err)
+		}
+	}
+	if req.ClearRaw {
+		if _, err := tx.ExecContext(ctx, `
+UPDATE agent_affect_job_batches
+SET batch_input_summary = '', context_window_snapshot_json = NULL
+WHERE id = ?
+`, req.BatchID); err != nil {
+			return fmt.Errorf("clear failed affect batch raw summary: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -854,11 +881,7 @@ func summarizeJobsForBatch(jobs []AffectJobRecord, maxChars int) string {
 }
 
 func compactForSummary(value string, maxChars int) string {
-	value = strings.Join(strings.Fields(value), " ")
-	if maxChars > 0 && len(value) > maxChars {
-		return value[:maxChars]
-	}
-	return value
+	return compactText(value, maxChars)
 }
 
 func roughJobTokenEstimate(job AffectJobRecord) int {

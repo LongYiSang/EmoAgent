@@ -29,5 +29,6 @@ type Store interface {
 	InsertPluginWrite(ctx context.Context, write PluginWriteRecord) error
 	ListRecentEvaluations(ctx context.Context, q RecentEvaluationsQuery) ([]AffectEvaluationRecord, error)
 	ListRecentEvents(ctx context.Context, q RecentEventsQuery) ([]AffectEventRecord, error)
+	ListAffectiveEpisodeCandidates(ctx context.Context, q AffectEpisodeQuery) ([]AffectEpisodeSummary, error)
 	ListPluginWrites(ctx context.Context, q PluginWritesQuery) ([]PluginWriteRecord, error)
 }

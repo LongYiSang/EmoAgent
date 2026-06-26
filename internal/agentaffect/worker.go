@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/longyisang/emoagent/internal/config"
 )
 
 type BatchWorker struct {
@@ -105,16 +106,12 @@ func (r *Runtime) ProcessNextBatch(ctx context.Context, workerID string) (bool, 
 	if beforeSession == "" {
 		beforeSession = jobs[0].SessionID
 	}
-	before, err := r.currentMood(ctx, batch.PersonaID, beforeSession)
+	before, profile, err := r.effectiveMood(ctx, batch.PersonaID, beforeSession)
 	if err != nil {
 		return true, r.failBatch(ctx, batch.ID, jobs, err, true)
 	}
-	recentSession := sessionID
-	if strings.TrimSpace(r.cfg.State.RecentContextScope) != "session" {
-		recentSession = ""
-	}
-	recent, _ := r.recentEvaluations(ctx, batch.PersonaID, recentSession)
-	summary := buildBatchEvaluationInput(*batch, jobs, before, recent, r.cfg.Limits)
+	eventBatch := buildBatchEventBatch(r.cfg, jobs)
+	summary := buildBatchEvaluationInput(*batch, eventBatch)
 	req := EvaluateMoodImpactRequest{
 		PersonaID: batch.PersonaID,
 		SessionID: sessionID,
@@ -133,19 +130,20 @@ func (r *Runtime) ProcessNextBatch(ctx context.Context, workerID string) (bool, 
 			Summary: summary,
 		},
 	}
-	profile := r.profileForPrompt(ctx, batch.PersonaID)
 	result, err := r.evaluator.Evaluate(ctx, LLMEvaluationRequest{
 		PersonaID:            req.PersonaID,
 		SessionID:            req.SessionID,
 		TurnID:               req.TurnID,
 		PersonaAffectProfile: profile,
 		CurrentMood:          before,
+		StateCheckpoint:      checkpointFromMood(r.cfg, before, r.now()),
+		EventBatch:           eventBatch,
+		AffectiveEpisodes:    r.retrieveAffectiveEpisodes(ctx, before, eventBatch),
 		Trigger:              req.Trigger,
 		Input:                req.Input,
-		Recent:               recent,
 	})
 	if err != nil {
-		return true, r.failBatch(ctx, batch.ID, jobs, err, true)
+		return true, r.failBatch(ctx, batch.ID, jobs, err, !IsPromptBudgetError(err))
 	}
 	if err := r.ensureBatchBaseStillCurrent(ctx, batch.PersonaID, beforeSession, before); err != nil {
 		return true, r.failBatch(ctx, batch.ID, jobs, err, false)
@@ -176,35 +174,50 @@ func (r *Runtime) buildBatchCommitRecords(req EvaluateMoodImpactRequest, before 
 	predicted.PromptMoodText = result.PromptMoodText
 	predicted.CauseSummary = result.CauseSummary
 	predicted.VisibleCauseSummary = result.VisibleCauseSummary
+	predicted.CauseStack = updateCauseTrace(r.cfg, before.CauseStack, result, clamped.ClampedDelta, r.now())
 	predicted.UpdatedAt = r.now()
 	evalID := uuid.NewString()
 	record := AffectEvaluationRecord{
-		ID:                      evalID,
-		PersonaID:               req.PersonaID,
-		SessionID:               req.SessionID,
-		TurnID:                  req.TurnID,
-		BatchID:                 req.BatchID,
-		MoodOwnerScope:          before.MoodOwnerScope,
-		MoodOwnerID:             before.MoodOwnerID,
-		Trigger:                 normalizeTrigger(req.Trigger),
-		Input:                   r.storageInput(req.Input),
-		ContextWindowPolicyJSON: "{}",
-		BeforeStateID:           before.StateID,
-		BeforeStateJSON:         mustJSON(before),
-		PromptVersion:           "agent_affect_v2.prompt.v1",
-		ResponseJSON:            result.RawResponseJSON,
-		ProposedDelta:           result.Delta,
-		ClampedDelta:            clamped.ClampedDelta,
-		PredictedState:          predicted.Vector,
-		MoodDescription:         result.MoodDescription,
-		MoodReason:              result.MoodReason,
-		PromptMoodText:          result.PromptMoodText,
-		CauseSummary:            result.CauseSummary,
-		VisibleCauseSummary:     result.VisibleCauseSummary,
-		Confidence:              result.Confidence,
-		ClampNotes:              clamped.Notes,
-		Status:                  EvaluationStatusCommitted,
-		CreatedAt:               r.now(),
+		ID:                        evalID,
+		PersonaID:                 req.PersonaID,
+		SessionID:                 req.SessionID,
+		TurnID:                    req.TurnID,
+		BatchID:                   req.BatchID,
+		MoodOwnerScope:            before.MoodOwnerScope,
+		MoodOwnerID:               before.MoodOwnerID,
+		Trigger:                   normalizeTrigger(req.Trigger),
+		Input:                     r.storageInput(req.Input),
+		ContextWindowPolicyJSON:   "{}",
+		ContextWindowSnapshotJSON: mustJSON(result.BudgetReport),
+		BeforeStateID:             before.StateID,
+		BeforeStateJSON:           mustJSON(before),
+		LLMProvider:               result.LLMProvider,
+		LLMModel:                  result.LLMModel,
+		LLMThinkingEnabled:        result.LLMThinkingEnabled,
+		PromptVersion:             defaultString(result.PromptVersion, agentAffectPromptVersion),
+		PromptHash:                result.PromptHash,
+		PromptSnapshot:            result.PromptSnapshot,
+		ResponseJSON:              result.RawResponseJSON,
+		Appraisal:                 result.Appraisal,
+		ContextStrategy:           result.ContextStrategy,
+		PromptChars:               result.BudgetReport.PromptChars,
+		EstimatedInputTokens:      result.BudgetReport.EstimatedInputTokens,
+		ActualInputTokens:         result.Usage.InputTokens,
+		ActualOutputTokens:        result.Usage.OutputTokens,
+		PromptTruncated:           result.BudgetReport.Truncated,
+		BudgetReportJSON:          mustJSON(result.BudgetReport),
+		ProposedDelta:             result.Delta,
+		ClampedDelta:              clamped.ClampedDelta,
+		PredictedState:            predicted.Vector,
+		MoodDescription:           result.MoodDescription,
+		MoodReason:                result.MoodReason,
+		PromptMoodText:            result.PromptMoodText,
+		CauseSummary:              result.CauseSummary,
+		VisibleCauseSummary:       result.VisibleCauseSummary,
+		Confidence:                result.Confidence,
+		ClampNotes:                clamped.Notes,
+		Status:                    EvaluationStatusCommitted,
+		CreatedAt:                 r.now(),
 	}
 	after := predicted
 	after.StateID = uuid.NewString()
@@ -221,6 +234,10 @@ func (r *Runtime) buildBatchCommitRecords(req EvaluateMoodImpactRequest, before 
 		MoodOwnerID:     before.MoodOwnerID,
 		EvaluationID:    evalID,
 		Trigger:         normalizeTrigger(req.Trigger),
+		SourceKind:      req.Trigger.SourceKind,
+		SourceRefType:   req.Trigger.SourceRefType,
+		SourceRefID:     req.Trigger.SourceRefID,
+		SourceRefHash:   req.Trigger.SourceRefHash,
 		BeforeStateID:   before.StateID,
 		AfterStateID:    after.StateID,
 		ProposedDelta:   result.Delta,
@@ -232,7 +249,9 @@ func (r *Runtime) buildBatchCommitRecords(req EvaluateMoodImpactRequest, before 
 		MoodReason:      after.MoodReason,
 		PromptMoodText:  after.PromptMoodText,
 		CauseSummary:    after.CauseSummary,
-		Significance:    significance(clamped.ClampedDelta),
+		CauseCode:       result.Cause.Code,
+		AffectTags:      result.AffectTags,
+		Significance:    resultSignificance(result, clamped.ClampedDelta),
 		Confidence:      after.Confidence,
 		CommittedBy:     "core",
 		CreatedAt:       r.now(),
@@ -275,6 +294,7 @@ func (r *Runtime) failBatch(ctx context.Context, batchID string, jobs []AffectJo
 		ErrorMessage: cause.Error(),
 		FinishedAt:   r.now(),
 		Retry:        retry,
+		ClearRaw:     !retry && (!r.cfg.Context.StoreRawInputs || r.cfg.Async.ClearRawAfterDone),
 	}
 	if retry {
 		req.RetryAt = r.now().Add(r.retryDelay(jobs))
@@ -336,96 +356,48 @@ func commonNonEmpty(jobs []AffectJobRecord, value func(AffectJobRecord) string) 
 }
 
 type batchEvaluationPayload struct {
-	Instructions           []string                    `json:"instructions"`
-	Batch                  batchEvaluationPayloadBatch `json:"batch"`
-	CurrentMoodBeforeBatch MoodSnapshot                `json:"current_mood_before_batch"`
-	RecentEvaluations      []batchEvaluationRecent     `json:"recent_evaluations"`
-	DimensionLimits        any                         `json:"dimension_limits"`
+	SchemaVersion  string           `json:"schema_version"`
+	BatchID        string           `json:"batch_id"`
+	JobCount       int              `json:"job_count"`
+	MoodOwnerScope string           `json:"mood_owner_scope"`
+	MoodOwnerID    string           `json:"mood_owner_id"`
+	EventBatch     AffectEventBatch `json:"event_batch"`
 }
 
-type batchEvaluationPayloadBatch struct {
-	BatchID        string                `json:"batch_id"`
-	JobCount       int                   `json:"job_count"`
-	MoodOwnerScope string                `json:"mood_owner_scope"`
-	MoodOwnerID    string                `json:"mood_owner_id"`
-	Turns          []batchEvaluationTurn `json:"turns"`
-}
-
-type batchEvaluationTurn struct {
-	TurnID                 string `json:"turn_id,omitempty"`
-	SessionID              string `json:"session_id,omitempty"`
-	UserTextOrSummary      string `json:"user_text_or_summary,omitempty"`
-	AssistantTextOrSummary string `json:"assistant_text_or_summary,omitempty"`
-	MemoryContextSummary   string `json:"memory_context_summary,omitempty"`
-}
-
-type batchEvaluationRecent struct {
-	ID                  string     `json:"id,omitempty"`
-	SessionID           string     `json:"session_id,omitempty"`
-	TurnID              string     `json:"turn_id,omitempty"`
-	BatchID             string     `json:"batch_id,omitempty"`
-	MoodOwnerScope      string     `json:"mood_owner_scope,omitempty"`
-	MoodOwnerID         string     `json:"mood_owner_id,omitempty"`
-	ProposedDelta       MoodVector `json:"proposed_delta"`
-	ClampedDelta        MoodVector `json:"clamped_delta"`
-	MoodDescription     string     `json:"mood_description,omitempty"`
-	MoodReason          string     `json:"mood_reason,omitempty"`
-	PromptMoodText      string     `json:"prompt_mood_text,omitempty"`
-	CauseSummary        string     `json:"cause_summary,omitempty"`
-	VisibleCauseSummary string     `json:"visible_cause_summary,omitempty"`
-	Confidence          float64    `json:"confidence"`
-	CreatedAt           time.Time  `json:"created_at"`
-}
-
-func buildBatchEvaluationInput(batch AffectJobBatchRecord, jobs []AffectJobRecord, before MoodSnapshot, recent []AffectEvaluationRecord, limits any) string {
+func buildBatchEvaluationInput(batch AffectJobBatchRecord, eventBatch AffectEventBatch) string {
 	payload := batchEvaluationPayload{
-		Instructions: []string{
-			"You are evaluating the combined mood impact of a chronological batch of completed turns.",
-			"Do not output per-turn deltas.",
-			"Output one consolidated mood transition for the Agent after absorbing the whole batch.",
-		},
-		Batch: batchEvaluationPayloadBatch{
-			BatchID:        batch.ID,
-			JobCount:       len(jobs),
-			MoodOwnerScope: batch.MoodOwnerScope,
-			MoodOwnerID:    batch.MoodOwnerID,
-			Turns:          make([]batchEvaluationTurn, 0, len(jobs)),
-		},
-		CurrentMoodBeforeBatch: before,
-		RecentEvaluations:      make([]batchEvaluationRecent, 0, len(recent)),
-		DimensionLimits:        limits,
+		SchemaVersion:  agentAffectSchemaVersion,
+		BatchID:        batch.ID,
+		JobCount:       eventBatch.TurnCount,
+		MoodOwnerScope: batch.MoodOwnerScope,
+		MoodOwnerID:    batch.MoodOwnerID,
+		EventBatch:     eventBatch,
 	}
-	for _, job := range jobs {
-		payload.Batch.Turns = append(payload.Batch.Turns, batchEvaluationTurn{
-			TurnID:                 job.TurnID,
-			SessionID:              job.SessionID,
-			UserTextOrSummary:      compactForSummary(defaultString(job.UserText, job.InputSummary), 1200),
-			AssistantTextOrSummary: compactForSummary(defaultString(job.AssistantText, job.InputSummary), 1600),
-			MemoryContextSummary:   compactForSummary(job.MemoryPromptBlock, 800),
-		})
-	}
-	for _, item := range recent {
-		payload.RecentEvaluations = append(payload.RecentEvaluations, batchEvaluationRecent{
-			ID:                  item.ID,
-			SessionID:           item.SessionID,
-			TurnID:              item.TurnID,
-			BatchID:             item.BatchID,
-			MoodOwnerScope:      item.MoodOwnerScope,
-			MoodOwnerID:         item.MoodOwnerID,
-			ProposedDelta:       item.ProposedDelta,
-			ClampedDelta:        item.ClampedDelta,
-			MoodDescription:     item.MoodDescription,
-			MoodReason:          item.MoodReason,
-			PromptMoodText:      item.PromptMoodText,
-			CauseSummary:        item.CauseSummary,
-			VisibleCauseSummary: item.VisibleCauseSummary,
-			Confidence:          item.Confidence,
-			CreatedAt:           item.CreatedAt,
-		})
-	}
-	data, err := json.MarshalIndent(payload, "", "  ")
+	data, err := json.Marshal(payload)
 	if err != nil {
 		return "{}"
 	}
 	return string(data)
+}
+
+func buildBatchEventBatch(cfg config.AgentAffectConfig, jobs []AffectJobRecord) AffectEventBatch {
+	batch := AffectEventBatch{
+		TurnCount: len(jobs),
+		Turns:     make([]CompactAffectTurn, 0, len(jobs)),
+	}
+	var memoryBlocks []string
+	for i, job := range jobs {
+		batch.Turns = append(batch.Turns, CompactAffectTurn{
+			Ordinal:   i + 1,
+			User:      defaultString(job.UserText, job.InputSummary),
+			Assistant: defaultString(job.AssistantText, job.InputSummary),
+		})
+		if job.MemoryPromptBlock != "" {
+			memoryBlocks = append(memoryBlocks, job.MemoryPromptBlock)
+		}
+	}
+	if len(memoryBlocks) > 0 {
+		batch.MemoryContext = compactMemoryContext(strings.Join(memoryBlocks, "\n"), defaultPositive(cfg.Context.MaxMemoryContextChars, 600))
+	}
+	return compactEventBatch(cfg, batch)
 }

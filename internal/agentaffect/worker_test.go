@@ -5,11 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/llm"
 )
 
 type recordingEvaluator struct {
@@ -70,33 +72,35 @@ func TestProcessNextBatchMergesThreeSamePersonaJobsIntoOneEvaluation(t *testing.
 	if evaluator.calls != 1 {
 		t.Fatalf("evaluator calls = %d, want 1", evaluator.calls)
 	}
-	if len(evaluator.requests) != 1 || !strings.Contains(evaluator.requests[0].Input.Summary, "turn-1") || !strings.Contains(evaluator.requests[0].Input.Summary, "turn-3") {
+	if len(evaluator.requests) != 1 || evaluator.requests[0].EventBatch.TurnCount != 3 {
 		t.Fatalf("batch evaluator request = %#v", evaluator.requests)
 	}
 	var payload struct {
-		Batch struct {
-			JobCount int `json:"job_count"`
-			Turns    []struct {
-				TurnID                 string `json:"turn_id"`
-				SessionID              string `json:"session_id"`
-				UserTextOrSummary      string `json:"user_text_or_summary"`
-				AssistantTextOrSummary string `json:"assistant_text_or_summary"`
-				MemoryContextSummary   string `json:"memory_context_summary"`
+		SchemaVersion string `json:"schema_version"`
+		JobCount      int    `json:"job_count"`
+		MoodOwnerID   string `json:"mood_owner_id"`
+		EventBatch    struct {
+			TurnCount int `json:"turn_count"`
+			Turns     []struct {
+				Ordinal   int    `json:"ordinal"`
+				User      string `json:"user"`
+				Assistant string `json:"assistant"`
 			} `json:"turns"`
-			MoodOwnerID string `json:"mood_owner_id"`
-		} `json:"batch"`
-		CurrentMoodBeforeBatch map[string]any `json:"current_mood_before_batch"`
-		RecentEvaluations      []any          `json:"recent_evaluations"`
-		DimensionLimits        map[string]any `json:"dimension_limits"`
+		} `json:"event_batch"`
 	}
 	if err := json.Unmarshal([]byte(evaluator.requests[0].Input.Summary), &payload); err != nil {
 		t.Fatalf("batch evaluator summary is not structured JSON: %v\n%s", err, evaluator.requests[0].Input.Summary)
 	}
-	if payload.Batch.JobCount != 3 || payload.Batch.MoodOwnerID != "persona:default" || len(payload.Batch.Turns) != 3 {
-		t.Fatalf("batch payload = %#v", payload.Batch)
+	if payload.SchemaVersion != agentAffectSchemaVersion || payload.JobCount != 3 || payload.MoodOwnerID != "persona:default" || len(payload.EventBatch.Turns) != 3 {
+		t.Fatalf("batch payload = %#v", payload)
 	}
-	if payload.CurrentMoodBeforeBatch == nil || payload.DimensionLimits == nil || payload.RecentEvaluations == nil {
-		t.Fatalf("batch payload missing mood/recent/limits: %#v", payload)
+	if payload.EventBatch.Turns[0].Ordinal != 1 || payload.EventBatch.Turns[2].Ordinal != 3 {
+		t.Fatalf("batch ordinals = %#v", payload.EventBatch.Turns)
+	}
+	for _, forbidden := range []string{"current_mood_before_batch", "recent_evaluations", "previous_evaluations", "dimension_limits", "turn-1", "session-1"} {
+		if strings.Contains(evaluator.requests[0].Input.Summary, forbidden) {
+			t.Fatalf("batch summary contains forbidden %q: %s", forbidden, evaluator.requests[0].Input.Summary)
+		}
 	}
 	for table, want := range map[string]int{
 		"agent_affect_evaluations": 1,
@@ -347,5 +351,134 @@ func TestProcessNextBatchFailedEvaluateRetriesWithBackoff(t *testing.T) {
 	}
 	if !parseDBTime(runAfter).After(rt.now()) {
 		t.Fatalf("run_after = %q, want after now", runAfter)
+	}
+}
+
+func TestLongRunThousandBatchesKeepsPromptBoundedAndRawCleared(t *testing.T) {
+	cfg := config.DefaultConfig().AgentAffect
+	cfg.Enabled = true
+	cfg.Context.StoreRawInputs = false
+	cfg.Context.MaxInputTokens = 1200
+	cfg.Context.MaxUserCharsPerTurn = 80
+	cfg.Context.MaxAssistantCharsPerTurn = 80
+	cfg.Context.MaxMemoryContextChars = 80
+	cfg.Async.Batch.MaxJobs = 1
+	client := &fakeLLMClient{resp: &llm.ChatResponse{
+		Model: "fake-affect",
+		Usage: llm.Usage{InputTokens: 321, OutputTokens: 22},
+		Content: `{
+			"schema_version": "agent_affect.v3.appraisal.v1",
+			"appraisal": {
+				"event_significance": 0.2,
+				"novelty": 0.1,
+				"goal_relevance": 0.1,
+				"relationship_impact": 0.1,
+				"boundary_impact": 0,
+				"uncertainty": 0.1
+			},
+			"delta": {
+				"valence": 0,
+				"arousal": 0,
+				"dominance": 0,
+				"energy": 0,
+				"warmth": 0.01,
+				"concern": 0,
+				"curiosity": 0,
+				"playfulness": 0,
+				"attachment": 0,
+				"frustration": 0,
+				"uncertainty": 0
+			},
+			"label": "steady",
+			"cause": {
+				"code": "ordinary_batch",
+				"summary": "Compact batch appraisal.",
+				"visible_summary": "Compact batch appraisal.",
+				"tags": ["ordinary"]
+			},
+			"confidence": 0.8
+		}`,
+	}}
+	rt, db := newTestRuntime(t, cfg, NewLLMEvaluator(client, cfg))
+
+	for i := 0; i < 1000; i++ {
+		turnID := fmt.Sprintf("turn-%04d", i)
+		if _, err := rt.EnqueueTurnEvaluationJob(context.Background(), EnqueueTurnEvaluationJobRequest{
+			PersonaID:         "default",
+			SessionID:         "session-1",
+			TurnID:            turnID,
+			UserText:          strings.Repeat("用户输入", 80),
+			AssistantText:     strings.Repeat("助手回复", 80),
+			MemoryPromptBlock: strings.Repeat("记忆片段", 80),
+			Trigger:           TriggerDescriptor{TriggerType: "user_message"},
+		}); err != nil {
+			t.Fatalf("enqueue %d: %v", i, err)
+		}
+		processed, err := rt.ProcessNextBatch(context.Background(), "worker-1")
+		if err != nil {
+			t.Fatalf("ProcessNextBatch %d: %v", i, err)
+		}
+		if !processed {
+			t.Fatalf("ProcessNextBatch %d processed = false", i)
+		}
+	}
+	if len(client.requests) != 1000 {
+		t.Fatalf("llm calls = %d, want 1000", len(client.requests))
+	}
+	minPrompt := 1 << 30
+	maxPrompt := 0
+	for _, req := range client.requests {
+		prompt := req.System + "\n" + req.Messages[0].Content
+		if strings.Contains(prompt, "previous_evaluations") || strings.Contains(prompt, "recent_evaluations") {
+			t.Fatalf("prompt contains recursive history keys: %s", prompt)
+		}
+		size := len([]rune(prompt))
+		if size < minPrompt {
+			minPrompt = size
+		}
+		if size > maxPrompt {
+			maxPrompt = size
+		}
+		if estimateTokens(prompt) > cfg.Context.MaxInputTokens {
+			t.Fatalf("prompt estimate = %d, limit = %d", estimateTokens(prompt), cfg.Context.MaxInputTokens)
+		}
+	}
+	if maxPrompt-minPrompt > 600 {
+		t.Fatalf("prompt size drift = %d, min=%d max=%d", maxPrompt-minPrompt, minPrompt, maxPrompt)
+	}
+	t.Logf("prompt budget sample: strategy=checkpoint_trace_v1 min_prompt_chars=%d max_prompt_chars=%d max_estimated_tokens<=%d calls=%d actual_input_tokens=321 actual_output_tokens=22", minPrompt, maxPrompt, cfg.Context.MaxInputTokens, len(client.requests))
+
+	var causeStackJSON string
+	if err := db.QueryRow("SELECT cause_stack_json FROM agent_affect_states ORDER BY updated_at DESC LIMIT 1").Scan(&causeStackJSON); err != nil {
+		t.Fatalf("read cause stack: %v", err)
+	}
+	var stack []CauseContributor
+	if err := json.Unmarshal([]byte(causeStackJSON), &stack); err != nil {
+		t.Fatalf("decode cause stack: %v", err)
+	}
+	if len(stack) > 5 {
+		t.Fatalf("trace items = %d, want <= 5", len(stack))
+	}
+
+	var rawJobs, rawBatches, rawEvals int
+	if err := db.QueryRow("SELECT COUNT(*) FROM agent_affect_jobs WHERE COALESCE(user_text, '') <> '' OR COALESCE(assistant_text, '') <> '' OR COALESCE(input_summary, '') <> '' OR COALESCE(memory_prompt_block, '') <> ''").Scan(&rawJobs); err != nil {
+		t.Fatalf("count raw jobs: %v", err)
+	}
+	if err := db.QueryRow("SELECT COUNT(*) FROM agent_affect_job_batches WHERE COALESCE(batch_input_summary, '') <> '' OR COALESCE(context_window_snapshot_json, '') <> ''").Scan(&rawBatches); err != nil {
+		t.Fatalf("count raw batches: %v", err)
+	}
+	if err := db.QueryRow("SELECT COUNT(*) FROM agent_affect_evaluations WHERE COALESCE(input_text, '') <> '' OR COALESCE(input_summary, '') <> '' OR COALESCE(prompt_snapshot, '') <> ''").Scan(&rawEvals); err != nil {
+		t.Fatalf("count raw evals: %v", err)
+	}
+	if rawJobs != 0 || rawBatches != 0 || rawEvals != 0 {
+		t.Fatalf("raw residual jobs/batches/evals = %d/%d/%d, want 0", rawJobs, rawBatches, rawEvals)
+	}
+
+	var evalsWithUsage int
+	if err := db.QueryRow("SELECT COUNT(*) FROM agent_affect_evaluations WHERE prompt_chars > 0 AND estimated_input_tokens > 0 AND actual_input_tokens = 321 AND actual_output_tokens = 22 AND context_strategy = 'checkpoint_trace_v1'").Scan(&evalsWithUsage); err != nil {
+		t.Fatalf("count usage evals: %v", err)
+	}
+	if evalsWithUsage != 1000 {
+		t.Fatalf("evals with usage = %d, want 1000", evalsWithUsage)
 	}
 }
