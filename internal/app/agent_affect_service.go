@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/longyisang/emoagent/internal/agentaffect"
 	"github.com/longyisang/emoagent/internal/config"
-	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/plugin"
 	"github.com/longyisang/emoagent/internal/turn"
 )
@@ -187,31 +187,75 @@ func (s *AgentAffectService) evaluator(cfg config.AgentAffectConfig) agentaffect
 	if cfg.Evaluator.Mode == "disabled" {
 		return agentaffect.DisabledEvaluator{}
 	}
-	return agentaffect.NewLLMEvaluator(s.evaluatorClient(), s.withResolvedModel(cfg))
+	evaluator, err := s.llmEvaluator(cfg)
+	if err != nil {
+		return failingAgentAffectEvaluator{err: err}
+	}
+	return evaluator
 }
 
-func (s *AgentAffectService) withResolvedModel(cfg config.AgentAffectConfig) config.AgentAffectConfig {
-	if cfg.Evaluator.Model != "" {
-		return cfg
-	}
-	if s != nil && s.agentRuntime != nil {
-		if active := s.agentRuntime.Active(); active != nil {
-			cfg.Evaluator.Model = active.EmotionSummary.Model
+func (s *AgentAffectService) llmEvaluator(cfg config.AgentAffectConfig) (agentaffect.Evaluator, error) {
+	providerID := strings.TrimSpace(cfg.Evaluator.ProviderID)
+	model := strings.TrimSpace(cfg.Evaluator.Model)
+	cfg.Evaluator.ProviderID = providerID
+	cfg.Evaluator.Model = model
+	if providerID != "" {
+		if model == "" {
+			active := s.activeRuntime()
+			if active == nil || strings.TrimSpace(active.EmotionSummary.Provider.ID) != providerID || strings.TrimSpace(active.EmotionSummary.Model) == "" {
+				return nil, fmt.Errorf("agent_affect.evaluator.model is required when provider_id %q differs from active emotion summary provider %q", providerID, activeEmotionSummaryProviderID(active))
+			}
+			model = strings.TrimSpace(active.EmotionSummary.Model)
+			cfg.Evaluator.Model = model
 		}
+		if s == nil || s.agentRuntime == nil {
+			return nil, fmt.Errorf("agent affect evaluator provider %q requires agent runtime service", providerID)
+		}
+		runtime, err := s.agentRuntime.modelRuntime(config.ModelBinding{ProviderID: providerID, Model: model}, true)
+		if err != nil {
+			return nil, fmt.Errorf("agent affect evaluator provider %q: %w", providerID, err)
+		}
+		cfg.Evaluator.ProviderID = runtime.Provider.ID
+		cfg.Evaluator.Model = runtime.Model
+		return agentaffect.NewLLMEvaluator(runtime.Client, cfg), nil
 	}
-	return cfg
-}
 
-func (s *AgentAffectService) evaluatorClient() llm.Client {
-	if s != nil && s.agentRuntime != nil {
-		if active := s.agentRuntime.Active(); active != nil && active.EmotionSummary.Client != nil {
-			return active.EmotionSummary.Client
+	if active := s.activeRuntime(); active != nil && active.EmotionSummary.Client != nil {
+		if model == "" {
+			cfg.Evaluator.Model = strings.TrimSpace(active.EmotionSummary.Model)
 		}
+		cfg.Evaluator.ProviderID = strings.TrimSpace(active.EmotionSummary.Provider.ID)
+		return agentaffect.NewLLMEvaluator(active.EmotionSummary.Client, cfg), nil
 	}
 	if s != nil && s.infra != nil {
-		return s.infra.LLM
+		return agentaffect.NewLLMEvaluator(s.infra.LLM, cfg), nil
+	}
+	return agentaffect.NewLLMEvaluator(nil, cfg), nil
+}
+
+func (s *AgentAffectService) activeRuntime() *ActiveAgentRuntime {
+	if s != nil && s.agentRuntime != nil {
+		return s.agentRuntime.Active()
 	}
 	return nil
+}
+
+func activeEmotionSummaryProviderID(active *ActiveAgentRuntime) string {
+	if active == nil {
+		return ""
+	}
+	return strings.TrimSpace(active.EmotionSummary.Provider.ID)
+}
+
+type failingAgentAffectEvaluator struct {
+	err error
+}
+
+func (e failingAgentAffectEvaluator) Evaluate(context.Context, agentaffect.LLMEvaluationRequest) (agentaffect.LLMEvaluationResult, error) {
+	if e.err != nil {
+		return agentaffect.LLMEvaluationResult{}, e.err
+	}
+	return agentaffect.LLMEvaluationResult{}, fmt.Errorf("agent affect evaluator is not configured")
 }
 
 func (s *AgentAffectService) logger() *slog.Logger {
