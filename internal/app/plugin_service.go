@@ -21,6 +21,7 @@ import (
 	"github.com/longyisang/emoagent/internal/processguard"
 	"github.com/longyisang/emoagent/internal/pytoolchain"
 	"github.com/longyisang/emoagent/internal/storage"
+	"github.com/longyisang/emoagent/internal/tokenmeter"
 	"github.com/longyisang/emoagent/internal/tool"
 	"github.com/longyisang/emoagent/internal/turn"
 )
@@ -313,13 +314,30 @@ func (s *PluginService) providerClient(ctx context.Context, providerID string) (
 	if !provider.Enabled {
 		return nil, fmt.Errorf("provider %q is disabled", providerID)
 	}
-	return llm.NewClient(llm.ProviderConfig{
+	cfg := llm.ProviderConfig{
 		ID:        provider.ID,
 		PresetID:  provider.PresetID,
 		Protocol:  provider.Protocol,
 		BaseURL:   provider.BaseURL,
 		APIKeyEnv: provider.APIKeyEnv,
-	}, s.infra.Logger)
+	}
+	resolved, err := llm.ResolveProviderConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	client, err := llm.NewClient(resolved, s.infra.Logger)
+	if err != nil {
+		return nil, err
+	}
+	return tokenmeter.NewMeteredClient(tokenmeter.MeteredClientConfig{
+		Inner:        client,
+		Recorder:     s.infra.DB,
+		ProviderID:   provider.ID,
+		ProviderName: provider.Name,
+		Protocol:     resolved.Protocol,
+		Endpoint:     resolved.BaseURL,
+		Logger:       s.infra.Logger,
+	}), nil
 }
 
 func (s *PluginService) providerGatewayFallback(ctx context.Context) (string, string, bool, error) {

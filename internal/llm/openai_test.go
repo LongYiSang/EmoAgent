@@ -85,6 +85,119 @@ func TestOpenAIChatStreamStatusLogRedactsImageData(t *testing.T) {
 	}
 }
 
+func TestNormalizeOpenAIUsageStandard(t *testing.T) {
+	usage := normalizeOpenAIUsage(openaiUsage{
+		PromptTokens:     10,
+		CompletionTokens: 5,
+		TotalTokens:      15,
+	}, json.RawMessage(`{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}`))
+
+	if usage.InputTokens != 10 || usage.OutputTokens != 5 || usage.TotalTokens != 15 {
+		t.Fatalf("usage = %#v, want input/output/total", usage)
+	}
+	if usage.Source != UsageSourceProvider {
+		t.Fatalf("usage source = %q, want provider", usage.Source)
+	}
+	if string(usage.RawUsage) == "" {
+		t.Fatalf("raw usage missing: %#v", usage)
+	}
+}
+
+func TestNormalizeOpenAIUsageKimiCachedTokens(t *testing.T) {
+	usage := normalizeOpenAIUsage(openaiUsage{
+		PromptTokens:     100,
+		CompletionTokens: 20,
+		TotalTokens:      120,
+		CachedTokens:     40,
+		PromptTokensDetails: openaiPromptTokensDetails{
+			CachedTokens: 50,
+		},
+	}, json.RawMessage(`{"cached_tokens":40,"prompt_tokens_details":{"cached_tokens":50}}`))
+
+	if usage.CachedInputTokens != 50 || usage.CacheReadTokens != 50 {
+		t.Fatalf("cached usage = cached %d read %d, want max cached 50", usage.CachedInputTokens, usage.CacheReadTokens)
+	}
+	if usage.InputTokens != 100 {
+		t.Fatalf("input tokens = %d, want provider prompt total", usage.InputTokens)
+	}
+}
+
+func TestNormalizeOpenAIUsageDeepSeekCacheAndReasoning(t *testing.T) {
+	usage := normalizeOpenAIUsage(openaiUsage{
+		PromptTokens:           90,
+		CompletionTokens:       30,
+		PromptCacheHitTokens:   70,
+		PromptCacheMissTokens:  20,
+		CompletionTokensDetails: openaiCompletionTokensDetails{
+			ReasoningTokens: 12,
+		},
+	}, json.RawMessage(`{"prompt_cache_hit_tokens":70,"prompt_cache_miss_tokens":20,"completion_tokens_details":{"reasoning_tokens":12}}`))
+
+	if usage.TotalTokens != 120 {
+		t.Fatalf("total tokens = %d, want input+output fallback", usage.TotalTokens)
+	}
+	if usage.CacheHitInputTokens != 70 || usage.CacheMissInputTokens != 20 || usage.CacheReadTokens != 70 {
+		t.Fatalf("cache usage = %#v, want hit/miss/read", usage)
+	}
+	if usage.ReasoningTokens != 12 {
+		t.Fatalf("reasoning tokens = %d, want 12", usage.ReasoningTokens)
+	}
+}
+
+func TestOpenAIPayloadIncludesUsageForConfiguredStreamingProvider(t *testing.T) {
+	client := &openaiClient{
+		providerID: "deepseek",
+		baseURL:    "https://proxy.example.test",
+		usageCaps: ProviderUsageCapabilities{
+			StreamUsageMode: StreamUsageOpenAIIncludeUsage,
+		},
+		logger: slog.Default(),
+	}
+
+	payload := client.openaiPayload(ChatRequest{
+		Model:    "deepseek-v4-pro",
+		Messages: []Message{{Role: RoleUser, Content: "Hi"}},
+	}, true)
+
+	streamOptions, ok := payload["stream_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("stream_options = %#v, want object", payload["stream_options"])
+	}
+	if got := streamOptions["include_usage"]; got != true {
+		t.Fatalf("include_usage = %#v, want true", got)
+	}
+}
+
+func TestOpenAIPayloadDoesNotOverrideExplicitStreamOptions(t *testing.T) {
+	client := &openaiClient{
+		providerID: "deepseek",
+		baseURL:    "https://proxy.example.test",
+		usageCaps: ProviderUsageCapabilities{
+			StreamUsageMode: StreamUsageOpenAIIncludeUsage,
+		},
+		logger: slog.Default(),
+	}
+
+	payload := client.openaiPayload(ChatRequest{
+		Model:    "deepseek-v4-pro",
+		Messages: []Message{{Role: RoleUser, Content: "Hi"}},
+		Params: RequestParams{Extra: map[string]any{
+			"stream_options": map[string]any{"include_usage": false, "custom": "kept"},
+		}},
+	}, true)
+
+	streamOptions, ok := payload["stream_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("stream_options = %#v, want object", payload["stream_options"])
+	}
+	if got := streamOptions["include_usage"]; got != false {
+		t.Fatalf("include_usage = %#v, want explicit false", got)
+	}
+	if got := streamOptions["custom"]; got != "kept" {
+		t.Fatalf("custom stream option = %#v, want kept", got)
+	}
+}
+
 func TestOpenAIChat_MapsRequestParamsAndOmitsNilTemperature(t *testing.T) {
 	var payload map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -15,6 +15,7 @@ import (
 	"github.com/longyisang/emoagent/internal/progress"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/runtimeenv"
+	"github.com/longyisang/emoagent/internal/tokenmeter"
 	"github.com/longyisang/emoagent/internal/tool"
 )
 
@@ -241,6 +242,12 @@ func (r *Runtime) runLoop(
 	journal *Journal,
 ) RunOutcome {
 	ctx = tool.WithReadScope(ctx, readScopeFromBrief(brief))
+	ctx = tokenmeter.MergeUsageScope(ctx, tokenmeter.UsageScope{
+		SessionID: SessionIDFromContext(ctx),
+		TaskID:    brief.TaskID,
+		Protocol:  r.cfg.Provider,
+		Model:     r.cfg.Model,
+	})
 	system := BuildWorkSystem(brief, r.cfg.EnvironmentFacts)
 	tools := r.cfg.Registry.ForScope(tool.ScopeWork)
 	permission := tool.Permission(brief.PermissionScope)
@@ -304,7 +311,16 @@ func (r *Runtime) runLoop(
 			}
 
 			params := effectiveRuntimeParams(r.cfg.Params, r.cfg.MaxTokens, r.cfg.Temperature)
-			resp, err := r.cfg.LLM.ChatStream(ctx, llm.ChatRequest{
+			callCtx := tokenmeter.MergeUsageScope(ctx, tokenmeter.UsageScope{
+				Component: "work_runtime",
+				Operation: "work_round",
+				SessionID: SessionIDFromContext(ctx),
+				TaskID:    brief.TaskID,
+				RequestID: fmt.Sprintf("work:%s:%d", brief.TaskID, round),
+				Protocol:  r.cfg.Provider,
+				Model:     r.cfg.Model,
+			})
+			resp, err := r.cfg.LLM.ChatStream(callCtx, llm.ChatRequest{
 				Model:       r.cfg.Model,
 				Messages:    messages,
 				System:      system,
@@ -1078,17 +1094,7 @@ func truncateContent(text string, maxRunes int) (string, bool) {
 }
 
 func estimateMessagesTokens(messages []llm.Message) int {
-	total := 0
-	for _, message := range messages {
-		total += contextutil.EstimateTokens(message.Content)
-		total += contextutil.EstimateTokens(message.ReasoningContent)
-		for _, block := range message.ContentBlocks {
-			total += contextutil.EstimateTokens(block.Text)
-			total += contextutil.EstimateTokens(string(block.Input))
-			total += contextutil.EstimateTokens(block.Content)
-		}
-	}
-	return total
+	return tokenmeter.DefaultCounter().CountMessages(context.Background(), "", "", messages).InputTokens
 }
 
 func effectiveRuntimeParams(params llm.RequestParams, maxTokens int, temperature float64) llm.RequestParams {

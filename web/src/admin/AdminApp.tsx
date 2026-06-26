@@ -12,6 +12,7 @@ import { useAgentAffectAdmin } from './hooks/useAgentAffectAdmin';
 import { usePromptCenterAdmin } from './hooks/usePromptCenterAdmin';
 import { useWebSearchAdmin } from './hooks/useWebSearchAdmin';
 import { usePythonToolchainAdmin } from './hooks/usePythonToolchainAdmin';
+import { useUsageAdmin } from './hooks/useUsageAdmin';
 import { useAdminBootstrap } from './hooks/useAdminBootstrap';
 import { tabs, type TabID } from './lib/adminData';
 import '../styles.css';
@@ -20,6 +21,7 @@ const ProvidersTab = lazy(() => import('./tabs/ProvidersTab'));
 const AgentsTab = lazy(() => import('./tabs/AgentsTab'));
 const PersonasTab = lazy(() => import('./tabs/PersonasTab'));
 const ChatSettingsTab = lazy(() => import('./tabs/ChatSettingsTab'));
+const UsageTab = lazy(() => import('./tabs/UsageTab'));
 const MemoryCoreTab = lazy(() => import('./tabs/MemoryCoreTab'));
 const AgentAffectTab = lazy(() => import('./tabs/AgentAffectTab'));
 const PromptCenterTab = lazy(() => import('./tabs/PromptCenterTab'));
@@ -45,8 +47,9 @@ export function AdminApp() {
   const promptCenter = usePromptCenterAdmin(status);
   const webSearch = useWebSearchAdmin(status);
   const pythonToolchain = usePythonToolchainAdmin(status);
+  const usage = useUsageAdmin(status);
 
-  useAdminBootstrap(tab, { providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, webSearch, pythonToolchain, sidecar, status });
+  useAdminBootstrap(tab, { providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, webSearch, pythonToolchain, usage, sidecar, status });
 
   function renderActiveTab() {
     switch (tab) {
@@ -115,6 +118,8 @@ export function AdminApp() {
         );
       case 'chat-settings':
         return <ChatSettingsTab {...chatSettings} />;
+      case 'usage':
+        return <UsageTab {...usage} />;
       case 'memory-core':
         return (
           <MemoryCoreTab

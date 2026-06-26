@@ -1,6 +1,7 @@
 package context
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/storage"
+	"github.com/longyisang/emoagent/internal/tokenmeter"
 )
 
 const previewRuneLimit = 160
@@ -201,18 +203,7 @@ func hardLimitTokens(cfg config.ContextConfig) int {
 }
 
 func estimateMessagesTokens(messages []llm.Message) int {
-	total := 0
-	for _, msg := range messages {
-		total += EstimateTokens(msg.Content)
-		total += EstimateTokens(msg.ReasoningContent)
-		for _, block := range msg.ContentBlocks {
-			total += EstimateTokens(block.Text)
-			total += EstimateTokens(block.Content)
-			total += EstimateTokens(string(block.Input))
-			total += EstimateTokens(block.Name)
-		}
-	}
-	return total
+	return tokenmeter.DefaultCounter().CountMessages(context.Background(), "", "", messages).InputTokens
 }
 
 func compactToolPayloads(messages []llm.Message, cfg config.ContextConfig) ([]llm.Message, int) {

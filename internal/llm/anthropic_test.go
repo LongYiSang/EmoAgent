@@ -36,10 +36,7 @@ func TestAnthropicChat_TextOnly(t *testing.T) {
 				{Type: "text", Text: "Hello there!"},
 			},
 			StopReason: "end_turn",
-			Usage: struct {
-				InputTokens  int `json:"input_tokens"`
-				OutputTokens int `json:"output_tokens"`
-			}{InputTokens: 10, OutputTokens: 5},
+			Usage: anthropicUsage{InputTokens: 10, OutputTokens: 5},
 		})
 	}))
 	defer server.Close()
@@ -66,6 +63,9 @@ func TestAnthropicChat_TextOnly(t *testing.T) {
 	}
 	if len(resp.ContentBlocks) != 1 || resp.ContentBlocks[0].Type != "text" {
 		t.Errorf("ContentBlocks: expected 1 text block, got %+v", resp.ContentBlocks)
+	}
+	if resp.Usage.TotalTokens != 15 || resp.Usage.Source != UsageSourceProvider || len(resp.Usage.RawUsage) == 0 {
+		t.Fatalf("usage = %#v, want normalized provider usage with raw JSON", resp.Usage)
 	}
 }
 
@@ -223,10 +223,7 @@ func TestAnthropicChat_ToolUse(t *testing.T) {
 				{Type: "tool_use", ID: "toolu_01", Name: "get_time", Input: json.RawMessage(`{"timezone":"UTC"}`)},
 			},
 			StopReason: "tool_use",
-			Usage: struct {
-				InputTokens  int `json:"input_tokens"`
-				OutputTokens int `json:"output_tokens"`
-			}{InputTokens: 20, OutputTokens: 15},
+			Usage: anthropicUsage{InputTokens: 20, OutputTokens: 15},
 		})
 	}))
 	defer server.Close()

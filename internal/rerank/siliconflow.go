@@ -8,15 +8,21 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/storage"
+	"github.com/longyisang/emoagent/internal/tokenmeter"
 )
 
 type SiliconFlowConfig struct {
-	APIKey  string
-	BaseURL string
-	Path    string
-	Model   string
-	Timeout time.Duration
-	Client  *http.Client
+	APIKey   string
+	BaseURL  string
+	Path     string
+	Model    string
+	Timeout  time.Duration
+	Client   *http.Client
+	Recorder UsageRecorder
 }
 
 type siliconFlowProvider struct {
@@ -39,6 +45,7 @@ func NewSiliconFlowProvider(cfg SiliconFlowConfig) Provider {
 func (p *siliconFlowProvider) Name() string { return "siliconflow" }
 
 func (p *siliconFlowProvider) Rerank(ctx context.Context, req Request) (Response, error) {
+	start := time.Now()
 	model := strings.TrimSpace(req.Model)
 	if model == "" {
 		model = strings.TrimSpace(p.cfg.Model)
@@ -57,10 +64,12 @@ func (p *siliconFlowProvider) Rerank(ctx context.Context, req Request) (Response
 
 	payload, err := json.Marshal(body)
 	if err != nil {
+		p.recordUsage(ctx, req, model, start, Usage{}, "error", err, nil)
 		return Response{}, fmt.Errorf("siliconflow rerank request encode failed")
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint(), bytes.NewReader(payload))
 	if err != nil {
+		p.recordUsage(ctx, req, model, start, Usage{}, "error", err, nil)
 		return Response{}, fmt.Errorf("siliconflow rerank request build failed")
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -70,15 +79,19 @@ func (p *siliconFlowProvider) Rerank(ctx context.Context, req Request) (Response
 
 	httpResp, err := p.client.Do(httpReq)
 	if err != nil {
+		p.recordUsage(ctx, req, model, start, Usage{}, "error", err, nil)
 		return Response{}, fmt.Errorf("siliconflow rerank request failed")
 	}
 	defer httpResp.Body.Close()
 
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		err := fmt.Errorf("siliconflow rerank failed with status %d", httpResp.StatusCode)
+		p.recordUsage(ctx, req, model, start, Usage{}, "error", err, nil)
 		return Response{}, fmt.Errorf("siliconflow rerank failed with status %d", httpResp.StatusCode)
 	}
 	var decoded siliconFlowResponse
 	if err := json.NewDecoder(httpResp.Body).Decode(&decoded); err != nil {
+		p.recordUsage(ctx, req, model, start, Usage{}, "error", err, nil)
 		return Response{}, fmt.Errorf("siliconflow rerank response parse failed")
 	}
 
@@ -100,14 +113,103 @@ func (p *siliconFlowProvider) Rerank(ctx context.Context, req Request) (Response
 		})
 	}
 	tokens := decoded.Meta.Tokens
+	usage := Usage{
+		Documents:   len(req.Documents),
+		InputTokens: tokens.InputTokens,
+		TotalTokens: tokens.InputTokens + tokens.OutputTokens + tokens.ImageTokens,
+	}
+	rawUsage, _ := json.Marshal(decoded.Meta.Tokens)
+	p.recordUsage(ctx, req, model, start, usage, "success", nil, rawUsage)
 	return Response{
 		Results: results,
-		Usage: Usage{
-			Documents:   len(req.Documents),
-			InputTokens: tokens.InputTokens,
-			TotalTokens: tokens.InputTokens + tokens.OutputTokens + tokens.ImageTokens,
-		},
+		Usage:   usage,
 	}, nil
+}
+
+func (p *siliconFlowProvider) recordUsage(ctx context.Context, req Request, model string, start time.Time, usage Usage, status string, err error, rawUsage []byte) {
+	if p.cfg.Recorder == nil {
+		return
+	}
+	scope, _ := tokenmeter.UsageScopeFromContext(ctx)
+	estimate := estimateRerankInputTokens(ctx, req, model)
+	source := llm.UsageSourceProvider
+	if usage.TotalTokens == 0 && usage.InputTokens == 0 {
+		source = llm.UsageSourceEstimated
+	}
+	event := storage.LLMUsageEvent{
+		ID:                   uuid.NewString(),
+		RequestID:            scope.RequestID,
+		SessionID:            scope.SessionID,
+		TurnID:               scope.TurnID,
+		AgentID:              scope.AgentID,
+		PersonaKey:           scope.PersonaKey,
+		PluginID:             scope.PluginID,
+		TaskID:               scope.TaskID,
+		Component:            firstNonEmpty(scope.Component, "web_search"),
+		Operation:            firstNonEmpty(scope.Operation, "rerank"),
+		ProviderID:           firstNonEmpty(scope.ProviderID, "siliconflow"),
+		ProviderName:         firstNonEmpty(scope.ProviderName, "SiliconFlow"),
+		Protocol:             firstNonEmpty(scope.Protocol, "siliconflow_rerank"),
+		Model:                firstNonEmpty(scope.Model, model),
+		Endpoint:             p.endpoint(),
+		Status:               status,
+		DurationMS:           time.Since(start).Milliseconds(),
+		EstimatedInputTokens: estimate,
+		EstimatedTotalTokens: estimate,
+		EstimateMethod:       tokenmeter.MethodHeuristicCJK,
+		EstimateConfidence:   0.55,
+		UsageSource:          source,
+		InputTokens:          usage.InputTokens,
+		TotalTokens:          usage.TotalTokens,
+		ActualInputTokens:    usage.InputTokens,
+		ActualTotalTokens:    usage.TotalTokens,
+		RawUsageJSON:         firstNonEmpty(string(rawUsage), "{}"),
+		MetadataJSON:         rerankMetadataJSON(req, usage),
+	}
+	if source == llm.UsageSourceEstimated {
+		event.InputTokens = estimate
+		event.TotalTokens = estimate
+		event.ActualInputTokens = 0
+		event.ActualTotalTokens = 0
+	}
+	if err != nil {
+		event.ErrorMessage = err.Error()
+	}
+	if recordErr := p.cfg.Recorder.RecordLLMUsageEvent(context.WithoutCancel(ctx), event); recordErr != nil {
+		return
+	}
+}
+
+func estimateRerankInputTokens(ctx context.Context, req Request, model string) int {
+	counter := tokenmeter.DefaultCounter()
+	total := counter.CountText(ctx, "siliconflow", model, req.Query).InputTokens
+	for _, doc := range req.Documents {
+		total += counter.CountText(ctx, "siliconflow", model, doc.Text).InputTokens
+	}
+	return total
+}
+
+func rerankMetadataJSON(req Request, usage Usage) string {
+	payload, err := json.Marshal(struct {
+		Documents int `json:"documents"`
+		TopK      int `json:"top_k,omitempty"`
+	}{
+		Documents: usage.Documents,
+		TopK:      req.TopK,
+	})
+	if err != nil {
+		return "{}"
+	}
+	return string(payload)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func (p *siliconFlowProvider) endpoint() string {

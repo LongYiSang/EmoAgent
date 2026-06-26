@@ -13,6 +13,7 @@ import (
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/promptcenter"
 	"github.com/longyisang/emoagent/internal/storage"
+	"github.com/longyisang/emoagent/internal/tokenmeter"
 )
 
 const (
@@ -231,7 +232,8 @@ func UpdateRunningSummaryWithParamsAndPromptResolver(
 		}
 		repairReq, repairBuildErr := buildSummaryRepairRequestWithSystemPrompt(req, resp, err, repairPrompt)
 		if repairBuildErr == nil {
-			repairResp, repairErr := client.Chat(ctx, repairReq)
+			repairCtx := tokenmeter.MergeUsageScope(ctx, tokenmeter.UsageScope{Operation: "summary_repair"})
+			repairResp, repairErr := client.Chat(repairCtx, repairReq)
 			copyResponseStatsToReport(&report, repairResp)
 			if repairErr == nil {
 				nextSummary, err = parseRunningSummaryResponse(repairResp)

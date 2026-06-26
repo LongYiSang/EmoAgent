@@ -107,6 +107,13 @@ type fakeAdminApp struct {
 	lastAgentAffectSupers  AgentAffectQueueRequest
 	agentAffectSupersResp  AgentAffectSupersedePendingResponse
 	uploadAsset            *media.MediaAsset
+	usageEvents            []storage.LLMUsageEvent
+	lastUsageFilter        storage.LLMUsageEventFilter
+	usageSummary           []storage.LLMUsageSummaryRow
+	lastUsageSummaryFilter storage.LLMUsageSummaryFilter
+	calibrations           []storage.TokenEstimatorCalibration
+	lastCalibrationFilter  storage.TokenEstimatorCalibrationFilter
+	refreshCalibrationRows int
 }
 
 func (f *fakeAdminApp) ListLLMProviders() ([]config.LLMProvider, error) {
@@ -563,6 +570,22 @@ func (f *fakeAdminApp) GetMemoryFeatures(ctx context.Context) (configcenter.Memo
 func (f *fakeAdminApp) UpdateMemoryFeatures(ctx context.Context, memory config.MemoryConfig) (configcenter.EffectiveConfig, error) {
 	f.lastMemoryConfig = memory
 	return f.effectiveConfig, nil
+}
+func (f *fakeAdminApp) ListLLMUsageEvents(ctx context.Context, filter storage.LLMUsageEventFilter) ([]storage.LLMUsageEvent, error) {
+	f.lastUsageFilter = filter
+	return append([]storage.LLMUsageEvent(nil), f.usageEvents...), nil
+}
+func (f *fakeAdminApp) SummarizeLLMUsage(ctx context.Context, filter storage.LLMUsageSummaryFilter) ([]storage.LLMUsageSummaryRow, error) {
+	f.lastUsageSummaryFilter = filter
+	return append([]storage.LLMUsageSummaryRow(nil), f.usageSummary...), nil
+}
+func (f *fakeAdminApp) ListTokenEstimatorCalibrations(ctx context.Context, filter storage.TokenEstimatorCalibrationFilter) ([]storage.TokenEstimatorCalibration, error) {
+	f.lastCalibrationFilter = filter
+	return append([]storage.TokenEstimatorCalibration(nil), f.calibrations...), nil
+}
+func (f *fakeAdminApp) RefreshTokenEstimatorCalibrations(ctx context.Context, filter storage.TokenEstimatorCalibrationFilter) (int, error) {
+	f.lastCalibrationFilter = filter
+	return f.refreshCalibrationRows, nil
 }
 func (f *fakeAdminApp) GetWebSearchConfig(ctx context.Context) (configcenter.WebSearchConfigResponse, error) {
 	return f.webSearchConfig, nil
@@ -1807,5 +1830,55 @@ func TestHandleListMemorySegments(t *testing.T) {
 	}
 	if len(payload.Segments) != 1 || payload.Segments[0].ID != "segment-1" {
 		t.Fatalf("payload.Segments = %#v, want segment-1", payload.Segments)
+	}
+}
+
+func TestHandleListLLMUsageEventsParsesFilters(t *testing.T) {
+	app := &fakeAdminApp{usageEvents: []storage.LLMUsageEvent{{ID: "usage-1", ProviderID: "deepseek"}}}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	req := httptest.NewRequest(http.MethodGet, "/api/llm-usage/events?provider_id=deepseek&component=emotion_chat&limit=7", nil)
+	rec := httptest.NewRecorder()
+
+	handler.HandleListLLMUsageEvents(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if app.lastUsageFilter.ProviderID != "deepseek" || app.lastUsageFilter.Component != "emotion_chat" || app.lastUsageFilter.Limit != 7 {
+		t.Fatalf("filter = %#v", app.lastUsageFilter)
+	}
+	var body struct {
+		Events []storage.LLMUsageEvent `json:"events"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Events) != 1 || body.Events[0].ID != "usage-1" {
+		t.Fatalf("body = %#v", body)
+	}
+}
+
+func TestHandleTokenEstimatorCalibrationRefresh(t *testing.T) {
+	app := &fakeAdminApp{refreshCalibrationRows: 2}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	req := httptest.NewRequest(http.MethodPost, "/api/token-estimator/calibrations/refresh?provider_id=deepseek&model=m1", nil)
+	rec := httptest.NewRecorder()
+
+	handler.HandleRefreshTokenEstimatorCalibrations(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if app.lastCalibrationFilter.ProviderID != "deepseek" || app.lastCalibrationFilter.Model != "m1" {
+		t.Fatalf("filter = %#v", app.lastCalibrationFilter)
+	}
+	var body struct {
+		Refreshed int `json:"refreshed"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Refreshed != 2 {
+		t.Fatalf("refreshed = %d, want 2", body.Refreshed)
 	}
 }

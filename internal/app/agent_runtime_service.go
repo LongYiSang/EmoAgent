@@ -10,6 +10,7 @@ import (
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/storage"
+	"github.com/longyisang/emoagent/internal/tokenmeter"
 	"github.com/longyisang/emoagent/internal/tool"
 	"github.com/longyisang/emoagent/internal/work"
 )
@@ -331,13 +332,33 @@ func (s *AgentRuntimeService) modelRuntime(binding config.ModelBinding, requireC
 }
 
 func (s *AgentRuntimeService) buildClientForProvider(provider config.LLMProvider) (llm.Client, error) {
-	return llm.NewClient(llm.ProviderConfig{
+	cfg := llm.ProviderConfig{
 		ID:        provider.ID,
 		PresetID:  provider.PresetID,
 		Protocol:  provider.Protocol,
 		BaseURL:   provider.BaseURL,
 		APIKeyEnv: provider.APIKeyEnv,
-	}, s.infra.Logger)
+	}
+	resolved, err := llm.ResolveProviderConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	client, err := llm.NewClient(resolved, s.infra.Logger)
+	if err != nil {
+		return nil, err
+	}
+	if s.infra == nil || s.infra.DB == nil {
+		return client, nil
+	}
+	return tokenmeter.NewMeteredClient(tokenmeter.MeteredClientConfig{
+		Inner:        client,
+		Recorder:     s.infra.DB,
+		ProviderID:   provider.ID,
+		ProviderName: provider.Name,
+		Protocol:     resolved.Protocol,
+		Endpoint:     resolved.BaseURL,
+		Logger:       s.infra.Logger,
+	}), nil
 }
 
 func (s *AgentRuntimeService) setActive(runtime *ActiveAgentRuntime) {

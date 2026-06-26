@@ -9,6 +9,7 @@ import (
 
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/protocol"
+	"github.com/longyisang/emoagent/internal/tokenmeter"
 )
 
 // RuntimeDecider handles low-risk auto decisions within Work runtime.
@@ -80,7 +81,15 @@ func (d *LLMRuntimeDecider) Decide(ctx context.Context, brief protocol.TaskBrief
 		Temperature: d.temperature,
 		Stream:      false,
 	}
-	resp, err := d.client.ChatStream(ctx, req, func(llm.StreamEvent) {})
+	callCtx := tokenmeter.MergeUsageScope(ctx, tokenmeter.UsageScope{
+		Component: "work_decider",
+		Operation: "work_decide",
+		SessionID: SessionIDFromContext(ctx),
+		TaskID:    brief.TaskID,
+		RequestID: fmt.Sprintf("work_decider:%s", brief.TaskID),
+		Model:     d.model,
+	})
+	resp, err := d.client.ChatStream(callCtx, req, func(llm.StreamEvent) {})
 	if err != nil {
 		return RuntimeDecision{
 			Escalate:       true,
@@ -103,7 +112,15 @@ func (d *LLMRuntimeDecider) Decide(ctx context.Context, brief protocol.TaskBrief
 	if repairBuildErr != nil {
 		return RuntimeDecision{Escalate: true, EscalateReason: repairBuildErr.Error()}, nil
 	}
-	repairResp, repairErr := d.client.ChatStream(ctx, repairReq, func(llm.StreamEvent) {})
+	repairCtx := tokenmeter.MergeUsageScope(ctx, tokenmeter.UsageScope{
+		Component: "work_decider",
+		Operation: "work_decide_repair",
+		SessionID: SessionIDFromContext(ctx),
+		TaskID:    brief.TaskID,
+		RequestID: fmt.Sprintf("work_decider_repair:%s", brief.TaskID),
+		Model:     d.model,
+	})
+	repairResp, repairErr := d.client.ChatStream(repairCtx, repairReq, func(llm.StreamEvent) {})
 	if repairErr != nil {
 		return RuntimeDecision{
 			Escalate:       true,

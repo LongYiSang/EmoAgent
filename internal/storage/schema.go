@@ -1260,6 +1260,92 @@ CREATE INDEX IF NOT EXISTS idx_plugin_trust_acceptance_history_plugin_time
 		Version: 33,
 		SQL:     `SELECT 1;`,
 	},
+	{
+		Version: 34,
+		SQL: `
+CREATE TABLE IF NOT EXISTS llm_usage_events (
+    id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL DEFAULT '',
+    provider_request_id TEXT NOT NULL DEFAULT '',
+    response_id TEXT NOT NULL DEFAULT '',
+    session_id TEXT NOT NULL DEFAULT '',
+    turn_id TEXT NOT NULL DEFAULT '',
+    agent_id TEXT NOT NULL DEFAULT '',
+    persona_key TEXT NOT NULL DEFAULT '',
+    plugin_id TEXT NOT NULL DEFAULT '',
+    task_id TEXT NOT NULL DEFAULT '',
+    component TEXT NOT NULL DEFAULT 'unknown',
+    operation TEXT NOT NULL DEFAULT '',
+    provider_id TEXT NOT NULL DEFAULT '',
+    provider_name TEXT NOT NULL DEFAULT '',
+    protocol TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    endpoint TEXT NOT NULL DEFAULT '',
+    stream INTEGER NOT NULL DEFAULT 0 CHECK (stream IN (0,1)),
+    status TEXT NOT NULL DEFAULT 'success',
+    error_kind TEXT NOT NULL DEFAULT '',
+    error_message TEXT NOT NULL DEFAULT '',
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    estimated_input_tokens INTEGER NOT NULL DEFAULT 0,
+    estimated_output_tokens INTEGER NOT NULL DEFAULT 0,
+    estimated_total_tokens INTEGER NOT NULL DEFAULT 0,
+    estimate_method TEXT NOT NULL DEFAULT '',
+    estimate_confidence REAL NOT NULL DEFAULT 0,
+    actual_input_tokens INTEGER NOT NULL DEFAULT 0,
+    actual_output_tokens INTEGER NOT NULL DEFAULT 0,
+    actual_total_tokens INTEGER NOT NULL DEFAULT 0,
+    cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_hit_input_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_miss_input_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+    image_tokens INTEGER NOT NULL DEFAULT 0,
+    audio_tokens INTEGER NOT NULL DEFAULT 0,
+    usage_source TEXT NOT NULL DEFAULT 'unknown'
+        CHECK (usage_source IN ('provider_usage','estimated','hybrid','unknown')),
+    prompt_hash TEXT NOT NULL DEFAULT '',
+    completion_hash TEXT NOT NULL DEFAULT '',
+    raw_usage_json TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_events_created
+    ON llm_usage_events(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_events_session_time
+    ON llm_usage_events(session_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_events_provider_model_time
+    ON llm_usage_events(provider_id, model, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_events_component_time
+    ON llm_usage_events(component, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_events_plugin_time
+    ON llm_usage_events(plugin_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS token_estimator_calibrations (
+    id TEXT PRIMARY KEY,
+    provider_id TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    estimate_method TEXT NOT NULL DEFAULT '',
+    bucket TEXT NOT NULL DEFAULT 'global',
+    sample_count INTEGER NOT NULL DEFAULT 0,
+    estimated_input_tokens_sum INTEGER NOT NULL DEFAULT 0,
+    actual_input_tokens_sum INTEGER NOT NULL DEFAULT 0,
+    estimated_output_tokens_sum INTEGER NOT NULL DEFAULT 0,
+    actual_output_tokens_sum INTEGER NOT NULL DEFAULT 0,
+    correction_factor REAL NOT NULL DEFAULT 1.0,
+    mean_abs_pct_error REAL NOT NULL DEFAULT 0,
+    last_event_id TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT '',
+    UNIQUE(provider_id, model, estimate_method, bucket)
+);
+CREATE INDEX IF NOT EXISTS idx_token_estimator_calibrations_provider_model
+    ON token_estimator_calibrations(provider_id, model, estimate_method);
+`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.

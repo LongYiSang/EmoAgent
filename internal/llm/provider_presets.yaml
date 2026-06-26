@@ -10,6 +10,8 @@ presets:
     documentation_url: https://platform.openai.com/docs
     capabilities:
       reasoning_request_style: reasoning_effort
+      usage_format: openai_chat
+      stream_usage_mode: openai_include_usage
     admin:
       visible_params: [max_tokens, temperature, stream, top_p, presence_penalty, frequency_penalty, reasoning_effort, extra]
       main_defaults:
@@ -33,6 +35,8 @@ presets:
       reasoning_request_style: thinking_type
       reasoning_response_style: reasoning_content
       tool_reasoning_continuation: preserve_during_tool_loop
+      usage_format: openai_chat
+      stream_usage_mode: final_chunk_usage
     admin:
       visible_params: [max_tokens, temperature, stream, thinking_mode, extra]
       main_defaults:
@@ -61,6 +65,8 @@ presets:
       reasoning_response_style: reasoning_content
       tool_reasoning_continuation: preserve_during_tool_loop
       thinking_effort_fallback_to_reasoning: true
+      usage_format: openai_chat
+      stream_usage_mode: openai_include_usage
     admin:
       visible_params: [max_tokens, stream, reasoning_effort, thinking_mode, extra]
       main_defaults:
@@ -87,6 +93,8 @@ presets:
       reasoning_request_style: anthropic_thinking
       reasoning_response_style: anthropic_thinking_blocks
       tool_reasoning_continuation: preserve_during_tool_loop
+      usage_format: anthropic_messages
+      stream_usage_mode: final_chunk_usage
     admin:
       visible_params: [max_tokens, temperature, stream, thinking_mode, thinking_budget, extra]
       main_defaults:
@@ -256,6 +264,8 @@ presets:
       reasoning_request_style: siliconflow_enable_thinking
       reasoning_response_style: reasoning_content
       tool_reasoning_continuation: preserve_during_tool_loop
+      usage_format: openai_chat
+      stream_usage_mode: openai_include_usage
     admin:
       visible_params: [max_tokens, temperature, stream, top_p, reasoning_effort, thinking_mode, thinking_budget, extra]
       main_defaults:

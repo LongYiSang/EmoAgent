@@ -79,10 +79,7 @@ func TestAnthropicChat_SendsNonNullToolSchema(t *testing.T) {
 			Model:      "claude-test",
 			Content:    []anthropicContentBlock{{Type: "text", Text: "ok"}},
 			StopReason: "end_turn",
-			Usage: struct {
-				InputTokens  int `json:"input_tokens"`
-				OutputTokens int `json:"output_tokens"`
-			}{InputTokens: 1, OutputTokens: 1},
+			Usage: anthropicUsage{InputTokens: 1, OutputTokens: 1},
 		})
 	}))
 	defer server.Close()

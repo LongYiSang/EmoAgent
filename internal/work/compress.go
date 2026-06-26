@@ -8,6 +8,7 @@ import (
 
 	contextutil "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/tokenmeter"
 )
 
 // snipConsumedToolResults snips tool_result payloads from rounds older than
@@ -104,7 +105,12 @@ func compressWorkContextWithParams(
 	if err != nil {
 		return messages, currentProgress, fmt.Errorf("build progress summary request: %w", err)
 	}
-	resp, err := summaryClient.Chat(ctx, req)
+	summaryCtx := tokenmeter.MergeUsageScope(ctx, tokenmeter.UsageScope{
+		Component: "work_summary",
+		Operation: "work_summary",
+		Model:     summaryModel,
+	})
+	resp, err := summaryClient.Chat(summaryCtx, req)
 	if err != nil {
 		return messages, currentProgress, fmt.Errorf("progress summary LLM call: %w", err)
 	}
@@ -113,7 +119,12 @@ func compressWorkContextWithParams(
 	if err != nil {
 		repairReq, repairBuildErr := buildProgressRepairRequest(req, resp, err)
 		if repairBuildErr == nil {
-			repairResp, repairErr := summaryClient.Chat(ctx, repairReq)
+			repairCtx := tokenmeter.MergeUsageScope(ctx, tokenmeter.UsageScope{
+				Component: "work_summary",
+				Operation: "work_summary_repair",
+				Model:     summaryModel,
+			})
+			repairResp, repairErr := summaryClient.Chat(repairCtx, repairReq)
 			if repairErr == nil {
 				newProgress, err = parseProgressSummaryResponse(repairResp)
 			} else {

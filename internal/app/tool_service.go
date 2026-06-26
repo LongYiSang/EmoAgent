@@ -48,7 +48,7 @@ func (s *ToolService) EnsureRegistry() error {
 		if s.infra.DB != nil {
 			sqlDB = s.infra.DB.SqlDB()
 		}
-		builtin.RegisterAllWithFactsAndDB(s.registry, cfg, projectRoot, s.infra.Environment, s.infra.Logger, sqlDB)
+		builtin.RegisterAllWithFactsDBAndUsageRecorder(s.registry, cfg, projectRoot, s.infra.Environment, s.infra.Logger, sqlDB, s.infra.DB)
 		s.infra.Logger.Info("tool registry initialized", "tools", len(s.registry.Specs()))
 	} else if s.infra.Environment.OS == "" {
 		projectRoot := s.infra.ProjectRoot
@@ -88,7 +88,11 @@ func (s *ToolService) ReconfigureWebSearch(cfg config.WebSearchConfig) configcen
 	if s.infra != nil {
 		logger = s.infra.Logger
 	}
-	provider, err := websearch.NewProvider(cfg, logger)
+	var usageRecorder websearch.UsageRecorder
+	if s.infra != nil {
+		usageRecorder = s.infra.DB
+	}
+	provider, err := websearch.NewProviderWithUsageRecorder(cfg, logger, usageRecorder)
 	if err != nil {
 		s.registry.Unregister(builtin.WebSearchSpec.Name)
 		s.setWebSearchLastError(err.Error())

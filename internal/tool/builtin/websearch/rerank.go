@@ -10,6 +10,7 @@ import (
 
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/rerank"
+	"github.com/longyisang/emoagent/internal/tokenmeter"
 )
 
 type rerankProvider struct {
@@ -46,7 +47,13 @@ func (p *rerankProvider) Search(ctx context.Context, query string, opts Options)
 	}
 
 	providerName := p.reranker.Name()
-	rr, err := p.reranker.Rerank(ctx, rerank.Request{
+	rerankCtx := tokenmeter.MergeUsageScope(ctx, tokenmeter.UsageScope{
+		Component:  "web_search",
+		Operation:  "rerank",
+		ProviderID: providerName,
+		Model:      p.cfg.Model,
+	})
+	rr, err := p.reranker.Rerank(rerankCtx, rerank.Request{
 		Query:     query,
 		Model:     p.cfg.Model,
 		Documents: docs,
@@ -56,7 +63,7 @@ func (p *rerankProvider) Search(ctx context.Context, query string, opts Options)
 		resp.Warnings = append(resp.Warnings, rerankFallbackWarning(p.reranker.Name(), p.cfg.Fallback))
 		if strings.EqualFold(p.cfg.Fallback, "heuristic") {
 			heuristic := rerank.NewHeuristicProvider()
-			rr, err = heuristic.Rerank(ctx, rerank.Request{
+			rr, err = heuristic.Rerank(rerankCtx, rerank.Request{
 				Query:     query,
 				Model:     "heuristic",
 				Documents: docs,

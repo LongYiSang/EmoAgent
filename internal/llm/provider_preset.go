@@ -21,6 +21,14 @@ const (
 	ReasoningResponseAnthropicBlocks  = "anthropic_thinking_blocks"
 
 	ToolReasoningContinuationPreserve = "preserve_during_tool_loop"
+
+	UsageFormatOpenAIChat         = "openai_chat"
+	UsageFormatAnthropicMessages = "anthropic_messages"
+	UsageFormatSiliconFlowRerank = "siliconflow_rerank"
+
+	StreamUsageOpenAIIncludeUsage = "openai_include_usage"
+	StreamUsageFinalChunk         = "final_chunk_usage"
+	StreamUsageNone               = "none"
 )
 
 type ProviderPreset struct {
@@ -44,6 +52,8 @@ type ProviderCapabilities struct {
 	ReasoningResponseStyle         string `yaml:"reasoning_response_style" json:"reasoning_response_style,omitempty"`
 	ToolReasoningContinuation      string `yaml:"tool_reasoning_continuation" json:"tool_reasoning_continuation,omitempty"`
 	ThinkingEffortFallbackToReason bool   `yaml:"thinking_effort_fallback_to_reasoning" json:"thinking_effort_fallback_to_reasoning,omitempty"`
+	UsageFormat                    string `yaml:"usage_format" json:"usage_format,omitempty"`
+	StreamUsageMode                string `yaml:"stream_usage_mode" json:"stream_usage_mode,omitempty"`
 }
 
 type ProviderAdmin struct {
@@ -190,6 +200,12 @@ func applyPresetToProviderConfig(cfg ProviderConfig, preset ProviderPreset) Prov
 	}
 	if !cfg.ThinkingEffortFallbackToReason {
 		cfg.ThinkingEffortFallbackToReason = preset.Capabilities.ThinkingEffortFallbackToReason
+	}
+	if cfg.UsageFormat == "" {
+		cfg.UsageFormat = preset.Capabilities.UsageFormat
+	}
+	if cfg.StreamUsageMode == "" {
+		cfg.StreamUsageMode = preset.Capabilities.StreamUsageMode
 	}
 	return cfg
 }

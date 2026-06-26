@@ -191,6 +191,18 @@ func (a *routeTestAdminApp) GetMemoryFeatures(ctx context.Context) (configcenter
 func (a *routeTestAdminApp) UpdateMemoryFeatures(ctx context.Context, memory config.MemoryConfig) (configcenter.EffectiveConfig, error) {
 	return configcenter.EffectiveConfig{}, nil
 }
+func (a *routeTestAdminApp) ListLLMUsageEvents(ctx context.Context, filter storage.LLMUsageEventFilter) ([]storage.LLMUsageEvent, error) {
+	return nil, nil
+}
+func (a *routeTestAdminApp) SummarizeLLMUsage(ctx context.Context, filter storage.LLMUsageSummaryFilter) ([]storage.LLMUsageSummaryRow, error) {
+	return nil, nil
+}
+func (a *routeTestAdminApp) ListTokenEstimatorCalibrations(ctx context.Context, filter storage.TokenEstimatorCalibrationFilter) ([]storage.TokenEstimatorCalibration, error) {
+	return nil, nil
+}
+func (a *routeTestAdminApp) RefreshTokenEstimatorCalibrations(ctx context.Context, filter storage.TokenEstimatorCalibrationFilter) (int, error) {
+	return 0, nil
+}
 func (a *routeTestAdminApp) GetSidecarStatus(ctx context.Context) (sidecarruntime.Status, error) {
 	return sidecarruntime.Status{}, nil
 }

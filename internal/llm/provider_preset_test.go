@@ -41,6 +41,10 @@ func TestProviderPresetsCoverCommonProviders(t *testing.T) {
 	if !containsString(moonshot.Admin.VisibleParams, "thinking_mode") {
 		t.Fatalf("moonshot visible params = %#v, want thinking_mode", moonshot.Admin.VisibleParams)
 	}
+	if moonshot.Capabilities.UsageFormat != UsageFormatOpenAIChat ||
+		moonshot.Capabilities.StreamUsageMode != StreamUsageFinalChunk {
+		t.Fatalf("moonshot usage capabilities = %#v", moonshot.Capabilities)
+	}
 
 	groq, ok := ProviderPresetByID("groq")
 	if !ok {
@@ -48,6 +52,24 @@ func TestProviderPresetsCoverCommonProviders(t *testing.T) {
 	}
 	if groq.Capabilities.ReasoningResponseStyle != ReasoningResponseMessageReasoning {
 		t.Fatalf("groq reasoning response style = %q, want %q", groq.Capabilities.ReasoningResponseStyle, ReasoningResponseMessageReasoning)
+	}
+
+	deepseek, ok := ProviderPresetByID("deepseek")
+	if !ok {
+		t.Fatal("deepseek preset not found")
+	}
+	if deepseek.Capabilities.UsageFormat != UsageFormatOpenAIChat ||
+		deepseek.Capabilities.StreamUsageMode != StreamUsageOpenAIIncludeUsage {
+		t.Fatalf("deepseek usage capabilities = %#v", deepseek.Capabilities)
+	}
+
+	anthropic, ok := ProviderPresetByID("anthropic")
+	if !ok {
+		t.Fatal("anthropic preset not found")
+	}
+	if anthropic.Capabilities.UsageFormat != UsageFormatAnthropicMessages ||
+		anthropic.Capabilities.StreamUsageMode != StreamUsageFinalChunk {
+		t.Fatalf("anthropic usage capabilities = %#v", anthropic.Capabilities)
 	}
 
 	siliconflow, ok := ProviderPresetByID("siliconflow")
@@ -97,6 +119,9 @@ func TestResolveProviderConfigAppliesPresetDefaultsAndKeepsOverrides(t *testing.
 	}
 	if resolved.ChatCompletionsPath != "/v1/chat/completions" || resolved.ModelsPath != "/v1/models" {
 		t.Fatalf("paths = %q/%q", resolved.ChatCompletionsPath, resolved.ModelsPath)
+	}
+	if resolved.UsageFormat != UsageFormatOpenAIChat || resolved.StreamUsageMode != StreamUsageFinalChunk {
+		t.Fatalf("resolved usage capabilities = format %q stream %q", resolved.UsageFormat, resolved.StreamUsageMode)
 	}
 
 	if _, err := ResolveProviderConfig(ProviderConfig{PresetID: "missing"}); err == nil {

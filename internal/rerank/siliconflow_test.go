@@ -8,7 +8,20 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/storage"
+	"github.com/longyisang/emoagent/internal/tokenmeter"
 )
+
+type rerankUsageRecorder struct {
+	events []storage.LLMUsageEvent
+}
+
+func (r *rerankUsageRecorder) RecordLLMUsageEvent(_ context.Context, event storage.LLMUsageEvent) error {
+	r.events = append(r.events, event)
+	return nil
+}
 
 func TestSiliconFlowProviderUsesConfiguredEndpointAndMapsResults(t *testing.T) {
 	const apiKey = "sf-secret"
@@ -87,6 +100,50 @@ func TestSiliconFlowProviderUsesConfiguredEndpointAndMapsResults(t *testing.T) {
 	}
 	if resp.Usage.Documents != 2 || resp.Usage.InputTokens != 17 || resp.Usage.TotalTokens != 20 {
 		t.Fatalf("usage = %#v, want documents/input/total tokens", resp.Usage)
+	}
+}
+
+func TestSiliconFlowProviderRecordsUsage(t *testing.T) {
+	recorder := &rerankUsageRecorder{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"results": [{"index": 0, "relevance_score": 0.9}],
+			"meta": {"tokens": {"input_tokens": 11, "output_tokens": 2, "image_tokens": 0}}
+		}`))
+	}))
+	defer server.Close()
+
+	provider := NewSiliconFlowProvider(SiliconFlowConfig{
+		APIKey:   "sf-secret",
+		BaseURL:  server.URL,
+		Path:     "/rerank",
+		Model:    "rerank-model",
+		Recorder: recorder,
+	})
+	ctx := tokenmeter.WithUsageScope(context.Background(), tokenmeter.UsageScope{
+		Component: "web_search",
+		Operation: "rerank",
+		SessionID: "session-1",
+		RequestID: "req-1",
+	})
+
+	_, err := provider.Rerank(ctx, Request{
+		Query:     "query",
+		Documents: []Document{{ID: "doc-a", Index: 0, Text: "alpha"}},
+	})
+	if err != nil {
+		t.Fatalf("Rerank: %v", err)
+	}
+	if len(recorder.events) != 1 {
+		t.Fatalf("events = %#v, want one", recorder.events)
+	}
+	event := recorder.events[0]
+	if event.UsageSource != llm.UsageSourceProvider || event.ActualInputTokens != 11 || event.ActualTotalTokens != 13 {
+		t.Fatalf("event = %#v, want provider token usage", event)
+	}
+	if event.Component != "web_search" || event.Operation != "rerank" || event.SessionID != "session-1" || event.Model != "rerank-model" {
+		t.Fatalf("event scope = %#v", event)
 	}
 }
 

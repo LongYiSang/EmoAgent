@@ -28,6 +28,10 @@ func RegisterAllWithFacts(registry *tool.Registry, cfg *config.Config, projectRo
 
 // RegisterAllWithFactsAndDB registers built-in tools with optional DB-backed host resource state.
 func RegisterAllWithFactsAndDB(registry *tool.Registry, cfg *config.Config, projectRoot string, env runtimeenv.Facts, logger *slog.Logger, db *sql.DB) {
+	RegisterAllWithFactsDBAndUsageRecorder(registry, cfg, projectRoot, env, logger, db, nil)
+}
+
+func RegisterAllWithFactsDBAndUsageRecorder(registry *tool.Registry, cfg *config.Config, projectRoot string, env runtimeenv.Facts, logger *slog.Logger, db *sql.DB, usageRecorder websearch.UsageRecorder) {
 	hostBroker := configuredHostBroker(cfg, logger)
 	changeManager := configuredChangeSetManager(cfg, projectRoot, hostBroker, db, logger)
 	registry.Register(GetCurrentTimeSpec, GetCurrentTimeHandler)
@@ -44,7 +48,7 @@ func RegisterAllWithFactsAndDB(registry *tool.Registry, cfg *config.Config, proj
 	editFileSpec, editFileHandler := NewEditFileTool(projectRoot)
 	registry.Register(editFileSpec, editFileHandler)
 
-	registerWebSearch(registry, cfg, logger)
+	registerWebSearch(registry, cfg, logger, usageRecorder)
 	registerWebFetch(registry, cfg, logger)
 	registerBash(registry, cfg, env, logger)
 	registerHostResourceTools(registry, cfg, projectRoot, hostBroker, changeManager, logger)
@@ -132,11 +136,11 @@ func mustHostTool(spec tool.Spec, handler tool.Handler) struct {
 
 // registerWebSearch conditionally registers the web_search tool.
 // Failures are logged and skipped — they do NOT abort registration of other tools.
-func registerWebSearch(registry *tool.Registry, cfg *config.Config, logger *slog.Logger) {
+func registerWebSearch(registry *tool.Registry, cfg *config.Config, logger *slog.Logger, usageRecorder websearch.UsageRecorder) {
 	if !cfg.WebSearch.Enabled {
 		return
 	}
-	provider, err := websearch.NewProvider(cfg.WebSearch, logger)
+	provider, err := websearch.NewProviderWithUsageRecorder(cfg.WebSearch, logger, usageRecorder)
 	if err != nil {
 		logger.Warn("web_search disabled", "error", err)
 		return

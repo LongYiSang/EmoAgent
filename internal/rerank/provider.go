@@ -1,10 +1,18 @@
 package rerank
 
-import "context"
+import (
+	"context"
+
+	"github.com/longyisang/emoagent/internal/storage"
+)
 
 type Provider interface {
 	Name() string
 	Rerank(ctx context.Context, req Request) (Response, error)
+}
+
+type UsageRecorder interface {
+	RecordLLMUsageEvent(context.Context, storage.LLMUsageEvent) error
 }
 
 type Request struct {

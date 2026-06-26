@@ -12,9 +12,15 @@ import (
 	"github.com/longyisang/emoagent/internal/rerank"
 )
 
+type UsageRecorder = rerank.UsageRecorder
+
 // NewProvider constructs the appropriate Provider based on the given config.
 // It reads the API key from the environment variable named by cfg.APIKeyEnv.
 func NewProvider(cfg config.WebSearchConfig, logger *slog.Logger) (Provider, error) {
+	return NewProviderWithUsageRecorder(cfg, logger, nil)
+}
+
+func NewProviderWithUsageRecorder(cfg config.WebSearchConfig, logger *slog.Logger, usageRecorder rerank.UsageRecorder) (Provider, error) {
 	apiKey := strings.TrimSpace(os.Getenv(cfg.APIKeyEnv))
 	if apiKey == "" {
 		return nil, fmt.Errorf("%s not set", cfg.APIKeyEnv)
@@ -34,7 +40,7 @@ func NewProvider(cfg config.WebSearchConfig, logger *slog.Logger) (Provider, err
 		if !cfg.Pipeline.Enabled {
 			return tavily, nil
 		}
-		return assemblePipelineProvider(tavily, cfg, apiKey, timeout, logger), nil
+		return assemblePipelineProvider(tavily, cfg, apiKey, timeout, logger, usageRecorder), nil
 	case "tavily":
 		return tavily, nil
 	default:
@@ -42,7 +48,7 @@ func NewProvider(cfg config.WebSearchConfig, logger *slog.Logger) (Provider, err
 	}
 }
 
-func assemblePipelineProvider(tavily Provider, cfg config.WebSearchConfig, apiKey string, timeout time.Duration, logger *slog.Logger) Provider {
+func assemblePipelineProvider(tavily Provider, cfg config.WebSearchConfig, apiKey string, timeout time.Duration, logger *slog.Logger, usageRecorder rerank.UsageRecorder) Provider {
 	provider := NewPipelineProvider(tavily, NewPlanner(cfg.Pipeline), logger)
 	readerCfg := readerConfigFromConfig(cfg.Pipeline.Reader)
 	if readerCfg.Enabled {
@@ -57,7 +63,7 @@ func assemblePipelineProvider(tavily Provider, cfg config.WebSearchConfig, apiKe
 		}, logger)
 		provider = NewReaderProvider(provider, reader, readerCfg)
 	}
-	reranker, warning := rerankerFromConfig(cfg.Pipeline.Rerank)
+	reranker, warning := rerankerFromConfig(cfg.Pipeline.Rerank, usageRecorder)
 	if reranker != nil {
 		provider = NewRerankProvider(provider, reranker, cfg.Pipeline.Rerank)
 	}
@@ -99,7 +105,7 @@ func readerConfigFromConfig(cfg config.WebSearchPipelineReaderConfig) ReaderConf
 	}
 }
 
-func rerankerFromConfig(cfg config.WebSearchPipelineRerankConfig) (rerank.Provider, string) {
+func rerankerFromConfig(cfg config.WebSearchPipelineRerankConfig, usageRecorder rerank.UsageRecorder) (rerank.Provider, string) {
 	if !cfg.Enabled || strings.EqualFold(cfg.Provider, "disabled") {
 		return nil, ""
 	}
@@ -118,11 +124,12 @@ func rerankerFromConfig(cfg config.WebSearchPipelineRerankConfig) (rerank.Provid
 		}
 		timeout := time.Duration(cfg.TimeoutSec) * time.Second
 		return rerank.NewSiliconFlowProvider(rerank.SiliconFlowConfig{
-			APIKey:  apiKey,
-			BaseURL: cfg.BaseURL,
-			Path:    cfg.Path,
-			Model:   model,
-			Timeout: timeout,
+			APIKey:   apiKey,
+			BaseURL:  cfg.BaseURL,
+			Path:     cfg.Path,
+			Model:    model,
+			Timeout:  timeout,
+			Recorder: usageRecorder,
 		}), ""
 	case "heuristic", "":
 		return rerank.NewHeuristicProvider(), ""

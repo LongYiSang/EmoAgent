@@ -55,6 +55,10 @@ func NewClient(cfg ProviderConfig, logger *slog.Logger) (Client, error) {
 			reasoningResponseStyle:         cfg.ReasoningResponseStyle,
 			toolReasoningContinuation:      cfg.ToolReasoningContinuation,
 			thinkingEffortFallbackToReason: cfg.ThinkingEffortFallbackToReason,
+			usageCaps: ProviderUsageCapabilities{
+				UsageFormat:     cfg.UsageFormat,
+				StreamUsageMode: cfg.StreamUsageMode,
+			},
 		}, nil
 	case "anthropic":
 		return &anthropicClient{
@@ -94,6 +98,12 @@ type openaiClient struct {
 	reasoningResponseStyle         string
 	toolReasoningContinuation      string
 	thinkingEffortFallbackToReason bool
+	usageCaps                      ProviderUsageCapabilities
+}
+
+type ProviderUsageCapabilities struct {
+	UsageFormat     string `yaml:"usage_format" json:"usage_format,omitempty"`
+	StreamUsageMode string `yaml:"stream_usage_mode" json:"stream_usage_mode,omitempty"`
 }
 
 // openaiRequest is the OpenAI chat completions request format.
@@ -182,10 +192,7 @@ type openaiResponse struct {
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
-	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-	} `json:"usage"`
+	Usage openaiUsage `json:"usage"`
 }
 
 type openaiStreamChunk struct {
@@ -200,10 +207,71 @@ type openaiStreamChunk struct {
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
-	Usage *struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-	} `json:"usage"`
+	Usage *openaiUsage `json:"usage"`
+}
+
+type openaiPromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
+type openaiCompletionTokensDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
+}
+
+type openaiUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+
+	CachedTokens int `json:"cached_tokens"`
+
+	PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+	PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
+
+	PromptTokensDetails     openaiPromptTokensDetails     `json:"prompt_tokens_details"`
+	CompletionTokensDetails openaiCompletionTokensDetails `json:"completion_tokens_details"`
+}
+
+func normalizeOpenAIUsage(raw openaiUsage, rawJSON json.RawMessage) Usage {
+	usage := Usage{
+		InputTokens:           raw.PromptTokens,
+		OutputTokens:          raw.CompletionTokens,
+		TotalTokens:           raw.TotalTokens,
+		CacheHitInputTokens:   raw.PromptCacheHitTokens,
+		CacheMissInputTokens:  raw.PromptCacheMissTokens,
+		ReasoningTokens:       raw.CompletionTokensDetails.ReasoningTokens,
+		Source:                UsageSourceProvider,
+		RawUsage:              rawJSON,
+	}
+	cached := raw.CachedTokens
+	if raw.PromptTokensDetails.CachedTokens > cached {
+		cached = raw.PromptTokensDetails.CachedTokens
+	}
+	if raw.PromptCacheHitTokens > cached {
+		cached = raw.PromptCacheHitTokens
+	}
+	usage.CachedInputTokens = cached
+	usage.CacheReadTokens = cached
+	return usage.NormalizeTotals()
+}
+
+func openAIUsageRawJSON(usage openaiUsage) json.RawMessage {
+	raw, err := json.Marshal(usage)
+	if err != nil {
+		return nil
+	}
+	return raw
+}
+
+func hasOpenAIUsage(usage openaiUsage) bool {
+	return usage.PromptTokens > 0 ||
+		usage.CompletionTokens > 0 ||
+		usage.TotalTokens > 0 ||
+		usage.CachedTokens > 0 ||
+		usage.PromptCacheHitTokens > 0 ||
+		usage.PromptCacheMissTokens > 0 ||
+		usage.PromptTokensDetails.CachedTokens > 0 ||
+		usage.CompletionTokensDetails.ReasoningTokens > 0
 }
 
 func strPtr(s string) *string { return &s }
@@ -368,10 +436,9 @@ func (c *openaiClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse
 	chatResp := &ChatResponse{
 		ID:    oResp.ID,
 		Model: oResp.Model,
-		Usage: Usage{
-			InputTokens:  oResp.Usage.PromptTokens,
-			OutputTokens: oResp.Usage.CompletionTokens,
-		},
+	}
+	if hasOpenAIUsage(oResp.Usage) {
+		chatResp.Usage = normalizeOpenAIUsage(oResp.Usage, openAIUsageRawJSON(oResp.Usage))
 	}
 
 	if len(oResp.Choices) > 0 {
@@ -525,9 +592,8 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 		}
 
 		if chunk.Usage != nil {
-			chatResp.Usage = Usage{
-				InputTokens:  chunk.Usage.PromptTokens,
-				OutputTokens: chunk.Usage.CompletionTokens,
+			if hasOpenAIUsage(*chunk.Usage) {
+				chatResp.Usage = normalizeOpenAIUsage(*chunk.Usage, openAIUsageRawJSON(*chunk.Usage))
 			}
 		}
 	}
@@ -613,6 +679,11 @@ func (c *openaiClient) openaiPayload(req ChatRequest, stream bool) map[string]an
 	applyProviderThinkingPayload(payload, c.reasoningRequestStyle, params.Thinking)
 	if stream {
 		payload["stream"] = true
+		if c.usageCaps.StreamUsageMode == StreamUsageOpenAIIncludeUsage {
+			if _, exists := payload["stream_options"]; !exists {
+				payload["stream_options"] = map[string]any{"include_usage": true}
+			}
+		}
 	}
 	if tools := c.convertTools(req.Tools); len(tools) > 0 {
 		payload["tools"] = tools

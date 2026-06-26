@@ -4,12 +4,13 @@ import type { AgentConfig, Persona, Provider, ProviderPreset } from '../protocol
 
 export { matchesQuery } from '../../shared/lib/search';
 
-export type TabID = 'providers' | 'agents' | 'personas' | 'chat-settings' | 'memory-core' | 'agent-affect' | 'prompt-center' | 'websearch-pipeline' | 'pipelines' | 'retrieval-mirror' | 'python-toolchain' | 'sidecar' | 'privacy-forget' | 'retention' | 'diagnostics';
+export type TabID = 'providers' | 'agents' | 'personas' | 'chat-settings' | 'usage' | 'memory-core' | 'agent-affect' | 'prompt-center' | 'websearch-pipeline' | 'pipelines' | 'retrieval-mirror' | 'python-toolchain' | 'sidecar' | 'privacy-forget' | 'retention' | 'diagnostics';
 
 export const tabs: Array<{ id: TabID; label: string }> = [
   { id: 'providers', label: '模型服务' },
   { id: 'agents', label: 'Agent 配置' },
   { id: 'personas', label: 'Persona' },
+  { id: 'usage', label: 'Usage' },
   { id: 'chat-settings', label: '聊天设置' },
   { id: 'memory-core', label: 'Memory Core' },
   { id: 'agent-affect', label: 'Agent Affect' },

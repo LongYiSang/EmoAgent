@@ -69,6 +69,8 @@ func TestOpenAndMigrate(t *testing.T) {
 		"plugin_trust_acceptance_history",
 		"plugin_provider_usage",
 		"plugin_kv",
+		"llm_usage_events",
+		"token_estimator_calibrations",
 		"prompt_overrides",
 		"prompt_render_snapshots",
 		"resource_grants",
@@ -136,8 +138,8 @@ func TestOpenAndMigrate(t *testing.T) {
 	if err := db.SqlDB().QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_version").Scan(&latestVersion); err != nil {
 		t.Fatalf("read latest schema_version: %v", err)
 	}
-	if latestVersion != 33 {
-		t.Fatalf("latest schema_version = %d, want 33", latestVersion)
+	if latestVersion != 34 {
+		t.Fatalf("latest schema_version = %d, want 34", latestVersion)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/storage"
+	"github.com/longyisang/emoagent/internal/tokenmeter"
 )
 
 type ProviderGateway struct {
@@ -132,14 +133,22 @@ func (g *ProviderGateway) Generate(ctx context.Context, pluginID string, req Plu
 	if chatReq.Params.MaxTokens == 0 {
 		chatReq.Params.MaxTokens = req.MaxTokens
 	}
-	resp, err := client.Chat(ctx, chatReq)
+	callCtx := tokenmeter.MergeUsageScope(ctx, tokenmeter.UsageScope{
+		Component:  "plugin",
+		Operation:  "plugin_generate",
+		PluginID:   pluginID,
+		ProviderID: providerID,
+		Model:      model,
+	})
+	resp, err := client.Chat(callCtx, chatReq)
 	if err != nil {
 		usage.ErrorMessage = err.Error()
 		return PluginGenerateResponse{}, err
 	}
 	if resp != nil {
-		usage.InputTokens = resp.Usage.InputTokens
-		usage.OutputTokens = resp.Usage.OutputTokens
+		actualInput, actualOutput := resp.Usage.ActualInputOutputTokens()
+		usage.InputTokens = actualInput
+		usage.OutputTokens = actualOutput
 		usage.Status = "success"
 		return PluginGenerateResponse{
 			Content:    resp.Content,
@@ -237,15 +246,12 @@ func providerStringAllowed(values []string, target string) bool {
 }
 
 func estimatePluginRequestTokens(req PluginGenerateRequest) int {
-	chars := len(req.System)
-	for _, message := range req.Messages {
-		chars += len(message.Content)
-		for _, block := range message.ContentBlocks {
-			chars += len(block.Text) + len(block.Content) + len(block.Input)
-		}
-	}
-	if chars == 0 {
-		return 0
-	}
-	return (chars + 3) / 4
+	result := tokenmeter.DefaultCounter().CountChatRequest(context.Background(), tokenmeter.CountRequest{
+		ProviderID: req.ProviderID,
+		Model:      req.Model,
+		System:     req.System,
+		Messages:   req.Messages,
+		Params:     req.Params,
+	})
+	return result.InputTokens
 }

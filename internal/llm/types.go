@@ -77,6 +77,8 @@ type ProviderConfig struct {
 	ReasoningResponseStyle         string
 	ToolReasoningContinuation      string
 	ThinkingEffortFallbackToReason bool
+	UsageFormat                    string
+	StreamUsageMode                string
 }
 
 // RequestParams is the provider-agnostic set of generation parameters.
@@ -146,6 +148,85 @@ type ChatResponse struct {
 type Usage struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
+	TotalTokens  int `json:"total_tokens,omitempty"`
+
+	EstimatedInputTokens  int `json:"estimated_input_tokens,omitempty"`
+	EstimatedOutputTokens int `json:"estimated_output_tokens,omitempty"`
+	EstimatedTotalTokens  int `json:"estimated_total_tokens,omitempty"`
+	ActualInputTokens     int `json:"actual_input_tokens,omitempty"`
+	ActualOutputTokens    int `json:"actual_output_tokens,omitempty"`
+	ActualTotalTokens     int `json:"actual_total_tokens,omitempty"`
+
+	CachedInputTokens    int `json:"cached_input_tokens,omitempty"`
+	CacheHitInputTokens  int `json:"cache_hit_input_tokens,omitempty"`
+	CacheMissInputTokens int `json:"cache_miss_input_tokens,omitempty"`
+	CacheReadTokens      int `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens     int `json:"cache_write_tokens,omitempty"`
+
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+	ImageTokens     int `json:"image_tokens,omitempty"`
+	AudioTokens     int `json:"audio_tokens,omitempty"`
+
+	Source             string          `json:"source,omitempty"`
+	EstimateMethod     string          `json:"estimate_method,omitempty"`
+	EstimateConfidence float64         `json:"estimate_confidence,omitempty"`
+	UsageEventID       string          `json:"usage_event_id,omitempty"`
+	RawUsage           json.RawMessage `json:"raw_usage,omitempty"`
+}
+
+const (
+	UsageSourceProvider  = "provider_usage"
+	UsageSourceEstimated = "estimated"
+	UsageSourceHybrid    = "hybrid"
+	UsageSourceUnknown   = "unknown"
+)
+
+func (u Usage) HasProviderTokens() bool {
+	return u.InputTokens > 0 || u.OutputTokens > 0 || u.TotalTokens > 0
+}
+
+func (u Usage) HasActualTokens() bool {
+	if u.ActualInputTokens > 0 || u.ActualOutputTokens > 0 || u.ActualTotalTokens > 0 {
+		return true
+	}
+	return (u.Source == "" || u.Source == UsageSourceProvider) && u.HasProviderTokens()
+}
+
+func (u Usage) ActualInputOutputTokens() (int, int) {
+	if u.ActualInputTokens > 0 || u.ActualOutputTokens > 0 || u.ActualTotalTokens > 0 {
+		return u.ActualInputTokens, u.ActualOutputTokens
+	}
+	if u.Source == "" || u.Source == UsageSourceProvider {
+		return u.InputTokens, u.OutputTokens
+	}
+	return 0, 0
+}
+
+func (u Usage) ActualTotal() int {
+	if u.ActualTotalTokens > 0 {
+		return u.ActualTotalTokens
+	}
+	if u.ActualInputTokens > 0 || u.ActualOutputTokens > 0 {
+		return u.ActualInputTokens + u.ActualOutputTokens
+	}
+	if u.Source == "" || u.Source == UsageSourceProvider {
+		return u.EffectiveTotal()
+	}
+	return 0
+}
+
+func (u Usage) EffectiveTotal() int {
+	if u.TotalTokens > 0 {
+		return u.TotalTokens
+	}
+	return u.InputTokens + u.OutputTokens
+}
+
+func (u Usage) NormalizeTotals() Usage {
+	if u.TotalTokens == 0 && (u.InputTokens > 0 || u.OutputTokens > 0) {
+		u.TotalTokens = u.InputTokens + u.OutputTokens
+	}
+	return u
 }
 
 // StreamEvent represents a single event during streaming.

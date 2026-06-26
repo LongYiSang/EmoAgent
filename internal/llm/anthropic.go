@@ -69,10 +69,7 @@ type anthropicResponse struct {
 	Model      string                  `json:"model"`
 	Content    []anthropicContentBlock `json:"content"`
 	StopReason string                  `json:"stop_reason"`
-	Usage      struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
-	} `json:"usage"`
+	Usage      anthropicUsage          `json:"usage"`
 }
 
 type anthropicStreamEvent struct {
@@ -80,11 +77,15 @@ type anthropicStreamEvent struct {
 	Index        int                    `json:"index,omitempty"`
 	Delta        json.RawMessage        `json:"delta,omitempty"`
 	ContentBlock *anthropicContentBlock `json:"content_block,omitempty"`
-	Usage        *struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
-	} `json:"usage,omitempty"`
+	Usage        *anthropicUsage        `json:"usage,omitempty"`
 	Message *anthropicResponse `json:"message,omitempty"`
+}
+
+type anthropicUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 }
 
 type anthropicDelta struct {
@@ -174,6 +175,26 @@ func (c *anthropicClient) parseContentBlocks(content []anthropicContentBlock) (s
 	return text.String(), blocks
 }
 
+func normalizeAnthropicUsage(raw anthropicUsage) Usage {
+	rawJSON, _ := json.Marshal(raw)
+	return Usage{
+		InputTokens:        raw.InputTokens,
+		OutputTokens:       raw.OutputTokens,
+		CacheWriteTokens:   raw.CacheCreationInputTokens,
+		CacheReadTokens:    raw.CacheReadInputTokens,
+		CachedInputTokens:  raw.CacheReadInputTokens,
+		Source:             UsageSourceProvider,
+		RawUsage:           rawJSON,
+	}.NormalizeTotals()
+}
+
+func hasAnthropicUsage(raw anthropicUsage) bool {
+	return raw.InputTokens > 0 ||
+		raw.OutputTokens > 0 ||
+		raw.CacheCreationInputTokens > 0 ||
+		raw.CacheReadInputTokens > 0
+}
+
 func (c *anthropicClient) doRequest(ctx context.Context, body []byte, stream bool) (*http.Response, error) {
 	client := c.httpClient
 	if stream {
@@ -231,10 +252,7 @@ func (c *anthropicClient) Chat(ctx context.Context, req ChatRequest) (*ChatRespo
 		Content:       content,
 		ContentBlocks: contentBlocks,
 		Model:         aResp.Model,
-		Usage: Usage{
-			InputTokens:  aResp.Usage.InputTokens,
-			OutputTokens: aResp.Usage.OutputTokens,
-		},
+		Usage:         normalizeAnthropicUsage(aResp.Usage),
 		StopReason:    NormalizeStopReason("anthropic", aResp.StopReason),
 		RawStopReason: aResp.StopReason,
 	}, nil
@@ -287,7 +305,7 @@ func (c *anthropicClient) ChatStream(ctx context.Context, req ChatRequest, cb St
 				chatResp.ID = se.Message.ID
 				chatResp.Model = se.Message.Model
 				if se.Message.Usage.InputTokens > 0 {
-					chatResp.Usage.InputTokens = se.Message.Usage.InputTokens
+					chatResp.Usage = normalizeAnthropicUsage(se.Message.Usage)
 				}
 			}
 
@@ -347,10 +365,12 @@ func (c *anthropicClient) ChatStream(ctx context.Context, req ChatRequest, cb St
 				}
 			}
 			if se.Usage != nil {
-				chatResp.Usage = Usage{
-					InputTokens:  se.Usage.InputTokens,
-					OutputTokens: se.Usage.OutputTokens,
+				next := normalizeAnthropicUsage(*se.Usage)
+				if next.InputTokens == 0 && chatResp.Usage.InputTokens > 0 {
+					next.InputTokens = chatResp.Usage.InputTokens
+					next = next.NormalizeTotals()
 				}
+				chatResp.Usage = next
 			}
 
 		case "message_stop":

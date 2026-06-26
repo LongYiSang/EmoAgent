@@ -1,13 +1,13 @@
 package context
 
 import (
+	"context"
 	"encoding/json"
-	"math"
-	"unicode"
 
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/storage"
+	"github.com/longyisang/emoagent/internal/tokenmeter"
 )
 
 const (
@@ -18,20 +18,7 @@ const (
 
 // EstimateTokens performs a coarse CJK-aware token estimate for plain text.
 func EstimateTokens(text string) int {
-	cjk := 0
-	other := 0
-	for _, r := range text {
-		if isCJK(r) {
-			cjk++
-			continue
-		}
-		other++
-	}
-	tokens := int(math.Ceil(float64(cjk)*0.5 + float64(other)*0.25))
-	if tokens < 1 && len(text) > 0 {
-		return 1
-	}
-	return tokens
+	return tokenmeter.DefaultCounter().CountText(context.Background(), "", "", text).InputTokens
 }
 
 func NewBudget(cfg config.ContextConfig, system string, messages []llm.Message) Budget {
@@ -122,11 +109,4 @@ func estimateMessageTokens(msg llm.Message) int {
 		total += EstimateTokens(msg.ReasoningContent)
 	}
 	return total
-}
-
-func isCJK(r rune) bool {
-	return unicode.Is(unicode.Han, r) ||
-		unicode.Is(unicode.Hangul, r) ||
-		unicode.Is(unicode.Katakana, r) ||
-		unicode.Is(unicode.Hiragana, r)
 }

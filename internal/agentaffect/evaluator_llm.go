@@ -8,6 +8,7 @@ import (
 
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/tokenmeter"
 )
 
 type LLMEvaluator struct {
@@ -51,7 +52,16 @@ func (e *LLMEvaluator) Evaluate(ctx context.Context, req LLMEvaluationRequest) (
 		Stream: false,
 	}
 	started := time.Now()
-	resp, err := e.client.Chat(ctx, chatReq)
+	callCtx := tokenmeter.MergeUsageScope(ctx, tokenmeter.UsageScope{
+		Component:  "agent_affect",
+		Operation:  "affect_eval",
+		SessionID:  req.SessionID,
+		TurnID:     req.TurnID,
+		AgentID:    req.PersonaID,
+		ProviderID: e.cfg.Evaluator.ProviderID,
+		Model:      e.cfg.Evaluator.Model,
+	})
+	resp, err := e.client.Chat(callCtx, chatReq)
 	if err != nil {
 		return LLMEvaluationResult{}, fmt.Errorf("agent affect evaluator failed: %w", err)
 	}
@@ -69,7 +79,8 @@ func (e *LLMEvaluator) Evaluate(ctx context.Context, req LLMEvaluationRequest) (
 	result.PromptHash = prompt.Hash
 	result.ContextStrategy = report.Strategy
 	result.BudgetReport = report
-	result.Usage = LLMUsage{InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens}
+	actualInput, actualOutput := resp.Usage.ActualInputOutputTokens()
+	result.Usage = LLMUsage{InputTokens: actualInput, OutputTokens: actualOutput}
 	result.LLMProvider = e.cfg.Evaluator.ProviderID
 	result.LLMModel = defaultString(resp.Model, e.cfg.Evaluator.Model)
 	result.LLMThinkingEnabled = e.cfg.Evaluator.ThinkingEnabled

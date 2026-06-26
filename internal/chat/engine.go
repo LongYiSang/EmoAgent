@@ -21,6 +21,7 @@ import (
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/storage"
+	"github.com/longyisang/emoagent/internal/tokenmeter"
 	"github.com/longyisang/emoagent/internal/tool"
 	"github.com/longyisang/emoagent/internal/tool/resultv2"
 	"github.com/longyisang/emoagent/internal/work"
@@ -742,9 +743,22 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	if !hasRequestParams(summaryParams) {
 		summaryParams = summaryParamsFromLegacy(summaryMaxTokens, summaryTemperature)
 	}
-	summaryCtx, cancelSummary := context.WithTimeout(ctx, 8*time.Second)
 	promptScope := promptcenter.PromptScope{AgentID: agentID, PersonaKey: personaKey}
 	summaryRequestModel := effectiveSummaryModel(model, summaryModel)
+	summaryCtx, cancelSummary := context.WithTimeout(ctx, 8*time.Second)
+	summaryCtx = tokenmeter.MergeUsageScope(summaryCtx, tokenmeter.UsageScope{
+		Component:    "context_summary",
+		Operation:    "summary_update",
+		SessionID:    sessionID,
+		TurnID:       memoryAnchor.turnID,
+		RequestID:    requestID,
+		AgentID:      agentID,
+		PersonaKey:   personaKey,
+		ProviderID:   providerID,
+		ProviderName: providerName,
+		Protocol:     provider,
+		Model:        summaryRequestModel,
+	})
 	nextState, report, updateErr := contextutil.UpdateRunningSummaryWithParamsAndPromptResolver(summaryCtx, summaryClient, summaryRequestModel, summaryParams, persona, history, state, contextCfg, promptResolver, promptScope)
 	cancelSummary()
 	if updateErr != nil {
@@ -933,7 +947,20 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 			UpdatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
 		})
 		e.emitAndPersistContextStats(ctx, sessionID, state, rawWriter, currentStats)
-		resp, err = client.ChatStream(ctx, req, func(event llm.StreamEvent) {
+		roundCtx := tokenmeter.MergeUsageScope(ctx, tokenmeter.UsageScope{
+			Component:    "emotion_chat",
+			Operation:    "chat_stream",
+			SessionID:    sessionID,
+			TurnID:       memoryAnchor.turnID,
+			RequestID:    requestID,
+			AgentID:      agentID,
+			PersonaKey:   personaKey,
+			ProviderID:   providerID,
+			ProviderName: providerName,
+			Protocol:     provider,
+			Model:        model,
+		})
+		resp, err = client.ChatStream(roundCtx, req, func(event llm.StreamEvent) {
 			if event.ReasoningContent != "" {
 				reasoning.delta(event.ReasoningContent)
 			}
@@ -985,9 +1012,10 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 			return "", err
 		}
 		reasoning.complete(resp.ReasoningContent)
-		if resp.Usage.InputTokens > 0 || resp.Usage.OutputTokens > 0 {
-			currentStats.ProviderInputTokens = resp.Usage.InputTokens
-			currentStats.ProviderOutputTokens = resp.Usage.OutputTokens
+		actualInput, actualOutput := resp.Usage.ActualInputOutputTokens()
+		if actualInput > 0 || actualOutput > 0 {
+			currentStats.ProviderInputTokens = actualInput
+			currentStats.ProviderOutputTokens = actualOutput
 			currentStats.Source = "provider_usage"
 			currentStats.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 			e.emitAndPersistContextStats(ctx, sessionID, state, rawWriter, currentStats)

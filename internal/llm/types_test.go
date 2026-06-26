@@ -293,3 +293,54 @@ func TestNormalizeStopReason(t *testing.T) {
 		})
 	}
 }
+
+func TestUsageNormalizeTotalsAndEffectiveTotal(t *testing.T) {
+	usage := Usage{InputTokens: 7, OutputTokens: 3}.NormalizeTotals()
+	if usage.TotalTokens != 10 {
+		t.Fatalf("TotalTokens = %d, want input+output fallback", usage.TotalTokens)
+	}
+	if usage.EffectiveTotal() != 10 {
+		t.Fatalf("EffectiveTotal = %d, want 10", usage.EffectiveTotal())
+	}
+
+	usage = Usage{InputTokens: 7, OutputTokens: 3, TotalTokens: 20}.NormalizeTotals()
+	if usage.TotalTokens != 20 || usage.EffectiveTotal() != 20 {
+		t.Fatalf("usage = %#v, want provider total preserved", usage)
+	}
+}
+
+func TestUsageHasProviderTokens(t *testing.T) {
+	if (Usage{}).HasProviderTokens() {
+		t.Fatal("empty usage should not have provider tokens")
+	}
+	if !(Usage{InputTokens: 1, Source: UsageSourceProvider}).HasProviderTokens() {
+		t.Fatal("provider input usage should have provider tokens")
+	}
+	if !(Usage{TotalTokens: 1}).HasProviderTokens() {
+		t.Fatal("total tokens should count as provider tokens")
+	}
+}
+
+func TestUsageActualTokenHelpers(t *testing.T) {
+	provider := Usage{InputTokens: 10, OutputTokens: 5, Source: UsageSourceProvider}
+	if in, out := provider.ActualInputOutputTokens(); in != 10 || out != 5 || provider.ActualTotal() != 15 {
+		t.Fatalf("provider actual = in %d out %d total %d", in, out, provider.ActualTotal())
+	}
+	estimated := Usage{InputTokens: 10, OutputTokens: 5, Source: UsageSourceEstimated}
+	if estimated.HasActualTokens() {
+		t.Fatalf("estimated usage reported actual tokens: %#v", estimated)
+	}
+	if in, out := estimated.ActualInputOutputTokens(); in != 0 || out != 0 || estimated.ActualTotal() != 0 {
+		t.Fatalf("estimated actual = in %d out %d total %d", in, out, estimated.ActualTotal())
+	}
+	hybrid := Usage{
+		InputTokens:        20,
+		OutputTokens:       5,
+		Source:             UsageSourceHybrid,
+		ActualOutputTokens: 5,
+		ActualTotalTokens:  5,
+	}
+	if in, out := hybrid.ActualInputOutputTokens(); in != 0 || out != 5 || hybrid.ActualTotal() != 5 {
+		t.Fatalf("hybrid actual = in %d out %d total %d", in, out, hybrid.ActualTotal())
+	}
+}
