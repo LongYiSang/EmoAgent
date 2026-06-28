@@ -10,6 +10,16 @@ export type PromptCenterTabProps = PromptCenterAdmin & {
   activeAgentID: string;
 };
 
+type PromptListComponent = PromptCenterAdmin['visibleComponents'][number];
+
+function isAdvancedPromptComponent(component: PromptListComponent) {
+  return component.group === 'context'
+    || component.group === 'work'
+    || component.group === 'tool'
+    || component.id === 'emotion.operating_contract'
+    || component.id === 'emotion.internal_context_data_policy';
+}
+
 function sourceLabel(source: string) {
   const labels: Record<string, string> = {
     embedded_default: '内置默认',
@@ -77,6 +87,17 @@ export default memo(function PromptCenterTab({
     () => visibleComponents.filter(item => matchesQuery(query, item.id, item.name, item.group, item.effective_source)),
     [query, visibleComponents],
   );
+  const regularComponents = filtered.filter(component => !isAdvancedPromptComponent(component));
+  const advancedComponents = filtered.filter(isAdvancedPromptComponent);
+  const renderComponentButton = (component: PromptListComponent) => (
+    <button className={classNames('item', selectedComponentID === component.id && 'active')} type="button" key={component.id} onClick={() => selectPromptComponent(component.id)}>
+      <span className="item-title">
+        <span className="item-name">{component.name || component.id}</span>
+        <span className={classNames('badge', component.effective_source === 'agent_override' ? 'ok' : component.effective_source === 'agent_default' ? 'warn' : '')}>{sourceLabel(component.effective_source)}</span>
+      </span>
+      <span className="item-meta">{component.id} · {component.group}</span>
+    </button>
+  );
 
   useEffect(() => {
     if (!selectedAgentID && agentID) void setPromptAgentID(agentID);
@@ -89,15 +110,22 @@ export default memo(function PromptCenterTab({
           <input type="checkbox" checked={showOverriddenOnly} onChange={event => setShowOverriddenOnly(event.target.checked)} />
           只看有覆盖项
         </label>
-        {filtered.map(component => (
-          <button className={classNames('item', selectedComponentID === component.id && 'active')} type="button" key={component.id} onClick={() => selectPromptComponent(component.id)}>
-            <span className="item-title">
-              <span className="item-name">{component.name || component.id}</span>
-              <span className={classNames('badge', component.effective_source === 'agent_override' ? 'ok' : component.effective_source === 'agent_default' ? 'warn' : '')}>{sourceLabel(component.effective_source)}</span>
-            </span>
-            <span className="item-meta">{component.id} · {component.group}</span>
-          </button>
-        ))}
+        {regularComponents.map(renderComponentButton)}
+        {!!advancedComponents.length && (
+          <details className="prompt-advanced-group">
+            <summary className="item prompt-advanced-summary">
+              <span className="item-title">
+                <span className="item-name">高级/内部提示词</span>
+                <span className="badge">{advancedComponents.length}</span>
+              </span>
+              <span className="item-meta">context · work · tool · protocol</span>
+            </summary>
+            <div className="prompt-advanced-items">
+              {advancedComponents.map(renderComponentButton)}
+            </div>
+          </details>
+        )}
+        {!filtered.length && <div className="hint">暂无匹配组件</div>}
       </ListPane>
 
       <section className="detail-pane">

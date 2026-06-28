@@ -79,6 +79,14 @@ func TestBuildEmotionContextUsesPinnedContextAndRecentTurns(t *testing.T) {
 		"## Tone\nwarm, direct",
 		"## Quirks\n- remembers follow-ups\n- keeps replies concise",
 		"</persona>",
+		"<reply_policy>",
+		"</reply_policy>",
+		"<memory_usage_policy>",
+		"</memory_usage_policy>",
+		"<agent_affect_expression_policy>",
+		"</agent_affect_expression_policy>",
+		"<work_result_presentation>",
+		"</work_result_presentation>",
 		"<operating_contract>",
 		"</operating_contract>",
 		"<runtime_context>",
@@ -152,11 +160,15 @@ func TestBuildEmotionContextPromptCenterResolverPreservesDefaultsAndAppliesOverr
 	}
 	personaComponent := findPromptComponent(resolved.PromptComponents, promptcenter.ComponentEmotionPersona)
 	runtimeComponent := findPromptComponent(resolved.PromptComponents, promptcenter.ComponentEmotionRuntimeContext)
+	replyPolicyComponent := findPromptComponent(resolved.PromptComponents, promptcenter.ComponentEmotionReplyPolicy)
+	memoryPolicyComponent := findPromptComponent(resolved.PromptComponents, promptcenter.ComponentMemoryUsagePolicy)
+	affectPolicyComponent := findPromptComponent(resolved.PromptComponents, promptcenter.ComponentAgentAffectExpressionPolicy)
+	workResultComponent := findPromptComponent(resolved.PromptComponents, promptcenter.ComponentEmotionWorkResultPresentation)
 	operatingComponent := findPromptComponent(resolved.PromptComponents, promptcenter.ComponentEmotionOperatingContract)
 	policyComponent := findPromptComponent(resolved.PromptComponents, promptcenter.ComponentEmotionInternalContextDataPolicy)
-	for _, component := range []promptcenter.RenderComponent{personaComponent, runtimeComponent, operatingComponent, policyComponent} {
+	for _, component := range []promptcenter.RenderComponent{personaComponent, runtimeComponent, replyPolicyComponent, memoryPolicyComponent, affectPolicyComponent, workResultComponent, operatingComponent, policyComponent} {
 		if component.ComponentID == "" {
-			t.Fatalf("PromptComponents = %#v, want persona/runtime/operating/policy", resolved.PromptComponents)
+			t.Fatalf("PromptComponents = %#v, want persona/runtime/common policies/operating/internal policy", resolved.PromptComponents)
 		}
 	}
 	if !personaComponent.Dynamic || personaComponent.Source != promptcenter.SourcePersona {
@@ -165,10 +177,26 @@ func TestBuildEmotionContextPromptCenterResolverPreservesDefaultsAndAppliesOverr
 	if !runtimeComponent.Dynamic || runtimeComponent.Source != promptcenter.SourceRuntimeDynamic {
 		t.Fatalf("runtime component = %#v, want runtime dynamic source", runtimeComponent)
 	}
-	for _, component := range []promptcenter.RenderComponent{operatingComponent, policyComponent} {
+	for _, component := range []promptcenter.RenderComponent{replyPolicyComponent, memoryPolicyComponent, affectPolicyComponent, workResultComponent, operatingComponent, policyComponent} {
 		if component.Source != promptcenter.SourceEmbeddedDefault || component.Dynamic {
 			t.Fatalf("default static prompt component = %#v, want embedded default static", component)
 		}
+	}
+
+	if err := store.UpsertOverride(context.Background(), promptcenter.UpsertOverrideRequest{
+		ComponentID:  promptcenter.ComponentEmotionReplyPolicy,
+		ScopeType:    promptcenter.ScopeGlobal,
+		Mode:         promptcenter.OverrideModeCustom,
+		OverrideText: "global reply policy",
+	}); err != nil {
+		t.Fatalf("UpsertOverride reply policy global: %v", err)
+	}
+	resolved, err = ctxpkg.BuildEmotionContextWithStateAndPromptResolver(context.Background(), persona, history, nil, cfg, runtimeenv.Facts{}, resolver, scope)
+	if err != nil {
+		t.Fatalf("BuildEmotionContextWithStateAndPromptResolver reply policy global: %v", err)
+	}
+	if !strings.Contains(resolved.System, "<reply_policy>\nglobal reply policy\n</reply_policy>") || findPromptComponent(resolved.PromptComponents, promptcenter.ComponentEmotionReplyPolicy).Source != promptcenter.SourceGlobalOverride {
+		t.Fatalf("reply policy global override not applied: system=%s components=%#v", resolved.System, resolved.PromptComponents)
 	}
 
 	if err := store.UpsertOverride(context.Background(), promptcenter.UpsertOverrideRequest{

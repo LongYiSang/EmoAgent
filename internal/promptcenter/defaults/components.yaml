@@ -1,3 +1,47 @@
+- id: emotion.reply_policy
+  group: emotion
+  name: 聊天回复策略
+  description: 控制 Emotion 回复长度、结构、追问倾向和自然表达方式。
+  kind: system_section
+  editable: true
+  risk_level: normal
+  scope_support: [global, agent]
+  max_chars: 8000
+  order: 10
+  default_file: emotion.reply_policy.md
+- id: memory.usage_policy
+  group: memory
+  name: 长期记忆使用策略
+  description: 控制长期记忆在聊天回复中的引用方式，默认自然克制。
+  kind: system_section
+  editable: true
+  risk_level: normal
+  scope_support: [global, agent]
+  max_chars: 8000
+  order: 20
+  default_file: memory.usage_policy.md
+- id: agent_affect.expression_policy
+  group: agent_affect
+  name: Agent Affect 表达策略
+  description: 控制 Agent Affect 如何影响措辞、节奏和亲近感，避免暴露内部状态。
+  kind: system_section
+  editable: true
+  risk_level: normal
+  scope_support: [global, agent]
+  max_chars: 8000
+  order: 30
+  default_file: agent_affect.expression_policy.md
+- id: emotion.work_result_presentation
+  group: emotion
+  name: Work 结果转述策略
+  description: 控制 Emotion 如何把 Work 结果转述给用户，避免暴露 raw JSON、工具输出和内部 ID。
+  kind: system_section
+  editable: true
+  risk_level: normal
+  scope_support: [global, agent]
+  max_chars: 10000
+  order: 40
+  default_file: emotion.work_result_presentation.md
 - id: emotion.operating_contract
   group: emotion
   name: Emotion / Work 委派契约

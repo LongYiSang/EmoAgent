@@ -199,7 +199,17 @@ func TestPromptCenterAdminServiceFullEmotionPreview(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PreviewPrompt full: %v", err)
 	}
-	for _, snippet := range []string{"<persona>", "You are warm.", "<operating_contract>", "<runtime_context>", "<internal_context_data_policy>"} {
+	for _, snippet := range []string{
+		"<persona>",
+		"You are warm.",
+		"<reply_policy>",
+		"<memory_usage_policy>",
+		"<agent_affect_expression_policy>",
+		"<work_result_presentation>",
+		"<operating_contract>",
+		"<runtime_context>",
+		"<internal_context_data_policy>",
+	} {
 		if !strings.Contains(preview.RenderedText, snippet) {
 			t.Fatalf("full preview missing %q:\n%s", snippet, preview.RenderedText)
 		}
@@ -207,6 +217,10 @@ func TestPromptCenterAdminServiceFullEmotionPreview(t *testing.T) {
 	for _, id := range []string{
 		promptcenter.ComponentEmotionPersona,
 		promptcenter.ComponentEmotionRuntimeContext,
+		promptcenter.ComponentEmotionReplyPolicy,
+		promptcenter.ComponentMemoryUsagePolicy,
+		promptcenter.ComponentAgentAffectExpressionPolicy,
+		promptcenter.ComponentEmotionWorkResultPresentation,
 		promptcenter.ComponentEmotionOperatingContract,
 		promptcenter.ComponentEmotionInternalContextDataPolicy,
 	} {

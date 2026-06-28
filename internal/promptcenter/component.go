@@ -21,6 +21,10 @@ const (
 )
 
 const (
+	ComponentEmotionReplyPolicy               = "emotion.reply_policy"
+	ComponentMemoryUsagePolicy                = "memory.usage_policy"
+	ComponentAgentAffectExpressionPolicy      = "agent_affect.expression_policy"
+	ComponentEmotionWorkResultPresentation    = "emotion.work_result_presentation"
 	ComponentEmotionOperatingContract         = "emotion.operating_contract"
 	ComponentEmotionInternalContextDataPolicy = "emotion.internal_context_data_policy"
 	ComponentEmotionPersona                   = "emotion.persona"

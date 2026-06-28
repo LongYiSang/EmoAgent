@@ -15,6 +15,10 @@ func TestDefaultCatalogLoadsMVPComponents(t *testing.T) {
 	}
 
 	wantIDs := []string{
+		ComponentEmotionReplyPolicy,
+		ComponentMemoryUsagePolicy,
+		ComponentAgentAffectExpressionPolicy,
+		ComponentEmotionWorkResultPresentation,
 		ComponentEmotionOperatingContract,
 		ComponentEmotionInternalContextDataPolicy,
 		ComponentRunningSummarySystem,
