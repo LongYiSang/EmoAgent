@@ -6,9 +6,14 @@ import (
 )
 
 func formatCurrentTimeContext(now time.Time) string {
+	return formatTimeContext("当前时间上下文", now)
+}
+
+func formatTimeContext(label string, now time.Time) string {
 	_, offset := now.Zone()
 	return fmt.Sprintf(
-		"当前时间上下文：%d年%d月%d日 %s %02d:%02d（%s，%s）。",
+		"%s：%d年%d月%d日 %s %02d:%02d（%s，%s）。",
+		label,
 		now.Year(),
 		int(now.Month()),
 		now.Day(),

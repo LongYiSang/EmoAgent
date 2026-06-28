@@ -147,7 +147,7 @@ func buildEmotionContext(ctx stdcontext.Context, persona *config.Persona, histor
 	if err != nil {
 		return AssembledContext{}, err
 	}
-	system, promptComponents := buildEmotionSystemPrompt(ctx, persona, pendingDecisions, env, resolver, scope)
+	system, promptComponents := buildEmotionSystemPrompt(ctx, persona, pendingDecisions, env, history, resolver, scope)
 	budget := NewBudget(cfg, system, messages)
 	return AssembledContext{
 		System:           system,
@@ -169,7 +169,7 @@ func buildEmotionContext(ctx stdcontext.Context, persona *config.Persona, histor
 	}, nil
 }
 
-func buildEmotionSystemPrompt(ctx stdcontext.Context, persona *config.Persona, pendingDecisions any, env runtimeenv.Facts, resolver *promptcenter.Resolver, scope promptcenter.PromptScope) (string, []promptcenter.RenderComponent) {
+func buildEmotionSystemPrompt(ctx stdcontext.Context, persona *config.Persona, pendingDecisions any, env runtimeenv.Facts, history []storage.MessageRecord, resolver *promptcenter.Resolver, scope promptcenter.PromptScope) (string, []promptcenter.RenderComponent) {
 	replyPolicy, replyPolicyComponent := resolvePromptComponent(ctx, resolver, promptcenter.ComponentEmotionReplyPolicy, scope, emotionReplyPolicy)
 	memoryPolicy, memoryPolicyComponent := resolvePromptComponent(ctx, resolver, promptcenter.ComponentMemoryUsagePolicy, scope, memoryUsagePolicy)
 	affectPolicy, affectPolicyComponent := resolvePromptComponent(ctx, resolver, promptcenter.ComponentAgentAffectExpressionPolicy, scope, agentAffectExpressionPolicy)
@@ -177,7 +177,7 @@ func buildEmotionSystemPrompt(ctx stdcontext.Context, persona *config.Persona, p
 	operatingContract, operatingComponent := resolvePromptComponent(ctx, resolver, promptcenter.ComponentEmotionOperatingContract, scope, delegationGuideline)
 	internalPolicy, policyComponent := resolvePromptComponent(ctx, resolver, promptcenter.ComponentEmotionInternalContextDataPolicy, scope, internalContextDataPolicy)
 	personaText := buildPersonaPrompt(persona)
-	runtimeText := buildRuntimeContextText(env)
+	runtimeText := buildRuntimeContextText(env, history)
 	pendingNote := buildPendingNoteIfAny(pendingDecisions)
 	sections := []string{
 		wrapSystemSection("persona", personaText),
@@ -284,13 +284,37 @@ func wrapSystemSection(name, content string) string {
 	return "<" + name + ">\n" + strings.TrimSpace(content) + "\n</" + name + ">"
 }
 
-func buildRuntimeContextText(env runtimeenv.Facts) string {
+func buildRuntimeContextText(env runtimeenv.Facts, history []storage.MessageRecord) string {
 	var parts []string
 	if env.OS != "" {
 		parts = append(parts, "Execution environment: "+env.DisplayOS()+".")
 	}
 	parts = append(parts, formatCurrentTimeContext(time.Now()))
+	if previous, ok := previousUserMessageTime(history); ok {
+		parts = append(parts, formatTimeContext("上一条用户消息时间", previous))
+	}
 	return strings.Join(parts, "\n\n")
+}
+
+func previousUserMessageTime(history []storage.MessageRecord) (time.Time, bool) {
+	if len(history) == 0 || history[len(history)-1].Role != string(llm.RoleUser) {
+		return time.Time{}, false
+	}
+	for i := len(history) - 2; i >= 0; i-- {
+		if history[i].Role != string(llm.RoleUser) {
+			continue
+		}
+		text := strings.TrimSpace(history[i].CreatedAt)
+		if text == "" {
+			return time.Time{}, false
+		}
+		createdAt, err := time.Parse(time.RFC3339Nano, text)
+		if err != nil {
+			return time.Time{}, false
+		}
+		return createdAt, true
+	}
+	return time.Time{}, false
 }
 
 func buildPendingNoteIfAny(pendingDecisions any) string {

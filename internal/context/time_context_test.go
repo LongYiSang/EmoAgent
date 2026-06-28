@@ -15,3 +15,14 @@ func TestFormatCurrentTimeContext(t *testing.T) {
 		t.Fatalf("formatCurrentTimeContext() = %q, want %q", got, want)
 	}
 }
+
+func TestFormatTimeContextLabel(t *testing.T) {
+	loc := time.FixedZone("Asia/Shanghai", 8*60*60)
+	now := time.Date(2026, time.April, 25, 21, 10, 30, 0, loc)
+
+	got := formatTimeContext("上一条用户消息时间", now)
+	want := "上一条用户消息时间：2026年4月25日 星期六 21:10（Asia/Shanghai，UTC+08:00）。"
+	if got != want {
+		t.Fatalf("formatTimeContext() = %q, want %q", got, want)
+	}
+}

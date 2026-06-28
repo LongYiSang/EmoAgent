@@ -136,6 +136,77 @@ func TestBuildEmotionContextUsesPinnedContextAndRecentTurns(t *testing.T) {
 	}
 }
 
+func TestBuildEmotionContextInjectsPreviousUserMessageTime(t *testing.T) {
+	persona := &config.Persona{Name: "default", SystemPrompt: "You are warm."}
+	cfg := testContextConfig()
+	history := []storage.MessageRecord{
+		{ID: "u1", Role: "user", Content: "previous", CreatedAt: "2026-04-25T21:10:00+08:00"},
+		{ID: "a1", Role: "assistant", Content: "reply", CreatedAt: "2026-04-25T21:11:00+08:00"},
+		{ID: "u2", Role: "user", Content: "current", CreatedAt: "2026-04-26T17:05:00+08:00"},
+	}
+
+	assembled, err := ctxpkg.BuildEmotionContext(persona, history, cfg, runtimeenv.Facts{})
+	if err != nil {
+		t.Fatalf("BuildEmotionContext: %v", err)
+	}
+
+	want := "上一条用户消息时间：2026年4月25日 星期六 21:10"
+	if !strings.Contains(assembled.System, want) {
+		t.Fatalf("System = %q, want previous user message time %q", assembled.System, want)
+	}
+}
+
+func TestBuildEmotionContextOmitsPreviousUserMessageTimeWhenUnavailable(t *testing.T) {
+	persona := &config.Persona{Name: "default", SystemPrompt: "You are warm."}
+	cfg := testContextConfig()
+	tests := []struct {
+		name    string
+		history []storage.MessageRecord
+	}{
+		{
+			name: "only current user",
+			history: []storage.MessageRecord{
+				{ID: "u1", Role: "user", Content: "current", CreatedAt: "2026-04-26T17:05:00+08:00"},
+			},
+		},
+		{
+			name: "last message not user",
+			history: []storage.MessageRecord{
+				{ID: "u1", Role: "user", Content: "previous", CreatedAt: "2026-04-25T21:10:00+08:00"},
+				{ID: "a1", Role: "assistant", Content: "reply", CreatedAt: "2026-04-26T17:05:00+08:00"},
+			},
+		},
+		{
+			name: "previous user time missing",
+			history: []storage.MessageRecord{
+				{ID: "u1", Role: "user", Content: "previous"},
+				{ID: "a1", Role: "assistant", Content: "reply", CreatedAt: "2026-04-25T21:11:00+08:00"},
+				{ID: "u2", Role: "user", Content: "current", CreatedAt: "2026-04-26T17:05:00+08:00"},
+			},
+		},
+		{
+			name: "previous user time invalid",
+			history: []storage.MessageRecord{
+				{ID: "u1", Role: "user", Content: "previous", CreatedAt: "not-time"},
+				{ID: "a1", Role: "assistant", Content: "reply", CreatedAt: "2026-04-25T21:11:00+08:00"},
+				{ID: "u2", Role: "user", Content: "current", CreatedAt: "2026-04-26T17:05:00+08:00"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assembled, err := ctxpkg.BuildEmotionContext(persona, tt.history, cfg, runtimeenv.Facts{})
+			if err != nil {
+				t.Fatalf("BuildEmotionContext: %v", err)
+			}
+			if strings.Contains(assembled.System, "上一条用户消息时间") {
+				t.Fatalf("System = %q, want no previous user message time", assembled.System)
+			}
+		})
+	}
+}
+
 func TestBuildEmotionContextPromptCenterResolverPreservesDefaultsAndAppliesOverrides(t *testing.T) {
 	persona := &config.Persona{Name: "default", SystemPrompt: "You are warm."}
 	history := []storage.MessageRecord{{ID: "m1", Role: "user", Content: "hello"}}
