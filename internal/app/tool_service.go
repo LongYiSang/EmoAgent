@@ -43,6 +43,7 @@ func (s *ToolService) EnsureRegistry() error {
 			s.infra.ProjectRoot = projectRoot
 		}
 		s.infra.Environment = runtimeenv.BuildEnvironmentFacts(runtime.GOOS, projectRoot, cfg.Bash)
+		s.infra.Environment.Timezone = cfg.Time.Timezone
 		s.registry = tool.NewRegistry()
 		var sqlDB = (*sql.DB)(nil)
 		if s.infra.DB != nil {
@@ -61,6 +62,7 @@ func (s *ToolService) EnsureRegistry() error {
 			s.infra.ProjectRoot = projectRoot
 		}
 		s.infra.Environment = runtimeenv.BuildEnvironmentFacts(runtime.GOOS, projectRoot, cfg.Bash)
+		s.infra.Environment.Timezone = cfg.Time.Timezone
 	}
 	return nil
 }

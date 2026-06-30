@@ -1609,6 +1609,284 @@ func TestEngineSendMessageEmitsAndPersistsContextStats(t *testing.T) {
 	}
 }
 
+func TestEnginePromptRouterAlwaysCasualBuildsCasualPromptAndTools(t *testing.T) {
+	fakeLLM := &fakeLLMClient{response: &llm.ChatResponse{ID: "resp-casual", Content: "晚安", StopReason: "end_turn"}}
+	registry := tool.NewRegistry()
+	registerTestTool(t, registry, "web_search", tool.ScopeBoth)
+	registerTestTool(t, registry, work.ToolNameDelegateToWork, tool.ScopeEmotion)
+	registerTestTool(t, registry, work.ToolNameResumeWork, tool.ScopeEmotion)
+	registerTestTool(t, registry, work.ToolNameListPendingDecisions, tool.ScopeEmotion)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, logger)
+	engine, db, _ := newTestEngineWithPromptRouter(t, fakeLLM, registry, dispatcher, config.PromptRouterConfig{Mode: config.PromptRouterModeAlwaysCasual})
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if _, err := engine.SendMessage(context.Background(), sessionID, &config.Persona{Name: "default", SystemPrompt: "system"}, "晚安", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	if strings.Contains(fakeLLM.lastRequest.System, "Emotion Work Delegation Contract") || strings.Contains(fakeLLM.lastRequest.System, "<operating_contract>") {
+		t.Fatalf("casual system contains work contract:\n%s", fakeLLM.lastRequest.System)
+	}
+	names := toolDefNames(fakeLLM.lastRequest.Tools)
+	if !names["web_search"] {
+		t.Fatalf("casual tools missing web_search: %#v", fakeLLM.lastRequest.Tools)
+	}
+	for _, forbidden := range []string{work.ToolNameDelegateToWork, work.ToolNameResumeWork, work.ToolNameListPendingDecisions} {
+		if names[forbidden] {
+			t.Fatalf("casual tools include %s: %#v", forbidden, fakeLLM.lastRequest.Tools)
+		}
+	}
+	state, err := contextutil.LoadSessionState(context.Background(), db, sessionID, config.DefaultConfig().Context)
+	if err != nil {
+		t.Fatalf("LoadSessionState: %v", err)
+	}
+	if state.PromptRoute.LastMode != contextutil.PromptModeCasualChat || state.PromptRoute.WorkStickyRemaining != 0 {
+		t.Fatalf("PromptRoute = %#v, want casual clear", state.PromptRoute)
+	}
+}
+
+func TestEnginePromptRouterStickyKeepsWorkModeAndDecrements(t *testing.T) {
+	fakeLLM := &fakeLLMClient{response: &llm.ChatResponse{ID: "resp-work", Content: "继续", StopReason: "end_turn"}}
+	registry := tool.NewRegistry()
+	registerTestTool(t, registry, "web_search", tool.ScopeBoth)
+	registerTestTool(t, registry, work.ToolNameDelegateToWork, tool.ScopeEmotion)
+	registerTestTool(t, registry, work.ToolNameResumeWork, tool.ScopeEmotion)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, logger)
+	engine, db, _ := newTestEngineWithPromptRouter(t, fakeLLM, registry, dispatcher, config.PromptRouterConfig{Mode: config.PromptRouterModeAuto, StickyTurns: 5})
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if err := contextutil.UpdateSessionContextState(context.Background(), db, sessionID, contextutil.ContextState{
+		ContextVersion:      contextutil.CurrentContextVersion,
+		Mode:                contextutil.ModeEmotion,
+		KeepRecentUserTurns: config.DefaultConfig().Context.KeepRecentUserTurns,
+		PromptRoute:         contextutil.PromptRouteState{LastMode: contextutil.PromptModeWorkMode, WorkStickyRemaining: 2},
+	}); err != nil {
+		t.Fatalf("UpdateSessionContextState: %v", err)
+	}
+
+	if _, err := engine.SendMessage(context.Background(), sessionID, &config.Persona{Name: "default", SystemPrompt: "system"}, "继续", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	if !strings.Contains(fakeLLM.lastRequest.System, "Emotion Work Delegation Contract") {
+		t.Fatalf("work system missing contract:\n%s", fakeLLM.lastRequest.System)
+	}
+	names := toolDefNames(fakeLLM.lastRequest.Tools)
+	if !names[work.ToolNameDelegateToWork] || !names[work.ToolNameResumeWork] {
+		t.Fatalf("work tools missing bridge tools: %#v", fakeLLM.lastRequest.Tools)
+	}
+	state, err := contextutil.LoadSessionState(context.Background(), db, sessionID, config.DefaultConfig().Context)
+	if err != nil {
+		t.Fatalf("LoadSessionState: %v", err)
+	}
+	if state.PromptRoute.LastMode != contextutil.PromptModeWorkMode || state.PromptRoute.WorkStickyRemaining != 1 {
+		t.Fatalf("PromptRoute = %#v, want work sticky 1", state.PromptRoute)
+	}
+}
+
+func TestEnginePromptRouterAutoLLMCasualBuildsCasualPromptAndTools(t *testing.T) {
+	client := &promptRouterEngineClient{
+		routerContent: `{"mode":"casual_chat","sticky_action":"clear"}`,
+		response:      &llm.ChatResponse{ID: "resp-casual", Content: "晚安", StopReason: "end_turn"},
+	}
+	registry := tool.NewRegistry()
+	registerTestTool(t, registry, "web_search", tool.ScopeBoth)
+	registerTestTool(t, registry, work.ToolNameDelegateToWork, tool.ScopeEmotion)
+	registerTestTool(t, registry, work.ToolNameResumeWork, tool.ScopeEmotion)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, logger)
+	engine, db, _ := newTestEngineWithPromptRouter(t, client, registry, dispatcher, config.PromptRouterConfig{Mode: config.PromptRouterModeAuto})
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if _, err := engine.SendMessage(context.Background(), sessionID, &config.Persona{Name: "default", SystemPrompt: "system"}, "晚安", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	if len(client.routerRequests) != 1 {
+		t.Fatalf("router requests = %d, want 1", len(client.routerRequests))
+	}
+	if strings.Contains(client.lastRequest.System, "Emotion Work Delegation Contract") {
+		t.Fatalf("casual system contains work contract:\n%s", client.lastRequest.System)
+	}
+	names := toolDefNames(client.lastRequest.Tools)
+	if !names["web_search"] || names[work.ToolNameDelegateToWork] || names[work.ToolNameResumeWork] {
+		t.Fatalf("casual tools = %#v, want web_search without work bridge", client.lastRequest.Tools)
+	}
+	state, err := contextutil.LoadSessionState(context.Background(), db, sessionID, config.DefaultConfig().Context)
+	if err != nil {
+		t.Fatalf("LoadSessionState: %v", err)
+	}
+	if state.PromptRoute.LastMode != contextutil.PromptModeCasualChat || state.PromptRoute.WorkStickyRemaining != 0 {
+		t.Fatalf("PromptRoute = %#v, want casual clear", state.PromptRoute)
+	}
+}
+
+func TestEnginePromptRouterAutoLLMWorkBuildsWorkPromptAndResetsSticky(t *testing.T) {
+	client := &promptRouterEngineClient{
+		routerContent: `{"mode":"work_mode","sticky_action":"reset"}`,
+		response:      &llm.ChatResponse{ID: "resp-work", Content: "继续", StopReason: "end_turn"},
+	}
+	registry := tool.NewRegistry()
+	registerTestTool(t, registry, "web_search", tool.ScopeBoth)
+	registerTestTool(t, registry, work.ToolNameDelegateToWork, tool.ScopeEmotion)
+	registerTestTool(t, registry, work.ToolNameResumeWork, tool.ScopeEmotion)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, logger)
+	engine, db, _ := newTestEngineWithPromptRouter(t, client, registry, dispatcher, config.PromptRouterConfig{Mode: config.PromptRouterModeAuto, StickyTurns: 4})
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if _, err := engine.SendMessage(context.Background(), sessionID, &config.Persona{Name: "default", SystemPrompt: "system"}, "继续看代码", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	if len(client.routerRequests) != 1 {
+		t.Fatalf("router requests = %d, want 1", len(client.routerRequests))
+	}
+	if !strings.Contains(client.lastRequest.System, "Emotion Work Delegation Contract") {
+		t.Fatalf("work system missing contract:\n%s", client.lastRequest.System)
+	}
+	names := toolDefNames(client.lastRequest.Tools)
+	if !names[work.ToolNameDelegateToWork] || !names[work.ToolNameResumeWork] {
+		t.Fatalf("work tools = %#v, want work bridge tools", client.lastRequest.Tools)
+	}
+	state, err := contextutil.LoadSessionState(context.Background(), db, sessionID, config.DefaultConfig().Context)
+	if err != nil {
+		t.Fatalf("LoadSessionState: %v", err)
+	}
+	if state.PromptRoute.LastMode != contextutil.PromptModeWorkMode || state.PromptRoute.WorkStickyRemaining != 4 {
+		t.Fatalf("PromptRoute = %#v, want work sticky 4", state.PromptRoute)
+	}
+}
+
+func TestEnginePromptRouterStickyOneCallsLLMAndCanClearWorkMode(t *testing.T) {
+	client := &promptRouterEngineClient{
+		routerContent: `{"mode":"casual_chat","sticky_action":"clear"}`,
+		response:      &llm.ChatResponse{ID: "resp-casual", Content: "好", StopReason: "end_turn"},
+	}
+	registry := tool.NewRegistry()
+	registerTestTool(t, registry, "web_search", tool.ScopeBoth)
+	registerTestTool(t, registry, work.ToolNameDelegateToWork, tool.ScopeEmotion)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, logger)
+	engine, db, _ := newTestEngineWithPromptRouter(t, client, registry, dispatcher, config.PromptRouterConfig{Mode: config.PromptRouterModeAuto, StickyTurns: 5})
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if err := contextutil.UpdateSessionContextState(context.Background(), db, sessionID, contextutil.ContextState{
+		ContextVersion:      contextutil.CurrentContextVersion,
+		Mode:                contextutil.ModeEmotion,
+		KeepRecentUserTurns: config.DefaultConfig().Context.KeepRecentUserTurns,
+		PromptRoute:         contextutil.PromptRouteState{LastMode: contextutil.PromptModeWorkMode, WorkStickyRemaining: 1},
+	}); err != nil {
+		t.Fatalf("UpdateSessionContextState: %v", err)
+	}
+
+	if _, err := engine.SendMessage(context.Background(), sessionID, &config.Persona{Name: "default", SystemPrompt: "system"}, "晚安", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	if len(client.routerRequests) != 1 {
+		t.Fatalf("router requests = %d, want 1", len(client.routerRequests))
+	}
+	if strings.Contains(client.lastRequest.System, "Emotion Work Delegation Contract") {
+		t.Fatalf("casual system contains work contract:\n%s", client.lastRequest.System)
+	}
+	state, err := contextutil.LoadSessionState(context.Background(), db, sessionID, config.DefaultConfig().Context)
+	if err != nil {
+		t.Fatalf("LoadSessionState: %v", err)
+	}
+	if state.PromptRoute.LastMode != contextutil.PromptModeCasualChat || state.PromptRoute.WorkStickyRemaining != 0 {
+		t.Fatalf("PromptRoute = %#v, want casual clear", state.PromptRoute)
+	}
+}
+
+type promptRouterEngineClient struct {
+	routerContent  string
+	response       *llm.ChatResponse
+	lastRequest    llm.ChatRequest
+	routerRequests []llm.ChatRequest
+}
+
+func (c *promptRouterEngineClient) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	if req.System == promptRouterSystemPrompt {
+		c.routerRequests = append(c.routerRequests, req)
+		return &llm.ChatResponse{ID: "router-1", Model: req.Model, Content: c.routerContent}, nil
+	}
+	return &llm.ChatResponse{ID: "summary-1", Model: req.Model, Content: engineSummaryContent("summarized")}, nil
+}
+
+func (c *promptRouterEngineClient) ChatStream(_ context.Context, req llm.ChatRequest, cb llm.StreamCallback) (*llm.ChatResponse, error) {
+	c.lastRequest = req
+	if cb != nil {
+		cb(llm.StreamEvent{Done: true})
+	}
+	return c.response, nil
+}
+
+func newTestEngineWithPromptRouter(t *testing.T, client llm.Client, registry *tool.Registry, dispatcher *tool.Dispatcher, router config.PromptRouterConfig) (*Engine, *storage.DB, *slog.Logger) {
+	t.Helper()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chat.db")
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	db, err := storage.Open(path, logger)
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	engine := NewEngine(EngineConfig{
+		LLM:          client,
+		DB:           db,
+		Logger:       logger,
+		Model:        "test-model",
+		SummaryModel: "summary-model",
+		MaxTokens:    256,
+		Temperature:  0.2,
+		ContextConfig: config.ContextConfig{
+			InputBudgetTokens:    24000,
+			SoftCompactRatio:     0.75,
+			HardCompactRatio:     0.92,
+			ReserveOutputTokens:  4096,
+			KeepRecentUserTurns:  6,
+			ToolResultSoftTokens: 1000,
+			ToolResultHardTokens: 3000,
+		},
+		PromptRouter: router,
+		Registry:     registry,
+		Dispatcher:   dispatcher,
+	})
+
+	return engine, db, logger
+}
+
+func toolDefNames(tools []llm.ToolDef) map[string]bool {
+	names := make(map[string]bool, len(tools))
+	for _, item := range tools {
+		names[item.Name] = true
+	}
+	return names
+}
+
 func newTestEngine(t *testing.T, client llm.Client) (*Engine, *storage.DB, *slog.Logger) {
 	t.Helper()
 

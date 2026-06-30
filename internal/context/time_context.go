@@ -9,6 +9,60 @@ func formatCurrentTimeContext(now time.Time) string {
 	return formatTimeContext("当前时间上下文", now)
 }
 
+func formatPreviousUserMessageRelative(now, previous time.Time) string {
+	delta := now.Sub(previous)
+	if delta < 0 {
+		delta = 0
+	}
+	fullTime := formatFullLocalTime(previous)
+	if delta < 90*time.Second {
+		return fmt.Sprintf("上一条用户消息：刚刚（%s）。", fullTime)
+	}
+	return fmt.Sprintf("上一条用户消息：约%s之前（%s）。", humanizeDurationZH(delta), fullTime)
+}
+
+func humanizeDurationZH(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	if d < 90*time.Second {
+		return "刚刚"
+	}
+	if d < time.Hour {
+		minutes := int(d / time.Minute)
+		if minutes < 1 {
+			minutes = 1
+		}
+		return fmt.Sprintf("%d分钟", minutes)
+	}
+	if d < 48*time.Hour {
+		hours := int(d / time.Hour)
+		minutes := int((d % time.Hour) / time.Minute)
+		if minutes == 0 {
+			return fmt.Sprintf("%d小时", hours)
+		}
+		return fmt.Sprintf("%d小时%d分钟", hours, minutes)
+	}
+	days := int(d / (24 * time.Hour))
+	hours := int((d % (24 * time.Hour)) / time.Hour)
+	if hours == 0 {
+		return fmt.Sprintf("%d天", days)
+	}
+	return fmt.Sprintf("%d天%d小时", days, hours)
+}
+
+func formatFullLocalTime(now time.Time) string {
+	return fmt.Sprintf(
+		"%d年%d月%d日 %s %02d:%02d",
+		now.Year(),
+		int(now.Month()),
+		now.Day(),
+		formatChineseWeekday(now.Weekday()),
+		now.Hour(),
+		now.Minute(),
+	)
+}
+
 func formatTimeContext(label string, now time.Time) string {
 	_, offset := now.Zone()
 	return fmt.Sprintf(

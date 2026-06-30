@@ -69,7 +69,7 @@ type TaskBriefAnnotator interface {
 
 func NewDelegateToolWithFactoryAndAnnotator(runtimeFactory func() (*Runtime, error), pending *PendingRegistry, journalDir string, logger *slog.Logger, annotator TaskBriefAnnotator) (tool.Spec, tool.Handler) {
 	spec := tool.Spec{
-		Name:        "delegate_to_work",
+		Name:        ToolNameDelegateToWork,
 		Description: delegateToolDescription,
 		Parameters:  delegateToolSchema,
 		Scope:       tool.ScopeEmotion,

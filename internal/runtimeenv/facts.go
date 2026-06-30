@@ -18,6 +18,7 @@ type ShellSpec struct {
 type Facts struct {
 	OS              string
 	WorkspaceRoot   string
+	Timezone        string
 	PathStyle       string
 	BashEnabled     bool
 	ShellDisplay    string

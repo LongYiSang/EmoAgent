@@ -1,6 +1,7 @@
 package configcenter
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/longyisang/emoagent/internal/config"
@@ -82,5 +83,39 @@ func TestApplyRuntimeSettingsSupportsPythonToolchain(t *testing.T) {
 	}
 	if effective.PythonToolchain.RequiredPython != "3.12" {
 		t.Fatalf("required_python = %q, want default 3.12", effective.PythonToolchain.RequiredPython)
+	}
+}
+
+func TestApplyRuntimeSettingsSupportsChatPromptRouter(t *testing.T) {
+	seed := config.DefaultConfig()
+
+	effective, issues := ApplyRuntimeSettings(seed, []storage.RuntimeSetting{
+		{Namespace: "chat", Key: "config", ValueJSON: `{"prompt_router":{"mode":"always_work","sticky_turns":7}}`},
+	})
+	if len(issues) != 0 {
+		t.Fatalf("issues = %#v, want none", issues)
+	}
+	if effective.Chat.PromptRouter.Mode != config.PromptRouterModeAlwaysWork {
+		t.Fatalf("chat.prompt_router.mode = %q, want always_work", effective.Chat.PromptRouter.Mode)
+	}
+	if effective.Chat.PromptRouter.StickyTurns != 7 {
+		t.Fatalf("chat.prompt_router.sticky_turns = %d, want 7", effective.Chat.PromptRouter.StickyTurns)
+	}
+	if effective.Chat.PromptRouter.ContextTurns != 6 || effective.Chat.PromptRouter.MaxContextChars != 6000 {
+		t.Fatalf("chat.prompt_router defaults = %#v", effective.Chat.PromptRouter)
+	}
+}
+
+func TestApplyRuntimeSettingsRejectsInvalidChatPromptRouter(t *testing.T) {
+	seed := config.DefaultConfig()
+
+	_, issues := ApplyRuntimeSettings(seed, []storage.RuntimeSetting{
+		{Namespace: "chat", Key: "config", ValueJSON: `{"prompt_router":{"mode":"bad"}}`},
+	})
+	if len(issues) != 1 {
+		t.Fatalf("issues = %#v, want one issue", issues)
+	}
+	if issues[0].Path != "chat" || !strings.Contains(issues[0].Message, "prompt_router.mode") {
+		t.Fatalf("issue = %#v, want chat prompt_router.mode issue", issues[0])
 	}
 }

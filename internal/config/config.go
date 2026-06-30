@@ -1423,7 +1423,27 @@ type ServerConfig struct {
 type ChatConfig struct {
 	RealtimeStreaming bool               `yaml:"realtime_streaming" json:"realtime_streaming"`
 	TurnPipeline      TurnPipelineConfig `yaml:"turn_pipeline" json:"turn_pipeline"`
+	PromptRouter      PromptRouterConfig `yaml:"prompt_router" json:"prompt_router"`
 }
+
+type PromptRouterConfig struct {
+	Mode            PromptRouterMode `yaml:"mode" json:"mode"`
+	StickyTurns     int              `yaml:"sticky_turns" json:"sticky_turns"`
+	ContextTurns    int              `yaml:"context_turns" json:"context_turns"`
+	MaxContextChars int              `yaml:"max_context_chars" json:"max_context_chars"`
+	TimeoutMS       int              `yaml:"timeout_ms" json:"timeout_ms"`
+	MaxOutputTokens int              `yaml:"max_output_tokens" json:"max_output_tokens"`
+	ProviderID      string           `yaml:"provider_id" json:"provider_id"`
+	Model           string           `yaml:"model" json:"model"`
+}
+
+type PromptRouterMode string
+
+const (
+	PromptRouterModeAuto         PromptRouterMode = "auto"
+	PromptRouterModeAlwaysCasual PromptRouterMode = "always_casual"
+	PromptRouterModeAlwaysWork   PromptRouterMode = "always_work"
+)
 
 type TurnPipelineConfig struct {
 	Shadow         bool                      `yaml:"shadow" json:"shadow"`
@@ -1606,6 +1626,14 @@ func DefaultConfig() *Config {
 		},
 		Chat: ChatConfig{
 			RealtimeStreaming: false,
+			PromptRouter: PromptRouterConfig{
+				Mode:            PromptRouterModeAuto,
+				StickyTurns:     5,
+				ContextTurns:    6,
+				MaxContextChars: 6000,
+				TimeoutMS:       2000,
+				MaxOutputTokens: 64,
+			},
 			TurnPipeline: TurnPipelineConfig{
 				Journal: TurnPipelineJournalConfig{
 					Mode:     "sqlite",
@@ -1979,7 +2007,7 @@ func Load(path string) (*Config, error) {
 	}
 	explicitMemoryExtractionTimezone, memoryExtractionTimezone := memoryExtractionTimezoneValue(data)
 	explicitWebSearchReaderTopN, webSearchReaderTopN := webSearchReaderTopNValue(data)
-	cfg.Chat.TurnPipeline.applyDefaults()
+	cfg.Chat.applyDefaults()
 	cfg.Work.ApplyDefaults()
 	cfg.WebSearch.applyDefaults()
 	if explicitWebSearchReaderTopN {
@@ -2019,6 +2047,32 @@ func (c *Config) applyPythonToolchainLegacyMigration() {
 	}
 }
 
+func (c *ChatConfig) applyDefaults() {
+	c.TurnPipeline.applyDefaults()
+	c.PromptRouter.applyDefaults()
+}
+
+func (c *PromptRouterConfig) applyDefaults() {
+	if c.Mode == "" {
+		c.Mode = PromptRouterModeAuto
+	}
+	if c.StickyTurns <= 0 {
+		c.StickyTurns = 5
+	}
+	if c.ContextTurns <= 0 {
+		c.ContextTurns = 6
+	}
+	if c.MaxContextChars <= 0 {
+		c.MaxContextChars = 6000
+	}
+	if c.TimeoutMS <= 0 {
+		c.TimeoutMS = 2000
+	}
+	if c.MaxOutputTokens <= 0 {
+		c.MaxOutputTokens = 64
+	}
+}
+
 func (c *TurnPipelineConfig) applyDefaults() {
 	if c.Journal.Mode == "" {
 		c.Journal.Mode = "sqlite"
@@ -2035,6 +2089,30 @@ func (c *TurnPipelineConfig) applyDefaults() {
 	if c.Idempotency.DuplicateRunning == "" {
 		c.Idempotency.DuplicateRunning = "busy"
 	}
+}
+
+func (c PromptRouterConfig) Validate() error {
+	switch c.Mode {
+	case "", PromptRouterModeAuto, PromptRouterModeAlwaysCasual, PromptRouterModeAlwaysWork:
+	default:
+		return fmt.Errorf("mode must be auto, always_casual, or always_work, got %q", c.Mode)
+	}
+	if c.StickyTurns <= 0 {
+		return fmt.Errorf("sticky_turns must be > 0")
+	}
+	if c.ContextTurns <= 0 {
+		return fmt.Errorf("context_turns must be > 0")
+	}
+	if c.MaxContextChars <= 0 {
+		return fmt.Errorf("max_context_chars must be > 0")
+	}
+	if c.TimeoutMS <= 0 {
+		return fmt.Errorf("timeout_ms must be > 0")
+	}
+	if c.MaxOutputTokens <= 0 {
+		return fmt.Errorf("max_output_tokens must be > 0")
+	}
+	return nil
 }
 
 func memoryExtractionTimezoneValue(data []byte) (bool, string) {
@@ -2092,6 +2170,9 @@ func (c *Config) Validate() error {
 	}
 	if err := c.Chat.TurnPipeline.Validate(); err != nil {
 		return fmt.Errorf("chat.turn_pipeline: %w", err)
+	}
+	if err := c.Chat.PromptRouter.Validate(); err != nil {
+		return fmt.Errorf("chat.prompt_router.%w", err)
 	}
 	if err := c.Plugins.Validate(c.Chat.TurnPipeline); err != nil {
 		return fmt.Errorf("plugins: %w", err)

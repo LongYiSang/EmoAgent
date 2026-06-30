@@ -276,6 +276,10 @@ func normalizeContextState(state ContextState, cfg config.ContextConfig) Context
 	if state.Mode == "" {
 		state.Mode = ModeEmotion
 	}
+	state.PromptRoute.LastMode = NormalizePromptModeOrEmpty(state.PromptRoute.LastMode)
+	if state.PromptRoute.WorkStickyRemaining < 0 {
+		state.PromptRoute.WorkStickyRemaining = 0
+	}
 	state.RunningSummary = normalizeRunningSummary(state.RunningSummary)
 	if state.KeepRecentUserTurns <= 0 {
 		state.KeepRecentUserTurns = cfg.KeepRecentUserTurns

@@ -30,7 +30,7 @@ func (s *WorkService) Pending() *work.PendingRegistry {
 func (s *WorkService) Configure(ctx context.Context, dispatcher *tool.Dispatcher) error {
 	registry := s.tools.Registry()
 	activeRuntime := s.agentRuntime.Active()
-	if _, ok := registry.GetSpec("delegate_to_work"); ok {
+	if _, ok := registry.GetSpec(work.ToolNameDelegateToWork); ok {
 		return nil
 	}
 	if activeRuntime == nil || activeRuntime.WorkMain.Client == nil {
@@ -61,11 +61,11 @@ func (s *WorkService) Configure(ctx context.Context, dispatcher *tool.Dispatcher
 	if _, ok := registry.GetSpec("request_decision"); !ok {
 		registry.Register(work.NewRequestDecisionTool(), work.RequestDecisionPlaceholderHandler)
 	}
-	if _, ok := registry.GetSpec("resume_work"); !ok {
+	if _, ok := registry.GetSpec(work.ToolNameResumeWork); !ok {
 		resumeSpec, resumeHandler := work.NewResumeToolWithFactory(runtimeFactory, s.pending, cfg.Work.JournalDir, s.infra.Logger)
 		registry.Register(resumeSpec, resumeHandler)
 	}
-	if _, ok := registry.GetSpec("list_pending_decisions"); !ok {
+	if _, ok := registry.GetSpec(work.ToolNameListPendingDecisions); !ok {
 		spec, handler := work.NewListDecisionsTool(s.pending)
 		registry.Register(spec, handler)
 	}

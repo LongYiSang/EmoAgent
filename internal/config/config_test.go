@@ -24,6 +24,24 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Chat.RealtimeStreaming {
 		t.Error("default chat.realtime_streaming = true, want false")
 	}
+	if cfg.Chat.PromptRouter.Mode != PromptRouterModeAuto {
+		t.Errorf("default chat.prompt_router.mode = %q, want auto", cfg.Chat.PromptRouter.Mode)
+	}
+	if cfg.Chat.PromptRouter.StickyTurns != 5 {
+		t.Errorf("default chat.prompt_router.sticky_turns = %d, want 5", cfg.Chat.PromptRouter.StickyTurns)
+	}
+	if cfg.Chat.PromptRouter.ContextTurns != 6 {
+		t.Errorf("default chat.prompt_router.context_turns = %d, want 6", cfg.Chat.PromptRouter.ContextTurns)
+	}
+	if cfg.Chat.PromptRouter.MaxContextChars != 6000 {
+		t.Errorf("default chat.prompt_router.max_context_chars = %d, want 6000", cfg.Chat.PromptRouter.MaxContextChars)
+	}
+	if cfg.Chat.PromptRouter.TimeoutMS != 2000 {
+		t.Errorf("default chat.prompt_router.timeout_ms = %d, want 2000", cfg.Chat.PromptRouter.TimeoutMS)
+	}
+	if cfg.Chat.PromptRouter.MaxOutputTokens != 64 {
+		t.Errorf("default chat.prompt_router.max_output_tokens = %d, want 64", cfg.Chat.PromptRouter.MaxOutputTokens)
+	}
 	if cfg.Chat.TurnPipeline.Shadow {
 		t.Error("default chat.turn_pipeline.shadow = true, want false")
 	}
@@ -395,6 +413,32 @@ func TestLoadMissingFile(t *testing.T) {
 	}
 	if cfg.Server.Port != 8080 {
 		t.Errorf("expected defaults, got port %d", cfg.Server.Port)
+	}
+}
+
+func TestLoadPromptRouterPartialConfigUsesDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+chat:
+  prompt_router:
+    mode: always_casual
+    sticky_turns: 3
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Chat.PromptRouter.Mode != PromptRouterModeAlwaysCasual {
+		t.Fatalf("chat.prompt_router.mode = %q, want always_casual", cfg.Chat.PromptRouter.Mode)
+	}
+	if cfg.Chat.PromptRouter.StickyTurns != 3 {
+		t.Fatalf("chat.prompt_router.sticky_turns = %d, want 3", cfg.Chat.PromptRouter.StickyTurns)
+	}
+	if cfg.Chat.PromptRouter.ContextTurns != 6 || cfg.Chat.PromptRouter.MaxContextChars != 6000 || cfg.Chat.PromptRouter.TimeoutMS != 2000 || cfg.Chat.PromptRouter.MaxOutputTokens != 64 {
+		t.Fatalf("chat.prompt_router defaults = %#v", cfg.Chat.PromptRouter)
 	}
 }
 
@@ -2125,6 +2169,16 @@ func TestValidateRejectsInvalidContextBudget(t *testing.T) {
 	cfg.Context.InputBudgetTokens = 0
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error for invalid context budget")
+	}
+}
+
+func TestValidateRejectsInvalidPromptRouterMode(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Chat.PromptRouter.Mode = "sometimes"
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "chat.prompt_router.mode") {
+		t.Fatalf("Validate error = %v, want chat.prompt_router.mode", err)
 	}
 }
 

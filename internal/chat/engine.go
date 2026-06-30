@@ -24,6 +24,7 @@ import (
 	"github.com/longyisang/emoagent/internal/tokenmeter"
 	"github.com/longyisang/emoagent/internal/tool"
 	"github.com/longyisang/emoagent/internal/tool/resultv2"
+	"github.com/longyisang/emoagent/internal/turn"
 	"github.com/longyisang/emoagent/internal/work"
 )
 
@@ -76,6 +77,7 @@ type EngineConfig struct {
 	MaxTokens          int
 	Temperature        float64
 	ContextConfig      config.ContextConfig
+	PromptRouter       config.PromptRouterConfig
 	Provider           string           // "openai" or "anthropic", needed by ResultsToMessages
 	ProviderID         string           // configured provider id for model capability lookup
 	ProviderName       string           // display name for UI metadata
@@ -112,6 +114,7 @@ type RuntimeConfig struct {
 	MaxTokens          int
 	Temperature        float64
 	ContextConfig      config.ContextConfig
+	PromptRouter       config.PromptRouterConfig
 	RealtimeStreaming  bool
 }
 
@@ -131,6 +134,7 @@ type Engine struct {
 	maxTokens            int
 	temperature          float64
 	contextCfg           config.ContextConfig
+	promptRouter         config.PromptRouterConfig
 	provider             string
 	providerID           string
 	providerName         string
@@ -213,6 +217,12 @@ func (e *Engine) UpdateRealtimeStreaming(enabled bool) {
 	e.realtimeStreaming = enabled
 }
 
+func (e *Engine) UpdatePromptRouterConfig(cfg config.PromptRouterConfig) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.promptRouter = normalizePromptRouterConfig(cfg)
+}
+
 // NewEngine creates a chat engine from configuration.
 func NewEngine(cfg EngineConfig) *Engine {
 	contextCfg := cfg.ContextConfig
@@ -227,6 +237,11 @@ func NewEngine(cfg EngineConfig) *Engine {
 	if promptResolver == nil {
 		promptResolver = newPromptResolver(promptStore, cfg.Logger)
 	}
+	promptRouter := cfg.PromptRouter
+	if promptRouter == (config.PromptRouterConfig{}) {
+		promptRouter.Mode = config.PromptRouterModeAlwaysWork
+	}
+	promptRouter = normalizePromptRouterConfig(promptRouter)
 
 	return &Engine{
 		llm:                  cfg.LLM,
@@ -242,6 +257,7 @@ func NewEngine(cfg EngineConfig) *Engine {
 		maxTokens:            cfg.MaxTokens,
 		temperature:          cfg.Temperature,
 		contextCfg:           contextCfg,
+		promptRouter:         promptRouter,
 		provider:             cfg.Provider,
 		providerID:           firstNonEmptyString(cfg.ProviderID, cfg.Provider),
 		providerName:         providerDisplayName(cfg.ProviderName, cfg.Provider),
@@ -346,6 +362,7 @@ func (e *Engine) RuntimeConfig() RuntimeConfig {
 		MaxTokens:          e.maxTokens,
 		Temperature:        e.temperature,
 		ContextConfig:      e.contextCfg,
+		PromptRouter:       e.promptRouter,
 		RealtimeStreaming:  e.realtimeStreaming,
 	}
 }
@@ -405,6 +422,7 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID string, persona *con
 	return e.sendTurn(ctx, sessionID, persona, cb, turnOptions{
 		persistUser: true,
 		userContent: userContent,
+		inboundKind: turn.InboundUserMessage,
 	})
 }
 
@@ -419,6 +437,7 @@ func (e *Engine) SendMessageParts(ctx context.Context, sessionID string, persona
 		userContent: content,
 		userParts:   normalizedParts,
 		turnID:      uuid.NewString(),
+		inboundKind: turn.InboundUserMessage,
 	})
 }
 
@@ -426,6 +445,7 @@ type turnOptions struct {
 	persistUser           bool
 	userContent           string
 	userParts             []llm.ContentBlock
+	inboundKind           turn.InboundKind
 	turnID                string
 	requestID             string
 	extraSystem           string
@@ -637,6 +657,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	maxTokens := e.maxTokens
 	temperature := e.temperature
 	contextCfg := e.contextCfg
+	promptRouterCfg := e.promptRouter
 	provider := e.provider
 	providerID := e.providerID
 	providerName := providerDisplayName(e.providerName, provider)
@@ -781,11 +802,26 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 		pendingDecisions = append(pendingDecisions, pending.ListInjectable(sessionID)...)
 	}
 
+	inboundKind := opts.inboundKind
+	if inboundKind == "" && (opts.persistUser || opts.userContent != "" || len(opts.userParts) > 0) {
+		inboundKind = turn.InboundUserMessage
+	}
+	routeDecision := decidePromptMode(ctx, PromptRouteRequest{
+		LatestUserMessage:   firstNonEmptyString(memoryAnchor.userHistoryContent, opts.userContent),
+		LastMode:            state.PromptRoute.LastMode,
+		Sticky:              state.PromptRoute,
+		CurrentConversation: buildPromptRouterConversationDigest(history, state, promptRouterCfg),
+		PendingWorkCount:    len(pendingDecisions),
+		InboundKind:         inboundKind,
+	}, promptRouterCfg, summaryClient, summaryRequestModel, summaryParams, e.logger)
+	ApplyPromptRouteDecision(state, routeDecision, promptRouterCfg)
+	contextOptions := contextutil.EmotionContextOptions{PromptMode: routeDecision.Mode}
+
 	var assembled contextutil.AssembledContext
 	if len(pendingDecisions) > 0 {
-		assembled, err = contextutil.BuildEmotionContextWithPendingSummariesAndPromptResolver(ctx, persona, history, state, pendingDecisions, contextCfg, env, promptResolver, promptScope)
+		assembled, err = contextutil.BuildEmotionContextWithPendingSummariesAndPromptResolverAndOptions(ctx, persona, history, state, pendingDecisions, contextCfg, env, promptResolver, promptScope, contextOptions)
 	} else {
-		assembled, err = contextutil.BuildEmotionContextWithStateAndPromptResolver(ctx, persona, history, state, contextCfg, env, promptResolver, promptScope)
+		assembled, err = contextutil.BuildEmotionContextWithStateAndPromptResolverAndOptions(ctx, persona, history, state, contextCfg, env, promptResolver, promptScope, contextOptions)
 	}
 	if err != nil {
 		e.logger.Error("failed to assemble llm context", "session", sessionID, "error", err)
@@ -850,7 +886,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	// Populate available tools only when the execution pipeline is enabled.
 	var tools []llm.ToolDef
 	if !opts.disableTools && registry != nil && dispatcher != nil {
-		tools = registry.ForScope(tool.ScopeEmotion)
+		tools = emotionToolsForPromptMode(registry, routeDecision.Mode)
 	}
 
 	req := llm.ChatRequest{
@@ -1240,12 +1276,14 @@ func (e *Engine) ContinueAfterApproval(ctx context.Context, sessionID string, pe
 			persistUser:  false,
 			extraSystem:  note,
 			disableTools: terminal,
+			inboundKind:  turn.InboundApprovalAction,
 		})
 	}
 	note := buildApprovalContinuationNote(approval)
 	return e.sendTurn(ctx, sessionID, persona, cb, turnOptions{
 		persistUser: false,
 		extraSystem: note,
+		inboundKind: turn.InboundApprovalAction,
 	})
 }
 
@@ -1264,7 +1302,7 @@ func (e *Engine) resumeApprovalDirectly(ctx context.Context, sessionID string, a
 	if registry == nil || dispatcher == nil {
 		return "", false, false, nil
 	}
-	if _, ok := registry.GetSpec("resume_work"); !ok {
+	if _, ok := registry.GetSpec(work.ToolNameResumeWork); !ok {
 		return "", false, false, nil
 	}
 
@@ -1279,7 +1317,7 @@ func (e *Engine) resumeApprovalDirectly(ctx context.Context, sessionID string, a
 	resumeCtx := work.WithSessionID(ctx, sessionID)
 	result := dispatcher.Execute(resumeCtx, tool.Call{
 		ID:    "internal_resume_approval",
-		Name:  "resume_work",
+		Name:  work.ToolNameResumeWork,
 		Input: input,
 	}, tool.PermReadOnly)
 	if result.NeedsApproval {

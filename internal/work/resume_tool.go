@@ -41,7 +41,7 @@ func NewResumeTool(runtime *Runtime, pending *PendingRegistry, journalDir string
 
 func NewResumeToolWithFactory(runtimeFactory func() (*Runtime, error), pending *PendingRegistry, journalDir string, logger *slog.Logger) (tool.Spec, tool.Handler) {
 	spec := tool.Spec{
-		Name:        "resume_work",
+		Name:        ToolNameResumeWork,
 		Description: resumeToolDescription,
 		Parameters:  resumeToolSchema,
 		Scope:       tool.ScopeEmotion,

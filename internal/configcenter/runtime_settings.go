@@ -35,7 +35,13 @@ func applyRuntimeSetting(cfg *config.Config, setting storage.RuntimeSetting) err
 	case "system.server":
 		return overlayJSONSetting(&cfg.Server, setting)
 	case "chat":
-		return overlayJSONSetting(&cfg.Chat, setting)
+		if err := overlayJSONSetting(&cfg.Chat, setting); err != nil {
+			return err
+		}
+		if err := cfg.Chat.PromptRouter.Validate(); err != nil {
+			return fmt.Errorf("prompt_router.%w", err)
+		}
+		return nil
 	case "memory":
 		return overlayJSONSetting(&cfg.Memory, setting)
 	case "memory.retrieval":

@@ -91,6 +91,7 @@ func (s *ChatService) BuildEngine(dispatcher *tool.Dispatcher) *chat.Engine {
 		MaxTokens:          maxTokens,
 		Temperature:        temperature,
 		ContextConfig:      contextCfg,
+		PromptRouter:       cfg.Chat.PromptRouter,
 		Provider:           provider,
 		ProviderID:         providerID,
 		ProviderName:       providerName,
@@ -130,6 +131,12 @@ func (s *ChatService) HandlerOptions() []chat.HandlerOption {
 func (s *ChatService) UpdateRealtimeStreaming(enabled bool) {
 	if s.engine != nil {
 		s.engine.UpdateRealtimeStreaming(enabled)
+	}
+}
+
+func (s *ChatService) UpdatePromptRouterConfig(cfg config.PromptRouterConfig) {
+	if s.engine != nil {
+		s.engine.UpdatePromptRouterConfig(cfg)
 	}
 }
 

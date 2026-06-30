@@ -41,12 +41,14 @@ func (b Bootstrapper) Build(ctx context.Context) (kernel *Kernel, cancel context
 		}
 	}
 
+	env := runtimeenv.BuildEnvironmentFacts(runtime.GOOS, projectRoot, cfg.Bash)
+	env.Timezone = cfg.Time.Timezone
 	kernel = NewKernel(&Infra{
 		Config:      cfg,
 		DB:          db,
 		Logger:      log,
 		ProjectRoot: projectRoot,
-		Environment: runtimeenv.BuildEnvironmentFacts(runtime.GOOS, projectRoot, cfg.Bash),
+		Environment: env,
 	})
 	createdKernel := kernel
 	success := false

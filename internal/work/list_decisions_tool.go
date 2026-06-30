@@ -22,7 +22,7 @@ var listPendingDecisionsSchema = json.RawMessage(`{
 // NewListDecisionsTool builds the Emotion-facing list_pending_decisions tool.
 func NewListDecisionsTool(pending *PendingRegistry) (tool.Spec, tool.Handler) {
 	spec := tool.Spec{
-		Name:        "list_pending_decisions",
+		Name:        ToolNameListPendingDecisions,
 		Description: "List persisted pending or expired Work decision objects for the current session.",
 		Parameters:  listPendingDecisionsSchema,
 		Scope:       tool.ScopeEmotion,

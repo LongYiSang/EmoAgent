@@ -161,11 +161,13 @@ type personasResponse struct {
 }
 
 type chatSettingsResponse struct {
-	RealtimeStreaming bool `json:"realtime_streaming"`
+	RealtimeStreaming bool                      `json:"realtime_streaming"`
+	PromptRouter      config.PromptRouterConfig `json:"prompt_router"`
 }
 
 type chatSettingsRequest struct {
-	RealtimeStreaming bool `json:"realtime_streaming"`
+	RealtimeStreaming *bool                      `json:"realtime_streaming,omitempty"`
+	PromptRouter      *config.PromptRouterConfig `json:"prompt_router,omitempty"`
 }
 
 type personaDetailResponse struct {
@@ -634,9 +636,7 @@ func (h *APIHandler) HandleDeleteAgentConfig(w http.ResponseWriter, r *http.Requ
 
 func (h *APIHandler) HandleGetChatSettings(w http.ResponseWriter, r *http.Request) {
 	settings := h.app.GetChatSettings()
-	writeJSON(w, http.StatusOK, chatSettingsResponse{
-		RealtimeStreaming: settings.RealtimeStreaming,
-	})
+	writeJSON(w, http.StatusOK, chatSettingsResponseFromConfig(settings))
 }
 
 func (h *APIHandler) HandleUpdateChatSettings(w http.ResponseWriter, r *http.Request) {
@@ -645,14 +645,37 @@ func (h *APIHandler) HandleUpdateChatSettings(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	settings := config.ChatConfig{RealtimeStreaming: req.RealtimeStreaming}
+	current := h.app.GetChatSettings()
+	settings := config.ChatConfig{
+		RealtimeStreaming: current.RealtimeStreaming,
+		TurnPipeline:      current.TurnPipeline,
+		PromptRouter:      current.PromptRouter,
+	}
+	if req.RealtimeStreaming != nil {
+		settings.RealtimeStreaming = *req.RealtimeStreaming
+	}
+	if settings.PromptRouter == (config.PromptRouterConfig{}) {
+		settings.PromptRouter = config.DefaultConfig().Chat.PromptRouter
+	}
+	if req.PromptRouter != nil {
+		settings.PromptRouter = *req.PromptRouter
+	}
 	if err := h.app.UpdateChatSettings(settings); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update chat settings")
 		return
 	}
-	writeJSON(w, http.StatusOK, chatSettingsResponse{
+	writeJSON(w, http.StatusOK, chatSettingsResponseFromConfig(settings))
+}
+
+func chatSettingsResponseFromConfig(settings config.ChatConfig) chatSettingsResponse {
+	router := settings.PromptRouter
+	if router == (config.PromptRouterConfig{}) {
+		router = config.DefaultConfig().Chat.PromptRouter
+	}
+	return chatSettingsResponse{
 		RealtimeStreaming: settings.RealtimeStreaming,
-	})
+		PromptRouter:      router,
+	}
 }
 
 func (h *APIHandler) HandleListPersonas(w http.ResponseWriter, r *http.Request) {

@@ -9,6 +9,33 @@ import (
 
 const CurrentContextVersion = 1
 
+type PromptMode string
+
+const (
+	PromptModeCasualChat PromptMode = "casual_chat"
+	PromptModeWorkMode   PromptMode = "work_mode"
+)
+
+func NormalizePromptMode(mode PromptMode) PromptMode {
+	switch mode {
+	case PromptModeCasualChat:
+		return PromptModeCasualChat
+	case PromptModeWorkMode, "":
+		return PromptModeWorkMode
+	default:
+		return PromptModeWorkMode
+	}
+}
+
+func NormalizePromptModeOrEmpty(mode PromptMode) PromptMode {
+	switch mode {
+	case PromptModeCasualChat, PromptModeWorkMode:
+		return mode
+	default:
+		return ""
+	}
+}
+
 // Budget captures the configured limits and current estimate for one request.
 type Budget struct {
 	InputBudgetTokens   int
@@ -66,19 +93,29 @@ type SummaryPromptAudit struct {
 
 // ContextState is the persisted session-level context metadata stored in sessions.metadata.
 type ContextState struct {
-	ContextVersion               int            `json:"context_version"`
-	Mode                         Mode           `json:"mode"`
-	RunningSummary               RunningSummary `json:"running_summary"`
-	SummaryCoveredUntilMessageID string         `json:"summary_covered_until_message_id"`
-	SummaryUpdatedAt             string         `json:"summary_updated_at"`
-	SummaryFailedAt              string         `json:"summary_failed_at,omitempty"`
-	SummaryRetryAfter            string         `json:"summary_retry_after,omitempty"`
-	SummaryFailureCount          int            `json:"summary_failure_count,omitempty"`
-	SummaryLastError             string         `json:"summary_last_error,omitempty"`
-	LastCompactReason            string         `json:"last_compact_reason"`
-	LastInputEstimate            int            `json:"last_input_estimate"`
-	KeepRecentUserTurns          int            `json:"keep_recent_user_turns"`
-	LastContextStats             *ContextStats  `json:"last_context_stats,omitempty"`
+	ContextVersion               int              `json:"context_version"`
+	Mode                         Mode             `json:"mode"`
+	PromptRoute                  PromptRouteState `json:"prompt_route,omitempty"`
+	RunningSummary               RunningSummary   `json:"running_summary"`
+	SummaryCoveredUntilMessageID string           `json:"summary_covered_until_message_id"`
+	SummaryUpdatedAt             string           `json:"summary_updated_at"`
+	SummaryFailedAt              string           `json:"summary_failed_at,omitempty"`
+	SummaryRetryAfter            string           `json:"summary_retry_after,omitempty"`
+	SummaryFailureCount          int              `json:"summary_failure_count,omitempty"`
+	SummaryLastError             string           `json:"summary_last_error,omitempty"`
+	LastCompactReason            string           `json:"last_compact_reason"`
+	LastInputEstimate            int              `json:"last_input_estimate"`
+	KeepRecentUserTurns          int              `json:"keep_recent_user_turns"`
+	LastContextStats             *ContextStats    `json:"last_context_stats,omitempty"`
+}
+
+type PromptRouteState struct {
+	LastMode            PromptMode `json:"last_mode,omitempty"`
+	WorkStickyRemaining int        `json:"work_sticky_remaining,omitempty"`
+}
+
+type EmotionContextOptions struct {
+	PromptMode PromptMode
 }
 
 // RunningSummary is the structured rolling summary injected ahead of recent turns.

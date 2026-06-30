@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -78,16 +79,46 @@ func (s *ConfigService) UpdateChatSettings(settings config.ChatConfig, chat *Cha
 	if s.infra.DB == nil {
 		return fmt.Errorf("database is not initialized")
 	}
-	if err := s.infra.DB.SetRuntimeConfig("chat.realtime_streaming", strconv.FormatBool(settings.RealtimeStreaming)); err != nil {
+
+	next := config.DefaultConfig().Chat
+	if s.infra.Config != nil {
+		next = s.infra.Config.Chat
+	}
+	next.RealtimeStreaming = settings.RealtimeStreaming
+	if settings.PromptRouter != (config.PromptRouterConfig{}) {
+		next.PromptRouter = settings.PromptRouter
+	}
+	if next.PromptRouter == (config.PromptRouterConfig{}) {
+		next.PromptRouter = config.DefaultConfig().Chat.PromptRouter
+	}
+	validation := *config.DefaultConfig()
+	validation.Chat = next
+	if err := validation.Validate(); err != nil {
+		return err
+	}
+
+	payload, err := json.Marshal(struct {
+		RealtimeStreaming bool                      `json:"realtime_streaming"`
+		PromptRouter      config.PromptRouterConfig `json:"prompt_router"`
+	}{
+		RealtimeStreaming: next.RealtimeStreaming,
+		PromptRouter:      next.PromptRouter,
+	})
+	if err != nil {
+		return err
+	}
+	if err := s.infra.DB.UpsertRuntimeSetting("chat", "config", string(payload), "ui"); err != nil {
 		return err
 	}
 
 	if s.infra.Config == nil {
 		s.infra.Config = config.DefaultConfig()
 	}
-	s.infra.Config.Chat.RealtimeStreaming = settings.RealtimeStreaming
+	s.infra.Config.Chat.RealtimeStreaming = next.RealtimeStreaming
+	s.infra.Config.Chat.PromptRouter = next.PromptRouter
 	if chat != nil {
-		chat.UpdateRealtimeStreaming(settings.RealtimeStreaming)
+		chat.UpdateRealtimeStreaming(next.RealtimeStreaming)
+		chat.UpdatePromptRouterConfig(next.PromptRouter)
 	}
 	return nil
 }

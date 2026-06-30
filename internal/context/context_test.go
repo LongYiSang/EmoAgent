@@ -150,9 +150,12 @@ func TestBuildEmotionContextInjectsPreviousUserMessageTime(t *testing.T) {
 		t.Fatalf("BuildEmotionContext: %v", err)
 	}
 
-	want := "上一条用户消息时间：2026年4月25日 星期六 21:10"
+	want := "上一条用户消息："
 	if !strings.Contains(assembled.System, want) {
 		t.Fatalf("System = %q, want previous user message time %q", assembled.System, want)
+	}
+	if !strings.Contains(assembled.System, "2026年4月25日 星期六 21:10") {
+		t.Fatalf("System = %q, want previous user message date", assembled.System)
 	}
 }
 
@@ -200,7 +203,7 @@ func TestBuildEmotionContextOmitsPreviousUserMessageTimeWhenUnavailable(t *testi
 			if err != nil {
 				t.Fatalf("BuildEmotionContext: %v", err)
 			}
-			if strings.Contains(assembled.System, "上一条用户消息时间") {
+			if strings.Contains(assembled.System, "上一条用户消息：") {
 				t.Fatalf("System = %q, want no previous user message time", assembled.System)
 			}
 		})
@@ -567,6 +570,10 @@ func TestContextStateRoundTripInSessionMetadata(t *testing.T) {
 	want := ctxpkg.ContextState{
 		ContextVersion: 1,
 		Mode:           ctxpkg.ModeEmotion,
+		PromptRoute: ctxpkg.PromptRouteState{
+			LastMode:            ctxpkg.PromptModeWorkMode,
+			WorkStickyRemaining: 4,
+		},
 		RunningSummary: ctxpkg.RunningSummary{
 			SessionGoal: "ship phase 5b",
 			UserFacts:   []string{"prefers concise status"},
@@ -609,6 +616,9 @@ func TestContextStateRoundTripInSessionMetadata(t *testing.T) {
 	if got.SummaryCoveredUntilMessageID != "msg-2" {
 		t.Fatalf("SummaryCoveredUntilMessageID = %q, want msg-2", got.SummaryCoveredUntilMessageID)
 	}
+	if got.PromptRoute.LastMode != ctxpkg.PromptModeWorkMode || got.PromptRoute.WorkStickyRemaining != 4 {
+		t.Fatalf("PromptRoute = %#v, want work_mode sticky 4", got.PromptRoute)
+	}
 	if len(got.RunningSummary.RelationshipState.PromisesMade) != 1 || got.RunningSummary.RelationshipState.PromisesMade[0] != "report final status" {
 		t.Fatalf("PromisesMade = %#v, want preserved promise", got.RunningSummary.RelationshipState.PromisesMade)
 	}
@@ -650,6 +660,41 @@ func TestContextStateVersionUpgradeUsesDefaults(t *testing.T) {
 	}
 	if got.RunningSummary.SessionGoal != "legacy" {
 		t.Fatalf("SessionGoal = %q, want legacy", got.RunningSummary.SessionGoal)
+	}
+	if got.PromptRoute.LastMode != "" || got.PromptRoute.WorkStickyRemaining != 0 {
+		t.Fatalf("PromptRoute = %#v, want empty upgraded prompt route", got.PromptRoute)
+	}
+}
+
+func TestContextStateNormalizesPromptRoute(t *testing.T) {
+	db := openContextTestDB(t)
+	ctx := context.Background()
+	if err := db.CreateSession(ctx, "session-1", "default"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	legacy := `{"context_version":1,"mode":"emotion","prompt_route":{"last_mode":"unknown","work_sticky_remaining":-2}}`
+	if _, err := db.SqlDB().ExecContext(ctx, `UPDATE sessions SET metadata = ? WHERE id = ?`, legacy, "session-1"); err != nil {
+		t.Fatalf("seed prompt route metadata: %v", err)
+	}
+
+	got, err := ctxpkg.LoadSessionState(ctx, db, "session-1", config.ContextConfig{
+		InputBudgetTokens:    24000,
+		SoftCompactRatio:     0.75,
+		HardCompactRatio:     0.92,
+		ReserveOutputTokens:  4096,
+		KeepRecentUserTurns:  6,
+		ToolResultSoftTokens: 1000,
+		ToolResultHardTokens: 3000,
+	})
+	if err != nil {
+		t.Fatalf("LoadSessionState: %v", err)
+	}
+	if got.PromptRoute.LastMode != "" {
+		t.Fatalf("PromptRoute.LastMode = %q, want empty for invalid mode", got.PromptRoute.LastMode)
+	}
+	if got.PromptRoute.WorkStickyRemaining != 0 {
+		t.Fatalf("WorkStickyRemaining = %d, want 0", got.PromptRoute.WorkStickyRemaining)
 	}
 }
 
@@ -765,6 +810,80 @@ func TestBuildEmotionContextWithPendingSummariesAddsResumeNote(t *testing.T) {
 	pendingComponent := findPromptComponent(assembled.PromptComponents, promptcenter.ComponentEmotionPendingWork)
 	if !pendingComponent.Dynamic || pendingComponent.Source != promptcenter.SourcePendingWorkDynamic {
 		t.Fatalf("pending component = %#v, want pending work dynamic", pendingComponent)
+	}
+}
+
+func TestBuildEmotionContextCasualModeOmitsWorkSectionsAndComponents(t *testing.T) {
+	persona := &config.Persona{Name: "default", SystemPrompt: "You are warm."}
+	history := []storage.MessageRecord{{ID: "1", Role: "user", Content: "hello"}}
+
+	assembled, err := ctxpkg.BuildEmotionContextWithStateAndPromptResolverAndOptions(
+		context.Background(),
+		persona,
+		history,
+		nil,
+		testContextConfig(),
+		runtimeenv.Facts{OS: "windows"},
+		nil,
+		promptcenter.PromptScope{PersonaKey: "default"},
+		ctxpkg.EmotionContextOptions{PromptMode: ctxpkg.PromptModeCasualChat},
+	)
+	if err != nil {
+		t.Fatalf("BuildEmotionContextWithStateAndPromptResolverAndOptions: %v", err)
+	}
+
+	for _, forbidden := range []string{"<work_result_presentation>", "<operating_contract>", "Emotion Work Delegation Contract", "delegate_to_work"} {
+		if strings.Contains(assembled.System, forbidden) {
+			t.Fatalf("casual system contains %q:\n%s", forbidden, assembled.System)
+		}
+	}
+	for _, required := range []string{"<persona>", "<reply_policy>", "<memory_usage_policy>", "<agent_affect_expression_policy>", "<runtime_context>", "<internal_context_data_policy>"} {
+		if !strings.Contains(assembled.System, required) {
+			t.Fatalf("casual system missing %q:\n%s", required, assembled.System)
+		}
+	}
+	if component := findPromptComponent(assembled.PromptComponents, promptcenter.ComponentEmotionWorkResultPresentation); component.ComponentID != "" {
+		t.Fatalf("casual components include work_result_presentation: %#v", assembled.PromptComponents)
+	}
+	if component := findPromptComponent(assembled.PromptComponents, promptcenter.ComponentEmotionOperatingContract); component.ComponentID != "" {
+		t.Fatalf("casual components include operating_contract: %#v", assembled.PromptComponents)
+	}
+}
+
+func TestBuildEmotionContextCasualModeOmitsPendingWork(t *testing.T) {
+	persona := &config.Persona{Name: "default", SystemPrompt: "You are warm."}
+	history := []storage.MessageRecord{{ID: "1", Role: "user", Content: "latest"}}
+	pending := []work.DecisionSummary{{
+		TaskID:      "task-1",
+		Status:      "pending",
+		Category:    string(protocol.CatHumanConfirmation),
+		RiskLevel:   "high",
+		GoalSummary: "goal",
+		Question:    "which option?",
+		Options:     []protocol.DecisionOption{{ID: "a", Summary: "option a"}},
+		Claimable:   true,
+	}}
+
+	assembled, err := ctxpkg.BuildEmotionContextWithPendingSummariesAndPromptResolverAndOptions(
+		context.Background(),
+		persona,
+		history,
+		nil,
+		pending,
+		testContextConfig(),
+		runtimeenv.Facts{OS: "windows"},
+		nil,
+		promptcenter.PromptScope{PersonaKey: "default"},
+		ctxpkg.EmotionContextOptions{PromptMode: ctxpkg.PromptModeCasualChat},
+	)
+	if err != nil {
+		t.Fatalf("BuildEmotionContextWithPendingSummariesAndPromptResolverAndOptions: %v", err)
+	}
+	if strings.Contains(assembled.System, "<pending_work>") || strings.Contains(assembled.System, "Pending Decision(s) Resume Note") {
+		t.Fatalf("casual system contains pending work:\n%s", assembled.System)
+	}
+	if component := findPromptComponent(assembled.PromptComponents, promptcenter.ComponentEmotionPendingWork); component.ComponentID != "" {
+		t.Fatalf("casual components include pending_work: %#v", assembled.PromptComponents)
 	}
 }
 

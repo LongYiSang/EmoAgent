@@ -1414,7 +1414,9 @@ func TestHandleCreateAgentConfigParsesBindings(t *testing.T) {
 }
 
 func TestHandleChatSettingsRoundTrip(t *testing.T) {
-	app := &fakeAdminApp{chatSettings: config.ChatConfig{RealtimeStreaming: true}}
+	router := config.DefaultConfig().Chat.PromptRouter
+	router.Mode = config.PromptRouterModeAlwaysWork
+	app := &fakeAdminApp{chatSettings: config.ChatConfig{RealtimeStreaming: true, PromptRouter: router}}
 	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	getReq := httptest.NewRequest(http.MethodGet, "/api/settings/chat", nil)
@@ -1425,7 +1427,8 @@ func TestHandleChatSettingsRoundTrip(t *testing.T) {
 		t.Fatalf("GET status = %d, want 200", getRec.Code)
 	}
 	var getResp struct {
-		RealtimeStreaming bool `json:"realtime_streaming"`
+		RealtimeStreaming bool                      `json:"realtime_streaming"`
+		PromptRouter      config.PromptRouterConfig `json:"prompt_router"`
 	}
 	if err := json.NewDecoder(getRec.Body).Decode(&getResp); err != nil {
 		t.Fatalf("Decode GET: %v", err)
@@ -1433,8 +1436,11 @@ func TestHandleChatSettingsRoundTrip(t *testing.T) {
 	if !getResp.RealtimeStreaming {
 		t.Fatal("GET realtime_streaming = false, want true")
 	}
+	if getResp.PromptRouter.Mode != config.PromptRouterModeAlwaysWork {
+		t.Fatalf("GET prompt_router = %#v, want always_work", getResp.PromptRouter)
+	}
 
-	putReq := httptest.NewRequest(http.MethodPut, "/api/settings/chat", bytes.NewBufferString(`{"realtime_streaming":false}`))
+	putReq := httptest.NewRequest(http.MethodPut, "/api/settings/chat", bytes.NewBufferString(`{"realtime_streaming":false,"prompt_router":{"mode":"always_casual","sticky_turns":3,"context_turns":6,"max_context_chars":6000,"timeout_ms":2000,"max_output_tokens":64}}`))
 	putRec := httptest.NewRecorder()
 	handler.HandleUpdateChatSettings(putRec, putReq)
 
@@ -1443,6 +1449,29 @@ func TestHandleChatSettingsRoundTrip(t *testing.T) {
 	}
 	if app.lastChatSettings.RealtimeStreaming {
 		t.Fatal("UpdateChatSettings received realtime_streaming = true, want false")
+	}
+	if app.lastChatSettings.PromptRouter.Mode != config.PromptRouterModeAlwaysCasual || app.lastChatSettings.PromptRouter.StickyTurns != 3 {
+		t.Fatalf("UpdateChatSettings prompt_router = %#v, want always_casual sticky 3", app.lastChatSettings.PromptRouter)
+	}
+}
+
+func TestHandleUpdateChatSettingsPreservesRealtimeStreamingWhenOmitted(t *testing.T) {
+	router := config.DefaultConfig().Chat.PromptRouter
+	app := &fakeAdminApp{chatSettings: config.ChatConfig{RealtimeStreaming: true, PromptRouter: router}}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/chat", bytes.NewBufferString(`{"prompt_router":{"mode":"always_work","sticky_turns":5,"context_turns":6,"max_context_chars":6000,"timeout_ms":2000,"max_output_tokens":64}}`))
+	rec := httptest.NewRecorder()
+	handler.HandleUpdateChatSettings(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !app.lastChatSettings.RealtimeStreaming {
+		t.Fatal("UpdateChatSettings realtime_streaming = false, want preserved true")
+	}
+	if app.lastChatSettings.PromptRouter.Mode != config.PromptRouterModeAlwaysWork {
+		t.Fatalf("prompt_router = %#v, want always_work", app.lastChatSettings.PromptRouter)
 	}
 }
 

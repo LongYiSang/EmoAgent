@@ -92,40 +92,50 @@ Keep the final reply proportional to the task and avoid narrating unimportant in
 
 // BuildEmotionContext assembles the emotion context with no persisted session state.
 func BuildEmotionContext(persona *config.Persona, history []storage.MessageRecord, cfg config.ContextConfig, env runtimeenv.Facts) (AssembledContext, error) {
-	return buildEmotionContext(stdcontext.Background(), persona, history, nil, nil, nil, cfg, env, nil, promptcenter.PromptScope{})
+	return buildEmotionContext(stdcontext.Background(), persona, history, nil, nil, nil, cfg, env, nil, promptcenter.PromptScope{}, EmotionContextOptions{})
 }
 
 // BuildEmotionContextWithState assembles the emotion context using persisted session state.
 func BuildEmotionContextWithState(persona *config.Persona, history []storage.MessageRecord, state *ContextState, cfg config.ContextConfig, env runtimeenv.Facts) (AssembledContext, error) {
-	return buildEmotionContext(stdcontext.Background(), persona, history, state, nil, nil, cfg, env, nil, promptcenter.PromptScope{})
+	return buildEmotionContext(stdcontext.Background(), persona, history, state, nil, nil, cfg, env, nil, promptcenter.PromptScope{}, EmotionContextOptions{})
 }
 
 // BuildEmotionContextWithStateAndPromptResolver assembles the emotion context using Prompt Center components.
 func BuildEmotionContextWithStateAndPromptResolver(ctx stdcontext.Context, persona *config.Persona, history []storage.MessageRecord, state *ContextState, cfg config.ContextConfig, env runtimeenv.Facts, resolver *promptcenter.Resolver, scope promptcenter.PromptScope) (AssembledContext, error) {
-	return buildEmotionContext(ctx, persona, history, state, nil, nil, cfg, env, resolver, scope)
+	return BuildEmotionContextWithStateAndPromptResolverAndOptions(ctx, persona, history, state, cfg, env, resolver, scope, EmotionContextOptions{})
+}
+
+// BuildEmotionContextWithStateAndPromptResolverAndOptions assembles the emotion context using Prompt Center components and explicit prompt mode options.
+func BuildEmotionContextWithStateAndPromptResolverAndOptions(ctx stdcontext.Context, persona *config.Persona, history []storage.MessageRecord, state *ContextState, cfg config.ContextConfig, env runtimeenv.Facts, resolver *promptcenter.Resolver, scope promptcenter.PromptScope, opts EmotionContextOptions) (AssembledContext, error) {
+	return buildEmotionContext(ctx, persona, history, state, nil, nil, cfg, env, resolver, scope, opts)
 }
 
 // BuildEmotionContextWithToolDigests assembles the emotion context with an explicit ToolDigest slot.
 func BuildEmotionContextWithToolDigests(persona *config.Persona, history []storage.MessageRecord, toolDigests []ToolDigest, cfg config.ContextConfig, env runtimeenv.Facts) (AssembledContext, error) {
-	return buildEmotionContext(stdcontext.Background(), persona, history, nil, toolDigests, nil, cfg, env, nil, promptcenter.PromptScope{})
+	return buildEmotionContext(stdcontext.Background(), persona, history, nil, toolDigests, nil, cfg, env, nil, promptcenter.PromptScope{}, EmotionContextOptions{})
 }
 
 // BuildEmotionContextWithPending assembles context and injects paused decision notes.
 func BuildEmotionContextWithPending(persona *config.Persona, history []storage.MessageRecord, state *ContextState, pendingDecisions []protocol.DecisionPacket, cfg config.ContextConfig, env runtimeenv.Facts) (AssembledContext, error) {
-	return buildEmotionContext(stdcontext.Background(), persona, history, state, nil, pendingDecisions, cfg, env, nil, promptcenter.PromptScope{})
+	return buildEmotionContext(stdcontext.Background(), persona, history, state, nil, pendingDecisions, cfg, env, nil, promptcenter.PromptScope{}, EmotionContextOptions{})
 }
 
 // BuildEmotionContextWithPendingSummaries assembles context and injects persisted decision summaries.
 func BuildEmotionContextWithPendingSummaries(persona *config.Persona, history []storage.MessageRecord, state *ContextState, pendingSummaries []protocol.DecisionSummary, cfg config.ContextConfig, env runtimeenv.Facts) (AssembledContext, error) {
-	return buildEmotionContext(stdcontext.Background(), persona, history, state, nil, pendingSummaries, cfg, env, nil, promptcenter.PromptScope{})
+	return buildEmotionContext(stdcontext.Background(), persona, history, state, nil, pendingSummaries, cfg, env, nil, promptcenter.PromptScope{}, EmotionContextOptions{})
 }
 
 // BuildEmotionContextWithPendingSummariesAndPromptResolver assembles context with persisted decisions and Prompt Center components.
 func BuildEmotionContextWithPendingSummariesAndPromptResolver(ctx stdcontext.Context, persona *config.Persona, history []storage.MessageRecord, state *ContextState, pendingSummaries []protocol.DecisionSummary, cfg config.ContextConfig, env runtimeenv.Facts, resolver *promptcenter.Resolver, scope promptcenter.PromptScope) (AssembledContext, error) {
-	return buildEmotionContext(ctx, persona, history, state, nil, pendingSummaries, cfg, env, resolver, scope)
+	return BuildEmotionContextWithPendingSummariesAndPromptResolverAndOptions(ctx, persona, history, state, pendingSummaries, cfg, env, resolver, scope, EmotionContextOptions{})
 }
 
-func buildEmotionContext(ctx stdcontext.Context, persona *config.Persona, history []storage.MessageRecord, state *ContextState, toolDigests []ToolDigest, pendingDecisions any, cfg config.ContextConfig, env runtimeenv.Facts, resolver *promptcenter.Resolver, scope promptcenter.PromptScope) (AssembledContext, error) {
+// BuildEmotionContextWithPendingSummariesAndPromptResolverAndOptions assembles context with persisted decisions, Prompt Center components, and explicit prompt mode options.
+func BuildEmotionContextWithPendingSummariesAndPromptResolverAndOptions(ctx stdcontext.Context, persona *config.Persona, history []storage.MessageRecord, state *ContextState, pendingSummaries []protocol.DecisionSummary, cfg config.ContextConfig, env runtimeenv.Facts, resolver *promptcenter.Resolver, scope promptcenter.PromptScope, opts EmotionContextOptions) (AssembledContext, error) {
+	return buildEmotionContext(ctx, persona, history, state, nil, pendingSummaries, cfg, env, resolver, scope, opts)
+}
+
+func buildEmotionContext(ctx stdcontext.Context, persona *config.Persona, history []storage.MessageRecord, state *ContextState, toolDigests []ToolDigest, pendingDecisions any, cfg config.ContextConfig, env runtimeenv.Facts, resolver *promptcenter.Resolver, scope promptcenter.PromptScope, opts EmotionContextOptions) (AssembledContext, error) {
 	if persona == nil {
 		return AssembledContext{}, fmt.Errorf("persona is required")
 	}
@@ -147,7 +157,7 @@ func buildEmotionContext(ctx stdcontext.Context, persona *config.Persona, histor
 	if err != nil {
 		return AssembledContext{}, err
 	}
-	system, promptComponents := buildEmotionSystemPrompt(ctx, persona, pendingDecisions, env, history, resolver, scope)
+	system, promptComponents := buildEmotionSystemPrompt(ctx, persona, pendingDecisions, env, history, resolver, scope, opts)
 	budget := NewBudget(cfg, system, messages)
 	return AssembledContext{
 		System:           system,
@@ -169,37 +179,50 @@ func buildEmotionContext(ctx stdcontext.Context, persona *config.Persona, histor
 	}, nil
 }
 
-func buildEmotionSystemPrompt(ctx stdcontext.Context, persona *config.Persona, pendingDecisions any, env runtimeenv.Facts, history []storage.MessageRecord, resolver *promptcenter.Resolver, scope promptcenter.PromptScope) (string, []promptcenter.RenderComponent) {
+func buildEmotionSystemPrompt(ctx stdcontext.Context, persona *config.Persona, pendingDecisions any, env runtimeenv.Facts, history []storage.MessageRecord, resolver *promptcenter.Resolver, scope promptcenter.PromptScope, opts EmotionContextOptions) (string, []promptcenter.RenderComponent) {
+	isWorkMode := NormalizePromptMode(opts.PromptMode) == PromptModeWorkMode
 	replyPolicy, replyPolicyComponent := resolvePromptComponent(ctx, resolver, promptcenter.ComponentEmotionReplyPolicy, scope, emotionReplyPolicy)
 	memoryPolicy, memoryPolicyComponent := resolvePromptComponent(ctx, resolver, promptcenter.ComponentMemoryUsagePolicy, scope, memoryUsagePolicy)
 	affectPolicy, affectPolicyComponent := resolvePromptComponent(ctx, resolver, promptcenter.ComponentAgentAffectExpressionPolicy, scope, agentAffectExpressionPolicy)
-	workResultPresentation, workResultComponent := resolvePromptComponent(ctx, resolver, promptcenter.ComponentEmotionWorkResultPresentation, scope, emotionWorkResultPresentation)
-	operatingContract, operatingComponent := resolvePromptComponent(ctx, resolver, promptcenter.ComponentEmotionOperatingContract, scope, delegationGuideline)
 	internalPolicy, policyComponent := resolvePromptComponent(ctx, resolver, promptcenter.ComponentEmotionInternalContextDataPolicy, scope, internalContextDataPolicy)
 	personaText := buildPersonaPrompt(persona)
 	runtimeText := buildRuntimeContextText(env, history)
-	pendingNote := buildPendingNoteIfAny(pendingDecisions)
 	sections := []string{
 		wrapSystemSection("persona", personaText),
 		wrapSystemSection("reply_policy", replyPolicy),
 		wrapSystemSection("memory_usage_policy", memoryPolicy),
 		wrapSystemSection("agent_affect_expression_policy", affectPolicy),
-		wrapSystemSection("work_result_presentation", workResultPresentation),
-		wrapSystemSection("operating_contract", operatingContract),
-		wrapSystemSection("runtime_context", runtimeText),
-		wrapSystemSection("internal_context_data_policy", internalPolicy),
 	}
 	components := []promptcenter.RenderComponent{
 		promptcenter.DynamicComponent(promptcenter.ComponentEmotionPersona, "persona", promptcenter.SourcePersona, personaText, map[string]any{"persona_key": scope.PersonaKey}),
 		withComponentSection(replyPolicyComponent, "reply_policy"),
 		withComponentSection(memoryPolicyComponent, "memory_usage_policy"),
 		withComponentSection(affectPolicyComponent, "agent_affect_expression_policy"),
-		withComponentSection(workResultComponent, "work_result_presentation"),
-		withComponentSection(operatingComponent, "operating_contract"),
+	}
+
+	if isWorkMode {
+		workResultPresentation, workResultComponent := resolvePromptComponent(ctx, resolver, promptcenter.ComponentEmotionWorkResultPresentation, scope, emotionWorkResultPresentation)
+		operatingContract, operatingComponent := resolvePromptComponent(ctx, resolver, promptcenter.ComponentEmotionOperatingContract, scope, delegationGuideline)
+		sections = append(sections,
+			wrapSystemSection("work_result_presentation", workResultPresentation),
+			wrapSystemSection("operating_contract", operatingContract),
+		)
+		components = append(components,
+			withComponentSection(workResultComponent, "work_result_presentation"),
+			withComponentSection(operatingComponent, "operating_contract"),
+		)
+	}
+
+	sections = append(sections,
+		wrapSystemSection("runtime_context", runtimeText),
+		wrapSystemSection("internal_context_data_policy", internalPolicy),
+	)
+	components = append(components,
 		promptcenter.DynamicComponent(promptcenter.ComponentEmotionRuntimeContext, "runtime_context", promptcenter.SourceRuntimeDynamic, runtimeText, nil),
 		withComponentSection(policyComponent, "internal_context_data_policy"),
-	}
-	if pendingNote != "" {
+	)
+
+	if pendingNote := buildPendingNoteIfAny(pendingDecisions); isWorkMode && pendingNote != "" {
 		sections = append(sections, wrapSystemSection("pending_work", pendingNote))
 		components = append(components, promptcenter.DynamicComponent(promptcenter.ComponentEmotionPendingWork, "pending_work", promptcenter.SourcePendingWorkDynamic, pendingNote, nil))
 	}
@@ -289,9 +312,16 @@ func buildRuntimeContextText(env runtimeenv.Facts, history []storage.MessageReco
 	if env.OS != "" {
 		parts = append(parts, "Execution environment: "+env.DisplayOS()+".")
 	}
-	parts = append(parts, formatCurrentTimeContext(time.Now()))
+	loc := time.Local
+	if timezone := strings.TrimSpace(env.Timezone); timezone != "" {
+		if loaded, err := time.LoadLocation(timezone); err == nil {
+			loc = loaded
+		}
+	}
+	now := time.Now().In(loc)
+	parts = append(parts, formatCurrentTimeContext(now))
 	if previous, ok := previousUserMessageTime(history); ok {
-		parts = append(parts, formatTimeContext("上一条用户消息时间", previous))
+		parts = append(parts, formatPreviousUserMessageRelative(now, previous.In(loc)))
 	}
 	return strings.Join(parts, "\n\n")
 }

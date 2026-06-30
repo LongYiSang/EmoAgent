@@ -980,28 +980,47 @@ func TestUpdateChatSettingsPersistsRuntimeOverrideAndHotUpdatesEngine(t *testing
 		MaxTokens:   128,
 		Temperature: 0.2,
 	})
-	a := newTestApp(&config.Config{Chat: config.ChatConfig{
-		RealtimeStreaming: false,
-		TurnPipeline:      config.TurnPipelineConfig{Shadow: true, Enabled: true, MemoryStages: true, ApprovalStages: true},
-	}}, db, logger)
+	cfg := config.DefaultConfig()
+	cfg.Chat.RealtimeStreaming = false
+	cfg.Chat.TurnPipeline = config.TurnPipelineConfig{Shadow: true, Enabled: true, MemoryStages: true, ApprovalStages: true}
+	a := newTestApp(cfg, db, logger)
 	a.kernel.Services.Chat.engine = engine
 
-	if err := a.UpdateChatSettings(config.ChatConfig{RealtimeStreaming: true}); err != nil {
+	router := config.DefaultConfig().Chat.PromptRouter
+	router.Mode = config.PromptRouterModeAlwaysCasual
+	router.StickyTurns = 3
+	if err := a.UpdateChatSettings(config.ChatConfig{RealtimeStreaming: true, PromptRouter: router}); err != nil {
 		t.Fatalf("UpdateChatSettings: %v", err)
 	}
 
-	value, ok, err := db.GetRuntimeConfig("chat.realtime_streaming")
+	setting, ok, err := db.GetRuntimeSetting("chat", "config")
 	if err != nil {
-		t.Fatalf("GetRuntimeConfig: %v", err)
+		t.Fatalf("GetRuntimeSetting: %v", err)
 	}
-	if !ok || value != "true" {
-		t.Fatalf("runtime chat.realtime_streaming = %q/%t, want true/true", value, ok)
+	if !ok {
+		t.Fatal("runtime setting chat/config missing")
+	}
+	var persisted struct {
+		RealtimeStreaming bool                      `json:"realtime_streaming"`
+		PromptRouter      config.PromptRouterConfig `json:"prompt_router"`
+	}
+	if err := json.Unmarshal([]byte(setting.ValueJSON), &persisted); err != nil {
+		t.Fatalf("Unmarshal runtime setting: %v", err)
+	}
+	if !persisted.RealtimeStreaming || persisted.PromptRouter.Mode != config.PromptRouterModeAlwaysCasual || persisted.PromptRouter.StickyTurns != 3 {
+		t.Fatalf("runtime chat/config = %#v, want realtime true and always_casual sticky 3", persisted)
 	}
 	if !testConfig(a).Chat.RealtimeStreaming {
 		t.Fatal("Config.Chat.RealtimeStreaming = false, want true")
 	}
+	if testConfig(a).Chat.PromptRouter.Mode != config.PromptRouterModeAlwaysCasual {
+		t.Fatalf("Config.Chat.PromptRouter = %#v, want always_casual", testConfig(a).Chat.PromptRouter)
+	}
 	if !engine.RuntimeConfig().RealtimeStreaming {
 		t.Fatal("engine realtime streaming = false, want true")
+	}
+	if engine.RuntimeConfig().PromptRouter.Mode != config.PromptRouterModeAlwaysCasual {
+		t.Fatalf("engine prompt router = %#v, want always_casual", engine.RuntimeConfig().PromptRouter)
 	}
 	if got := testConfig(a).Chat.TurnPipeline; !got.Shadow || !got.Enabled || !got.MemoryStages || !got.ApprovalStages {
 		t.Fatalf("turn pipeline config = %#v, want preserved", got)

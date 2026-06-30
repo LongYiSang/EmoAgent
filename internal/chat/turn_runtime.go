@@ -13,6 +13,7 @@ import (
 	"github.com/longyisang/emoagent/internal/promptcenter"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/turn"
+	"github.com/longyisang/emoagent/internal/work"
 )
 
 type chatTurnRuntime struct {
@@ -337,6 +338,7 @@ func (r *chatTurnRuntime) memoryPrepareStage() turn.Stage {
 				userContent: tc.Inbound.UserMessage.Content,
 				userParts:   tc.Inbound.UserMessage.Parts,
 				turnID:      tc.TurnID,
+				inboundKind: tc.Inbound.Kind,
 			})
 			if err != nil {
 				return turn.StageResult{NextState: turn.StateFailed, Terminal: true, Status: "failed", ErrorKind: "memory_prepare_failed"}, err
@@ -617,6 +619,7 @@ func (r *chatTurnRuntime) messageStage(persona *config.Persona) turn.Stage {
 						userParts:             tc.Inbound.UserMessage.Parts,
 						turnID:                tc.TurnID,
 						requestID:             tc.Inbound.RequestID,
+						inboundKind:           tc.Inbound.Kind,
 						extraSystem:           extraSystem,
 						extraSystemComponents: extraSystemComponents,
 						deferCommit:           true,
@@ -656,6 +659,7 @@ func (r *chatTurnRuntime) messageStage(persona *config.Persona) turn.Stage {
 						userParts:   tc.Inbound.UserMessage.Parts,
 						turnID:      tc.TurnID,
 						requestID:   tc.Inbound.RequestID,
+						inboundKind: tc.Inbound.Kind,
 					})
 				} else {
 					reply, err = r.engine.SendMessage(ctx, tc.Inbound.SessionID, persona, tc.Inbound.UserMessage.Content, func(delta string) {
@@ -852,7 +856,7 @@ func outboundJournalPayload(event turn.OutboundEvent) map[string]any {
 }
 
 func safeWorkToolSummary(toolName, preview string) map[string]any {
-	if toolName != "delegate_to_work" && toolName != "resume_work" {
+	if toolName != work.ToolNameDelegateToWork && toolName != work.ToolNameResumeWork {
 		return nil
 	}
 	var raw map[string]any
