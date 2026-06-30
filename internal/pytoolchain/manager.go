@@ -257,30 +257,42 @@ func (m *Manager) probeUVBinding(ctx context.Context) error {
 	if err := os.MkdirAll(envRoot, 0o755); err != nil {
 		return fmt.Errorf("create uv python binding probe root: %w", err)
 	}
-	probeDir, err := os.MkdirTemp(envRoot, "toolchain-probe-*")
-	if err != nil {
-		return fmt.Errorf("create uv python binding probe dir: %w", err)
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		probeDir, err := os.MkdirTemp(envRoot, "toolchain-probe-*")
+		if err != nil {
+			return fmt.Errorf("create uv python binding probe dir: %w", err)
+		}
+		targetEnv := filepath.Join(probeDir, "venv")
+		result := m.runner.Run(ctx, Command{
+			Path:    strings.TrimSpace(m.cfg.UVExecutable),
+			Args:    []string{"venv", targetEnv, "--python", strings.TrimSpace(m.cfg.PythonExecutable)},
+			Env:     m.uvCommandEnv(targetEnv),
+			Timeout: m.commandTimeout(),
+		})
+		if result.Err != nil {
+			lastErr = fmt.Errorf("uv python binding probe failed: %w", result.Err)
+		} else if result.ExitCode != 0 {
+			lastErr = fmt.Errorf("uv python binding probe failed with exit code %d: %s", result.ExitCode, sanitizeLogText(result.Stderr))
+		} else {
+			defer os.RemoveAll(probeDir)
+			envPython := filepath.Join(targetEnv, "Scripts", "python.exe")
+			if runtime.GOOS != "windows" {
+				envPython = filepath.Join(targetEnv, "bin", "python")
+			}
+			_, err := m.probePython(ctx, envPython)
+			return err
+		}
+		_ = os.RemoveAll(probeDir)
+		if attempt < 3 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(attempt) * 200 * time.Millisecond):
+			}
+		}
 	}
-	defer os.RemoveAll(probeDir)
-	targetEnv := filepath.Join(probeDir, "venv")
-	result := m.runner.Run(ctx, Command{
-		Path:    strings.TrimSpace(m.cfg.UVExecutable),
-		Args:    []string{"venv", targetEnv, "--python", strings.TrimSpace(m.cfg.PythonExecutable)},
-		Env:     m.uvCommandEnv(targetEnv),
-		Timeout: m.commandTimeout(),
-	})
-	if result.Err != nil {
-		return fmt.Errorf("uv python binding probe failed: %w", result.Err)
-	}
-	if result.ExitCode != 0 {
-		return fmt.Errorf("uv python binding probe failed with exit code %d: %s", result.ExitCode, sanitizeLogText(result.Stderr))
-	}
-	envPython := filepath.Join(targetEnv, "Scripts", "python.exe")
-	if runtime.GOOS != "windows" {
-		envPython = filepath.Join(targetEnv, "bin", "python")
-	}
-	_, err = m.probePython(ctx, envPython)
-	return err
+	return lastErr
 }
 
 func (m *Manager) uvCommandEnv(targetEnv string) []string {

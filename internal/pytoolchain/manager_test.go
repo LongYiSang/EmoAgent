@@ -286,6 +286,46 @@ func TestManagerProbeUVBindingUsesUniqueTempEnvPerProbe(t *testing.T) {
 	}
 }
 
+func TestManagerProbeRetriesTransientUVBindingFailure(t *testing.T) {
+	uvVenvAttempts := 0
+	runner := &fakeRunner{fn: func(cmd Command) CommandResult {
+		joined := strings.Join(append([]string{cmd.Path}, cmd.Args...), " ")
+		switch {
+		case strings.Contains(joined, "python.exe -I -P -c"):
+			return CommandResult{Stdout: `{"implementation":"CPython","version":"3.12.11","major":3,"minor":12,"patch":11,"architecture":"AMD64","executable":"C:/Python312/python.exe","prefix":"C:/Python312","isolated":true,"safe_path":true}`, ExitCode: 0}
+		case strings.Contains(joined, "uv.exe --version"):
+			return CommandResult{Stdout: "uv 0.11.9", ExitCode: 0}
+		case strings.Contains(joined, "uv.exe venv"):
+			uvVenvAttempts++
+			if uvVenvAttempts == 1 {
+				return CommandResult{Stderr: "Failed to update Windows PE resources", ExitCode: 2}
+			}
+			return CommandResult{Stdout: "Using CPython 3.12.11", ExitCode: 0}
+		default:
+			t.Fatalf("unexpected command: %#v", cmd)
+			return CommandResult{ExitCode: 1}
+		}
+	}}
+	manager := NewManager(config.PythonToolchainConfig{
+		Enabled:            true,
+		PythonExecutable:   "C:/Python312/python.exe",
+		UVExecutable:       "C:/Users/me/.local/bin/uv.exe",
+		RequiredPython:     "3.12",
+		MinimumUVVersion:   "0.11.0",
+		EnvironmentRoot:    "data/python-envs",
+		CacheDir:           "data/uv-cache",
+		DefaultIndex:       "https://pypi.org/simple",
+		SyncTimeoutSeconds: 600,
+	}, WithRunner(runner), WithProcessArchitecture("AMD64"), WithTempDir(t.TempDir()))
+
+	if _, err := manager.Probe(context.Background()); err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if uvVenvAttempts != 2 {
+		t.Fatalf("uv venv attempts = %d, want 2", uvVenvAttempts)
+	}
+}
+
 func TestManagerDefaultsPreserveDisabledSystemCertificates(t *testing.T) {
 	manager := NewManager(config.PythonToolchainConfig{
 		PythonExecutable: "C:/Python312/python.exe",
