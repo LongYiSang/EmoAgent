@@ -25,6 +25,7 @@ async def after_turn_end(ctx):
     },
     scope="both",
     permission="read-only",
+    invocation_policy="auto",
 )
 async def echo(input_data):
     return {"ok": True, "text": input_data.get("text", "")}

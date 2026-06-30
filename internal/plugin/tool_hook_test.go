@@ -43,7 +43,7 @@ func TestToolHookConvertsPluginPatchesToConservativeDecision(t *testing.T) {
 	})
 
 	decision, err := hook.BeforeToolCall(ctx, tool.CallHookView{
-		Call:          tool.Call{ID: "call-1", Name: "plugin.com.example.policy.echo"},
+		Call:          tool.Call{ID: "call-1", Name: "plugin_com_example_policy_echo"},
 		MaxPermission: tool.PermWorkspaceWrite,
 	})
 	if err != nil {

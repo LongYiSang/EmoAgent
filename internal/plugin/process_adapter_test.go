@@ -47,7 +47,7 @@ func TestRegisterProcessPluginHooksAndToolsThroughExistingGates(t *testing.T) {
 	if hookResult.Annotations["process_hook"] != "called" {
 		t.Fatalf("hook annotations = %#v", hookResult.Annotations)
 	}
-	namespaced := "plugin.com.example.echo.echo"
+	namespaced := "plugin_com_example_echo_echo"
 	spec, ok := toolRegistry.GetSpec(namespaced)
 	if !ok {
 		t.Fatalf("namespaced tool %q not registered", namespaced)
@@ -373,7 +373,7 @@ func TestRegisterProcessPluginSkipsInvocationPolicyDenyTools(t *testing.T) {
 	if err := RegisterProcessPlugin(t.Context(), manifest, NewPluginRegistry(), toolRegistry, NewHookBus(HookBusConfig{}, nil), supervisor); err != nil {
 		t.Fatalf("RegisterProcessPlugin: %v", err)
 	}
-	if _, ok := toolRegistry.GetSpec("plugin.com.example.echo.echo"); ok {
+	if _, ok := toolRegistry.GetSpec("plugin_com_example_echo_echo"); ok {
 		t.Fatal("deny invocation tool was registered")
 	}
 }

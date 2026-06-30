@@ -10,6 +10,7 @@ from .types import AttrView
 
 HookHandler = Callable[["Context"], Any | Awaitable[Any]]
 ToolHandler = Callable[..., Any | Awaitable[Any]]
+_INVOCATION_POLICIES = {"auto", "ask", "deny"}
 
 _default_plugin: "Plugin | None" = None
 
@@ -73,7 +74,10 @@ class Plugin:
         parameters: dict[str, Any] | None = None,
         scope: str = "both",
         permission: str = "read-only",
+        invocation_policy: str = "ask",
     ) -> Callable[[ToolHandler], ToolHandler]:
+        invocation_policy = _normalize_invocation_policy(invocation_policy)
+
         def decorator(func: ToolHandler) -> ToolHandler:
             self._tools[name] = ({
                 "name": name,
@@ -81,6 +85,7 @@ class Plugin:
                 "parameters": parameters or {"type": "object"},
                 "scope": scope,
                 "permission": permission,
+                "invocation": invocation_policy,
             }, func)
             return func
         return decorator
@@ -143,10 +148,25 @@ def tool(
     parameters: dict[str, Any] | None = None,
     scope: str = "both",
     permission: str = "read-only",
+    invocation_policy: str = "ask",
 ) -> Callable[[ToolHandler], ToolHandler]:
     if _default_plugin is None:
         Plugin()
-    return _default_plugin.tool(name, description=description, parameters=parameters, scope=scope, permission=permission)  # type: ignore[union-attr]
+    return _default_plugin.tool(
+        name,
+        description=description,
+        parameters=parameters,
+        scope=scope,
+        permission=permission,
+        invocation_policy=invocation_policy,
+    )  # type: ignore[union-attr]
+
+
+def _normalize_invocation_policy(value: str) -> str:
+    policy = str(value or "ask").strip().lower()
+    if policy not in _INVOCATION_POLICIES:
+        raise ValueError(f"invalid invocation_policy {value!r}: expected auto, ask, or deny")
+    return policy
 
 
 def _run(value: Any) -> Any:

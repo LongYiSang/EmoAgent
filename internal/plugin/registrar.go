@@ -136,8 +136,8 @@ func (f *ToolFacade) Register(ctx context.Context, spec tool.Spec, handler tool.
 	if spec.Name == "" {
 		return fmt.Errorf("plugin tool name is required")
 	}
-	if !strings.HasPrefix(spec.Name, "plugin."+f.pluginID+".") {
-		return fmt.Errorf("plugin tool %q must use namespace plugin.%s.", spec.Name, f.pluginID)
+	if !strings.HasPrefix(spec.Name, pluginToolNamePrefix(f.pluginID)) {
+		return fmt.Errorf("plugin tool %q must use namespace %s", spec.Name, pluginToolNamePrefix(f.pluginID))
 	}
 	return f.registry.TryRegister(spec, handler)
 }
@@ -147,12 +147,51 @@ func (f *ToolFacade) namespacedToolName(name string) string {
 	if name == "" {
 		return ""
 	}
-	prefix := "plugin." + f.pluginID + "."
+	prefix := pluginToolNamePrefix(f.pluginID)
 	if strings.HasPrefix(name, prefix) {
 		return name
 	}
-	if strings.HasPrefix(name, "plugin.") {
+	legacyPrefix := "plugin." + f.pluginID + "."
+	if strings.HasPrefix(name, legacyPrefix) {
+		return prefix + safePluginToolNameSegment(strings.TrimPrefix(name, legacyPrefix))
+	}
+	if strings.HasPrefix(name, "plugin.") || strings.HasPrefix(name, "plugin_") {
 		return name
 	}
-	return prefix + name
+	return prefix + safePluginToolNameSegment(name)
+}
+
+func pluginToolNamePrefix(pluginID string) string {
+	return "plugin_" + safePluginToolNameSegment(pluginID) + "_"
+}
+
+func safePluginToolNameSegment(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "tool"
+	}
+	var b strings.Builder
+	b.Grow(len(value))
+	lastUnderscore := false
+	for _, r := range value {
+		allowed := (r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') ||
+			r == '_' ||
+			r == '-'
+		if allowed {
+			b.WriteRune(r)
+			lastUnderscore = false
+			continue
+		}
+		if !lastUnderscore {
+			b.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+	out := strings.Trim(b.String(), "_")
+	if out == "" {
+		return "tool"
+	}
+	return out
 }

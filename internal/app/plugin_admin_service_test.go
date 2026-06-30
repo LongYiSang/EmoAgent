@@ -126,6 +126,102 @@ func TestPluginServiceSettingsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPluginServiceSettingsSchemaRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(dir, "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open DB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	cfg := config.DefaultConfig()
+	cfg.Plugins.Enabled = false
+	cfg.Plugins.Store.RootDir = filepath.Join(dir, "store")
+	cfg.Plugins.Installer.AllowUnsignedDev = true
+	cfg.Plugins.Installer.RequireSignature = true
+	service := &PluginService{infra: &Infra{Config: cfg, DB: db, Logger: logger, ProjectRoot: dir}}
+
+	sourceDir := writeAdminFixtureSettingsPlugin(t, dir)
+	installed, err := service.InstallLocal(context.Background(), plugin.AdminPluginInstallRequest{Path: sourceDir})
+	if err != nil {
+		t.Fatalf("InstallLocal: %v", err)
+	}
+	if installed.SettingsSchema == nil || installed.SettingsSchema.Properties["api_key"].Type != "string" {
+		t.Fatalf("installed settings_schema = %#v", installed.SettingsSchema)
+	}
+
+	value := json.RawMessage(`{"api_key":"k","mode":"all","retries":2,"ratio":1.5,"enabled":true,"extra":"drop"}`)
+	saved, err := service.UpdatePluginSettings(context.Background(), installed.PluginID, plugin.AdminPluginSettingsUpdateRequest{Value: value})
+	if err != nil {
+		t.Fatalf("UpdatePluginSettings: %v", err)
+	}
+	var savedValue map[string]any
+	if err := json.Unmarshal(saved.Value, &savedValue); err != nil {
+		t.Fatalf("decode saved settings: %v", err)
+	}
+	if _, ok := savedValue["extra"]; ok {
+		t.Fatalf("saved settings kept schema-external field: %s", saved.Value)
+	}
+	if savedValue["api_key"] != "k" || savedValue["mode"] != "all" || savedValue["enabled"] != true {
+		t.Fatalf("saved settings = %#v", savedValue)
+	}
+
+	loaded, err := service.GetPluginSettings(context.Background(), installed.PluginID)
+	if err != nil {
+		t.Fatalf("GetPluginSettings: %v", err)
+	}
+	if string(loaded.Value) != string(saved.Value) {
+		t.Fatalf("loaded settings = %s, want %s", loaded.Value, saved.Value)
+	}
+}
+
+func TestPluginServiceSettingsSchemaRejectsInvalidValues(t *testing.T) {
+	dir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(dir, "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open DB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	cfg := config.DefaultConfig()
+	cfg.Plugins.Enabled = false
+	cfg.Plugins.Store.RootDir = filepath.Join(dir, "store")
+	cfg.Plugins.Installer.AllowUnsignedDev = true
+	cfg.Plugins.Installer.RequireSignature = true
+	service := &PluginService{infra: &Infra{Config: cfg, DB: db, Logger: logger, ProjectRoot: dir}}
+
+	sourceDir := writeAdminFixtureSettingsPlugin(t, dir)
+	installed, err := service.InstallLocal(context.Background(), plugin.AdminPluginInstallRequest{Path: sourceDir})
+	if err != nil {
+		t.Fatalf("InstallLocal: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "not object", value: `[]`, want: "object"},
+		{name: "required missing", value: `{}`, want: "api_key"},
+		{name: "required empty string", value: `{"api_key":" "}`, want: "api_key"},
+		{name: "enum invalid", value: `{"api_key":"k","mode":"bad"}`, want: "mode"},
+		{name: "number type", value: `{"api_key":"k","ratio":"fast"}`, want: "ratio"},
+		{name: "integer type", value: `{"api_key":"k","retries":1.2}`, want: "retries"},
+		{name: "boolean type", value: `{"api_key":"k","enabled":"yes"}`, want: "enabled"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := service.UpdatePluginSettings(context.Background(), installed.PluginID, plugin.AdminPluginSettingsUpdateRequest{Value: json.RawMessage(tt.value)})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("UpdatePluginSettings error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestPluginServiceInstallUpdateRollbackUsesEnabledVersionForDefaultDetail(t *testing.T) {
 	dir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -1686,7 +1782,7 @@ func TestPluginServiceEnableDifferentVersionReplacesProcessRegistrations(t *test
 	}); err != nil {
 		t.Fatalf("EnablePlugin v1: %v", err)
 	}
-	if !processWorkToolRegistered(service, "plugin.com.example.admin.echo_v1") {
+	if !processWorkToolRegistered(service, "plugin_com_example_admin_echo_v1") {
 		t.Fatalf("v1 tool not registered")
 	}
 
@@ -1697,10 +1793,10 @@ func TestPluginServiceEnableDifferentVersionReplacesProcessRegistrations(t *test
 		t.Fatalf("EnablePlugin v2: %v", err)
 	}
 
-	if processWorkToolRegistered(service, "plugin.com.example.admin.echo_v1") {
+	if processWorkToolRegistered(service, "plugin_com_example_admin_echo_v1") {
 		t.Fatalf("v1 tool still registered after v2 enable")
 	}
-	if !processWorkToolRegistered(service, "plugin.com.example.admin.echo_v2") {
+	if !processWorkToolRegistered(service, "plugin_com_example_admin_echo_v2") {
 		t.Fatalf("v2 tool not registered after v2 enable")
 	}
 	result, err := service.host.HookBus().Dispatch(ctx, plugin.HookAfterTurnEnd, plugin.HookContext{})
@@ -1710,7 +1806,7 @@ func TestPluginServiceEnableDifferentVersionReplacesProcessRegistrations(t *test
 	if result.Annotations["runtime_version"] != "v2" {
 		t.Fatalf("hook annotations = %#v, want v2", result.Annotations)
 	}
-	if spec, ok := service.tools.Registry().GetSpec("plugin.com.example.admin.echo_v2"); !ok || spec.Source.ProducerVersion != "0.2.0" {
+	if spec, ok := service.tools.Registry().GetSpec("plugin_com_example_admin_echo_v2"); !ok || spec.Source.ProducerVersion != "0.2.0" {
 		t.Fatalf("v2 source metadata = %#v, ok=%v", spec.Source, ok)
 	}
 }
@@ -1731,14 +1827,14 @@ func TestPluginServiceDisableUnregistersProcessHooksAndTools(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("EnablePlugin: %v", err)
 	}
-	if !processWorkToolRegistered(service, "plugin.com.example.admin.echo_v1") {
+	if !processWorkToolRegistered(service, "plugin_com_example_admin_echo_v1") {
 		t.Fatalf("process tool not registered before disable")
 	}
 
 	if _, err := service.DisablePlugin(ctx, installed.PluginID); err != nil {
 		t.Fatalf("DisablePlugin: %v", err)
 	}
-	if processWorkToolRegistered(service, "plugin.com.example.admin.echo_v1") {
+	if processWorkToolRegistered(service, "plugin_com_example_admin_echo_v1") {
 		t.Fatalf("process tool still registered after disable")
 	}
 	result, err := service.host.HookBus().Dispatch(ctx, plugin.HookAfterTurnEnd, plugin.HookContext{})
@@ -1747,6 +1843,33 @@ func TestPluginServiceDisableUnregistersProcessHooksAndTools(t *testing.T) {
 	}
 	if len(result.Annotations) != 0 {
 		t.Fatalf("hook annotations after disable = %#v, want none", result.Annotations)
+	}
+}
+
+func TestPluginServiceToolPolicySummaryUsesProcessInvocationPolicy(t *testing.T) {
+	dir := t.TempDir()
+	service := newProcessPluginAdminService(t, dir)
+	ctx := context.Background()
+	sourceDir := writeAdminProcessPluginVersion(t, dir, "0.1.0", "echo_auto", "v1", "fail_closed")
+	patchAdminProcessPluginToolInvocation(t, sourceDir, plugin.InvocationAuto)
+
+	installed, err := service.InstallLocal(ctx, plugin.AdminPluginInstallRequest{Path: sourceDir})
+	if err != nil {
+		t.Fatalf("InstallLocal: %v", err)
+	}
+	enabled, err := service.EnablePlugin(ctx, installed.PluginID, plugin.AdminPluginEnableRequest{
+		Version:       installed.Version,
+		UserGrantJSON: `{"tier":"runtime_safe","capabilities":["turn.read","tool.register"]}`,
+	})
+	if err != nil {
+		t.Fatalf("EnablePlugin: %v", err)
+	}
+	if len(enabled.ToolPolicy.RegisteredTools) != 1 {
+		t.Fatalf("registered tools = %#v, want one process tool", enabled.ToolPolicy.RegisteredTools)
+	}
+	entry := enabled.ToolPolicy.RegisteredTools[0]
+	if entry.Name != "echo_auto" || entry.HostInvocation != plugin.InvocationAuto {
+		t.Fatalf("tool policy entry = %#v, want echo_auto with auto invocation", entry)
 	}
 }
 
@@ -1889,31 +2012,31 @@ func TestPluginServiceManagedPythonInstallUpdateRollbackProviderLoop(t *testing.
 	}
 	assertManagedProviderRuntime(t, service, v1.Version)
 	assertManagedProviderHook(t, service, "v1")
-	result := executeApprovedPluginToolForTest(t, ctx, service, "plugin.com.example.admin.provider_ping_v1", `{"text":"hello v1"}`)
+	result := executeApprovedPluginToolForTest(t, ctx, service, "plugin_com_example_admin_provider_ping_v1", `{"text":"hello v1"}`)
 	assertManagedProviderToolResult(t, result, "v1", "fake-model-v1")
 	assertProviderUsageCount(t, service, ctx, v1.PluginID, 1)
 
 	if _, err := service.EnablePlugin(ctx, v2.PluginID, plugin.AdminPluginEnableRequest{Version: v2.Version, UserGrantJSON: grant}); err != nil {
 		t.Fatalf("EnablePlugin v2: %v", err)
 	}
-	if processWorkToolRegistered(service, "plugin.com.example.admin.provider_ping_v1") {
+	if processWorkToolRegistered(service, "plugin_com_example_admin_provider_ping_v1") {
 		t.Fatalf("v1 provider tool still registered after v2 enable")
 	}
 	assertManagedProviderRuntime(t, service, v2.Version)
 	assertManagedProviderHook(t, service, "v2")
-	result = executeApprovedPluginToolForTest(t, ctx, service, "plugin.com.example.admin.provider_ping_v2", `{"text":"hello v2"}`)
+	result = executeApprovedPluginToolForTest(t, ctx, service, "plugin_com_example_admin_provider_ping_v2", `{"text":"hello v2"}`)
 	assertManagedProviderToolResult(t, result, "v2", "fake-model-v2")
 	assertProviderUsageCount(t, service, ctx, v2.PluginID, 2)
 
 	if _, err := service.EnablePlugin(ctx, v1.PluginID, plugin.AdminPluginEnableRequest{Version: v1.Version, UserGrantJSON: grant}); err != nil {
 		t.Fatalf("EnablePlugin rollback v1: %v", err)
 	}
-	if processWorkToolRegistered(service, "plugin.com.example.admin.provider_ping_v2") {
+	if processWorkToolRegistered(service, "plugin_com_example_admin_provider_ping_v2") {
 		t.Fatalf("v2 provider tool still registered after v1 rollback")
 	}
 	assertManagedProviderRuntime(t, service, v1.Version)
 	assertManagedProviderHook(t, service, "v1")
-	result = executeApprovedPluginToolForTest(t, ctx, service, "plugin.com.example.admin.provider_ping_v1", `{"text":"rollback v1"}`)
+	result = executeApprovedPluginToolForTest(t, ctx, service, "plugin_com_example_admin_provider_ping_v1", `{"text":"rollback v1"}`)
 	assertManagedProviderToolResult(t, result, "v1", "fake-model-v1")
 	assertProviderUsageCount(t, service, ctx, v1.PluginID, 3)
 
@@ -2179,6 +2302,61 @@ hooks:
 	return dir
 }
 
+func writeAdminFixtureSettingsPlugin(t *testing.T, root string) string {
+	t.Helper()
+	dir := filepath.Join(root, "settings-plugin")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	manifest := `schema_version: emoagent.plugin.v0.2
+id: com.example.settings
+name: Settings Fixture
+version: 0.1.0
+emoagent_version: ">=0.2.0"
+runtime:
+  kind: python_process
+  entry: main.py
+access:
+  tier: runtime_safe
+  capabilities:
+    - plugin.kv
+settings:
+  key: settings
+  schema:
+    type: object
+    required:
+      - api_key
+    properties:
+      api_key:
+        type: string
+        title: API Key
+        secret: true
+      mode:
+        type: string
+        enum:
+          - base
+          - all
+        enum_titles:
+          base: Base
+          all: All
+        default: base
+      retries:
+        type: integer
+      ratio:
+        type: number
+      enabled:
+        type: boolean
+hooks: []
+`
+	if err := os.WriteFile(filepath.Join(dir, "emo_plugin.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.py"), []byte("print('settings fixture')\n"), 0o644); err != nil {
+		t.Fatalf("write main: %v", err)
+	}
+	return dir
+}
+
 func writeAdminFixturePluginVersionWithCapabilities(t *testing.T, root, version, name string, capabilities []plugin.Capability) string {
 	t.Helper()
 	dir := filepath.Join(root, "trust-plugin-"+strings.ReplaceAll(version, ".", "-"))
@@ -2405,7 +2583,7 @@ func (c *adminFakeLLMClient) ChatStream(ctx context.Context, req llm.ChatRequest
 func executeApprovedPluginToolForTest(t *testing.T, ctx context.Context, service *PluginService, name string, input string) tool.Result {
 	t.Helper()
 	dispatcher := tool.NewDispatcher(service.tools.Registry(), tool.MinimalSchemaValidator{}, nil)
-	call := tool.Call{ID: "call-" + strings.TrimPrefix(name, "plugin.com.example.admin."), Name: name, Input: json.RawMessage(input)}
+	call := tool.Call{ID: "call-" + strings.TrimPrefix(name, "plugin_com_example_admin_"), Name: name, Input: json.RawMessage(input)}
 	result := dispatcher.Execute(ctx, call, tool.PermReadOnly)
 	if !result.IsError || !result.NeedsApproval {
 		t.Fatalf("initial tool result = %#v, want approval before plugin execution", result)
@@ -2664,6 +2842,21 @@ for line in sys.stdin:
     else:
         send({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": "unknown method"}})
 `
+}
+
+func patchAdminProcessPluginToolInvocation(t *testing.T, dir string, invocation plugin.InvocationPolicy) {
+	t.Helper()
+	path := filepath.Join(dir, "main.py")
+	raw := string(readFileBytes(t, path))
+	needle := `            "permission": "read-only"`
+	replacement := needle + `,` + "\n" + `            "invocation": "` + string(invocation) + `"`
+	updated := strings.Replace(raw, needle, replacement, 1)
+	if updated == raw {
+		t.Fatalf("main.py fixture did not contain process tool permission marker")
+	}
+	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+		t.Fatalf("write patched main.py: %v", err)
+	}
 }
 
 func adminManagedProviderProcessPluginSource(toolName, annotation string) string {

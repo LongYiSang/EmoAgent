@@ -33,6 +33,7 @@ type AdminPluginSummary struct {
 	HostAPIPolicy      PluginHostAPIPolicySummary `json:"host_api_policy"`
 	ToolPolicy         PluginToolPolicySummary    `json:"tool_policy"`
 	HookPolicy         PluginHookPolicySummary    `json:"hook_policy"`
+	SettingsSchema     *PluginSettingsSchema      `json:"settings_schema,omitempty"`
 	SourceType         string                     `json:"source_type"`
 	SourceRef          string                     `json:"source_ref"`
 	InstalledAt        string                     `json:"installed_at"`

@@ -31,6 +31,7 @@ type ManifestV2 struct {
 	Hooks           []HookSpec          `json:"hooks" yaml:"hooks"`
 	Provider        ManifestV2Provider  `json:"provider,omitempty" yaml:"provider"`
 	Container       ManifestV2Container `json:"container,omitempty" yaml:"container"`
+	Settings        *ManifestV2Settings `json:"settings,omitempty" yaml:"settings"`
 }
 
 type ManifestV2Runtime struct {
@@ -64,6 +65,27 @@ type ManifestV2Mount struct {
 	HostPath      string `json:"host_path" yaml:"host_path"`
 	ContainerPath string `json:"container_path" yaml:"container_path"`
 	Mode          string `json:"mode" yaml:"mode"`
+}
+
+type ManifestV2Settings struct {
+	Key    string               `json:"key,omitempty" yaml:"key"`
+	Schema PluginSettingsSchema `json:"schema,omitempty" yaml:"schema"`
+}
+
+type PluginSettingsSchema struct {
+	Type       string                               `json:"type" yaml:"type"`
+	Required   []string                             `json:"required,omitempty" yaml:"required"`
+	Properties map[string]PluginSettingsFieldSchema `json:"properties,omitempty" yaml:"properties"`
+}
+
+type PluginSettingsFieldSchema struct {
+	Type        string            `json:"type" yaml:"type"`
+	Title       string            `json:"title,omitempty" yaml:"title"`
+	Description string            `json:"description,omitempty" yaml:"description"`
+	Enum        []string          `json:"enum,omitempty" yaml:"enum"`
+	EnumTitles  map[string]string `json:"enum_titles,omitempty" yaml:"enum_titles"`
+	Secret      bool              `json:"secret,omitempty" yaml:"secret"`
+	Default     any               `json:"default,omitempty" yaml:"default"`
 }
 
 func DecodeManifestV2YAML(data []byte, options ManifestValidationOptions) (ManifestV2, error) {
@@ -108,6 +130,11 @@ func (m ManifestV2) Validate(options ManifestValidationOptions) error {
 			default:
 				return fmt.Errorf("container.workspace.mode must be ro or rw")
 			}
+		}
+	}
+	if m.Settings != nil {
+		if err := m.Settings.Validate(); err != nil {
+			return err
 		}
 	}
 	return nil

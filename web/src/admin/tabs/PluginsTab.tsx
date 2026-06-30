@@ -3,6 +3,7 @@ import { classNames } from '../../shared/lib/classNames';
 import { pretty } from '../../shared/lib/data';
 import { matchesQuery } from '../../shared/lib/search';
 import type { PluginAdmin } from '../hooks/usePluginAdmin';
+import type { PluginSettingsFieldSchema, PluginSettingsSchema } from '../protocol/pluginApi';
 import { Field } from '../components/Field';
 import { ListPane } from '../components/ListPane';
 
@@ -175,9 +176,10 @@ export default memo(function PluginsTab({
               )}
             </div>
 
-            {selectedPlugin?.plugin_id === 'com.longyisang.amap-weather' && (
-              <AmapWeatherSettingsCard
-                key={`${selectedPlugin.plugin_id}:${selectedPlugin.version}:${JSON.stringify(pluginSettings?.value || {})}`}
+            {selectedPlugin?.settings_schema && (
+              <PluginSettingsSchemaCard
+                key={`${selectedPlugin.plugin_id}:${selectedPlugin.version}:${JSON.stringify(selectedPlugin.settings_schema)}:${JSON.stringify(pluginSettings?.value || {})}`}
+                schema={selectedPlugin.settings_schema}
                 value={(pluginSettings?.value || {}) as Record<string, unknown>}
                 onSave={savePluginSettings}
               />
@@ -295,43 +297,151 @@ export default memo(function PluginsTab({
   );
 });
 
-type AmapWeatherSettingsCardProps = {
+type PluginSettingsSchemaCardProps = {
+  schema: PluginSettingsSchema;
   value: Record<string, unknown>;
   onSave: (value: Record<string, unknown>) => void | Promise<void>;
 };
 
-function AmapWeatherSettingsCard({ value, onSave }: AmapWeatherSettingsCardProps) {
-  const [amapKey, setAmapKey] = useState(String(value?.amap_key || ''));
-  const [cityAdcode, setCityAdcode] = useState(String(value?.city_adcode || ''));
-  const [extensions, setExtensions] = useState(String(value?.extensions || 'base'));
+type SettingsFormState = Record<string, string | boolean>;
+
+function PluginSettingsSchemaCard({ schema, value, onSave }: PluginSettingsSchemaCardProps) {
+  const entries = Object.entries(schema.properties || {});
+  const [draft, setDraft] = useState<SettingsFormState>(() => initialSettingsDraft(schema, value));
+  const [error, setError] = useState('');
+
+  if (entries.length === 0) return null;
+
+  const required = new Set(schema.required || []);
+  const setField = (name: string, next: string | boolean) => setDraft(current => ({ ...current, [name]: next }));
+  const save = () => {
+    const result = buildSettingsValue(schema, draft);
+    if (result.error) {
+      setError(result.error);
+      return;
+    }
+    setError('');
+    void onSave(result.value);
+  };
 
   return (
     <div className="section nested">
       <div className="row-head">
-        <strong>高德天气设置</strong>
+        <strong>插件设置</strong>
         <span className="badge">settings</span>
       </div>
       <p className="meta">设置会保存到插件私有 KV 的 settings key。保存后无需重启插件，下一次工具调用会读取最新配置。</p>
       <div className="grid compact">
-        <Field id="amap-weather-key" label="高德 Web服务 Key" value={amapKey} onChange={setAmapKey} type="password" mono />
-        <Field id="amap-weather-adcode" label="地区 adcode" value={cityAdcode} onChange={setCityAdcode} mono />
-        <div className="field">
-          <label htmlFor="amap-weather-extensions">默认查询类型</label>
-          <select id="amap-weather-extensions" value={extensions} onChange={event => setExtensions(event.target.value)}>
-            <option value="base">base - 实况天气</option>
-            <option value="all">all - 预报天气</option>
-          </select>
-        </div>
+        {entries.map(([name, field]) => renderSettingsField(name, field, draft[name], setField, required.has(name)))}
       </div>
+      {error && <div className="field-error">{error}</div>}
       <div className="actions foot">
-        <button
-          className="btn primary"
-          type="button"
-          onClick={() => onSave({ amap_key: amapKey, city_adcode: cityAdcode, extensions })}
-        >
-          保存天气设置
-        </button>
+        <button className="btn primary" type="button" onClick={save}>保存设置</button>
       </div>
     </div>
   );
+}
+
+function renderSettingsField(
+  name: string,
+  field: PluginSettingsFieldSchema,
+  value: string | boolean | undefined,
+  onChange: (name: string, value: string | boolean) => void,
+  required: boolean,
+) {
+  const id = `plugin-setting-${name}`;
+  const label = `${field.title || name}${required ? ' *' : ''}`;
+  if (field.type === 'boolean') {
+    return (
+      <div className="field" key={name}>
+        <label className="check" htmlFor={id}>
+          <input id={id} type="checkbox" checked={value === true} onChange={event => onChange(name, event.target.checked)} />
+          {label}
+        </label>
+        {field.description && <span className="meta">{field.description}</span>}
+      </div>
+    );
+  }
+  if (field.enum && field.enum.length > 0) {
+    return (
+      <div className="field" key={name}>
+        <label htmlFor={id}>{label}</label>
+        <select id={id} value={String(value ?? '')} onChange={event => onChange(name, event.target.value)}>
+          <option value="">请选择</option>
+          {field.enum.map(option => <option key={option} value={option}>{enumTitle(field, option)}</option>)}
+        </select>
+        {field.description && <span className="meta">{field.description}</span>}
+      </div>
+    );
+  }
+  return (
+    <div className="field" key={name}>
+      <label htmlFor={id}>{label}</label>
+      <input
+        id={id}
+        className={field.secret ? 'mono' : undefined}
+        value={String(value ?? '')}
+        onChange={event => onChange(name, event.target.value)}
+        type={field.type === 'number' || field.type === 'integer' ? 'number' : field.secret ? 'password' : 'text'}
+        step={field.type === 'integer' ? '1' : undefined}
+      />
+      {field.description && <span className="meta">{field.description}</span>}
+    </div>
+  );
+}
+
+function initialSettingsDraft(schema: PluginSettingsSchema, value: Record<string, unknown>): SettingsFormState {
+  const draft: SettingsFormState = {};
+  for (const [name, field] of Object.entries(schema.properties || {})) {
+    const current = value[name] ?? field.default;
+    if (field.type === 'boolean') {
+      draft[name] = current === true;
+      continue;
+    }
+    draft[name] = current === undefined || current === null ? '' : String(current);
+  }
+  return draft;
+}
+
+function buildSettingsValue(schema: PluginSettingsSchema, draft: SettingsFormState): { value: Record<string, unknown>; error?: string } {
+  const required = new Set(schema.required || []);
+  const output: Record<string, unknown> = {};
+  for (const [name, field] of Object.entries(schema.properties || {})) {
+    if (field.type === 'boolean') {
+      output[name] = draft[name] === true;
+      continue;
+    }
+    const raw = String(draft[name] ?? '');
+    if (required.has(name) && raw.trim() === '') {
+      return { value: {}, error: `${field.title || name} 不能为空` };
+    }
+    if (field.enum && field.enum.length > 0) {
+      if (raw === '') {
+        continue;
+      }
+      if (!field.enum.includes(raw)) {
+        return { value: {}, error: `${field.title || name} 不在允许范围内` };
+      }
+      output[name] = raw;
+      continue;
+    }
+    if (field.type === 'number' || field.type === 'integer') {
+      if (raw.trim() === '') {
+        continue;
+      }
+      const parsed = Number(raw);
+      if (!Number.isFinite(parsed) || (field.type === 'integer' && !Number.isInteger(parsed))) {
+        return { value: {}, error: `${field.title || name} 必须是${field.type === 'integer' ? '整数' : '数字'}` };
+      }
+      output[name] = parsed;
+      continue;
+    }
+    output[name] = raw;
+  }
+  return { value: output };
+}
+
+function enumTitle(field: PluginSettingsFieldSchema, value: string) {
+  const title = field.enum_titles?.[value];
+  return title ? `${value} - ${title}` : value;
 }

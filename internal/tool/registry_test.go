@@ -148,7 +148,7 @@ func TestRegistryUnregisterPluginRemovesOnlyThatPluginTools(t *testing.T) {
 	r := NewRegistry()
 	r.Register(Spec{Name: "builtin", Parameters: json.RawMessage(`{}`), Scope: ScopeWork, Permission: PermReadOnly}, noopHandler)
 	r.Register(Spec{
-		Name:       "plugin.com.example.a.echo",
+		Name:       "plugin_com_example_a_echo",
 		Parameters: json.RawMessage(`{}`),
 		Scope:      ScopeWork,
 		Permission: PermApprovedDestructive,
@@ -158,7 +158,7 @@ func TestRegistryUnregisterPluginRemovesOnlyThatPluginTools(t *testing.T) {
 		},
 	}, noopHandler)
 	r.Register(Spec{
-		Name:       "plugin.com.example.b.echo",
+		Name:       "plugin_com_example_b_echo",
 		Parameters: json.RawMessage(`{}`),
 		Scope:      ScopeWork,
 		Permission: PermApprovedDestructive,
@@ -170,10 +170,10 @@ func TestRegistryUnregisterPluginRemovesOnlyThatPluginTools(t *testing.T) {
 
 	r.UnregisterPlugin("com.example.a")
 
-	if _, ok := r.GetSpec("plugin.com.example.a.echo"); ok {
+	if _, ok := r.GetSpec("plugin_com_example_a_echo"); ok {
 		t.Fatal("plugin A tool still present after UnregisterPlugin")
 	}
-	if _, ok := r.GetSpec("plugin.com.example.b.echo"); !ok {
+	if _, ok := r.GetSpec("plugin_com_example_b_echo"); !ok {
 		t.Fatal("plugin B tool removed by UnregisterPlugin for plugin A")
 	}
 	if _, ok := r.GetSpec("builtin"); !ok {

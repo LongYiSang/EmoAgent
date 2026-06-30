@@ -409,8 +409,12 @@ func TestToolFacadeRequiresCapabilityAndNamespacesTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Register plugin tool: %v", err)
 	}
-	if _, ok := registry.GetSpec("plugin.com.example.audit.echo"); !ok {
+	spec, ok := registry.GetSpec("plugin_com_example_audit_echo")
+	if !ok {
 		t.Fatal("namespaced plugin tool not registered")
+	}
+	if strings.Contains(spec.ToToolDef().Name, ".") {
+		t.Fatalf("LLM tool name = %q, want provider-safe name without dots", spec.ToToolDef().Name)
 	}
 
 	noCapability := validManifest()
@@ -446,7 +450,7 @@ func TestPluginToolStillUsesDispatcherApprovalGate(t *testing.T) {
 	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, nil)
 	call := tool.Call{
 		ID:    "call-plugin-delete",
-		Name:  "plugin.com.example.audit.delete_note",
+		Name:  "plugin_com_example_audit_delete_note",
 		Input: json.RawMessage(`{"path":"tmp/note.txt"}`),
 	}
 

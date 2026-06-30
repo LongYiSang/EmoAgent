@@ -91,6 +91,22 @@ export type PluginHookPolicy = {
   active_hooks?: string[];
 };
 
+export type PluginSettingsFieldSchema = {
+  type?: 'string' | 'number' | 'integer' | 'boolean' | string;
+  title?: string;
+  description?: string;
+  enum?: string[];
+  enum_titles?: Record<string, string>;
+  secret?: boolean;
+  default?: unknown;
+};
+
+export type PluginSettingsSchema = {
+  type?: 'object' | string;
+  required?: string[];
+  properties?: Record<string, PluginSettingsFieldSchema>;
+};
+
 export type PluginSummary = {
   plugin_id: string;
   version: string;
@@ -112,6 +128,7 @@ export type PluginSummary = {
   host_api_policy?: PluginHostAPIPolicy;
   tool_policy?: PluginToolPolicy;
   hook_policy?: PluginHookPolicy;
+  settings_schema?: PluginSettingsSchema;
   source_type?: string;
   source_ref?: string;
   installed_at?: string;

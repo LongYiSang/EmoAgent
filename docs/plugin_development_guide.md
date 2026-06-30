@@ -224,6 +224,7 @@ Manifest 使用严格 YAML 解码，未知字段会导致安装失败。
 | `hooks` | 否 | 插件要订阅的 hook 列表。 |
 | `provider` | 否 | ProviderGateway 默认 provider/model 和 allowlist。 |
 | `container` | 否 | 只用于 container mount plan 校验；当前不执行容器。 |
+| `settings` | 否 | 声明式设置表单 schema；宿主原生渲染，保存到插件私有 KV。 |
 
 `runtime.kind`：
 
@@ -259,7 +260,37 @@ Manifest 使用严格 YAML 解码，未知字段会导致安装失败。
 
 插件页显示的 `trust_level` 是 Host 根据安装来源、签名/发布者、用户接受和宿主策略派生的代码运行信任分类。Manifest、`user_grant_json`、依赖 digest、私有 Python artifact 或插件返回值都不能自提升该字段；签名验证只说明供应链完整性/发布者匹配，不代表插件处在 OS 沙箱内。
 
-插件页同时显示 Host 派生的 `host_api_policy`、`tool_policy` 和 `hook_policy`。`host_api_policy` 用于说明 Manifest 申请、用户 Grant 与宿主 allowlist 收敛后的 facade capability；`tool_policy` 显示第三方工具默认 `work + ask`，Host 会生成最终 Tool Spec，插件自报 `scope` / `permission` 只作为兼容 hint；`hook_policy` 显示 observe/active hook 分类和 active hook 是否被宿主策略允许。这些字段用于可解释性和重新确认，不是 OS 沙箱、文件/网络隔离或恶意插件隔离证明。
+插件页同时显示 Host 派生的 `host_api_policy`、`tool_policy` 和 `hook_policy`。`host_api_policy` 用于说明 Manifest 申请、用户 Grant 与宿主 allowlist 收敛后的 facade capability；`tool_policy` 显示第三方工具默认 `work + ask` 以及进程工具最终采用的 `host_invocation`，Host 会生成最终 Tool Spec，插件自报 `scope` / `permission` 只作为兼容 hint；`hook_policy` 显示 observe/active hook 分类和 active hook 是否被宿主策略允许。这些字段用于可解释性和重新确认，不是 OS 沙箱、文件/网络隔离或恶意插件隔离证明。
+
+### 声明式设置表单
+
+插件可以在 `emo_plugin.yaml` 中声明 `settings.schema`，插件详情页会用宿主原生表单渲染，保存后仍写入插件私有 KV 的 `settings` key。v1 的 `settings.key` 只能省略或写 `settings`：
+
+```yaml
+settings:
+  key: settings
+  schema:
+    type: object
+    required:
+      - api_key
+    properties:
+      api_key:
+        type: string
+        title: API Key
+        secret: true
+      mode:
+        type: string
+        enum: [base, all]
+        enum_titles:
+          base: 实时
+          all: 预报
+        default: base
+      enabled:
+        type: boolean
+        default: true
+```
+
+当前只支持根 `type: object`、一层 `properties`、`required`、`default`、`title`、`description`、`enum`、`enum_titles`、`secret`。字段类型只支持 `string`、`number`、`integer`、`boolean`；不支持数组、嵌套对象和条件逻辑。`secret: true` 只表示前端用 password input 显示，不表示加密、密钥托管或 secret vault。保存时宿主会按 schema 校验并丢弃 schema 外字段；没有 schema 的旧插件仍可通过 settings API 直接读写 JSON。
 
 ## Capabilities
 
@@ -545,11 +576,13 @@ async def echo(input_data, ctx):
 | `parameters` | JSON Schema。工具调用前会校验输入。 |
 | `scope` | `emotion`、`work` 或 `both`。仅作为插件声明的展示/请求意图；最终可见范围由 Host 派生的 tool policy 决定。 |
 | `permission` | `read-only`、`workspace-write` 或 `approved-destructive`。仅作为兼容提示；最终权限、审批策略和是否暴露给 Emotion/Work 由 Host 生成。 |
+| `invocation_policy` | `ask`、`auto` 或 `deny`。默认 `ask`；Python SDK 会序列化为进程协议字段 `invocation`。只有安全、只读、无需用户逐次确认的工具才建议使用 `auto`。 |
 
 插件工具仍走宿主 `tool.Dispatcher`；插件自报 `scope`/`permission` 不能提升权限：
 
 - 未知工具、重复工具名、schema 校验失败会拒绝。
 - Host 派生策略不足会拒绝。
+- `invocation_policy="ask"` 会要求本次第三方插件工具调用有有效审批；`auto` 不要求逐次审批；`deny` 不注册该工具。
 - `approved-destructive` 需要有效审批。
 - `before_tool_call` hook 可以进一步要求审批或降级权限，但不能提升权限。
 

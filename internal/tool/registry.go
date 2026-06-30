@@ -110,17 +110,51 @@ func (r *Registry) UnregisterPlugin(pluginID string) {
 	if pluginID == "" {
 		return
 	}
-	prefix := "plugin." + pluginID + "."
+	legacyPrefix := "plugin." + pluginID + "."
+	safePrefix := "plugin_" + safeToolNameSegment(pluginID) + "_"
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	for name, spec := range r.specs {
-		if (spec.Source.Kind == ToolSourcePlugin && spec.Source.ProducerID == pluginID) || strings.HasPrefix(name, prefix) {
+		if (spec.Source.Kind == ToolSourcePlugin && spec.Source.ProducerID == pluginID) ||
+			strings.HasPrefix(name, legacyPrefix) ||
+			strings.HasPrefix(name, safePrefix) {
 			delete(r.specs, name)
 			delete(r.funcs, name)
 		}
 	}
+}
+
+func safeToolNameSegment(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "tool"
+	}
+	var b strings.Builder
+	b.Grow(len(value))
+	lastUnderscore := false
+	for _, r := range value {
+		allowed := (r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') ||
+			r == '_' ||
+			r == '-'
+		if allowed {
+			b.WriteRune(r)
+			lastUnderscore = false
+			continue
+		}
+		if !lastUnderscore {
+			b.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+	out := strings.Trim(b.String(), "_")
+	if out == "" {
+		return "tool"
+	}
+	return out
 }
 
 // Get returns the handler for a tool name.

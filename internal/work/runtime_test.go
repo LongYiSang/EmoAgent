@@ -987,7 +987,7 @@ func TestBuildToolApprovalPacket_PluginInvocationWordingAndBindingKind(t *testin
 	}
 	call := tool.Call{
 		ID:    "plugin-1",
-		Name:  "plugin.com.example.echo.echo",
+		Name:  "plugin_com_example_echo_echo",
 		Input: json.RawMessage(`{"text":"hello"}`),
 	}
 

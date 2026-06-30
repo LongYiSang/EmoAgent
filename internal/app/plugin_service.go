@@ -46,7 +46,7 @@ type PluginService struct {
 	pendingTrustAcks map[string]plugin.PluginTrustAcknowledgement
 }
 
-const pluginSettingsKVKey = "settings"
+const pluginSettingsKVKey = plugin.PluginSettingsKey
 
 func (s *PluginService) Host() *plugin.PluginHost {
 	return s.host
@@ -758,6 +758,19 @@ func (s *PluginService) UpdatePluginSettings(ctx context.Context, pluginID strin
 	}
 	if !json.Valid(value) {
 		return plugin.AdminPluginSettings{}, fmt.Errorf("settings value must be valid JSON")
+	}
+	manifest, err := decodeInstalledManifest(*installation)
+	if err != nil {
+		return plugin.AdminPluginSettings{}, err
+	}
+	if manifest.Settings != nil && manifest.Settings.HasSchema() {
+		if manifest.Settings.EffectiveKey() != pluginSettingsKVKey {
+			return plugin.AdminPluginSettings{}, fmt.Errorf("plugin settings key %q is unsupported", manifest.Settings.EffectiveKey())
+		}
+		value, err = manifest.Settings.Schema.CleanValue(value)
+		if err != nil {
+			return plugin.AdminPluginSettings{}, err
+		}
 	}
 	if err := s.infra.DB.PluginKVSet(ctx, pluginID, pluginSettingsKVKey, string(value)); err != nil {
 		return plugin.AdminPluginSettings{}, err
@@ -1747,6 +1760,11 @@ func (s *PluginService) summaryForInstallationWithGrant(ctx context.Context, ins
 	toolPolicy := s.pluginToolPolicySummary(installation, status, enabled)
 	hookPolicy := s.pluginHookPolicySummary(manifest)
 	dependencySummary := s.pluginDependencyLockSummary(manifest)
+	var settingsSchema *plugin.PluginSettingsSchema
+	if manifest.Settings != nil && manifest.Settings.HasSchema() {
+		schema := manifest.Settings.Schema
+		settingsSchema = &schema
+	}
 	return plugin.AdminPluginSummary{
 		PluginID:           installation.PluginID,
 		Version:            installation.Version,
@@ -1768,6 +1786,7 @@ func (s *PluginService) summaryForInstallationWithGrant(ctx context.Context, ins
 		HostAPIPolicy:      hostAPIPolicy,
 		ToolPolicy:         toolPolicy,
 		HookPolicy:         hookPolicy,
+		SettingsSchema:     settingsSchema,
 		SourceType:         installation.SourceType,
 		SourceRef:          installation.SourceRef,
 		InstalledAt:        installation.InstalledAt,
@@ -1862,10 +1881,14 @@ func (s *PluginService) pluginToolPolicySummary(installation storage.PluginInsta
 		return summary
 	}
 	for _, processTool := range s.supervisor.Tools(installation.PluginID) {
+		invocation := pluginSummaryInvocationPolicy(processTool.InvocationPolicy)
+		if invocation == plugin.InvocationDeny {
+			continue
+		}
 		summary.RegisteredTools = append(summary.RegisteredTools, plugin.PluginToolPolicyEntry{
 			Name:                   processTool.Name,
 			HostExposure:           plugin.ExposureWork,
-			HostInvocation:         plugin.InvocationAsk,
+			HostInvocation:         invocation,
 			SelfReportedScope:      string(processTool.Scope),
 			SelfReportedPermission: string(processTool.Permission),
 		})
@@ -1874,6 +1897,17 @@ func (s *PluginService) pluginToolPolicySummary(installation storage.PluginInsta
 		return summary.RegisteredTools[i].Name < summary.RegisteredTools[j].Name
 	})
 	return summary
+}
+
+func pluginSummaryInvocationPolicy(policy plugin.InvocationPolicy) plugin.InvocationPolicy {
+	switch policy {
+	case plugin.InvocationAuto:
+		return plugin.InvocationAuto
+	case plugin.InvocationDeny:
+		return plugin.InvocationDeny
+	default:
+		return plugin.InvocationAsk
+	}
 }
 
 func (s *PluginService) pluginHookPolicySummary(manifest plugin.ManifestV2) plugin.PluginHookPolicySummary {

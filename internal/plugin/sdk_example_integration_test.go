@@ -113,8 +113,30 @@ func TestSDKExamplePluginInstallEnableHookToolProviderAudit(t *testing.T) {
 		t.Fatalf("hook annotations = %#v status=%#v events=%#v", hookResult.Annotations, supervisor.Status(result.PluginID), events)
 	}
 
+	var echoInvocation, providerInvocation InvocationPolicy
+	for _, processTool := range supervisor.Tools(result.PluginID) {
+		switch processTool.Name {
+		case "echo":
+			echoInvocation = processTool.InvocationPolicy
+		case "provider_ping":
+			providerInvocation = processTool.InvocationPolicy
+		}
+	}
+	if echoInvocation != InvocationAuto {
+		t.Fatalf("echo invocation = %q, want %q", echoInvocation, InvocationAuto)
+	}
+	if providerInvocation != InvocationAsk {
+		t.Fatalf("provider_ping invocation = %q, want %q", providerInvocation, InvocationAsk)
+	}
+
 	dispatcher := tool.NewDispatcher(toolRegistry, tool.MinimalSchemaValidator{}, nil)
-	call := tool.Call{ID: "call-1", Name: "plugin.com.example.echo.provider_ping", Input: json.RawMessage(`{"text":"hello"}`)}
+	autoCall := tool.Call{ID: "call-auto", Name: "plugin_com_example_echo_echo", Input: json.RawMessage(`{"text":"hello auto"}`)}
+	autoResult := dispatcher.Execute(ctx, autoCall, tool.PermReadOnly)
+	if autoResult.IsError || autoResult.NeedsApproval || !strings.Contains(string(autoResult.Content), "hello auto") {
+		t.Fatalf("auto tool result = %#v, want direct echo result", autoResult)
+	}
+
+	call := tool.Call{ID: "call-1", Name: "plugin_com_example_echo_provider_ping", Input: json.RawMessage(`{"text":"hello"}`)}
 	toolResult := dispatcher.Execute(ctx, call, tool.PermReadOnly)
 	if !toolResult.IsError || !toolResult.NeedsApproval {
 		t.Fatalf("tool result = %#v, want approval before plugin execution", toolResult)

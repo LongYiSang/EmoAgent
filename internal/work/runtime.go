@@ -853,17 +853,24 @@ func pluginInvocationApprovalQuestion(call tool.Call) string {
 }
 
 func pluginToolIdentity(name string) (string, string) {
-	const prefix = "plugin."
 	trimmed := strings.TrimSpace(name)
-	if !strings.HasPrefix(trimmed, prefix) {
-		return trimmed, ""
+	if strings.HasPrefix(trimmed, "plugin.") {
+		rest := strings.TrimPrefix(trimmed, "plugin.")
+		idx := strings.LastIndex(rest, ".")
+		if idx <= 0 || idx == len(rest)-1 {
+			return rest, ""
+		}
+		return strings.ReplaceAll(rest[:idx], "_", "."), rest[idx+1:]
 	}
-	rest := strings.TrimPrefix(trimmed, prefix)
-	idx := strings.LastIndex(rest, ".")
-	if idx <= 0 || idx == len(rest)-1 {
-		return rest, ""
+	if strings.HasPrefix(trimmed, "plugin_") {
+		rest := strings.TrimPrefix(trimmed, "plugin_")
+		idx := strings.LastIndex(rest, "_")
+		if idx <= 0 || idx == len(rest)-1 {
+			return rest, ""
+		}
+		return strings.ReplaceAll(rest[:idx], "_", "."), rest[idx+1:]
 	}
-	return rest[:idx], rest[idx+1:]
+	return trimmed, ""
 }
 
 func sensitiveReadApprovalQuestion(call tool.Call) string {

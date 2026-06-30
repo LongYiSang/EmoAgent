@@ -29,7 +29,7 @@ func TestResultGatewayClampsExistingEnvelopeToHostDerivedLabels(t *testing.T) {
 		},
 	}
 	spec := Spec{
-		Name: "plugin.com.example.echo.echo",
+		Name: "plugin_com_example_echo_echo",
 		Source: ToolSourceMetadata{
 			Kind:        ToolSourcePlugin,
 			ProducerID:  "com.example.echo",

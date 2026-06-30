@@ -39,6 +39,7 @@ type pluginAPIApp struct {
 	settingsValue      json.RawMessage
 	settingsUpdateID   string
 	settingsUpdateReq  plugin.AdminPluginSettingsUpdateRequest
+	settingsUpdateErr  error
 	accessEventsID     string
 	accessEventsLimit  int
 	providerUsageID    string
@@ -113,6 +114,9 @@ func (a *pluginAPIApp) GetPluginSettings(_ context.Context, pluginID string) (pl
 func (a *pluginAPIApp) UpdatePluginSettings(_ context.Context, pluginID string, req plugin.AdminPluginSettingsUpdateRequest) (plugin.AdminPluginSettings, error) {
 	a.settingsUpdateID = pluginID
 	a.settingsUpdateReq = req
+	if a.settingsUpdateErr != nil {
+		return plugin.AdminPluginSettings{}, a.settingsUpdateErr
+	}
 	return plugin.AdminPluginSettings{PluginID: pluginID, Key: "settings", Found: true, Value: req.Value}, nil
 }
 func (a *pluginAPIApp) ListPluginAccessEvents(_ context.Context, pluginID string, limit int) ([]storage.PluginAccessEvent, error) {
@@ -172,6 +176,12 @@ func TestPluginAdminAPIListEnableDisableStatus(t *testing.T) {
 		ToolPolicy:    plugin.PluginToolPolicySummary{DefaultExposure: plugin.ExposureWork, DefaultInvocation: plugin.InvocationAsk},
 		HookPolicy:    plugin.PluginHookPolicySummary{AllowActiveHooks: false, ObserveHooks: []plugin.HookName{plugin.HookAfterTurnEnd}},
 		RuntimeStatus: plugin.RuntimeStatus{PluginID: "com.example.echo", Status: "stopped"},
+		SettingsSchema: &plugin.PluginSettingsSchema{
+			Type: "object",
+			Properties: map[string]plugin.PluginSettingsFieldSchema{
+				"api_key": {Type: "string", Secret: true},
+			},
+		},
 	}}
 	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
@@ -206,6 +216,9 @@ func TestPluginAdminAPIListEnableDisableStatus(t *testing.T) {
 	}
 	if !listResp.Plugins[0].DependencySummary.Present || listResp.Plugins[0].DependencySummary.PackageCount != 1 {
 		t.Fatalf("list dependency summary = %#v, want one package", listResp.Plugins[0].DependencySummary)
+	}
+	if listResp.Plugins[0].SettingsSchema == nil || listResp.Plugins[0].SettingsSchema.Properties["api_key"].Type != "string" {
+		t.Fatalf("list settings_schema = %#v", listResp.Plugins[0].SettingsSchema)
 	}
 
 	grantPreview := `{"tier":"runtime_safe","capabilities":["turn.read","provider.generate"]}`
@@ -306,6 +319,15 @@ func TestPluginAdminAPISettings(t *testing.T) {
 	}
 	if string(app.settingsUpdateReq.Value) != `{"amap_key":"k2","city_adcode":"310101","extensions":"all"}` {
 		t.Fatalf("settings update value = %s", app.settingsUpdateReq.Value)
+	}
+
+	app.settingsUpdateErr = errors.New("settings.api_key is required")
+	badReq := httptest.NewRequest(http.MethodPut, "/api/plugins/com.longyisang.amap-weather/settings", bytes.NewBufferString(`{"value":{}}`))
+	badReq.SetPathValue("id", "com.longyisang.amap-weather")
+	badRec := httptest.NewRecorder()
+	handler.HandleUpdatePluginSettings(badRec, badReq)
+	if badRec.Code != http.StatusBadRequest {
+		t.Fatalf("bad settings status=%d body=%s", badRec.Code, badRec.Body.String())
 	}
 }
 

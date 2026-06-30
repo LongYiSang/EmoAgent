@@ -25,7 +25,7 @@ chat:
       duplicate_running: busy
 
 plugins:
-  enabled: false
+  enabled: true
   directories:
     - data/plugins
   builtin_enabled:

@@ -61,14 +61,14 @@ func TestPluginAdminUsesGrantPreviewBeforeEnable(t *testing.T) {
 	}
 }
 
-func TestPluginAdminShowsAmapWeatherSettingsCard(t *testing.T) {
+func TestPluginAdminUsesDeclarativeSettingsSchemaCard(t *testing.T) {
 	apiPath := filepath.Join("..", "..", "web", "src", "admin", "protocol", "pluginApi.ts")
 	apiRaw, err := os.ReadFile(apiPath)
 	if err != nil {
 		t.Fatalf("read pluginApi: %v", err)
 	}
 	apiText := string(apiRaw)
-	for _, want := range []string{"PluginSettings", "loadPluginSettings", "updatePluginSettings", "/settings"} {
+	for _, want := range []string{"PluginSettings", "PluginSettingsSchema", "settings_schema", "loadPluginSettings", "updatePluginSettings", "/settings"} {
 		if !strings.Contains(apiText, want) {
 			t.Fatalf("pluginApi missing %q", want)
 		}
@@ -92,9 +92,14 @@ func TestPluginAdminShowsAmapWeatherSettingsCard(t *testing.T) {
 		t.Fatalf("read PluginsTab: %v", err)
 	}
 	tabText := string(tabRaw)
-	for _, want := range []string{"com.longyisang.amap-weather", "AmapWeatherSettingsCard", "高德天气设置", "高德 Web服务 Key", "地区 adcode", "默认查询类型", "保存天气设置"} {
+	for _, want := range []string{"PluginSettingsSchemaCard", "selectedPlugin?.settings_schema", "secret", "enum_titles", "保存设置"} {
 		if !strings.Contains(tabText, want) {
 			t.Fatalf("PluginsTab missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"com.longyisang.amap-weather", "AmapWeatherSettingsCard", "高德天气设置"} {
+		if strings.Contains(tabText, forbidden) {
+			t.Fatalf("PluginsTab still contains plugin-specific settings marker %q", forbidden)
 		}
 	}
 }
