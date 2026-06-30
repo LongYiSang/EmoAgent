@@ -86,6 +86,46 @@ func TestPluginServiceInstallEnableDisableList(t *testing.T) {
 	}
 }
 
+func TestPluginServiceSettingsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(dir, "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open DB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	cfg := config.DefaultConfig()
+	cfg.Plugins.Enabled = false
+	cfg.Plugins.Store.RootDir = filepath.Join(dir, "store")
+	cfg.Plugins.Installer.AllowUnsignedDev = true
+	cfg.Plugins.Installer.RequireSignature = true
+	service := &PluginService{infra: &Infra{Config: cfg, DB: db, Logger: logger, ProjectRoot: dir}}
+
+	sourceDir := writeAdminFixturePlugin(t, dir)
+	installed, err := service.InstallLocal(context.Background(), plugin.AdminPluginInstallRequest{Path: sourceDir})
+	if err != nil {
+		t.Fatalf("InstallLocal: %v", err)
+	}
+
+	value := json.RawMessage(`{"amap_key":"k","city_adcode":"110101","extensions":"base"}`)
+	saved, err := service.UpdatePluginSettings(context.Background(), installed.PluginID, plugin.AdminPluginSettingsUpdateRequest{Value: value})
+	if err != nil {
+		t.Fatalf("UpdatePluginSettings: %v", err)
+	}
+	if !saved.Found || saved.PluginID != installed.PluginID || saved.Key != "settings" || string(saved.Value) != string(value) {
+		t.Fatalf("saved settings = %#v", saved)
+	}
+
+	loaded, err := service.GetPluginSettings(context.Background(), installed.PluginID)
+	if err != nil {
+		t.Fatalf("GetPluginSettings: %v", err)
+	}
+	if !loaded.Found || loaded.PluginID != installed.PluginID || loaded.Key != "settings" || string(loaded.Value) != string(value) {
+		t.Fatalf("loaded settings = %#v", loaded)
+	}
+}
+
 func TestPluginServiceInstallUpdateRollbackUsesEnabledVersionForDefaultDetail(t *testing.T) {
 	dir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))

@@ -36,10 +36,24 @@ type PluginAdminVersionGrantPreviewApp interface {
 	GetPluginVersionForGrant(context.Context, string, string, string) (plugin.AdminPluginSummary, error)
 }
 
+type PluginAdminSettingsApp interface {
+	GetPluginSettings(context.Context, string) (plugin.AdminPluginSettings, error)
+	UpdatePluginSettings(context.Context, string, plugin.AdminPluginSettingsUpdateRequest) (plugin.AdminPluginSettings, error)
+}
+
 func (h *APIHandler) pluginAdminApp(w http.ResponseWriter) (PluginAdminApp, bool) {
 	app, ok := any(h.app).(PluginAdminApp)
 	if !ok {
 		writeError(w, http.StatusNotImplemented, "plugin admin API is not available")
+		return nil, false
+	}
+	return app, true
+}
+
+func (h *APIHandler) pluginAdminSettingsApp(w http.ResponseWriter) (PluginAdminSettingsApp, bool) {
+	app, ok := any(h.app).(PluginAdminSettingsApp)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "plugin settings API is not available")
 		return nil, false
 	}
 	return app, true
@@ -99,6 +113,37 @@ func (h *APIHandler) HandleGetPlugin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, summary)
+}
+
+func (h *APIHandler) HandleGetPluginSettings(w http.ResponseWriter, r *http.Request) {
+	app, ok := h.pluginAdminSettingsApp(w)
+	if !ok {
+		return
+	}
+	settings, err := app.GetPluginSettings(r.Context(), r.PathValue("id"))
+	if err != nil {
+		h.writePluginError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (h *APIHandler) HandleUpdatePluginSettings(w http.ResponseWriter, r *http.Request) {
+	app, ok := h.pluginAdminSettingsApp(w)
+	if !ok {
+		return
+	}
+	var req plugin.AdminPluginSettingsUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	settings, err := app.UpdatePluginSettings(r.Context(), r.PathValue("id"), req)
+	if err != nil {
+		h.writePluginError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
 }
 
 func (h *APIHandler) HandleInstallLocalPlugin(w http.ResponseWriter, r *http.Request) {

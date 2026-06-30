@@ -91,12 +91,13 @@ func activeHookMode(mode HookMode) bool {
 func (s ProcessToolSpec) ToToolSpec(pluginID, version string, runtimeKind RuntimeKind) tool.Spec {
 	sourceRuntime, executor := processToolSourceRuntime(runtimeKind)
 	permission := processToolPermission(s.Permission)
+	scope := processToolScope(s.Scope, permission)
 	approvalClassifier := pluginInvocationApprovalClassifier(pluginID, s.Name, s.InvocationPolicy)
 	return tool.Spec{
 		Name:               s.Name,
 		Description:        s.Description,
 		Parameters:         append(json.RawMessage(nil), s.Parameters...),
-		Scope:              tool.ScopeWork,
+		Scope:              scope,
 		Permission:         permission,
 		ApprovalClassifier: approvalClassifier,
 		Source: tool.ToolSourceMetadata{
@@ -111,6 +112,18 @@ func (s ProcessToolSpec) ToToolSpec(pluginID, version string, runtimeKind Runtim
 				InstructionAuthority: resultv2.InstructionDataOnly,
 			},
 		},
+	}
+}
+
+func processToolScope(scope tool.Scope, permission tool.Permission) tool.Scope {
+	if permission != tool.PermReadOnly {
+		return tool.ScopeWork
+	}
+	switch scope {
+	case tool.ScopeEmotion, tool.ScopeBoth, tool.ScopeWork:
+		return scope
+	default:
+		return tool.ScopeWork
 	}
 }
 

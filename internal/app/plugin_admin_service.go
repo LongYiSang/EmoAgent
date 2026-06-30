@@ -39,6 +39,22 @@ func (a *App) GetPlugin(ctx context.Context, pluginID string) (plugin.AdminPlugi
 	return services.Plugins.GetPlugin(ctx, pluginID)
 }
 
+func (a *App) GetPluginSettings(ctx context.Context, pluginID string) (plugin.AdminPluginSettings, error) {
+	services, err := a.services()
+	if err != nil {
+		return plugin.AdminPluginSettings{}, err
+	}
+	return services.Plugins.GetPluginSettings(ctx, pluginID)
+}
+
+func (a *App) UpdatePluginSettings(ctx context.Context, pluginID string, req plugin.AdminPluginSettingsUpdateRequest) (plugin.AdminPluginSettings, error) {
+	services, err := a.services()
+	if err != nil {
+		return plugin.AdminPluginSettings{}, err
+	}
+	return services.Plugins.UpdatePluginSettings(ctx, pluginID, req)
+}
+
 func (a *App) GetPluginVersion(ctx context.Context, pluginID, version string) (plugin.AdminPluginSummary, error) {
 	services, err := a.services()
 	if err != nil {

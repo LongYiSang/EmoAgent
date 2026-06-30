@@ -129,15 +129,33 @@ export async function loadPlugins(): Promise<PluginSummary[]> {
 }
 
 export async function loadPlugin(id: string, version?: string, userGrantJSON?: string): Promise<PluginSummary> {
-  const query = new URLSearchParams();
-  if (version) query.set('version', version);
-  if (userGrantJSON) query.set('user_grant_json', userGrantJSON);
-  const suffix = query.toString() ? `?${query.toString()}` : '';
-  return requestJSON<PluginSummary>(`/api/plugins/${encodeURIComponent(id)}${suffix}`);
+	const query = new URLSearchParams();
+	if (version) query.set('version', version);
+	if (userGrantJSON) query.set('user_grant_json', userGrantJSON);
+	const suffix = query.toString() ? `?${query.toString()}` : '';
+	return requestJSON<PluginSummary>(`/api/plugins/${encodeURIComponent(id)}${suffix}`);
+}
+
+export type PluginSettings = {
+	plugin_id?: string;
+	key?: string;
+	found?: boolean;
+	value?: AnyRecord;
+};
+
+export async function loadPluginSettings(id: string): Promise<PluginSettings> {
+	return requestJSON<PluginSettings>(`/api/plugins/${encodeURIComponent(id)}/settings`);
+}
+
+export async function updatePluginSettings(id: string, value: AnyRecord): Promise<PluginSettings> {
+	return requestJSON<PluginSettings>(`/api/plugins/${encodeURIComponent(id)}/settings`, {
+		method: 'PUT',
+		body: { value },
+	});
 }
 
 export async function installLocalPlugin(path: string): Promise<PluginSummary> {
-  return requestJSON<PluginSummary>('/api/plugins/install/local', { method: 'POST', body: { path } });
+	return requestJSON<PluginSummary>('/api/plugins/install/local', { method: 'POST', body: { path } });
 }
 
 export async function installGitHubPlugin(owner: string, repo: string, tag: string, asset: string): Promise<PluginSummary> {

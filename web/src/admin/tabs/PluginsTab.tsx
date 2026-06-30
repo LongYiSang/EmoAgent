@@ -22,6 +22,7 @@ export default memo(function PluginsTab({
   pluginLogs,
   accessEvents,
   providerUsage,
+  pluginSettings,
   setInstallPath,
   setGithubOwner,
   setGithubRepo,
@@ -35,6 +36,7 @@ export default memo(function PluginsTab({
   enableSelectedPlugin,
   disableSelectedPlugin,
   restartSelectedPlugin,
+  savePluginSettings,
   deleteSelectedPlugin,
 }: PluginsTabProps) {
   const [query, setQuery] = useState('');
@@ -173,6 +175,14 @@ export default memo(function PluginsTab({
               )}
             </div>
 
+            {selectedPlugin?.plugin_id === 'com.longyisang.amap-weather' && (
+              <AmapWeatherSettingsCard
+                key={`${selectedPlugin.plugin_id}:${selectedPlugin.version}:${JSON.stringify(pluginSettings?.value || {})}`}
+                value={(pluginSettings?.value || {}) as Record<string, unknown>}
+                onSave={savePluginSettings}
+              />
+            )}
+
             <div className="section nested">
               <div className="row-head">
                 <strong>Trust Acceptance</strong>
@@ -284,3 +294,44 @@ export default memo(function PluginsTab({
     </div>
   );
 });
+
+type AmapWeatherSettingsCardProps = {
+  value: Record<string, unknown>;
+  onSave: (value: Record<string, unknown>) => void | Promise<void>;
+};
+
+function AmapWeatherSettingsCard({ value, onSave }: AmapWeatherSettingsCardProps) {
+  const [amapKey, setAmapKey] = useState(String(value?.amap_key || ''));
+  const [cityAdcode, setCityAdcode] = useState(String(value?.city_adcode || ''));
+  const [extensions, setExtensions] = useState(String(value?.extensions || 'base'));
+
+  return (
+    <div className="section nested">
+      <div className="row-head">
+        <strong>高德天气设置</strong>
+        <span className="badge">settings</span>
+      </div>
+      <p className="meta">设置会保存到插件私有 KV 的 settings key。保存后无需重启插件，下一次工具调用会读取最新配置。</p>
+      <div className="grid compact">
+        <Field id="amap-weather-key" label="高德 Web服务 Key" value={amapKey} onChange={setAmapKey} type="password" mono />
+        <Field id="amap-weather-adcode" label="地区 adcode" value={cityAdcode} onChange={setCityAdcode} mono />
+        <div className="field">
+          <label htmlFor="amap-weather-extensions">默认查询类型</label>
+          <select id="amap-weather-extensions" value={extensions} onChange={event => setExtensions(event.target.value)}>
+            <option value="base">base - 实况天气</option>
+            <option value="all">all - 预报天气</option>
+          </select>
+        </div>
+      </div>
+      <div className="actions foot">
+        <button
+          className="btn primary"
+          type="button"
+          onClick={() => onSave({ amap_key: amapKey, city_adcode: cityAdcode, extensions })}
+        >
+          保存天气设置
+        </button>
+      </div>
+    </div>
+  );
+}

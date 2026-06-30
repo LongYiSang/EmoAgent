@@ -46,6 +46,8 @@ type PluginService struct {
 	pendingTrustAcks map[string]plugin.PluginTrustAcknowledgement
 }
 
+const pluginSettingsKVKey = "settings"
+
 func (s *PluginService) Host() *plugin.PluginHost {
 	return s.host
 }
@@ -702,6 +704,70 @@ func (s *PluginService) GetPlugin(ctx context.Context, pluginID string) (plugin.
 		return plugin.AdminPluginSummary{}, plugin.ErrPluginNotFound
 	}
 	return s.summaryForInstallation(ctx, *installation), nil
+}
+
+func (s *PluginService) GetPluginSettings(ctx context.Context, pluginID string) (plugin.AdminPluginSettings, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.requireAdminLocked(); err != nil {
+		return plugin.AdminPluginSettings{}, err
+	}
+	installation, err := s.activeOrLatestInstallation(ctx, pluginID)
+	if err != nil {
+		return plugin.AdminPluginSettings{}, err
+	}
+	if installation == nil {
+		return plugin.AdminPluginSettings{}, plugin.ErrPluginNotFound
+	}
+	value, found, err := s.infra.DB.PluginKVGet(ctx, pluginID, pluginSettingsKVKey)
+	if err != nil {
+		return plugin.AdminPluginSettings{}, err
+	}
+	raw := json.RawMessage("{}")
+	if found {
+		raw = json.RawMessage(value)
+	}
+	if !json.Valid(raw) {
+		raw = json.RawMessage("{}")
+		found = false
+	}
+	return plugin.AdminPluginSettings{
+		PluginID: pluginID,
+		Key:      pluginSettingsKVKey,
+		Found:    found,
+		Value:    raw,
+	}, nil
+}
+
+func (s *PluginService) UpdatePluginSettings(ctx context.Context, pluginID string, req plugin.AdminPluginSettingsUpdateRequest) (plugin.AdminPluginSettings, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.requireAdminLocked(); err != nil {
+		return plugin.AdminPluginSettings{}, err
+	}
+	installation, err := s.activeOrLatestInstallation(ctx, pluginID)
+	if err != nil {
+		return plugin.AdminPluginSettings{}, err
+	}
+	if installation == nil {
+		return plugin.AdminPluginSettings{}, plugin.ErrPluginNotFound
+	}
+	value := req.Value
+	if len(value) == 0 {
+		value = json.RawMessage("{}")
+	}
+	if !json.Valid(value) {
+		return plugin.AdminPluginSettings{}, fmt.Errorf("settings value must be valid JSON")
+	}
+	if err := s.infra.DB.PluginKVSet(ctx, pluginID, pluginSettingsKVKey, string(value)); err != nil {
+		return plugin.AdminPluginSettings{}, err
+	}
+	return plugin.AdminPluginSettings{
+		PluginID: pluginID,
+		Key:      pluginSettingsKVKey,
+		Found:    true,
+		Value:    append(json.RawMessage(nil), value...),
+	}, nil
 }
 
 func (s *PluginService) activeOrLatestInstallation(ctx context.Context, pluginID string) (*storage.PluginInstallation, error) {

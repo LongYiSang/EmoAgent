@@ -61,6 +61,44 @@ func TestPluginAdminUsesGrantPreviewBeforeEnable(t *testing.T) {
 	}
 }
 
+func TestPluginAdminShowsAmapWeatherSettingsCard(t *testing.T) {
+	apiPath := filepath.Join("..", "..", "web", "src", "admin", "protocol", "pluginApi.ts")
+	apiRaw, err := os.ReadFile(apiPath)
+	if err != nil {
+		t.Fatalf("read pluginApi: %v", err)
+	}
+	apiText := string(apiRaw)
+	for _, want := range []string{"PluginSettings", "loadPluginSettings", "updatePluginSettings", "/settings"} {
+		if !strings.Contains(apiText, want) {
+			t.Fatalf("pluginApi missing %q", want)
+		}
+	}
+
+	hookPath := filepath.Join("..", "..", "web", "src", "admin", "hooks", "usePluginAdmin.ts")
+	hookRaw, err := os.ReadFile(hookPath)
+	if err != nil {
+		t.Fatalf("read usePluginAdmin: %v", err)
+	}
+	hookText := string(hookRaw)
+	for _, want := range []string{"pluginSettings", "savePluginSettings", "loadPluginSettings(id)", "updatePluginSettings(selectedPluginID, value)"} {
+		if !strings.Contains(hookText, want) {
+			t.Fatalf("usePluginAdmin missing %q", want)
+		}
+	}
+
+	tabPath := filepath.Join("..", "..", "web", "src", "admin", "tabs", "PluginsTab.tsx")
+	tabRaw, err := os.ReadFile(tabPath)
+	if err != nil {
+		t.Fatalf("read PluginsTab: %v", err)
+	}
+	tabText := string(tabRaw)
+	for _, want := range []string{"com.longyisang.amap-weather", "AmapWeatherSettingsCard", "高德天气设置", "高德 Web服务 Key", "地区 adcode", "默认查询类型", "保存天气设置"} {
+		if !strings.Contains(tabText, want) {
+			t.Fatalf("PluginsTab missing %q", want)
+		}
+	}
+}
+
 func TestDiagnosticsTabShowsPluginRuntimeDiagnostics(t *testing.T) {
 	tabPath := filepath.Join("..", "..", "web", "src", "admin", "tabs", "DiagnosticsTab.tsx")
 	tabRaw, err := os.ReadFile(tabPath)

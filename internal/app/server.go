@@ -180,6 +180,8 @@ func registerRoutes(mux *http.ServeMux, api *web.APIHandler, chatHandler http.Ha
 	mux.HandleFunc("GET /api/plugins", api.HandleListPlugins)
 	mux.HandleFunc("GET /api/plugins/diagnostics", api.HandlePluginDiagnostics)
 	mux.HandleFunc("GET /api/plugins/{id}", api.HandleGetPlugin)
+	mux.HandleFunc("GET /api/plugins/{id}/settings", api.HandleGetPluginSettings)
+	mux.HandleFunc("PUT /api/plugins/{id}/settings", api.HandleUpdatePluginSettings)
 	mux.HandleFunc("POST /api/plugins/install/local", api.HandleInstallLocalPlugin)
 	mux.HandleFunc("POST /api/plugins/install/local-zip", api.HandleInstallLocalPlugin)
 	mux.HandleFunc("POST /api/plugins/install/github-release", api.HandleInstallGitHubPlugin)

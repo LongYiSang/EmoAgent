@@ -10,8 +10,11 @@ import {
   loadPluginAccessEvents,
   loadPluginLogs,
   loadPluginProviderUsage,
+  loadPluginSettings,
   loadPlugins,
   restartPlugin,
+  updatePluginSettings,
+  type PluginSettings,
   type PluginSummary,
 } from '../protocol/pluginApi';
 import type { AdminStatusControls } from './useAdminStatus';
@@ -33,6 +36,7 @@ export function usePluginAdmin({ showError, setStatus }: PluginAdminOptions) {
   const [pluginLogs, setPluginLogs] = useState('');
   const [accessEvents, setAccessEvents] = useState<AnyRecord[]>([]);
   const [providerUsage, setProviderUsage] = useState<AnyRecord[]>([]);
+  const [pluginSettings, setPluginSettings] = useState<PluginSettings | null>(null);
 
   const reloadPlugins = useCallback(async () => {
     const next = await loadPlugins();
@@ -49,12 +53,16 @@ export function usePluginAdmin({ showError, setStatus }: PluginAdminOptions) {
   }, [selectedPluginID, selectedPluginVersion]);
 
   const reloadPluginDetail = useCallback(async (id = selectedPluginID, version = selectedPluginVersion, userGrantJSON = '') => {
-    if (!id) return;
-    const [detail, logs, events, usage] = await Promise.all([
+    if (!id) {
+      setPluginSettings(null);
+      return;
+    }
+    const [detail, logs, events, usage, settings] = await Promise.all([
       loadPlugin(id, version, userGrantJSON),
       loadPluginLogs(id),
       loadPluginAccessEvents(id),
       loadPluginProviderUsage(id),
+      loadPluginSettings(id).catch(() => null),
     ]);
     setSelectedPlugin(detail);
     setSelectedPluginVersion(detail.version || version);
@@ -62,6 +70,7 @@ export function usePluginAdmin({ showError, setStatus }: PluginAdminOptions) {
     setPluginLogs(logs);
     setAccessEvents(events);
     setProviderUsage(usage);
+    setPluginSettings(settings);
   }, [selectedPluginID, selectedPluginVersion]);
 
   const selectPlugin = useCallback(async (id: string, version?: string) => {
@@ -160,6 +169,17 @@ export function usePluginAdmin({ showError, setStatus }: PluginAdminOptions) {
     }
   }, [reloadPluginDetail, reloadPlugins, selectedPluginID, selectedPluginVersion, setStatus, showError]);
 
+  const savePluginSettings = useCallback(async (value: AnyRecord) => {
+    if (!selectedPluginID) return;
+    try {
+      const next = await updatePluginSettings(selectedPluginID, value);
+      setPluginSettings(next);
+      setStatus(`已保存 ${selectedPluginID} 设置`);
+    } catch (error) {
+      showError(error);
+    }
+  }, [selectedPluginID, setStatus, showError]);
+
   const deleteSelectedPlugin = useCallback(async () => {
     if (!selectedPluginID) return;
     try {
@@ -170,6 +190,7 @@ export function usePluginAdmin({ showError, setStatus }: PluginAdminOptions) {
       setPluginLogs('');
       setAccessEvents([]);
       setProviderUsage([]);
+      setPluginSettings(null);
       setStatus(`已删除 ${selectedPluginID}`);
       await reloadPlugins();
     } catch (error) {
@@ -191,6 +212,7 @@ export function usePluginAdmin({ showError, setStatus }: PluginAdminOptions) {
     pluginLogs,
     accessEvents,
     providerUsage,
+    pluginSettings,
     setInstallPath,
     setGithubOwner,
     setGithubRepo,
@@ -205,6 +227,7 @@ export function usePluginAdmin({ showError, setStatus }: PluginAdminOptions) {
     enableSelectedPlugin,
     disableSelectedPlugin,
     restartSelectedPlugin,
+    savePluginSettings,
     deleteSelectedPlugin,
   }), [
     plugins,
@@ -220,6 +243,7 @@ export function usePluginAdmin({ showError, setStatus }: PluginAdminOptions) {
     pluginLogs,
     accessEvents,
     providerUsage,
+    pluginSettings,
     reloadPlugins,
     reloadPluginDetail,
     selectPlugin,
@@ -228,6 +252,7 @@ export function usePluginAdmin({ showError, setStatus }: PluginAdminOptions) {
     enableSelectedPlugin,
     disableSelectedPlugin,
     restartSelectedPlugin,
+    savePluginSettings,
     deleteSelectedPlugin,
   ]);
 }

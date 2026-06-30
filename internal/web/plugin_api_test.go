@@ -35,6 +35,10 @@ type pluginAPIApp struct {
 	restartedID        string
 	deletedID          string
 	logsID             string
+	settingsID         string
+	settingsValue      json.RawMessage
+	settingsUpdateID   string
+	settingsUpdateReq  plugin.AdminPluginSettingsUpdateRequest
 	accessEventsID     string
 	accessEventsLimit  int
 	providerUsageID    string
@@ -97,6 +101,19 @@ func (a *pluginAPIApp) DeletePlugin(_ context.Context, pluginID string) error {
 func (a *pluginAPIApp) PluginLogs(_ context.Context, pluginID string) (plugin.AdminPluginLogs, error) {
 	a.logsID = pluginID
 	return plugin.AdminPluginLogs{PluginID: a.summary.PluginID, StderrTail: "tail"}, nil
+}
+func (a *pluginAPIApp) GetPluginSettings(_ context.Context, pluginID string) (plugin.AdminPluginSettings, error) {
+	a.settingsID = pluginID
+	value := a.settingsValue
+	if len(value) == 0 {
+		value = json.RawMessage(`{}`)
+	}
+	return plugin.AdminPluginSettings{PluginID: pluginID, Key: "settings", Found: len(a.settingsValue) > 0, Value: value}, nil
+}
+func (a *pluginAPIApp) UpdatePluginSettings(_ context.Context, pluginID string, req plugin.AdminPluginSettingsUpdateRequest) (plugin.AdminPluginSettings, error) {
+	a.settingsUpdateID = pluginID
+	a.settingsUpdateReq = req
+	return plugin.AdminPluginSettings{PluginID: pluginID, Key: "settings", Found: true, Value: req.Value}, nil
 }
 func (a *pluginAPIApp) ListPluginAccessEvents(_ context.Context, pluginID string, limit int) ([]storage.PluginAccessEvent, error) {
 	a.accessEventsID = pluginID
@@ -263,6 +280,32 @@ func TestPluginAdminAPIListEnableDisableStatus(t *testing.T) {
 	handler.HandleDisablePlugin(disableRec, disableReq)
 	if disableRec.Code != http.StatusOK || app.disabledID != "com.example.echo" {
 		t.Fatalf("disable status=%d disabledID=%q body=%s", disableRec.Code, app.disabledID, disableRec.Body.String())
+	}
+}
+
+func TestPluginAdminAPISettings(t *testing.T) {
+	app := &pluginAPIApp{
+		settingsValue: json.RawMessage(`{"amap_key":"k","city_adcode":"110101","extensions":"base"}`),
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/plugins/com.longyisang.amap-weather/settings", nil)
+	getReq.SetPathValue("id", "com.longyisang.amap-weather")
+	getRec := httptest.NewRecorder()
+	handler.HandleGetPluginSettings(getRec, getReq)
+	if getRec.Code != http.StatusOK || app.settingsID != "com.longyisang.amap-weather" {
+		t.Fatalf("get settings status=%d id=%q body=%s", getRec.Code, app.settingsID, getRec.Body.String())
+	}
+
+	putReq := httptest.NewRequest(http.MethodPut, "/api/plugins/com.longyisang.amap-weather/settings", bytes.NewBufferString(`{"value":{"amap_key":"k2","city_adcode":"310101","extensions":"all"}}`))
+	putReq.SetPathValue("id", "com.longyisang.amap-weather")
+	putRec := httptest.NewRecorder()
+	handler.HandleUpdatePluginSettings(putRec, putReq)
+	if putRec.Code != http.StatusOK || app.settingsUpdateID != "com.longyisang.amap-weather" {
+		t.Fatalf("put settings status=%d id=%q body=%s", putRec.Code, app.settingsUpdateID, putRec.Body.String())
+	}
+	if string(app.settingsUpdateReq.Value) != `{"amap_key":"k2","city_adcode":"310101","extensions":"all"}` {
+		t.Fatalf("settings update value = %s", app.settingsUpdateReq.Value)
 	}
 }
 

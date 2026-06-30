@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"encoding/json"
 	"errors"
 
 	"github.com/longyisang/emoagent/internal/storage"
@@ -73,6 +74,17 @@ type AdminPluginEnableRequest struct {
 type AdminPluginLogs struct {
 	PluginID   string `json:"plugin_id"`
 	StderrTail string `json:"stderr_tail"`
+}
+
+type AdminPluginSettings struct {
+	PluginID string          `json:"plugin_id"`
+	Key      string          `json:"key"`
+	Found    bool            `json:"found"`
+	Value    json.RawMessage `json:"value"`
+}
+
+type AdminPluginSettingsUpdateRequest struct {
+	Value json.RawMessage `json:"value"`
 }
 
 type AdminPluginDiagnostics struct {

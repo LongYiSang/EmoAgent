@@ -58,8 +58,8 @@ func TestRegisterProcessPluginHooksAndToolsThroughExistingGates(t *testing.T) {
 	if spec.ApprovalClassifier == nil {
 		t.Fatal("ApprovalClassifier is nil, want plugin invocation approval gate")
 	}
-	if len(toolRegistry.ForScope(tool.ScopeEmotion)) != 0 {
-		t.Fatalf("emotion tools = %#v, want default plugin exposure hidden from Emotion", toolRegistry.ForScope(tool.ScopeEmotion))
+	if len(toolRegistry.ForScope(tool.ScopeEmotion)) != 1 {
+		t.Fatalf("emotion tools = %#v, want read-only both-scope plugin exposure visible to Emotion", toolRegistry.ForScope(tool.ScopeEmotion))
 	}
 	if len(toolRegistry.ForScope(tool.ScopeWork)) != 1 {
 		t.Fatalf("work tools = %#v, want default plugin exposure visible to Work", toolRegistry.ForScope(tool.ScopeWork))
@@ -225,6 +225,54 @@ func TestProcessToolSpecDefaults(t *testing.T) {
 	}
 }
 
+func TestProcessToolScopePreservesReadOnlyEmotionScope(t *testing.T) {
+	spec := ProcessToolSpec{
+		Name:       "weather",
+		Scope:      tool.ScopeEmotion,
+		Permission: tool.PermReadOnly,
+		Parameters: json.RawMessage(`{"type":"object"}`),
+	}.ToToolSpec("com.example.weather", "0.1.0", RuntimePythonProcess)
+	if spec.Scope != tool.ScopeEmotion {
+		t.Fatalf("scope = %q, want emotion", spec.Scope)
+	}
+}
+
+func TestProcessToolScopePreservesReadOnlyBothScope(t *testing.T) {
+	spec := ProcessToolSpec{
+		Name:       "weather",
+		Scope:      tool.ScopeBoth,
+		Permission: tool.PermReadOnly,
+		Parameters: json.RawMessage(`{"type":"object"}`),
+	}.ToToolSpec("com.example.weather", "0.1.0", RuntimePythonProcess)
+	if spec.Scope != tool.ScopeBoth {
+		t.Fatalf("scope = %q, want both", spec.Scope)
+	}
+}
+
+func TestProcessToolScopeKeepsWriteToolsInWorkScope(t *testing.T) {
+	spec := ProcessToolSpec{
+		Name:       "write",
+		Scope:      tool.ScopeEmotion,
+		Permission: tool.PermWorkspaceWrite,
+		Parameters: json.RawMessage(`{"type":"object"}`),
+	}.ToToolSpec("com.example.weather", "0.1.0", RuntimePythonProcess)
+	if spec.Scope != tool.ScopeWork {
+		t.Fatalf("scope = %q, want work", spec.Scope)
+	}
+}
+
+func TestProcessToolScopeDefaultsUnknownScopeToWork(t *testing.T) {
+	spec := ProcessToolSpec{
+		Name:       "weather",
+		Scope:      tool.Scope("elsewhere"),
+		Permission: tool.PermReadOnly,
+		Parameters: json.RawMessage(`{"type":"object"}`),
+	}.ToToolSpec("com.example.weather", "0.1.0", RuntimePythonProcess)
+	if spec.Scope != tool.ScopeWork {
+		t.Fatalf("scope = %q, want work", spec.Scope)
+	}
+}
+
 func TestProcessToolSpecGetsHostDerivedUnverifiedDataOnlyLabels(t *testing.T) {
 	spec := ProcessToolSpec{
 		Name:       "echo",
@@ -274,8 +322,12 @@ func TestProcessToolSpecSelfReportedLowerPermissionsCannotBypassHostAskPolicy(t 
 				Permission: permission,
 			}.ToToolSpec("com.example.echo", "0.1.0", RuntimeManagedPythonProcess)
 
-			if spec.Scope != tool.ScopeWork || spec.Permission != permission {
-				t.Fatalf("spec = %#v, want host-derived Work + self-reported coarse permission", spec)
+			wantScope := tool.ScopeBoth
+			if permission != tool.PermReadOnly {
+				wantScope = tool.ScopeWork
+			}
+			if spec.Scope != wantScope || spec.Permission != permission {
+				t.Fatalf("spec = %#v, want scope %q + self-reported coarse permission", spec, wantScope)
 			}
 			if spec.ApprovalClassifier == nil {
 				t.Fatal("ApprovalClassifier is nil, want host-derived ask policy")
