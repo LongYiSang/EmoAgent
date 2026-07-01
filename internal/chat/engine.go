@@ -24,6 +24,7 @@ import (
 	"github.com/longyisang/emoagent/internal/tokenmeter"
 	"github.com/longyisang/emoagent/internal/tool"
 	"github.com/longyisang/emoagent/internal/tool/resultv2"
+	"github.com/longyisang/emoagent/internal/toolapproval"
 	"github.com/longyisang/emoagent/internal/turn"
 	"github.com/longyisang/emoagent/internal/work"
 )
@@ -64,39 +65,40 @@ type manualMemoryNoticeBridge interface {
 
 // EngineConfig defines the dependencies for Engine.
 type EngineConfig struct {
-	LLM                llm.Client
-	SummaryLLM         llm.Client
-	DB                 *storage.DB
-	Logger             *slog.Logger
-	Model              string
-	Params             llm.RequestParams
-	SummaryModel       string
-	SummaryParams      llm.RequestParams
-	SummaryTemperature *float64
-	SummaryMaxTokens   int
-	MaxTokens          int
-	Temperature        float64
-	ContextConfig      config.ContextConfig
-	PromptRouter       config.PromptRouterConfig
-	Provider           string           // "openai" or "anthropic", needed by ResultsToMessages
-	ProviderID         string           // configured provider id for model capability lookup
-	ProviderName       string           // display name for UI metadata
-	Registry           *tool.Registry   // nil disables tool support
-	Dispatcher         *tool.Dispatcher // nil disables tool support
-	Pending            *work.PendingRegistry
-	Approvals          *work.ApprovalService
-	Environment        runtimeenv.Facts
-	RealtimeStreaming  bool
-	Memory             MemoryBridge
-	MemoryRetrieval    config.MemoryRetrievalConfig
-	AgentAffect        AgentAffectRuntime
-	MediaStore         media.Store
-	MediaResolver      media.CapabilityResolver
-	AgentID            string
-	PersonaKey         string
-	PromptResolver     *promptcenter.Resolver
-	PromptStore        promptcenter.Store
-	PromptSnapshots    config.PromptSnapshotConfig
+	LLM                 llm.Client
+	SummaryLLM          llm.Client
+	DB                  *storage.DB
+	Logger              *slog.Logger
+	Model               string
+	Params              llm.RequestParams
+	SummaryModel        string
+	SummaryParams       llm.RequestParams
+	SummaryTemperature  *float64
+	SummaryMaxTokens    int
+	MaxTokens           int
+	Temperature         float64
+	ContextConfig       config.ContextConfig
+	PromptRouter        config.PromptRouterConfig
+	Provider            string           // "openai" or "anthropic", needed by ResultsToMessages
+	ProviderID          string           // configured provider id for model capability lookup
+	ProviderName        string           // display name for UI metadata
+	Registry            *tool.Registry   // nil disables tool support
+	Dispatcher          *tool.Dispatcher // nil disables tool support
+	Pending             *work.PendingRegistry
+	Approvals           *work.ApprovalService
+	DirectToolApprovals *toolapproval.Coordinator
+	Environment         runtimeenv.Facts
+	RealtimeStreaming   bool
+	Memory              MemoryBridge
+	MemoryRetrieval     config.MemoryRetrievalConfig
+	AgentAffect         AgentAffectRuntime
+	MediaStore          media.Store
+	MediaResolver       media.CapabilityResolver
+	AgentID             string
+	PersonaKey          string
+	PromptResolver      *promptcenter.Resolver
+	PromptStore         promptcenter.Store
+	PromptSnapshots     config.PromptSnapshotConfig
 }
 
 // RuntimeConfig is the hot-swappable subset of EngineConfig used for new requests.
@@ -142,6 +144,7 @@ type Engine struct {
 	dispatcher           *tool.Dispatcher
 	pending              *work.PendingRegistry
 	approvals            *work.ApprovalService
+	directToolApprovals  *toolapproval.Coordinator
 	environment          runtimeenv.Facts
 	realtimeStreaming    bool
 	memory               MemoryBridge
@@ -242,6 +245,10 @@ func NewEngine(cfg EngineConfig) *Engine {
 		promptRouter.Mode = config.PromptRouterModeAlwaysWork
 	}
 	promptRouter = normalizePromptRouterConfig(promptRouter)
+	directToolApprovals := cfg.DirectToolApprovals
+	if directToolApprovals == nil && cfg.DB != nil && cfg.Approvals != nil {
+		directToolApprovals = toolapproval.NewCoordinator(cfg.DB.SqlDB(), cfg.Approvals, cfg.Logger, toolapproval.Config{})
+	}
 
 	return &Engine{
 		llm:                  cfg.LLM,
@@ -265,6 +272,7 @@ func NewEngine(cfg EngineConfig) *Engine {
 		dispatcher:           cfg.Dispatcher,
 		pending:              cfg.Pending,
 		approvals:            cfg.Approvals,
+		directToolApprovals:  directToolApprovals,
 		environment:          cfg.Environment,
 		realtimeStreaming:    cfg.RealtimeStreaming,
 		memory:               cfg.Memory,
@@ -665,6 +673,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	dispatcher := e.dispatcher
 	pending := e.pending
 	approvals := e.approvals
+	directToolApprovals := e.directToolApprovals
 	env := e.environment
 	realtimeStreaming := e.realtimeStreaming
 	memoryRetrieval := e.memoryRetrieval
@@ -1126,8 +1135,67 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 			e.logger.Info("tool call", "session", sessionID, "tool", c.Name, "call_id", c.ID)
 		}
 
-		snippedResults := make([]tool.Result, len(calls))
-		for i, call := range calls {
+		classifications := make([]tool.CallClassification, 0, len(calls))
+		for _, call := range calls {
+			classifications = append(classifications, dispatcher.ClassifyCall(ctx, call, tool.PermReadOnly))
+		}
+		if blocked, ok := firstClassificationByAction(classifications, tool.CallActionToolApprovalRequired); ok {
+			if directToolApprovals == nil {
+				return "", fmt.Errorf("tool %q requires approval but direct tool approval coordinator is not configured", blocked.Call.Name)
+			}
+			toolStarted := time.Now()
+			if emitToolEvents {
+				rawWriter(WSMessage{
+					Type: "tool_call_start",
+					Tool: &ToolActivity{
+						ID:     blocked.Call.ID,
+						Name:   blocked.Call.Name,
+						Status: "running",
+					},
+				})
+			}
+			approval, err := directToolApprovals.CreatePending(ctx, toolapproval.CreatePendingRequest{
+				SessionID:      sessionID,
+				TurnID:         memoryAnchor.turnID,
+				Provider:       provider,
+				MaxPermission:  tool.PermReadOnly,
+				Classification: blocked,
+				GoalSummary:    "Emotion direct tool call requested by the model",
+				ExpiresAt:      time.Now().UTC().Add(30 * time.Minute),
+			})
+			if err != nil {
+				return "", err
+			}
+			if emitToolEvents {
+				preview := ""
+				if approval.ToolApprovalBinding != nil {
+					preview = approval.ToolApprovalBinding.InputPreview
+				}
+				rawWriter(WSMessage{
+					Type: "tool_call_end",
+					Tool: &ToolActivity{
+						ID:         blocked.Call.ID,
+						Name:       blocked.Call.Name,
+						Status:     "approval_required",
+						DurationMS: time.Since(toolStarted).Milliseconds(),
+						Preview:    preview,
+					},
+				})
+			}
+			if rawWriter != nil {
+				if approvals != nil {
+					approvalSnapshot, _ = emitApprovalDiff(rawWriter, approvalSnapshot, approvals.ListSessionApprovals(sessionID, nil))
+				} else {
+					rawWriter(WSMessage{Type: "approval_required", Approval: approval})
+				}
+			}
+			e.logger.Info("direct tool approval required; interrupting current turn", "session", sessionID, "round", round, "tool", blocked.Call.Name)
+			return "", errApprovalPending
+		}
+
+		snippedResults := make([]tool.Result, len(classifications))
+		for i, classification := range classifications {
+			call := classification.Call
 			if emitToolEvents {
 				rawWriter(WSMessage{
 					Type: "tool_call_start",
@@ -1139,7 +1207,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 				})
 			}
 			toolStarted := time.Now()
-			result := dispatcher.Execute(ctx, call, tool.PermReadOnly)
+			result := dispatcher.ExecuteClassified(ctx, classification, tool.PermReadOnly)
 			digest := contextutil.SnipToolResult(
 				call.Name,
 				result.CallID,
@@ -1269,6 +1337,16 @@ func (e *Engine) ContinueAfterApproval(ctx context.Context, sessionID string, pe
 	if approval == nil {
 		return "", errors.New("approval is required")
 	}
+	if note, handled, terminal, err := e.resumeDirectToolApproval(ctx, sessionID, approval); err != nil {
+		return "", err
+	} else if handled {
+		return e.sendTurn(ctx, sessionID, persona, cb, turnOptions{
+			persistUser:  false,
+			extraSystem:  note,
+			disableTools: terminal,
+			inboundKind:  turn.InboundApprovalAction,
+		})
+	}
 	if note, handled, terminal, err := e.resumeApprovalDirectly(ctx, sessionID, approval); err != nil {
 		return "", err
 	} else if handled {
@@ -1285,6 +1363,94 @@ func (e *Engine) ContinueAfterApproval(ctx context.Context, sessionID string, pe
 		extraSystem: note,
 		inboundKind: turn.InboundApprovalAction,
 	})
+}
+
+func (e *Engine) resumeDirectToolApproval(ctx context.Context, sessionID string, approval *protocol.ApprovalRequest) (string, bool, bool, error) {
+	if approval == nil || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(approval.ID) == "" {
+		return "", false, false, nil
+	}
+
+	e.mu.RLock()
+	directApprovals := e.directToolApprovals
+	approvals := e.approvals
+	dispatcher := e.dispatcher
+	contextCfg := e.contextCfg
+	e.mu.RUnlock()
+	if directApprovals == nil || directApprovals.Store == nil {
+		return "", false, false, nil
+	}
+
+	row, ok, err := directApprovals.Store.GetByApproval(ctx, sessionID, approval.ID)
+	if err != nil {
+		return "", true, true, err
+	}
+	if !ok {
+		return "", false, false, nil
+	}
+	if row.Status != toolapproval.DirectToolCallStatusPending {
+		return buildDirectToolApprovalAlreadyResolvedNote(approval, row), true, true, nil
+	}
+	if approvals == nil {
+		return "", true, true, fmt.Errorf("approval service is not configured")
+	}
+	if dispatcher == nil {
+		return "", true, true, fmt.Errorf("tool dispatcher is not configured")
+	}
+
+	claimed, claimID, claimedOK, err := directApprovals.Store.Claim(ctx, sessionID, approval.ID)
+	if err != nil {
+		return "", true, true, err
+	}
+	if !claimedOK {
+		return buildDirectToolApprovalAlreadyResolvedNote(approval, claimed), true, true, nil
+	}
+
+	consumed, err := approvals.ConsumeResolvedRequest(sessionID, claimed.TaskID, approval.ID)
+	if err != nil {
+		_ = directApprovals.Store.MarkFailed(ctx, sessionID, approval.ID, claimID, err)
+		return "", true, true, err
+	}
+	resolved := consumed.Request
+	if resolved == nil {
+		_ = directApprovals.Store.MarkFailed(ctx, sessionID, approval.ID, claimID, errors.New("consumed approval request is nil"))
+		return "", true, true, fmt.Errorf("consumed approval request is nil")
+	}
+	if consumed.PreviousStatus == protocol.ApprovalStatusRejected || resolved.SelectedOptionID == resolved.RejectOptionID {
+		if err := directApprovals.Store.MarkRejected(ctx, sessionID, approval.ID, claimID); err != nil {
+			return "", true, true, err
+		}
+		return buildDirectToolApprovalRejectedNote(resolved, claimed), true, true, nil
+	}
+	if consumed.PreviousStatus != protocol.ApprovalStatusApproved {
+		err := fmt.Errorf("approval request %s is not approved or rejected", approval.ID)
+		_ = directApprovals.Store.MarkFailed(ctx, sessionID, approval.ID, claimID, err)
+		return "", true, true, err
+	}
+
+	approvalCtx, err := toolapproval.ApprovalContextFromRequest(resolved)
+	if err != nil {
+		_ = directApprovals.Store.MarkFailed(ctx, sessionID, approval.ID, claimID, err)
+		return "", true, true, err
+	}
+	call := tool.Call{ID: claimed.CallID, Name: claimed.ToolName, Input: claimed.Input}
+	execCtx := tool.WithApproval(work.WithSessionID(ctx, sessionID), approvalCtx)
+	result := dispatcher.Execute(execCtx, call, claimed.MaxPermission)
+	if result.NeedsApproval {
+		err := fmt.Errorf("approved direct tool call %q still requires approval", call.Name)
+		_ = directApprovals.Store.MarkFailed(ctx, sessionID, approval.ID, claimID, err)
+		return "", true, true, err
+	}
+	if err := directApprovals.Store.MarkConsumed(ctx, sessionID, approval.ID, claimID); err != nil {
+		return "", true, true, err
+	}
+	digest := contextutil.SnipToolResult(
+		call.Name,
+		result.CallID,
+		result.Content,
+		contextCfg.ToolResultSoftTokens,
+		contextCfg.ToolResultHardTokens,
+	)
+	return buildDirectToolApprovalOutcomeNote(resolved, claimed, result, digest), true, false, nil
 }
 
 func (e *Engine) resumeApprovalDirectly(ctx context.Context, sessionID string, approval *protocol.ApprovalRequest) (string, bool, bool, error) {
@@ -2010,6 +2176,46 @@ func buildApprovalContinuationNote(approval *protocol.ApprovalRequest) string {
 	)
 }
 
+func buildDirectToolApprovalOutcomeNote(approval *protocol.ApprovalRequest, row toolapproval.PendingDirectToolCall, result tool.Result, digest contextutil.ToolDigest) string {
+	if approval == nil {
+		return ""
+	}
+	resultState := "succeeded"
+	if result.IsError {
+		resultState = "returned an error"
+	}
+	return fmt.Sprintf(
+		"## Internal Direct Tool Approval Outcome\nA user approval decision was received for a pending direct Emotion tool call.\nThis note is internal runtime state, not user-facing content.\n\nApproval request %s for tool %s was approved.\nThe approved tool call has already been executed exactly once by the host and %s.\nDo not call the same tool again for this approval request.\nDo not reveal approval_request_id, internal task_id, raw protocol objects, or approval plumbing.\n\nTool result, snipped for context:\n%s\n\nUse the tool result naturally in the next reply. If the tool result is an error, explain it briefly and safely.",
+		approval.ID,
+		row.ToolName,
+		resultState,
+		contextutil.ToolResultContent(digest),
+	)
+}
+
+func buildDirectToolApprovalRejectedNote(approval *protocol.ApprovalRequest, row toolapproval.PendingDirectToolCall) string {
+	if approval == nil {
+		return ""
+	}
+	return fmt.Sprintf(
+		"## Internal Direct Tool Approval Outcome\nThe user rejected a pending direct Emotion tool call.\nApproval request %s for tool %s was rejected.\nThe tool was not executed.\nDo not call the same tool again unless the user explicitly asks to retry.\nDo not reveal approval_request_id, internal task_id, or approval plumbing.\n\nContinue naturally by acknowledging that the action was cancelled or by offering a safe alternative.",
+		approval.ID,
+		row.ToolName,
+	)
+}
+
+func buildDirectToolApprovalAlreadyResolvedNote(approval *protocol.ApprovalRequest, row toolapproval.PendingDirectToolCall) string {
+	if approval == nil {
+		return ""
+	}
+	return fmt.Sprintf(
+		"## Internal Direct Tool Approval Outcome\nApproval request %s for tool %s has already reached direct tool status %s.\nThe host did not execute the tool again.\nDo not call resume_work or retry this approval_request_id. Continue naturally from the current resolved state.",
+		approval.ID,
+		row.ToolName,
+		row.Status,
+	)
+}
+
 func buildApprovalOutcomeNote(approval *protocol.ApprovalRequest, outcome json.RawMessage) string {
 	if approval == nil {
 		return ""
@@ -2021,6 +2227,15 @@ func buildApprovalOutcomeNote(approval *protocol.ApprovalRequest, outcome json.R
 		approval.Status,
 		string(outcome),
 	)
+}
+
+func firstClassificationByAction(classifications []tool.CallClassification, action tool.CallAction) (tool.CallClassification, bool) {
+	for _, classification := range classifications {
+		if classification.Action == action {
+			return classification, true
+		}
+	}
+	return tool.CallClassification{}, false
 }
 
 func isTerminalTaskReport(outcome json.RawMessage) bool {

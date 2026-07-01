@@ -71,6 +71,7 @@ func TestOpenAndMigrate(t *testing.T) {
 		"plugin_kv",
 		"llm_usage_events",
 		"token_estimator_calibrations",
+		"pending_direct_tool_calls",
 		"prompt_overrides",
 		"prompt_render_snapshots",
 		"resource_grants",
@@ -138,8 +139,8 @@ func TestOpenAndMigrate(t *testing.T) {
 	if err := db.SqlDB().QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_version").Scan(&latestVersion); err != nil {
 		t.Fatalf("read latest schema_version: %v", err)
 	}
-	if latestVersion != 34 {
-		t.Fatalf("latest schema_version = %d, want 34", latestVersion)
+	if latestVersion != 35 {
+		t.Fatalf("latest schema_version = %d, want 35", latestVersion)
 	}
 }
 
@@ -770,10 +771,15 @@ func TestOpenAndMigrate_CreatesPendingDecisionTables(t *testing.T) {
 
 func approvalRequestColumns(t *testing.T, db *sql.DB) map[string]bool {
 	t.Helper()
+	return tableColumnSet(t, db, "approval_requests")
+}
 
-	rows, err := db.Query("PRAGMA table_info(approval_requests)")
+func tableColumnSet(t *testing.T, db *sql.DB, table string) map[string]bool {
+	t.Helper()
+
+	rows, err := db.Query("PRAGMA table_info(" + table + ")")
 	if err != nil {
-		t.Fatalf("PRAGMA table_info(approval_requests): %v", err)
+		t.Fatalf("PRAGMA table_info(%s): %v", table, err)
 	}
 	defer rows.Close()
 
@@ -788,12 +794,12 @@ func approvalRequestColumns(t *testing.T, db *sql.DB) map[string]bool {
 			pk         int
 		)
 		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
-			t.Fatalf("Scan(table_info approval_requests): %v", err)
+			t.Fatalf("Scan(table_info %s): %v", table, err)
 		}
 		columns[name] = true
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("rows.Err(): %v", err)
+		t.Fatalf("rows.Err(table_info %s): %v", table, err)
 	}
 	return columns
 }
@@ -881,6 +887,73 @@ func TestOpenAndMigrate_CreatesApprovalRequestsTableAndColumns(t *testing.T) {
 	assertSQLiteIndexColumns(t, db.SqlDB(), "idx_approval_requests_changeset_binding", []string{
 		"session_id", "task_id", "changeset_id", "plan_hash",
 	})
+}
+
+func TestOpenAndMigrate_CreatesPendingDirectToolCallsTableAndIndexes(t *testing.T) {
+	db := testDB(t)
+
+	var name string
+	if err := db.SqlDB().QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='pending_direct_tool_calls'").Scan(&name); err != nil {
+		t.Fatalf("table %q not found: %v", "pending_direct_tool_calls", err)
+	}
+
+	columns := tableColumnSet(t, db.SqlDB(), "pending_direct_tool_calls")
+	for _, required := range []string{
+		"approval_request_id", "session_id", "turn_id", "task_id", "call_id", "tool_name",
+		"input_json", "max_permission", "provider", "approval_kind", "normalized_input_hash",
+		"path_digest", "input_preview", "status", "claim_id", "claimed_at", "consumed_at",
+		"created_at", "expires_at", "error_message",
+	} {
+		if !columns[required] {
+			t.Fatalf("pending_direct_tool_calls missing column %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"idx_pending_direct_tool_calls_session_status",
+		"idx_pending_direct_tool_calls_task",
+		"idx_pending_direct_tool_calls_expires",
+		"idx_pending_direct_tool_calls_tool",
+	} {
+		assertSQLiteIndexExists(t, db.SqlDB(), required)
+	}
+	assertSQLiteIndexColumns(t, db.SqlDB(), "idx_pending_direct_tool_calls_task", []string{"session_id", "task_id"})
+}
+
+func TestApplyMigrationsRepairsMissingPendingDirectToolCallsTable(t *testing.T) {
+	dir := t.TempDir()
+	sqlDB, err := sql.Open("sqlite", filepath.Join(dir, "migration.db"))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer sqlDB.Close()
+
+	_, err = sqlDB.Exec(`
+CREATE TABLE schema_version (
+    version    INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT INTO schema_version (version)
+VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10),
+       (11), (12), (13), (14), (15), (16), (17), (18), (19), (20),
+       (21), (22), (23), (24), (25), (26), (27), (28), (29), (30),
+       (31), (32), (33), (34), (35);
+`)
+	if err != nil {
+		t.Fatalf("seed drifted schema: %v", err)
+	}
+
+	if err := ApplyMigrations(sqlDB); err != nil {
+		t.Fatalf("ApplyMigrations: %v", err)
+	}
+
+	columns := tableColumnSet(t, sqlDB, "pending_direct_tool_calls")
+	for _, required := range []string{"approval_request_id", "session_id", "input_json", "status", "expires_at"} {
+		if !columns[required] {
+			t.Fatalf("pending_direct_tool_calls missing repaired column %q", required)
+		}
+	}
+	assertSQLiteIndexExists(t, sqlDB, "idx_pending_direct_tool_calls_session_status")
 }
 
 func TestApplyMigrationsRepairsDriftedApprovalRequestSchema(t *testing.T) {

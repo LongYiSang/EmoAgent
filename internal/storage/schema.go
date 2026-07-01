@@ -1346,6 +1346,45 @@ CREATE INDEX IF NOT EXISTS idx_token_estimator_calibrations_provider_model
     ON token_estimator_calibrations(provider_id, model, estimate_method);
 `,
 	},
+	{
+		Version: 35,
+		SQL: `
+CREATE TABLE IF NOT EXISTS pending_direct_tool_calls (
+    approval_request_id   TEXT PRIMARY KEY,
+    session_id            TEXT NOT NULL,
+    turn_id               TEXT NOT NULL DEFAULT '',
+    task_id               TEXT NOT NULL,
+    call_id               TEXT NOT NULL,
+    tool_name             TEXT NOT NULL,
+    input_json            TEXT NOT NULL,
+    max_permission        TEXT NOT NULL DEFAULT 'read-only',
+    provider              TEXT NOT NULL DEFAULT '',
+    approval_kind         TEXT NOT NULL DEFAULT '',
+    normalized_input_hash TEXT NOT NULL DEFAULT '',
+    path_digest           TEXT NOT NULL DEFAULT '',
+    input_preview         TEXT NOT NULL DEFAULT '',
+    status                TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending','claimed','consumed','rejected','expired','failed')),
+    claim_id              TEXT NOT NULL DEFAULT '',
+    claimed_at            TEXT,
+    consumed_at           TEXT,
+    created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at            TEXT NOT NULL,
+    error_message         TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY(approval_request_id) REFERENCES approval_requests(id) ON DELETE CASCADE,
+    UNIQUE(session_id, task_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pending_direct_tool_calls_session_status
+    ON pending_direct_tool_calls(session_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_pending_direct_tool_calls_task
+    ON pending_direct_tool_calls(session_id, task_id);
+CREATE INDEX IF NOT EXISTS idx_pending_direct_tool_calls_expires
+    ON pending_direct_tool_calls(expires_at)
+    WHERE status IN ('pending','claimed');
+CREATE INDEX IF NOT EXISTS idx_pending_direct_tool_calls_tool
+    ON pending_direct_tool_calls(tool_name, created_at DESC);
+`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.
@@ -1400,6 +1439,9 @@ func ApplyMigrations(db *sql.DB) error {
 // whose schema_version rows predate later edits to already-applied migrations.
 func ApplySchemaRepairs(db *sql.DB) error {
 	if err := ensureApprovalRequestsSchema(db); err != nil {
+		return err
+	}
+	if err := ensurePendingDirectToolCallsSchema(db); err != nil {
 		return err
 	}
 	if err := ensureRuntimeSettingsSchema(db); err != nil {
@@ -1873,6 +1915,84 @@ CREATE INDEX IF NOT EXISTS idx_approval_requests_changeset_binding
     ON approval_requests(session_id, task_id, changeset_id, plan_hash);
 `); err != nil {
 		return fmt.Errorf("ensure approval_requests indexes: %w", err)
+	}
+	return nil
+}
+
+func ensurePendingDirectToolCallsSchema(db *sql.DB) error {
+	if _, err := db.Exec(`
+CREATE TABLE IF NOT EXISTS pending_direct_tool_calls (
+    approval_request_id   TEXT PRIMARY KEY,
+    session_id            TEXT NOT NULL,
+    turn_id               TEXT NOT NULL DEFAULT '',
+    task_id               TEXT NOT NULL,
+    call_id               TEXT NOT NULL,
+    tool_name             TEXT NOT NULL,
+    input_json            TEXT NOT NULL,
+    max_permission        TEXT NOT NULL DEFAULT 'read-only',
+    provider              TEXT NOT NULL DEFAULT '',
+    approval_kind         TEXT NOT NULL DEFAULT '',
+    normalized_input_hash TEXT NOT NULL DEFAULT '',
+    path_digest           TEXT NOT NULL DEFAULT '',
+    input_preview         TEXT NOT NULL DEFAULT '',
+    status                TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending','claimed','consumed','rejected','expired','failed')),
+    claim_id              TEXT NOT NULL DEFAULT '',
+    claimed_at            TEXT,
+    consumed_at           TEXT,
+    created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at            TEXT NOT NULL,
+    error_message         TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY(approval_request_id) REFERENCES approval_requests(id) ON DELETE CASCADE,
+    UNIQUE(session_id, task_id)
+);
+`); err != nil {
+		return fmt.Errorf("ensure pending_direct_tool_calls table: %w", err)
+	}
+
+	repairs := map[string][]struct {
+		name string
+		sql  string
+	}{
+		"pending_direct_tool_calls": {
+			{"approval_request_id", "ALTER TABLE pending_direct_tool_calls ADD COLUMN approval_request_id TEXT NOT NULL DEFAULT ''"},
+			{"session_id", "ALTER TABLE pending_direct_tool_calls ADD COLUMN session_id TEXT NOT NULL DEFAULT ''"},
+			{"turn_id", "ALTER TABLE pending_direct_tool_calls ADD COLUMN turn_id TEXT NOT NULL DEFAULT ''"},
+			{"task_id", "ALTER TABLE pending_direct_tool_calls ADD COLUMN task_id TEXT NOT NULL DEFAULT ''"},
+			{"call_id", "ALTER TABLE pending_direct_tool_calls ADD COLUMN call_id TEXT NOT NULL DEFAULT ''"},
+			{"tool_name", "ALTER TABLE pending_direct_tool_calls ADD COLUMN tool_name TEXT NOT NULL DEFAULT ''"},
+			{"input_json", "ALTER TABLE pending_direct_tool_calls ADD COLUMN input_json TEXT NOT NULL DEFAULT ''"},
+			{"max_permission", "ALTER TABLE pending_direct_tool_calls ADD COLUMN max_permission TEXT NOT NULL DEFAULT 'read-only'"},
+			{"provider", "ALTER TABLE pending_direct_tool_calls ADD COLUMN provider TEXT NOT NULL DEFAULT ''"},
+			{"approval_kind", "ALTER TABLE pending_direct_tool_calls ADD COLUMN approval_kind TEXT NOT NULL DEFAULT ''"},
+			{"normalized_input_hash", "ALTER TABLE pending_direct_tool_calls ADD COLUMN normalized_input_hash TEXT NOT NULL DEFAULT ''"},
+			{"path_digest", "ALTER TABLE pending_direct_tool_calls ADD COLUMN path_digest TEXT NOT NULL DEFAULT ''"},
+			{"input_preview", "ALTER TABLE pending_direct_tool_calls ADD COLUMN input_preview TEXT NOT NULL DEFAULT ''"},
+			{"status", "ALTER TABLE pending_direct_tool_calls ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'"},
+			{"claim_id", "ALTER TABLE pending_direct_tool_calls ADD COLUMN claim_id TEXT NOT NULL DEFAULT ''"},
+			{"claimed_at", "ALTER TABLE pending_direct_tool_calls ADD COLUMN claimed_at TEXT"},
+			{"consumed_at", "ALTER TABLE pending_direct_tool_calls ADD COLUMN consumed_at TEXT"},
+			{"created_at", "ALTER TABLE pending_direct_tool_calls ADD COLUMN created_at TEXT NOT NULL DEFAULT ''"},
+			{"expires_at", "ALTER TABLE pending_direct_tool_calls ADD COLUMN expires_at TEXT NOT NULL DEFAULT ''"},
+			{"error_message", "ALTER TABLE pending_direct_tool_calls ADD COLUMN error_message TEXT NOT NULL DEFAULT ''"},
+		},
+	}
+	if err := ensureTableColumns(db, repairs); err != nil {
+		return fmt.Errorf("repair pending_direct_tool_calls schema: %w", err)
+	}
+
+	if _, err := db.Exec(`
+CREATE INDEX IF NOT EXISTS idx_pending_direct_tool_calls_session_status
+    ON pending_direct_tool_calls(session_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_pending_direct_tool_calls_task
+    ON pending_direct_tool_calls(session_id, task_id);
+CREATE INDEX IF NOT EXISTS idx_pending_direct_tool_calls_expires
+    ON pending_direct_tool_calls(expires_at)
+    WHERE status IN ('pending','claimed');
+CREATE INDEX IF NOT EXISTS idx_pending_direct_tool_calls_tool
+    ON pending_direct_tool_calls(tool_name, created_at DESC);
+`); err != nil {
+		return fmt.Errorf("ensure pending_direct_tool_calls indexes: %w", err)
 	}
 	return nil
 }

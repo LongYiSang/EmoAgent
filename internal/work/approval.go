@@ -172,6 +172,10 @@ func (s *ApprovalService) ConsumeApprovedRequestForResume(sessionID, taskID, req
 	return result.Request, nil
 }
 
+func (s *ApprovalService) ConsumeResolvedRequest(sessionID, taskID, requestID string) (*ApprovalConsumeResult, error) {
+	return s.consumeRequestForResume(sessionID, taskID, requestID)
+}
+
 func (s *ApprovalService) consumeRequestForResume(sessionID, taskID, requestID string) (*ApprovalConsumeResult, error) {
 	if s == nil {
 		return nil, fmt.Errorf("approval service is nil")

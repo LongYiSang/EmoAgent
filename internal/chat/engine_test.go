@@ -21,6 +21,7 @@ import (
 	"github.com/longyisang/emoagent/internal/storage"
 	"github.com/longyisang/emoagent/internal/tool"
 	"github.com/longyisang/emoagent/internal/tool/resultv2"
+	"github.com/longyisang/emoagent/internal/toolapproval"
 	"github.com/longyisang/emoagent/internal/turn"
 	"github.com/longyisang/emoagent/internal/work"
 )
@@ -3493,6 +3494,481 @@ func TestEngineSendMessage_StopsTurnImmediatelyWhenToolApprovalIsRaised(t *testi
 	if got := len(llmClient.requests); got != 1 {
 		t.Fatalf("ChatStream requests = %d, want 1 when approval interrupts the turn", got)
 	}
+}
+
+type directApprovalFixture struct {
+	engine      *Engine
+	db          *storage.DB
+	approvals   *work.ApprovalService
+	coordinator *toolapproval.Coordinator
+	registry    *tool.Registry
+	dispatcher  *tool.Dispatcher
+	llmClient   *scriptedEngineClient
+	logger      *slog.Logger
+	execCount   int
+	approvalCtx tool.ApprovalContext
+	hasApproval bool
+}
+
+func newDirectApprovalFixture(t *testing.T, responses ...*llm.ChatResponse) *directApprovalFixture {
+	t.Helper()
+	llmClient := &scriptedEngineClient{responses: responses}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chat.db")
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+	db, err := storage.Open(path, logger)
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	registry := tool.NewRegistry()
+	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, logger)
+	approvals := work.NewApprovalService(db.SqlDB(), logger)
+	coordinator := toolapproval.NewCoordinator(db.SqlDB(), approvals, logger, toolapproval.Config{HardTTL: time.Hour})
+	fixture := &directApprovalFixture{
+		db:          db,
+		approvals:   approvals,
+		coordinator: coordinator,
+		registry:    registry,
+		dispatcher:  dispatcher,
+		llmClient:   llmClient,
+		logger:      logger,
+	}
+	registry.Register(tool.Spec{
+		Name:        "plugin.demo_weather.weather",
+		Description: "test direct approval plugin tool",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false}`),
+		Scope:       tool.ScopeEmotion,
+		Permission:  tool.PermReadOnly,
+		ApprovalClassifier: func(context.Context, json.RawMessage) (tool.ApprovalRequirement, bool) {
+			return tool.ApprovalRequirement{Kind: tool.ApprovalKindPluginInvocation, Reason: "third-party plugin invocation"}, true
+		},
+	}, func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		fixture.execCount++
+		fixture.approvalCtx, fixture.hasApproval = tool.ApprovalFromContext(ctx)
+		return json.RawMessage(`{"forecast":"sunny"}`), nil
+	})
+	fixture.engine = NewEngine(EngineConfig{
+		LLM:          llmClient,
+		DB:           db,
+		Logger:       logger,
+		Model:        "test-model",
+		SummaryModel: "summary-model",
+		MaxTokens:    512,
+		Temperature:  0.2,
+		ContextConfig: config.ContextConfig{
+			InputBudgetTokens:    24000,
+			SoftCompactRatio:     0.75,
+			HardCompactRatio:     0.92,
+			ReserveOutputTokens:  4096,
+			KeepRecentUserTurns:  6,
+			ToolResultSoftTokens: 1000,
+			ToolResultHardTokens: 3000,
+		},
+		Provider:            "openai",
+		Registry:            registry,
+		Dispatcher:          dispatcher,
+		Approvals:           approvals,
+		DirectToolApprovals: coordinator,
+	})
+	return fixture
+}
+
+func TestEngineSendMessage_DirectToolApprovalCreatesPendingAndStopsBeforeToolMessage(t *testing.T) {
+	f := newDirectApprovalFixture(t, toolUseResponse("call_weather", "plugin.demo_weather.weather", `{"city":"Hangzhou"}`))
+
+	sessionID, err := f.engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	persona := &config.Persona{Name: "default", SystemPrompt: "You are warm."}
+
+	var events []WSMessage
+	ctx := withWSWriter(context.Background(), func(msg WSMessage) {
+		events = append(events, msg)
+	})
+	ctx = withForcedOutboundEvents(ctx)
+	reply, err := f.engine.SendMessage(ctx, sessionID, persona, "查一下杭州天气", nil)
+	if !errors.Is(err, errApprovalPending) {
+		t.Fatalf("SendMessage err = %v, want errApprovalPending", err)
+	}
+	if reply != "" {
+		t.Fatalf("reply = %q, want empty", reply)
+	}
+	if f.execCount != 0 {
+		t.Fatalf("tool executed %d times before approval, want 0", f.execCount)
+	}
+
+	approvals := f.approvals.ListSessionApprovals(sessionID, []protocol.ApprovalStatus{protocol.ApprovalStatusPending})
+	if len(approvals) != 1 {
+		t.Fatalf("pending approvals = %#v, want one", approvals)
+	}
+	if approvals[0].ToolApprovalBinding == nil || approvals[0].ToolApprovalBinding.ToolName != "plugin.demo_weather.weather" {
+		t.Fatalf("approval binding = %#v, want plugin tool binding", approvals[0].ToolApprovalBinding)
+	}
+	stored, ok, err := f.coordinator.Store.GetByApproval(context.Background(), sessionID, approvals[0].ID)
+	if err != nil {
+		t.Fatalf("GetByApproval: %v", err)
+	}
+	if !ok || stored.Status != toolapproval.DirectToolCallStatusPending || string(stored.Input) != `{"city":"Hangzhou"}` {
+		t.Fatalf("stored = %#v ok=%v, want pending exact input", stored, ok)
+	}
+	if got := len(f.llmClient.requests); got != 1 {
+		t.Fatalf("ChatStream requests = %d, want 1", got)
+	}
+	if !hasDirectToolEvent(events, "tool_call_end", "approval_required") {
+		t.Fatalf("events = %#v, want tool_call_end approval_required", events)
+	}
+	if !hasApprovalRequiredEvent(events) {
+		t.Fatalf("events = %#v, want approval_required", events)
+	}
+}
+
+func TestEngineContinueAfterApproval_ExecutesPendingDirectToolOnce(t *testing.T) {
+	f := newDirectApprovalFixture(t, endTurnResponse("天气是晴。"))
+	sessionID, err := f.engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	persona := &config.Persona{Name: "default", SystemPrompt: "You are warm."}
+	pending := createPendingDirectWeatherApproval(t, f, sessionID)
+
+	approved, err := f.approvals.ApproveRequest(sessionID, pending.ID, "allow", "web", "")
+	if err != nil {
+		t.Fatalf("ApproveRequest: %v", err)
+	}
+	reply, err := f.engine.ContinueAfterApproval(context.Background(), sessionID, persona, approved, nil)
+	if err != nil {
+		t.Fatalf("ContinueAfterApproval: %v", err)
+	}
+	if reply != "天气是晴。" {
+		t.Fatalf("reply = %q, want 天气是晴。", reply)
+	}
+	if f.execCount != 1 {
+		t.Fatalf("tool executed %d times, want 1", f.execCount)
+	}
+	if !f.hasApproval || f.approvalCtx.RequestID != pending.ID || f.approvalCtx.ToolName != "plugin.demo_weather.weather" {
+		t.Fatalf("approval context = %#v has=%v, want matching request", f.approvalCtx, f.hasApproval)
+	}
+	stored, ok, err := f.coordinator.Store.GetByApproval(context.Background(), sessionID, pending.ID)
+	if err != nil {
+		t.Fatalf("GetByApproval: %v", err)
+	}
+	if !ok || stored.Status != toolapproval.DirectToolCallStatusConsumed {
+		t.Fatalf("stored = %#v ok=%v, want consumed", stored, ok)
+	}
+	if len(f.llmClient.requests) != 1 || !strings.Contains(f.llmClient.requests[0].System, "Internal Direct Tool Approval Outcome") {
+		t.Fatalf("llm requests = %#v, want internal direct approval outcome note", f.llmClient.requests)
+	}
+}
+
+func TestEngineContinueAfterApproval_RejectedDirectToolDoesNotExecute(t *testing.T) {
+	f := newDirectApprovalFixture(t, endTurnResponse("已取消。"))
+	sessionID, err := f.engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	persona := &config.Persona{Name: "default", SystemPrompt: "You are warm."}
+	pending := createPendingDirectWeatherApproval(t, f, sessionID)
+
+	rejected, err := f.approvals.RejectRequest(sessionID, pending.ID, "web", "")
+	if err != nil {
+		t.Fatalf("RejectRequest: %v", err)
+	}
+	reply, err := f.engine.ContinueAfterApproval(context.Background(), sessionID, persona, rejected, nil)
+	if err != nil {
+		t.Fatalf("ContinueAfterApproval: %v", err)
+	}
+	if reply != "已取消。" {
+		t.Fatalf("reply = %q, want 已取消。", reply)
+	}
+	if f.execCount != 0 {
+		t.Fatalf("tool executed %d times after rejection, want 0", f.execCount)
+	}
+	stored, ok, err := f.coordinator.Store.GetByApproval(context.Background(), sessionID, pending.ID)
+	if err != nil {
+		t.Fatalf("GetByApproval: %v", err)
+	}
+	if !ok || stored.Status != toolapproval.DirectToolCallStatusRejected {
+		t.Fatalf("stored = %#v ok=%v, want rejected", stored, ok)
+	}
+	if len(f.llmClient.requests) != 1 || !strings.Contains(f.llmClient.requests[0].System, "was rejected") {
+		t.Fatalf("llm requests = %#v, want rejection note", f.llmClient.requests)
+	}
+	if len(f.llmClient.requests[0].Tools) != 0 {
+		t.Fatalf("Tools = %#v, want tools disabled after rejection", f.llmClient.requests[0].Tools)
+	}
+}
+
+func TestEngineContinueAfterApproval_BindingMismatchFailsClosed(t *testing.T) {
+	f := newDirectApprovalFixture(t)
+	sessionID, err := f.engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	persona := &config.Persona{Name: "default", SystemPrompt: "You are warm."}
+	pending := createPendingDirectWeatherApproval(t, f, sessionID)
+	if _, err := f.db.SqlDB().Exec(`UPDATE pending_direct_tool_calls SET input_json = ? WHERE approval_request_id = ?`, `{"city":"Shanghai"}`, pending.ID); err != nil {
+		t.Fatalf("mutate pending input: %v", err)
+	}
+
+	approved, err := f.approvals.ApproveRequest(sessionID, pending.ID, "allow", "web", "")
+	if err != nil {
+		t.Fatalf("ApproveRequest: %v", err)
+	}
+	_, err = f.engine.ContinueAfterApproval(context.Background(), sessionID, persona, approved, nil)
+	if err == nil {
+		t.Fatal("ContinueAfterApproval should fail closed on binding mismatch")
+	}
+	if f.execCount != 0 {
+		t.Fatalf("tool executed %d times after binding mismatch, want 0", f.execCount)
+	}
+	stored, ok, getErr := f.coordinator.Store.GetByApproval(context.Background(), sessionID, pending.ID)
+	if getErr != nil {
+		t.Fatalf("GetByApproval: %v", getErr)
+	}
+	if !ok || stored.Status != toolapproval.DirectToolCallStatusFailed {
+		t.Fatalf("stored = %#v ok=%v, want failed", stored, ok)
+	}
+}
+
+func TestEngineContinueAfterApproval_ResolvedDirectRowDoesNotFallThroughToWork(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status toolapproval.DirectToolCallStatus
+		mark   func(t *testing.T, f *directApprovalFixture, sessionID string, pending *protocol.ApprovalRequest)
+	}{
+		{
+			name:   "consumed",
+			status: toolapproval.DirectToolCallStatusConsumed,
+			mark: func(t *testing.T, f *directApprovalFixture, sessionID string, pending *protocol.ApprovalRequest) {
+				t.Helper()
+				_, claimID, ok, err := f.coordinator.Store.Claim(context.Background(), sessionID, pending.ID)
+				if err != nil || !ok {
+					t.Fatalf("Claim: claimID=%q ok=%v err=%v", claimID, ok, err)
+				}
+				if err := f.coordinator.Store.MarkConsumed(context.Background(), sessionID, pending.ID, claimID); err != nil {
+					t.Fatalf("MarkConsumed: %v", err)
+				}
+			},
+		},
+		{
+			name:   "rejected",
+			status: toolapproval.DirectToolCallStatusRejected,
+			mark: func(t *testing.T, f *directApprovalFixture, sessionID string, pending *protocol.ApprovalRequest) {
+				t.Helper()
+				_, claimID, ok, err := f.coordinator.Store.Claim(context.Background(), sessionID, pending.ID)
+				if err != nil || !ok {
+					t.Fatalf("Claim: claimID=%q ok=%v err=%v", claimID, ok, err)
+				}
+				if err := f.coordinator.Store.MarkRejected(context.Background(), sessionID, pending.ID, claimID); err != nil {
+					t.Fatalf("MarkRejected: %v", err)
+				}
+			},
+		},
+		{
+			name:   "failed",
+			status: toolapproval.DirectToolCallStatusFailed,
+			mark: func(t *testing.T, f *directApprovalFixture, sessionID string, pending *protocol.ApprovalRequest) {
+				t.Helper()
+				_, claimID, ok, err := f.coordinator.Store.Claim(context.Background(), sessionID, pending.ID)
+				if err != nil || !ok {
+					t.Fatalf("Claim: claimID=%q ok=%v err=%v", claimID, ok, err)
+				}
+				if err := f.coordinator.Store.MarkFailed(context.Background(), sessionID, pending.ID, claimID, errors.New("boom")); err != nil {
+					t.Fatalf("MarkFailed: %v", err)
+				}
+			},
+		},
+		{
+			name:   "claimed",
+			status: toolapproval.DirectToolCallStatusClaimed,
+			mark: func(t *testing.T, f *directApprovalFixture, sessionID string, pending *protocol.ApprovalRequest) {
+				t.Helper()
+				if _, _, ok, err := f.coordinator.Store.Claim(context.Background(), sessionID, pending.ID); err != nil || !ok {
+					t.Fatalf("Claim: ok=%v err=%v", ok, err)
+				}
+			},
+		},
+		{
+			name:   "expired",
+			status: toolapproval.DirectToolCallStatusExpired,
+			mark: func(t *testing.T, f *directApprovalFixture, sessionID string, pending *protocol.ApprovalRequest) {
+				t.Helper()
+				if _, err := f.db.SqlDB().Exec(`UPDATE pending_direct_tool_calls SET status = ? WHERE approval_request_id = ?`, string(toolapproval.DirectToolCallStatusExpired), pending.ID); err != nil {
+					t.Fatalf("expire row: %v", err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDirectApprovalFixture(t, endTurnResponse("已处理。"))
+			sessionID, err := f.engine.StartSession(context.Background(), "default")
+			if err != nil {
+				t.Fatalf("StartSession: %v", err)
+			}
+			persona := &config.Persona{Name: "default", SystemPrompt: "You are warm."}
+			pending := createPendingDirectWeatherApproval(t, f, sessionID)
+			tc.mark(t, f, sessionID, pending)
+
+			var resumeWorkCalls int
+			f.registry.Register(tool.Spec{
+				Name:       work.ToolNameResumeWork,
+				Scope:      tool.ScopeEmotion,
+				Permission: tool.PermReadOnly,
+			}, func(context.Context, json.RawMessage) (json.RawMessage, error) {
+				resumeWorkCalls++
+				return json.RawMessage(`{"status":"completed","summary":"work resumed"}`), nil
+			})
+
+			reply, err := f.engine.ContinueAfterApproval(context.Background(), sessionID, persona, pending, nil)
+			if err != nil {
+				t.Fatalf("ContinueAfterApproval: %v", err)
+			}
+			if reply != "已处理。" {
+				t.Fatalf("reply = %q, want 已处理。", reply)
+			}
+			if resumeWorkCalls != 0 {
+				t.Fatalf("resume_work called %d times, want 0 for resolved direct row", resumeWorkCalls)
+			}
+			if f.execCount != 0 {
+				t.Fatalf("direct tool executed %d times, want 0 for resolved direct row", f.execCount)
+			}
+			stored, ok, err := f.coordinator.Store.GetByApproval(context.Background(), sessionID, pending.ID)
+			if err != nil || !ok || stored.Status != tc.status {
+				t.Fatalf("stored = %#v ok=%v err=%v, want %s", stored, ok, err, tc.status)
+			}
+		})
+	}
+}
+
+func TestEngineContinueAfterApproval_MissingBindingFailsClosed(t *testing.T) {
+	f := newDirectApprovalFixture(t)
+	sessionID, err := f.engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	persona := &config.Persona{Name: "default", SystemPrompt: "You are warm."}
+	pending := createPendingDirectWeatherApproval(t, f, sessionID)
+	if _, err := f.db.SqlDB().Exec(`
+		UPDATE approval_requests
+		SET approval_kind = '', tool_name = '', normalized_input_hash = '', path_digest = '',
+		    input_preview = '', changeset_id = '', plan_hash = '', resource_id = '',
+		    canonical_path_hash = '', baseline_hash = '', baseline_file_id = '', delete_mode = ''
+		WHERE id = ?
+	`, pending.ID); err != nil {
+		t.Fatalf("clear approval binding: %v", err)
+	}
+
+	approved, err := f.approvals.ApproveRequest(sessionID, pending.ID, "allow", "web", "")
+	if err != nil {
+		t.Fatalf("ApproveRequest: %v", err)
+	}
+	_, err = f.engine.ContinueAfterApproval(context.Background(), sessionID, persona, approved, nil)
+	if err == nil {
+		t.Fatal("ContinueAfterApproval should fail closed on missing binding")
+	}
+	if f.execCount != 0 {
+		t.Fatalf("tool executed %d times after missing binding, want 0", f.execCount)
+	}
+	stored, ok, getErr := f.coordinator.Store.GetByApproval(context.Background(), sessionID, pending.ID)
+	if getErr != nil {
+		t.Fatalf("GetByApproval: %v", getErr)
+	}
+	if !ok || stored.Status != toolapproval.DirectToolCallStatusFailed {
+		t.Fatalf("stored = %#v ok=%v, want failed", stored, ok)
+	}
+}
+
+func TestTurnRuntimeDirectToolApprovalWaitReplaysApprovalRequired(t *testing.T) {
+	f := newDirectApprovalFixture(t, toolUseResponse("call_weather", "plugin.demo_weather.weather", `{"city":"Hangzhou"}`))
+	runtime := newChatTurnRuntime(f.engine, config.TurnPipelineConfig{Enabled: true}, turn.NewMemoryJournal(), discardLogger())
+	sessionID, err := f.engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	env := mustWSMessageToInbound(t, WSMessage{Type: "message", Content: "查杭州天气", RequestID: "request-1"}, sessionID, "default")
+	persona := &config.Persona{Name: "default", SystemPrompt: "You are warm."}
+
+	result, err := runtime.Execute(context.Background(), env, persona, turn.SinkFunc(func(context.Context, turn.OutboundEvent) error {
+		return nil
+	}))
+	if err != nil {
+		t.Fatalf("first Execute: %v", err)
+	}
+	if result.Status != "approval_wait" {
+		t.Fatalf("first status = %q, want approval_wait", result.Status)
+	}
+
+	var replay []turn.OutboundEvent
+	result, err = runtime.Execute(context.Background(), env, persona, turn.SinkFunc(func(ctx context.Context, event turn.OutboundEvent) error {
+		replay = append(replay, event)
+		return nil
+	}))
+	if err != nil {
+		t.Fatalf("duplicate Execute: %v", err)
+	}
+	if result.Status != "approval_wait" {
+		t.Fatalf("duplicate status = %q, want approval_wait", result.Status)
+	}
+	if !hasEventType(replay, turn.EventApprovalRequired) {
+		t.Fatalf("replay = %#v, want approval_required", replay)
+	}
+	if f.execCount != 0 {
+		t.Fatalf("tool executed %d times before approval, want 0", f.execCount)
+	}
+	if got := len(f.llmClient.requests); got != 1 {
+		t.Fatalf("ChatStream requests = %d, want no duplicate engine call", got)
+	}
+}
+
+func createPendingDirectWeatherApproval(t *testing.T, f *directApprovalFixture, sessionID string) *protocol.ApprovalRequest {
+	t.Helper()
+	approval, err := f.coordinator.CreatePending(context.Background(), toolapproval.CreatePendingRequest{
+		SessionID:      sessionID,
+		TurnID:         "turn-1",
+		Provider:       "openai",
+		MaxPermission:  tool.PermReadOnly,
+		GoalSummary:    "Emotion direct tool call",
+		Classification: directWeatherClassification(),
+		ExpiresAt:      time.Now().UTC().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("CreatePending: %v", err)
+	}
+	return approval
+}
+
+func directWeatherClassification() tool.CallClassification {
+	return tool.CallClassification{
+		Call: tool.Call{
+			ID:    "call_weather",
+			Name:  "plugin.demo_weather.weather",
+			Input: json.RawMessage(`{"city":"Hangzhou"}`),
+		},
+		Action:         tool.CallActionToolApprovalRequired,
+		ApprovalKind:   tool.ApprovalKindPluginInvocation,
+		ApprovalReason: "third-party plugin invocation",
+	}
+}
+
+func hasDirectToolEvent(events []WSMessage, eventType, status string) bool {
+	for _, event := range events {
+		if event.Type == eventType && event.Tool != nil && event.Tool.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
+func hasApprovalRequiredEvent(events []WSMessage) bool {
+	for _, event := range events {
+		if event.Type == "approval_required" && event.Approval != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func TestEngineContinueAfterApproval_ResumesWorkDirectlyBeforeNarrating(t *testing.T) {
