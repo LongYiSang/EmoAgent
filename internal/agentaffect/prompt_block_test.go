@@ -69,6 +69,7 @@ func TestFormatPromptAffectBlockNumericDebugIncludesVector(t *testing.T) {
 
 	for _, want := range []string{
 		"[Agent Affect Runtime State]",
+		"label: attentive",
 		"mood_vector:",
 		"valence: 0.100",
 		"attachment: 0.620",
@@ -95,5 +96,37 @@ func TestFormatPromptAffectBlockOmitsRawInput(t *testing.T) {
 	block := FormatPromptAffectBlock(cfg, snapshot)
 	if strings.Contains(block, "raw input") {
 		t.Fatalf("prompt block should not include raw input: %s", block)
+	}
+}
+
+func TestPromptMoodTextStripsLegacyLabelPrefix(t *testing.T) {
+	got := promptMoodText(MoodSnapshot{
+		Label:          "playful_caring_weather_sleep_reminder",
+		PromptMoodText: "playful_caring_weather_sleep_reminder；俏皮地关心用户，提醒休息。",
+	})
+	if got != "俏皮地关心用户，提醒休息。" {
+		t.Fatalf("prompt mood text = %q", got)
+	}
+}
+
+func TestPromptMoodTextFallsBackToVisibleCauseWithoutLabel(t *testing.T) {
+	got := promptMoodText(MoodSnapshot{
+		Label:               "steady",
+		VisibleCauseSummary: "No meaningful affective change.",
+	})
+	if got != "No meaningful affective change." {
+		t.Fatalf("prompt mood text = %q", got)
+	}
+}
+
+func TestFormatPromptAffectBlockUsesDefaultWhenOnlyLabelAvailable(t *testing.T) {
+	cfg := config.DefaultConfig().AgentAffect
+	block := FormatPromptAffectBlock(cfg, MoodSnapshot{Label: "steady"})
+
+	if !strings.Contains(block, "当前模拟心情：平稳、接近基线。") {
+		t.Fatalf("prompt block missing default baseline text:\n%s", block)
+	}
+	if strings.Contains(block, "当前模拟心情：steady") {
+		t.Fatalf("prompt block leaked label:\n%s", block)
 	}
 }

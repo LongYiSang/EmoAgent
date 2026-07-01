@@ -38,17 +38,24 @@ func formatNaturalPromptAffectBlock(cfg config.AgentAffectConfig, mood MoodSnaps
 }
 
 func promptMoodText(mood MoodSnapshot) string {
-	if text := strings.TrimSpace(mood.PromptMoodText); text != "" {
-		return text
+	label := strings.TrimSpace(mood.Label)
+	if text := stripPromptMoodLabelPrefix(label, mood.PromptMoodText); strings.TrimSpace(text) != "" {
+		return strings.TrimSpace(text)
 	}
-	if text := buildPromptMoodTextFallback(mood.MoodDescription, mood.MoodReason); text != "" {
-		return text
+	if text := buildPromptMoodTextFallback(mood.MoodDescription, mood.MoodReason); strings.TrimSpace(text) != "" {
+		text = stripPromptMoodLabelPrefix(label, text)
+		if strings.TrimSpace(text) != "" {
+			return strings.TrimSpace(text)
+		}
 	}
-	reason := mood.VisibleCauseSummary
+	reason := strings.TrimSpace(mood.VisibleCauseSummary)
 	if reason == "" {
-		reason = mood.CauseSummary
+		reason = strings.TrimSpace(mood.CauseSummary)
 	}
-	return buildPromptMoodTextFallback(mood.Label, reason)
+	if text := stripPromptMoodLabelPrefix(label, reason); strings.TrimSpace(text) != "" {
+		return text
+	}
+	return ""
 }
 
 func truncateRunes(value string, max int) string {

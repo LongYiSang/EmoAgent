@@ -81,19 +81,16 @@ func ParseLLMResponse(content string) (LLMEvaluationResult, error) {
 	if label == "" {
 		label = deriveLabel(delta)
 	}
-	moodReason := cause.VisibleSummary
-	if moodReason == "" {
-		moodReason = cause.Summary
-	}
+	moodDescription, moodReason, promptMoodText := naturalMoodFieldsFromCause(label, cause)
 	return LLMEvaluationResult{
 		Delta:               delta,
 		Appraisal:           *parsed.Appraisal,
 		HasAppraisal:        true,
 		Cause:               cause,
 		Label:               label,
-		MoodDescription:     label,
+		MoodDescription:     moodDescription,
 		MoodReason:          moodReason,
-		PromptMoodText:      buildPromptMoodTextFallback(label, moodReason),
+		PromptMoodText:      promptMoodText,
 		CauseSummary:        cause.Summary,
 		VisibleCauseSummary: cause.VisibleSummary,
 		AffectTags:          cause.Tags,
@@ -197,15 +194,59 @@ func NoChangeResult(reason string, status string) LLMEvaluationResult {
 	if status == "" {
 		status = EvaluationStatusPreview
 	}
+	promptText := "平稳、接近基线。"
 	return LLMEvaluationResult{
 		Delta:               MoodVector{},
 		Label:               "steady",
+		MoodDescription:     promptText,
+		PromptMoodText:      promptText,
 		CauseSummary:        reason,
 		VisibleCauseSummary: reason,
 		Confidence:          0.5,
 		Fallback:            true,
 		Status:              status,
 	}
+}
+
+func naturalPromptMoodTextFromCause(cause AffectCauseProposal) string {
+	if text := strings.TrimSpace(cause.VisibleSummary); text != "" {
+		return text
+	}
+	if text := strings.TrimSpace(cause.Summary); text != "" {
+		return text
+	}
+	return ""
+}
+
+func stripPromptMoodLabelPrefix(label, text string) string {
+	label = strings.TrimSpace(label)
+	text = strings.TrimSpace(text)
+	if label == "" || text == "" {
+		return text
+	}
+	if text == label {
+		return ""
+	}
+	for _, sep := range []string{"；", ";", "：", ":", " - "} {
+		prefix := label + sep
+		if strings.HasPrefix(text, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(text, prefix))
+		}
+	}
+	return text
+}
+
+func naturalMoodFieldsFromCause(label string, cause AffectCauseProposal) (description string, reason string, promptText string) {
+	promptText = stripPromptMoodLabelPrefix(label, naturalPromptMoodTextFromCause(cause))
+	description = promptText
+
+	summary := strings.TrimSpace(cause.Summary)
+	visible := strings.TrimSpace(cause.VisibleSummary)
+	cleanSummary := stripPromptMoodLabelPrefix(label, summary)
+	if cleanSummary != "" && cleanSummary != visible && cleanSummary != promptText {
+		reason = cleanSummary
+	}
+	return description, reason, promptText
 }
 
 func buildPromptMoodTextFallback(description string, reason string) string {

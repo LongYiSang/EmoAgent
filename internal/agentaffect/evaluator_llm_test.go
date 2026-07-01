@@ -177,11 +177,84 @@ func TestParseLLMResponseRequiresV3SchemaAndDerivesNaturalMoodFields(t *testing.
 	if err != nil {
 		t.Fatalf("ParseLLMResponse: %v", err)
 	}
-	if result.MoodDescription != "steady" || result.MoodReason != "Safe visible cause summary." {
+	if result.Label != "steady" {
+		t.Fatalf("label = %q", result.Label)
+	}
+	if result.MoodDescription != "Safe visible cause summary." || result.MoodReason != "Internal audit summary." {
 		t.Fatalf("natural mood fields = %#v", result)
 	}
-	if result.PromptMoodText != "steady；Safe visible cause summary." {
+	if result.PromptMoodText != "Safe visible cause summary." {
 		t.Fatalf("prompt_mood_text = %q", result.PromptMoodText)
+	}
+	if strings.Contains(result.PromptMoodText, result.Label+"；") {
+		t.Fatalf("prompt_mood_text leaks machine label: %q", result.PromptMoodText)
+	}
+}
+
+func TestParseLLMResponseKeepsMachineLabelOutOfPromptMoodText(t *testing.T) {
+	result, err := ParseLLMResponse(`{
+		"schema_version": "agent_affect.v3.appraisal.v1",
+		"appraisal": {
+			"event_significance": 0.3,
+			"novelty": 0.1,
+			"goal_relevance": 0.1,
+			"relationship_impact": 0.2,
+			"boundary_impact": 0,
+			"uncertainty": 0.1
+		},
+		"delta": {"valence": 0.02, "warmth": 0.03},
+		"label": "playful_caring_weather_sleep_reminder",
+		"cause": {
+			"code": "sleep_reminder",
+			"summary": "Internal audit summary.",
+			"visible_summary": "俏皮地关心用户，提醒休息。",
+			"tags": ["sleep"]
+		},
+		"confidence": 0.6
+	}`)
+	if err != nil {
+		t.Fatalf("ParseLLMResponse: %v", err)
+	}
+	if result.Label != "playful_caring_weather_sleep_reminder" {
+		t.Fatalf("label = %q", result.Label)
+	}
+	if result.PromptMoodText != "俏皮地关心用户，提醒休息。" {
+		t.Fatalf("prompt_mood_text = %q", result.PromptMoodText)
+	}
+	if strings.Contains(result.PromptMoodText, result.Label) {
+		t.Fatalf("prompt_mood_text leaks label: %q", result.PromptMoodText)
+	}
+}
+
+func TestParseLLMResponseFallsBackToCauseSummaryForPromptMoodText(t *testing.T) {
+	result, err := ParseLLMResponse(`{
+		"schema_version": "agent_affect.v3.appraisal.v1",
+		"appraisal": {
+			"event_significance": 0.3,
+			"novelty": 0.1,
+			"goal_relevance": 0.1,
+			"relationship_impact": 0.2,
+			"boundary_impact": 0,
+			"uncertainty": 0.1
+		},
+		"delta": {"valence": 0.02, "warmth": 0.03},
+		"label": "playful_caring_weather_sleep_reminder",
+		"cause": {
+			"code": "sleep_reminder",
+			"summary": "安全的自然语言摘要。",
+			"visible_summary": "",
+			"tags": ["sleep"]
+		},
+		"confidence": 0.6
+	}`)
+	if err != nil {
+		t.Fatalf("ParseLLMResponse: %v", err)
+	}
+	if result.PromptMoodText != "安全的自然语言摘要。" {
+		t.Fatalf("prompt_mood_text = %q", result.PromptMoodText)
+	}
+	if strings.Contains(result.PromptMoodText, result.Label) {
+		t.Fatalf("prompt_mood_text leaks label: %q", result.PromptMoodText)
 	}
 }
 

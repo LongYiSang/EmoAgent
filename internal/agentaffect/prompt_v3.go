@@ -120,6 +120,7 @@ Return strict JSON only with schema_version "agent_affect.v3.appraisal.v1".
 The response object must contain: schema_version, appraisal, delta, label, cause, confidence.
 appraisal.event_significance, novelty, goal_relevance, boundary_impact, uncertainty are in [0,1]; relationship_impact is in [-1,1].
 delta contains valence, arousal, dominance, energy, warmth, concern, curiosity, playfulness, attachment, frustration, uncertainty.
+label is a compact internal tag, not prose; cause.visible_summary is short natural-language internal mood/cause text for the Agent Mood block, not a user-facing reply.
 cause contains code, summary, visible_summary, tags; keep summaries short and safe.
 Zero delta is valid when the batch has no meaningful affective change.`)
 }
