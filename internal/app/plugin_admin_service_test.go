@@ -86,6 +86,64 @@ func TestPluginServiceInstallEnableDisableList(t *testing.T) {
 	}
 }
 
+func TestPluginServiceDeleteRemovesInstalledPackageDirs(t *testing.T) {
+	dir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(dir, "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open DB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	cfg := config.DefaultConfig()
+	cfg.Plugins.Enabled = false
+	cfg.Plugins.Store.RootDir = filepath.Join(dir, "store")
+	cfg.Plugins.Installer.AllowUnsignedDev = true
+	cfg.Plugins.Installer.RequireSignature = true
+	service := &PluginService{infra: &Infra{Config: cfg, DB: db, Logger: logger, ProjectRoot: dir}}
+
+	v1Dir := writeAdminFixturePluginVersion(t, dir, "0.1.0", "Admin Fixture 0.1")
+	v2Dir := writeAdminFixturePluginVersion(t, dir, "0.2.0", "Admin Fixture 0.2")
+	v1, err := service.InstallLocal(context.Background(), plugin.AdminPluginInstallRequest{Path: v1Dir})
+	if err != nil {
+		t.Fatalf("InstallLocal v1: %v", err)
+	}
+	v2, err := service.InstallLocal(context.Background(), plugin.AdminPluginInstallRequest{Path: v2Dir})
+	if err != nil {
+		t.Fatalf("InstallLocal v2: %v", err)
+	}
+
+	store, err := plugin.NewPluginStore(cfg.Plugins.Store.RootDir)
+	if err != nil {
+		t.Fatalf("NewPluginStore: %v", err)
+	}
+	v1PackageDir, err := store.PackageDir(v1.PluginID, v1.Version)
+	if err != nil {
+		t.Fatalf("PackageDir v1: %v", err)
+	}
+	v2PackageDir, err := store.PackageDir(v2.PluginID, v2.Version)
+	if err != nil {
+		t.Fatalf("PackageDir v2: %v", err)
+	}
+	for _, packageDir := range []string{v1PackageDir, v2PackageDir} {
+		if info, err := os.Stat(packageDir); err != nil || !info.IsDir() {
+			t.Fatalf("package dir %s missing after install: info=%v err=%v", packageDir, info, err)
+		}
+	}
+
+	if err := service.DeletePlugin(context.Background(), v1.PluginID); err != nil {
+		t.Fatalf("DeletePlugin: %v", err)
+	}
+	for _, packageDir := range []string{v1PackageDir, v2PackageDir} {
+		if _, err := os.Stat(packageDir); !os.IsNotExist(err) {
+			t.Fatalf("package dir %s still exists after delete: %v", packageDir, err)
+		}
+	}
+	if _, err := service.InstallLocal(context.Background(), plugin.AdminPluginInstallRequest{Path: v1Dir}); err != nil {
+		t.Fatalf("InstallLocal v1 after delete: %v", err)
+	}
+}
+
 func TestPluginServiceSettingsRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))

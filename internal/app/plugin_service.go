@@ -958,6 +958,21 @@ func (s *PluginService) DeletePlugin(ctx context.Context, pluginID string) error
 	if err := s.requireAdminLocked(); err != nil {
 		return err
 	}
+	installations, err := s.infra.DB.ListPluginInstallations(ctx)
+	if err != nil {
+		return err
+	}
+	packageDirs := make([]string, 0)
+	for _, installation := range installations {
+		if installation.PluginID != pluginID {
+			continue
+		}
+		packageDir, err := s.store.PackageDir(installation.PluginID, installation.Version)
+		if err != nil {
+			return err
+		}
+		packageDirs = append(packageDirs, packageDir)
+	}
 	_ = s.unregisterProcessPluginLocked(ctx, pluginID)
 	if err := s.infra.DB.SetPluginEnabled(ctx, pluginID, "0.0.0", false, "{}"); err != nil {
 		state, stateErr := s.infra.DB.GetPluginEnabledState(ctx, pluginID)
@@ -966,6 +981,11 @@ func (s *PluginService) DeletePlugin(ctx context.Context, pluginID string) error
 		}
 		if err != nil {
 			return err
+		}
+	}
+	for _, packageDir := range packageDirs {
+		if err := os.RemoveAll(packageDir); err != nil {
+			return fmt.Errorf("delete plugin package %s: %w", packageDir, err)
 		}
 	}
 	return s.infra.DB.DeletePluginInstallation(ctx, pluginID)
