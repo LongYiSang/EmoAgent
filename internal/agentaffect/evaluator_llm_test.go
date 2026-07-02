@@ -86,7 +86,7 @@ func TestLLMEvaluatorParsesStrictJSONAndConfiguresChatRequest(t *testing.T) {
 		"cause": {
 			"code": "shared_progress",
 			"summary": "User shared progress.",
-			"visible_summary": "Shared progress.",
+			"visible_summary": "平稳而温和，因共同进展略带积极感。",
 			"tags": ["progress"]
 		},
 		"confidence": 0.8
@@ -116,8 +116,11 @@ func TestLLMEvaluatorParsesStrictJSONAndConfiguresChatRequest(t *testing.T) {
 	if result.Delta.Valence != 0.12 || result.Delta.Attachment != 0.04 {
 		t.Fatalf("delta = %#v", result.Delta)
 	}
-	if result.Label != "steady" || result.CauseSummary != "User shared progress." || result.VisibleCauseSummary != "Shared progress." {
+	if result.Label != "steady" || result.CauseSummary != "User shared progress." || result.VisibleCauseSummary != "平稳而温和，因共同进展略带积极感。" {
 		t.Fatalf("parsed result = %#v", result)
+	}
+	if result.PromptMoodText != "平稳而温和，因共同进展略带积极感。" {
+		t.Fatalf("prompt_mood_text = %q", result.PromptMoodText)
 	}
 	if !result.HasAppraisal || result.Appraisal.EventSignificance != 0.7 {
 		t.Fatalf("appraisal = %#v has=%v, want event significance", result.Appraisal, result.HasAppraisal)
@@ -153,6 +156,24 @@ func TestLLMEvaluatorParsesStrictJSONAndConfiguresChatRequest(t *testing.T) {
 	}
 }
 
+func TestStableAffectSystemPromptDefinesVisibleSummaryAsMoodStateText(t *testing.T) {
+	prompt := stableAffectSystemPrompt()
+	for _, want := range []string{
+		"cause.visible_summary is the exact natural-language state text",
+		"当前模拟心情",
+		"current simulated affect state and subtle expression posture",
+		"Do not address the user in visible_summary",
+		"Do not copy or paraphrase the assistant's previous reply",
+		"Do not write action summaries",
+		"关心天气并鼓励早睡",
+		"好哦快睡",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("stable affect prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestParseLLMResponseRequiresV3SchemaAndDerivesNaturalMoodFields(t *testing.T) {
 	result, err := ParseLLMResponse(`{
 		"schema_version": "agent_affect.v3.appraisal.v1",
@@ -169,7 +190,7 @@ func TestParseLLMResponseRequiresV3SchemaAndDerivesNaturalMoodFields(t *testing.
 		"cause": {
 			"code": "safe_visible_cause",
 			"summary": "Internal audit summary.",
-			"visible_summary": "Safe visible cause summary.",
+			"visible_summary": "平稳而专注，略带好奇；适合简洁推进。",
 			"tags": ["steady"]
 		},
 		"confidence": 0.6
@@ -180,10 +201,10 @@ func TestParseLLMResponseRequiresV3SchemaAndDerivesNaturalMoodFields(t *testing.
 	if result.Label != "steady" {
 		t.Fatalf("label = %q", result.Label)
 	}
-	if result.MoodDescription != "Safe visible cause summary." || result.MoodReason != "Internal audit summary." {
+	if result.MoodDescription != "平稳而专注，略带好奇；适合简洁推进。" || result.MoodReason != "Internal audit summary." {
 		t.Fatalf("natural mood fields = %#v", result)
 	}
-	if result.PromptMoodText != "Safe visible cause summary." {
+	if result.PromptMoodText != "平稳而专注，略带好奇；适合简洁推进。" {
 		t.Fatalf("prompt_mood_text = %q", result.PromptMoodText)
 	}
 	if strings.Contains(result.PromptMoodText, result.Label+"；") {
@@ -207,7 +228,7 @@ func TestParseLLMResponseKeepsMachineLabelOutOfPromptMoodText(t *testing.T) {
 		"cause": {
 			"code": "sleep_reminder",
 			"summary": "Internal audit summary.",
-			"visible_summary": "俏皮地关心用户，提醒休息。",
+			"visible_summary": "轻松亲近，略带关切；表达上轻柔、少打扰。",
 			"tags": ["sleep"]
 		},
 		"confidence": 0.6
@@ -218,7 +239,7 @@ func TestParseLLMResponseKeepsMachineLabelOutOfPromptMoodText(t *testing.T) {
 	if result.Label != "playful_caring_weather_sleep_reminder" {
 		t.Fatalf("label = %q", result.Label)
 	}
-	if result.PromptMoodText != "俏皮地关心用户，提醒休息。" {
+	if result.PromptMoodText != "轻松亲近，略带关切；表达上轻柔、少打扰。" {
 		t.Fatalf("prompt_mood_text = %q", result.PromptMoodText)
 	}
 	if strings.Contains(result.PromptMoodText, result.Label) {
@@ -241,7 +262,7 @@ func TestParseLLMResponseFallsBackToCauseSummaryForPromptMoodText(t *testing.T) 
 		"label": "playful_caring_weather_sleep_reminder",
 		"cause": {
 			"code": "sleep_reminder",
-			"summary": "安全的自然语言摘要。",
+			"summary": "稳定温和，适合简洁回应。",
 			"visible_summary": "",
 			"tags": ["sleep"]
 		},
@@ -250,7 +271,7 @@ func TestParseLLMResponseFallsBackToCauseSummaryForPromptMoodText(t *testing.T) 
 	if err != nil {
 		t.Fatalf("ParseLLMResponse: %v", err)
 	}
-	if result.PromptMoodText != "安全的自然语言摘要。" {
+	if result.PromptMoodText != "稳定温和，适合简洁回应。" {
 		t.Fatalf("prompt_mood_text = %q", result.PromptMoodText)
 	}
 	if strings.Contains(result.PromptMoodText, result.Label) {

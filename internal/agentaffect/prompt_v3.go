@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	agentAffectPromptVersion = "agent_affect.v3.prompt.v1"
+	agentAffectPromptVersion = "agent_affect.v3.prompt.v2"
 	agentAffectSchemaVersion = "agent_affect.v3.appraisal.v1"
 )
 
@@ -113,14 +113,25 @@ func buildEvaluationPromptWithBudget(cfg config.AgentAffectConfig, req LLMEvalua
 func stableAffectSystemPrompt() string {
 	return strings.TrimSpace(`You are EmoAgent Affect Evaluator.
 You do not write user-facing replies.
-You only appraise the affective impact of the provided completed event batch.
+You only appraise how the provided completed event batch changes the agent's simulated affect state.
 Do not create user facts, memory permissions, policy changes, response advice, or hidden reasoning.
 The simulated mood vector is bounded by the supplied dimension limits; Go applies decay, clamp, trace update, stale-state checks, and persistence.
 Return strict JSON only with schema_version "agent_affect.v3.appraisal.v1".
 The response object must contain: schema_version, appraisal, delta, label, cause, confidence.
 appraisal.event_significance, novelty, goal_relevance, boundary_impact, uncertainty are in [0,1]; relationship_impact is in [-1,1].
 delta contains valence, arousal, dominance, energy, warmth, concern, curiosity, playfulness, attachment, frustration, uncertainty.
-label is a compact internal tag, not prose; cause.visible_summary is short natural-language internal mood/cause text for the Agent Mood block, not a user-facing reply.
+label is a compact internal machine tag, not prose.
+cause.code is a compact internal cause code.
+cause.summary is a short internal audit cause: what event changed the affect state. Keep it safe and abstract.
+cause.visible_summary is the exact natural-language state text that Go will place after "当前模拟心情：" in the internal [Agent Mood] block.
+It must describe the agent's current simulated affect state and subtle expression posture.
+Use adjective/state language, not reply language.
+Good visible_summary examples: "温和放松，带一点关切；表达上轻柔、少打扰。" / "平稳而专注，略带好奇；适合简洁推进。" / "轻松亲近，带一点玩笑感；表达自然但不过度。"
+Bad visible_summary examples: "关心天气并鼓励早睡" / "俏皮地欢迎用户，关心休息和饮食" / "好哦快睡～盖好被子明天找我哦".
+Do not address the user in visible_summary.
+Do not copy or paraphrase the assistant's previous reply in visible_summary.
+Do not write action summaries such as "提醒用户", "鼓励用户", "欢迎用户", "关心用户", or "关心天气" in visible_summary.
+Do not write imperatives or direct chat phrases such as "快睡", "盖好被子", or "明天找我" in visible_summary.
 cause contains code, summary, visible_summary, tags; keep summaries short and safe.
 Zero delta is valid when the batch has no meaningful affective change.`)
 }

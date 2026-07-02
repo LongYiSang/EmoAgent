@@ -43,7 +43,7 @@ export function AdminApp() {
   const chatSettings = useChatSettingsAdmin(status);
   const memory = useMemoryAdmin(status);
   const sidecar = useSidecarAdmin(status);
-  const agentAffect = useAgentAffectAdmin(status);
+  const agentAffect = useAgentAffectAdmin({ setStatus: status.setStatus, showError: status.showError, defaultPersonaID: agents.activePersona });
   const promptCenter = usePromptCenterAdmin(status);
   const webSearch = useWebSearchAdmin(status);
   const pythonToolchain = usePythonToolchainAdmin(status);

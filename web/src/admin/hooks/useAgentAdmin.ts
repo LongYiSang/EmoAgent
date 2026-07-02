@@ -34,6 +34,7 @@ export function useAgentAdmin({ setStatus, showError }: AgentAdminOptions) {
     const preferred = preferredID && next.configs.some(item => item.id === preferredID) ? preferredID : next.activeID || next.configs[0]?.id || '';
     selectAgent(preferred, next.configs);
     setStatus('就绪');
+    return String(field(next.configs.find(item => item.id === next.activeID), 'persona_key', ''));
   }, [selectedAgent, selectAgent, setStatus]);
 
   const patchAgentDraft = useCallback((key: string, value: unknown) => {

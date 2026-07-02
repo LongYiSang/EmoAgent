@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { AnyRecord } from '../../shared/lib/api';
 import { field, pretty } from '../../shared/lib/data';
 import { cloneRecord, setNestedValue } from '../lib/adminData';
@@ -22,9 +22,11 @@ import {
   supersedeAgentAffectPendingJobs,
 } from '../protocol/agentAffectApi';
 
-type AgentAffectOptions = Pick<AdminStatusControls, 'setStatus' | 'showError'>;
+type AgentAffectOptions = Pick<AdminStatusControls, 'setStatus' | 'showError'> & {
+  defaultPersonaID?: string;
+};
 
-export function useAgentAffectAdmin({ setStatus, showError }: AgentAffectOptions) {
+export function useAgentAffectAdmin({ setStatus, showError, defaultPersonaID }: AgentAffectOptions) {
   const [personaID, setPersonaID] = useState('default');
   const [sessionID, setSessionID] = useState('admin-debug');
   const [configDraft, setConfigDraft] = useState<AnyRecord>({});
@@ -42,16 +44,22 @@ export function useAgentAffectAdmin({ setStatus, showError }: AgentAffectOptions
     setConfigDraft(cloneRecord(field<AnyRecord>(data, 'agent_affect', {})));
   }, []);
 
-  const reloadAgentAffect = useCallback(async () => {
+  useEffect(() => {
+    if (defaultPersonaID) setPersonaID(defaultPersonaID);
+  }, [defaultPersonaID]);
+
+  const reloadAgentAffect = useCallback(async (personaOverride?: string) => {
+    const targetPersonaID = personaOverride || personaID;
+    if (personaOverride && personaOverride !== personaID) setPersonaID(personaOverride);
     setStatus('正在加载 Agent Affect...');
     const [cfg, current, hist, profile, writes, queue, prompt] = await Promise.all([
       loadAgentAffectConfig(),
-      loadAgentAffectCurrent({ personaID, sessionID }),
-      loadAgentAffectHistory({ personaID, sessionID, kind: 'both', limit: 30 }),
-      loadAgentAffectProfile(personaID),
-      loadAgentAffectPluginWrites({ personaID, sessionID, limit: 30 }),
-      loadAgentAffectQueue({ personaID, sessionID, limit: 30 }),
-      previewAgentAffectPrompt({ persona_id: personaID, session_id: sessionID }),
+      loadAgentAffectCurrent({ personaID: targetPersonaID, sessionID }),
+      loadAgentAffectHistory({ personaID: targetPersonaID, sessionID, kind: 'both', limit: 30 }),
+      loadAgentAffectProfile(targetPersonaID),
+      loadAgentAffectPluginWrites({ personaID: targetPersonaID, sessionID, limit: 30 }),
+      loadAgentAffectQueue({ personaID: targetPersonaID, sessionID, limit: 30 }),
+      previewAgentAffectPrompt({ persona_id: targetPersonaID, session_id: sessionID }),
     ]);
     syncConfig(cfg);
     setCurrentMood(current);

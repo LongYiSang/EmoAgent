@@ -18,7 +18,7 @@ func TestFormatPromptAffectBlockNaturalSummaryOmitsNumericVectorByDefault(t *tes
 		Confidence:          0.8,
 		MoodDescription:     "温和、专注",
 		MoodReason:          "用户分享了一个有压力的节点",
-		PromptMoodText:      "温和、专注，也带着一点关切。",
+		PromptMoodText:      "温和专注，带一点关切；表达上轻柔、少打扰。",
 		VisibleCauseSummary: "用户分享了一个有压力的节点。",
 		Vector: MoodVector{
 			Valence:    0.1,
@@ -32,7 +32,7 @@ func TestFormatPromptAffectBlockNaturalSummaryOmitsNumericVectorByDefault(t *tes
 
 	for _, want := range []string{
 		"[Agent Mood]",
-		"当前模拟心情：温和、专注，也带着一点关切。",
+		"当前模拟心情：温和专注，带一点关切；表达上轻柔、少打扰。",
 		"这是内部表达背景",
 	} {
 		if !strings.Contains(block, want) {
@@ -102,9 +102,9 @@ func TestFormatPromptAffectBlockOmitsRawInput(t *testing.T) {
 func TestPromptMoodTextStripsLegacyLabelPrefix(t *testing.T) {
 	got := promptMoodText(MoodSnapshot{
 		Label:          "playful_caring_weather_sleep_reminder",
-		PromptMoodText: "playful_caring_weather_sleep_reminder；俏皮地关心用户，提醒休息。",
+		PromptMoodText: "playful_caring_weather_sleep_reminder；轻松亲近，略带关切；表达上轻柔、少打扰。",
 	})
-	if got != "俏皮地关心用户，提醒休息。" {
+	if got != "轻松亲近，略带关切；表达上轻柔、少打扰。" {
 		t.Fatalf("prompt mood text = %q", got)
 	}
 }

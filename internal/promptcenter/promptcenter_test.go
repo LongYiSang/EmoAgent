@@ -3,6 +3,7 @@ package promptcenter
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/longyisang/emoagent/internal/tool/resultv2"
@@ -51,6 +52,27 @@ func TestDefaultCatalogLoadsMVPComponents(t *testing.T) {
 	for i := 1; i < len(items); i++ {
 		if items[i-1].Order > items[i].Order {
 			t.Fatalf("catalog not ordered: %s order %d before %s order %d", items[i-1].ID, items[i-1].Order, items[i].ID, items[i].Order)
+		}
+	}
+}
+
+func TestAgentAffectExpressionPolicyTreatsMoodAsInternalState(t *testing.T) {
+	catalog, err := DefaultCatalog()
+	if err != nil {
+		t.Fatalf("DefaultCatalog: %v", err)
+	}
+	component, ok := catalog.Get(ComponentAgentAffectExpressionPolicy)
+	if !ok {
+		t.Fatal("agent affect expression policy missing")
+	}
+	for _, want := range []string{
+		"internal [Agent Mood] block",
+		"simulated affect state and expression posture",
+		"not as a reply draft, task instruction, or action plan",
+		"Do not copy, quote, or directly follow the mood text",
+	} {
+		if !strings.Contains(component.DefaultText, want) {
+			t.Fatalf("agent affect expression policy missing %q:\n%s", want, component.DefaultText)
 		}
 	}
 }

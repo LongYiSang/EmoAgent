@@ -71,7 +71,7 @@ export default memo(function AgentAffectTab({
           <div className="meta">当前 mood、运行时配置、调试写入与审计</div>
         </div>
         <div className="actions">
-          <button className="btn ghost" type="button" onClick={reloadAgentAffect}>重新加载</button>
+          <button className="btn ghost" type="button" onClick={() => reloadAgentAffect()}>重新加载</button>
           <button className="btn primary" type="button" onClick={saveConfigDraft}>保存配置</button>
         </div>
       </div>
@@ -240,7 +240,7 @@ export default memo(function AgentAffectTab({
         <div className="row-head">
           <h3>Queue / Batch</h3>
           <div className="actions">
-            <button className="btn ghost mini" type="button" onClick={reloadAgentAffect}>刷新队列</button>
+            <button className="btn ghost mini" type="button" onClick={() => reloadAgentAffect()}>刷新队列</button>
             <button className="btn ghost mini" type="button" onClick={processQueueOnce}>处理一次</button>
             <button className="btn ghost mini" type="button" onClick={clearFailedJobs}>清理 failed</button>
             <button className="btn danger mini" type="button" onClick={supersedePendingJobs}>Supersede pending</button>

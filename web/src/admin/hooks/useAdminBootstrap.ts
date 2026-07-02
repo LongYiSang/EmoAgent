@@ -64,7 +64,7 @@ export function useAdminBootstrap(activeTab: TabID, { providers, agents, persona
           loadOnce('providers', () => loaders.providers.reloadProviders()),
         ]);
         const loadPersonaBasics = () => loadOnce('personas', () => loaders.personas.reloadPersonas());
-        const loadAgentBasics = () => loadOnce('agents', () => loaders.agents.reloadAgents());
+        const loadAgentBasics = () => loadOnce('agents', async () => { await loaders.agents.reloadAgents(); });
         const loadEffectiveConfig = () => loadOnce('effective-config', loaders.memory.reloadEffectiveConfig);
 
         switch (activeTab) {
@@ -95,7 +95,11 @@ export function useAdminBootstrap(activeTab: TabID, { providers, agents, persona
             ]);
             break;
           case 'agent-affect':
-            await Promise.all([loadOnce('agent-affect', loaders.agentAffect.reloadAgentAffect), loadProviderBasics()]);
+            {
+              const activePersona = await loaders.agents.reloadAgents();
+              loadedResourcesRef.current.add('agents');
+              await Promise.all([loadOnce(`agent-affect:${activePersona || 'default'}`, () => loaders.agentAffect.reloadAgentAffect(activePersona)), loadProviderBasics()]);
+            }
             break;
           case 'prompt-center':
             await Promise.all([
