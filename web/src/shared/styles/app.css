@@ -1447,6 +1447,47 @@ code {
   align-self: start;
 }
 
+/* Layout guards to prevent grids with few items from stretching (auto-fill) and labels/fields from misaligning vertically */
+.slot .grid.compact {
+  /* Prefer auto-fill so sparse rows don't get pushed to edges */
+  grid-template-columns: repeat(auto-fill, minmax(min(190px, 100%), 1fr));
+  align-items: start;
+}
+
+.slot .field {
+  align-content: start;
+}
+
+.slot .field > label {
+  min-height: 28px;
+  display: flex;
+  align-items: flex-end;
+}
+
+.slot .check {
+  align-self: start;
+}
+
+/* Page-specific overrides (kept for ChatSettings which had custom tweaks) */
+.chat-settings-tab .grid.compact {
+  grid-template-columns: repeat(auto-fill, minmax(min(190px, 100%), 1fr));
+  align-items: start;
+}
+
+.chat-settings-tab .field {
+  align-content: start;
+}
+
+.chat-settings-tab .field > label {
+  min-height: 28px;
+  display: flex;
+  align-items: flex-end;
+}
+
+.chat-settings-tab .check {
+  align-self: start;
+}
+
 .grid.two-col {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: start;
