@@ -193,13 +193,15 @@ type personasResponse struct {
 }
 
 type chatSettingsResponse struct {
-	RealtimeStreaming bool                      `json:"realtime_streaming"`
-	PromptRouter      config.PromptRouterConfig `json:"prompt_router"`
+	RealtimeStreaming bool                       `json:"realtime_streaming"`
+	PromptRouter      config.PromptRouterConfig  `json:"prompt_router"`
+	ReplyDelivery     config.ReplyDeliveryConfig `json:"reply_delivery"`
 }
 
 type chatSettingsRequest struct {
-	RealtimeStreaming *bool                      `json:"realtime_streaming,omitempty"`
-	PromptRouter      *config.PromptRouterConfig `json:"prompt_router,omitempty"`
+	RealtimeStreaming *bool                       `json:"realtime_streaming,omitempty"`
+	PromptRouter      *config.PromptRouterConfig  `json:"prompt_router,omitempty"`
+	ReplyDelivery     *config.ReplyDeliveryConfig `json:"reply_delivery,omitempty"`
 }
 
 type personaDetailResponse struct {
@@ -705,6 +707,7 @@ func (h *APIHandler) HandleUpdateChatSettings(w http.ResponseWriter, r *http.Req
 		RealtimeStreaming: current.RealtimeStreaming,
 		TurnPipeline:      current.TurnPipeline,
 		PromptRouter:      current.PromptRouter,
+		ReplyDelivery:     current.ReplyDelivery,
 	}
 	if req.RealtimeStreaming != nil {
 		settings.RealtimeStreaming = *req.RealtimeStreaming
@@ -714,6 +717,9 @@ func (h *APIHandler) HandleUpdateChatSettings(w http.ResponseWriter, r *http.Req
 	}
 	if req.PromptRouter != nil {
 		settings.PromptRouter = *req.PromptRouter
+	}
+	if req.ReplyDelivery != nil {
+		settings.ReplyDelivery = config.NormalizeReplyDeliveryConfig(*req.ReplyDelivery)
 	}
 	if err := h.app.UpdateChatSettings(settings); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update chat settings")
@@ -730,6 +736,7 @@ func chatSettingsResponseFromConfig(settings config.ChatConfig) chatSettingsResp
 	return chatSettingsResponse{
 		RealtimeStreaming: settings.RealtimeStreaming,
 		PromptRouter:      router,
+		ReplyDelivery:     config.NormalizeReplyDeliveryConfig(settings.ReplyDelivery),
 	}
 }
 

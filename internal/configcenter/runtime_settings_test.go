@@ -90,7 +90,7 @@ func TestApplyRuntimeSettingsSupportsChatPromptRouter(t *testing.T) {
 	seed := config.DefaultConfig()
 
 	effective, issues := ApplyRuntimeSettings(seed, []storage.RuntimeSetting{
-		{Namespace: "chat", Key: "config", ValueJSON: `{"prompt_router":{"mode":"always_work","sticky_turns":7}}`},
+		{Namespace: "chat", Key: "config", ValueJSON: `{"prompt_router":{"mode":"always_work","sticky_turns":7},"reply_delivery":{"enabled":true,"segment":{"max_segments":3}}}`},
 	})
 	if len(issues) != 0 {
 		t.Fatalf("issues = %#v, want none", issues)
@@ -103,6 +103,12 @@ func TestApplyRuntimeSettingsSupportsChatPromptRouter(t *testing.T) {
 	}
 	if effective.Chat.PromptRouter.ContextTurns != 6 || effective.Chat.PromptRouter.MaxContextChars != 6000 {
 		t.Fatalf("chat.prompt_router defaults = %#v", effective.Chat.PromptRouter)
+	}
+	if !effective.Chat.ReplyDelivery.Enabled || effective.Chat.ReplyDelivery.Segment.MaxSegments != 3 {
+		t.Fatalf("chat.reply_delivery = %#v, want enabled max_segments 3", effective.Chat.ReplyDelivery)
+	}
+	if effective.Chat.ReplyDelivery.Segment.LongTextThreshold != 500 {
+		t.Fatalf("chat.reply_delivery defaults = %#v", effective.Chat.ReplyDelivery.Segment)
 	}
 }
 

@@ -15,10 +15,12 @@ import (
 
 	"github.com/longyisang/emoagent/internal/agentaffect"
 	"github.com/longyisang/emoagent/internal/config"
+	contextutil "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/media"
 	"github.com/longyisang/emoagent/internal/promptcenter"
 	"github.com/longyisang/emoagent/internal/protocol"
+	"github.com/longyisang/emoagent/internal/replydelivery"
 	"github.com/longyisang/emoagent/internal/tool/resultv2"
 	"github.com/longyisang/emoagent/internal/turn"
 )
@@ -144,6 +146,184 @@ func TestTurnRuntimeStagesHonorMemoryStageConfig(t *testing.T) {
 		turn.StageApprovalWait,
 	}) {
 		t.Fatalf("memory stages = %#v", got)
+	}
+}
+
+func TestTurnRuntimeEmitsAssistantSegmentsForCasualReply(t *testing.T) {
+	replyCfg := config.DefaultReplyDeliveryConfig()
+	replyCfg.Enabled = true
+	replyCfg.Timing.Enabled = false
+	handler, engine := newTestHandlerWithOptions(
+		WithTurnPipelineConfig(config.TurnPipelineConfig{Enabled: true, RolloutPercent: 100}),
+		WithReplyDeliveryConfig(replyCfg),
+	)
+	engine.sendReply = "第一句。第二句。"
+	engine.sendHook = func(ctx context.Context) {
+		replydelivery.RecordPromptMode(ctx, contextutil.PromptModeCasualChat)
+	}
+	env := mustWSMessageToInbound(t, WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, "session-test", "default")
+
+	var events []turn.OutboundEvent
+	result, err := handler.turnRuntime.Execute(context.Background(), env, &config.Persona{Name: "default"}, turn.SinkFunc(func(ctx context.Context, event turn.OutboundEvent) error {
+		events = append(events, event)
+		return nil
+	}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Status != "done" {
+		t.Fatalf("status = %q, want done", result.Status)
+	}
+	wantTypes := []string{turn.EventStreamStart, turn.EventAssistantSegment, turn.EventAssistantSegment, turn.EventStreamEnd}
+	if len(events) != len(wantTypes) {
+		t.Fatalf("events = %#v, want %d events", events, len(wantTypes))
+	}
+	for i, want := range wantTypes {
+		if events[i].Type != want {
+			t.Fatalf("events[%d].Type = %q, want %q (all=%#v)", i, events[i].Type, want, events)
+		}
+	}
+	if events[1].Content != "第一句。" || events[2].Content != "第二句。" || events[1].Payload["segment_index"] != 0 || events[2].Payload["segment_total"] != 2 {
+		t.Fatalf("segment events = %#v, want indexed segments", events)
+	}
+}
+
+func TestTurnRuntimeDuplicateDoneReplaysAssistantSegments(t *testing.T) {
+	replyCfg := config.DefaultReplyDeliveryConfig()
+	replyCfg.Enabled = true
+	replyCfg.Timing.Enabled = false
+	handler, engine := newTestHandlerWithOptions(
+		WithTurnPipelineConfig(config.TurnPipelineConfig{Enabled: true, RolloutPercent: 100}),
+		WithReplyDeliveryConfig(replyCfg),
+	)
+	engine.sendReply = "第一句。第二句。"
+	engine.sendHook = func(ctx context.Context) {
+		replydelivery.RecordPromptMode(ctx, contextutil.PromptModeCasualChat)
+	}
+	env := mustWSMessageToInbound(t, WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, "session-test", "default")
+	persona := &config.Persona{Name: "default"}
+
+	if _, err := handler.turnRuntime.Execute(context.Background(), env, persona, turn.SinkFunc(func(context.Context, turn.OutboundEvent) error { return nil })); err != nil {
+		t.Fatalf("first Execute: %v", err)
+	}
+
+	var replay []turn.OutboundEvent
+	result, err := handler.turnRuntime.Execute(context.Background(), env, persona, turn.SinkFunc(func(ctx context.Context, event turn.OutboundEvent) error {
+		replay = append(replay, event)
+		return nil
+	}))
+	if err != nil {
+		t.Fatalf("duplicate Execute: %v", err)
+	}
+	if result.Status != "done" {
+		t.Fatalf("duplicate status = %q, want done", result.Status)
+	}
+	var segments []turn.OutboundEvent
+	for _, event := range replay {
+		if event.Type == turn.EventAssistantSegment {
+			segments = append(segments, event)
+		}
+	}
+	if len(segments) != 2 {
+		t.Fatalf("replay = %#v, want two assistant segments", replay)
+	}
+	if segments[0].Content != "第一句。" || segments[0].Payload["segment_id"] == "" || segments[0].Payload["segment_index"] != 0 {
+		t.Fatalf("first replay segment = %#v, want content and segment metadata", segments[0])
+	}
+	if engine.sendCount != 1 {
+		t.Fatalf("sendCount = %d, want no duplicate engine call", engine.sendCount)
+	}
+}
+
+func TestTurnRuntimeMemoryStagesCommitsReplyDeliveryBeforeStreamEnd(t *testing.T) {
+	client := &fakeLLMClient{response: endTurnResponse("第一句。第二句。")}
+	engine, db, _ := newTestEngineWithPromptRouter(t, client, nil, nil, config.PromptRouterConfig{Mode: config.PromptRouterModeAlwaysCasual})
+	replyCfg := config.DefaultReplyDeliveryConfig()
+	replyCfg.Enabled = true
+	replyCfg.Timing.Enabled = false
+	engine.UpdateReplyDeliveryConfig(replyCfg)
+	engine.memory = &fakeMemoryBridge{ensureResult: MemorySegmentRef{SegmentID: "segment-current", MemorySessionID: "memory-current"}}
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	env := mustWSMessageToInbound(t, WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, sessionID, "default")
+	runtime := newChatTurnRuntime(engine, config.TurnPipelineConfig{Enabled: true, MemoryStages: true, RolloutPercent: 100}, turn.NewMemoryJournal(), discardLogger())
+
+	var sawSegment bool
+	var metadataAtStreamEnd map[string]any
+	_, err = runtime.Execute(context.Background(), env, &config.Persona{Name: "default", SystemPrompt: "system"}, turn.SinkFunc(func(ctx context.Context, event turn.OutboundEvent) error {
+		if event.Type == turn.EventAssistantSegment {
+			sawSegment = true
+		}
+		if event.Type == turn.EventStreamEnd {
+			messages, err := db.GetRecentMessages(ctx, sessionID, 10)
+			if err != nil {
+				return err
+			}
+			if len(messages) == 0 {
+				return nil
+			}
+			raw := messages[len(messages)-1].Metadata
+			if raw != "" {
+				return json.Unmarshal([]byte(raw), &metadataAtStreamEnd)
+			}
+		}
+		return nil
+	}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !sawSegment {
+		t.Fatal("expected assistant_segment before stream_end")
+	}
+	replyDelivery, ok := metadataAtStreamEnd["reply_delivery"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata at stream_end = %#v, want reply_delivery committed before stream_end", metadataAtStreamEnd)
+	}
+	if replyDelivery["segment_count"] != float64(2) || replyDelivery["suppressed"] != false {
+		t.Fatalf("reply_delivery at stream_end = %#v, want two unsuppressed segments", replyDelivery)
+	}
+}
+
+func TestTurnRuntimeFallsBackToStreamDeltaForRealtimeReplyDelivery(t *testing.T) {
+	replyCfg := config.DefaultReplyDeliveryConfig()
+	replyCfg.Enabled = true
+	replyCfg.Timing.Enabled = false
+	handler, engine := newTestHandlerWithOptions(
+		WithTurnPipelineConfig(config.TurnPipelineConfig{Enabled: true, RolloutPercent: 100}),
+		WithReplyDeliveryConfig(replyCfg),
+		WithRealtimeStreaming(true),
+	)
+	engine.sendReply = "第一句。第二句。"
+	engine.sendHook = func(ctx context.Context) {
+		replydelivery.RecordPromptMode(ctx, contextutil.PromptModeCasualChat)
+	}
+	env := mustWSMessageToInbound(t, WSMessage{Type: "message", Content: "hello", RequestID: "request-1"}, "session-test", "default")
+
+	var events []turn.OutboundEvent
+	result, err := handler.turnRuntime.Execute(context.Background(), env, &config.Persona{Name: "default"}, turn.SinkFunc(func(ctx context.Context, event turn.OutboundEvent) error {
+		events = append(events, event)
+		return nil
+	}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Status != "done" {
+		t.Fatalf("status = %q, want done", result.Status)
+	}
+	wantTypes := []string{turn.EventStreamStart, turn.EventStreamDelta, turn.EventStreamEnd}
+	if len(events) != len(wantTypes) {
+		t.Fatalf("events = %#v, want %d events", events, len(wantTypes))
+	}
+	for i, want := range wantTypes {
+		if events[i].Type != want {
+			t.Fatalf("events[%d].Type = %q, want %q (all=%#v)", i, events[i].Type, want, events)
+		}
+	}
+	if events[1].Content != "第一句。第二句。" {
+		t.Fatalf("stream_delta = %#v, want full reply", events[1])
 	}
 }
 

@@ -10,20 +10,24 @@ import (
 	"github.com/google/uuid"
 	"github.com/longyisang/emoagent/internal/agentaffect"
 	"github.com/longyisang/emoagent/internal/config"
+	contextutil "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/promptcenter"
 	"github.com/longyisang/emoagent/internal/protocol"
+	"github.com/longyisang/emoagent/internal/replydelivery"
 	"github.com/longyisang/emoagent/internal/turn"
 	"github.com/longyisang/emoagent/internal/work"
 )
 
 type chatTurnRuntime struct {
-	engine  conversationEngine
-	cfg     config.TurnPipelineConfig
-	rt      *turn.Runtime
-	journal turn.TurnJournal
-	ids     turn.IdempotencyStore
-	logger  *slog.Logger
-	plugin  turnPluginHost
+	engine            conversationEngine
+	cfg               config.TurnPipelineConfig
+	rt                *turn.Runtime
+	journal           turn.TurnJournal
+	ids               turn.IdempotencyStore
+	logger            *slog.Logger
+	plugin            turnPluginHost
+	realtimeStreaming bool
+	replyDelivery     config.ReplyDeliveryConfig
 }
 
 type turnPluginHost interface {
@@ -186,7 +190,7 @@ func (r *chatTurnRuntime) replayDuplicate(ctx context.Context, idem turn.Idempot
 		_ = emitTurnStatus(ctx, sink, idem.TurnID, status, "")
 		if r.cfg.Idempotency.DuplicateDone != "noop" {
 			_ = r.replayOutbound(ctx, idem.TurnID, sink, func(event turn.OutboundEvent) bool {
-				return event.Type == turn.EventStreamDelta || event.Type == turn.EventStreamEnd || event.Type == turn.EventApprovalRequired || event.Type == turn.EventApprovalUpdated
+				return event.Type == turn.EventStreamDelta || event.Type == turn.EventAssistantSegment || event.Type == turn.EventStreamEnd || event.Type == turn.EventApprovalRequired || event.Type == turn.EventApprovalUpdated
 			})
 		}
 		return turn.TurnResult{TurnID: idem.TurnID, State: turn.StateDone, Status: status}, nil
@@ -446,17 +450,27 @@ func (r *chatTurnRuntime) memoryCommitStage() turn.Stage {
 		NameValue: turn.StageMemoryCommit,
 		RunFunc: func(ctx context.Context, tc *turn.TurnContext) (turn.StageResult, error) {
 			ensureDiagnostics(tc)
+			deferStreamEnd, _ := tc.Diagnostics["stream_end_after_memory_commit"].(bool)
+			result := turn.StageResult{NextState: tc.State}
 			engine, ok := r.engine.(*Engine)
 			if !ok {
 				tc.Diagnostics["memory_commit_observed"] = true
-				return turn.StageResult{NextState: tc.State}, nil
+				if deferStreamEnd {
+					result.Outbound = append(result.Outbound, turn.OutboundEvent{Type: turn.EventStreamEnd})
+					delete(tc.Diagnostics, "stream_end_after_memory_commit")
+				}
+				return result, nil
 			}
 			output, ok := tc.Diagnostics["turn_output"].(deferredTurnOutput)
 			if !ok || output.assistantContent == "" {
 				tc.Diagnostics["memory_commit_observed"] = true
-				return turn.StageResult{NextState: tc.State}, nil
+				if deferStreamEnd {
+					result.Outbound = append(result.Outbound, turn.OutboundEvent{Type: turn.EventStreamEnd})
+					delete(tc.Diagnostics, "stream_end_after_memory_commit")
+				}
+				return result, nil
 			}
-			if err := engine.commitTurnOutput(ctx, tc.Inbound.SessionID, output.assistantContent, output.thinkingBlocks, output.memorySnapshot, output.memorySegment, output.hasMemorySegment); err != nil {
+			if err := engine.commitTurnOutput(ctx, tc.Inbound.SessionID, output); err != nil {
 				return turn.StageResult{NextState: turn.StateCommitFailedAfterOutput, Terminal: true, Status: "commit_failed_after_output", ErrorKind: "memory_commit_failed"}, err
 			}
 			tc.Diagnostics["memory_committed"] = true
@@ -488,7 +502,11 @@ func (r *chatTurnRuntime) memoryCommitStage() turn.Stage {
 					tc.Diagnostics["agent_affect_job_id"] = job.ID
 				}
 			}
-			return turn.StageResult{NextState: tc.State}, nil
+			if deferStreamEnd {
+				result.Outbound = append(result.Outbound, turn.OutboundEvent{Type: turn.EventStreamEnd})
+				delete(tc.Diagnostics, "stream_end_after_memory_commit")
+			}
+			return result, nil
 		},
 	}
 }
@@ -596,6 +614,25 @@ func (r *chatTurnRuntime) messageStage(persona *config.Persona) turn.Stage {
 			streamedDelta := false
 			reply := ""
 			var err error
+			replyCfg := r.currentReplyDeliveryConfig()
+			realtimeStreaming := r.currentRealtimeStreaming()
+			useReplyDelivery := replyDeliveryEnabled(replyCfg, realtimeStreaming)
+			var promptMode contextutil.PromptMode
+			if useReplyDelivery {
+				ctx = replydelivery.WithPromptModeRecorder(ctx, func(mode contextutil.PromptMode) {
+					promptMode = mode
+				})
+			}
+			deltaCB := func(delta string) {
+				if delta == "" || tc.Stream == nil {
+					return
+				}
+				streamedDelta = true
+				_ = tc.Stream.Emit(ctx, turn.OutboundEvent{Type: turn.EventStreamDelta, Content: delta})
+			}
+			if useReplyDelivery {
+				deltaCB = nil
+			}
 			if r.cfg.MemoryStages {
 				if engine, ok := r.engine.(*Engine); ok {
 					memoryBlock := stringDiagnostic(tc, "memory_prompt_block")
@@ -607,13 +644,7 @@ func (r *chatTurnRuntime) messageStage(persona *config.Persona) turn.Stage {
 					extraSystemComponents := extraSystemRenderComponents(tc, memoryBlock, agentAffectBlock)
 					var output deferredTurnOutput
 					preparedAnchor, hasPreparedAnchor := tc.Diagnostics["memory_anchor"].(turnMemoryAnchor)
-					reply, err = engine.sendTurn(ctx, tc.Inbound.SessionID, persona, func(delta string) {
-						if delta == "" || tc.Stream == nil {
-							return
-						}
-						streamedDelta = true
-						_ = tc.Stream.Emit(ctx, turn.OutboundEvent{Type: turn.EventStreamDelta, Content: delta})
-					}, turnOptions{
+					reply, err = engine.sendTurn(ctx, tc.Inbound.SessionID, persona, deltaCB, turnOptions{
 						persistUser:           false,
 						userContent:           tc.Inbound.UserMessage.Content,
 						userParts:             tc.Inbound.UserMessage.Parts,
@@ -637,23 +668,11 @@ func (r *chatTurnRuntime) messageStage(persona *config.Persona) turn.Stage {
 					ensureDiagnostics(tc)
 					tc.Diagnostics["turn_output"] = output
 				} else {
-					reply, err = r.engine.SendMessage(ctx, tc.Inbound.SessionID, persona, tc.Inbound.UserMessage.Content, func(delta string) {
-						if delta == "" || tc.Stream == nil {
-							return
-						}
-						streamedDelta = true
-						_ = tc.Stream.Emit(ctx, turn.OutboundEvent{Type: turn.EventStreamDelta, Content: delta})
-					})
+					reply, err = r.engine.SendMessage(ctx, tc.Inbound.SessionID, persona, tc.Inbound.UserMessage.Content, deltaCB)
 				}
 			} else {
 				if engine, ok := r.engine.(*Engine); ok {
-					reply, err = engine.sendTurn(ctx, tc.Inbound.SessionID, persona, func(delta string) {
-						if delta == "" || tc.Stream == nil {
-							return
-						}
-						streamedDelta = true
-						_ = tc.Stream.Emit(ctx, turn.OutboundEvent{Type: turn.EventStreamDelta, Content: delta})
-					}, turnOptions{
+					reply, err = engine.sendTurn(ctx, tc.Inbound.SessionID, persona, deltaCB, turnOptions{
 						persistUser: true,
 						userContent: tc.Inbound.UserMessage.Content,
 						userParts:   tc.Inbound.UserMessage.Parts,
@@ -662,22 +681,30 @@ func (r *chatTurnRuntime) messageStage(persona *config.Persona) turn.Stage {
 						inboundKind: tc.Inbound.Kind,
 					})
 				} else {
-					reply, err = r.engine.SendMessage(ctx, tc.Inbound.SessionID, persona, tc.Inbound.UserMessage.Content, func(delta string) {
-						if delta == "" || tc.Stream == nil {
-							return
-						}
-						streamedDelta = true
-						_ = tc.Stream.Emit(ctx, turn.OutboundEvent{Type: turn.EventStreamDelta, Content: delta})
-					})
+					reply, err = r.engine.SendMessage(ctx, tc.Inbound.SessionID, persona, tc.Inbound.UserMessage.Content, deltaCB)
 				}
 			}
 			if err != nil && !errors.Is(err, errApprovalPending) {
 				return turn.StageResult{NextState: turn.StateFailed, Terminal: true, Status: "failed", ErrorKind: "llm_failed"}, err
 			}
+			deferStreamEnd := err == nil && r.cfg.MemoryStages
+			if err == nil && useReplyDelivery && reply != "" && tc.Stream != nil {
+				plan := replydelivery.BuildPlan(replyCfg, string(promptMode), realtimeStreaming, reply)
+				if emitted, emitErr := emitReplyDeliverySegments(ctx, tc.Stream, replyCfg, plan, tc.TurnID); emitErr != nil {
+					return turn.StageResult{NextState: turn.StateFailed, Terminal: true, Status: "failed", ErrorKind: "outbound_failed"}, emitErr
+				} else if emitted {
+					streamedDelta = true
+				}
+			}
 			if err == nil && !streamedDelta && reply != "" {
 				result.Outbound = append(result.Outbound, turn.OutboundEvent{Type: turn.EventStreamDelta, Content: reply})
 			}
-			result.Outbound = append(result.Outbound, turn.OutboundEvent{Type: turn.EventStreamEnd})
+			if deferStreamEnd {
+				ensureDiagnostics(tc)
+				tc.Diagnostics["stream_end_after_memory_commit"] = true
+			} else {
+				result.Outbound = append(result.Outbound, turn.OutboundEvent{Type: turn.EventStreamEnd})
+			}
 			if errors.Is(err, errApprovalPending) {
 				result.NextState = turn.StateApprovalWait
 				result.Status = "approval_wait"
@@ -686,6 +713,20 @@ func (r *chatTurnRuntime) messageStage(persona *config.Persona) turn.Stage {
 			return result, nil
 		},
 	}
+}
+
+func (r *chatTurnRuntime) currentReplyDeliveryConfig() config.ReplyDeliveryConfig {
+	if engine, ok := r.engine.(*Engine); ok {
+		return engine.RuntimeConfig().ReplyDelivery
+	}
+	return config.NormalizeReplyDeliveryConfig(r.replyDelivery)
+}
+
+func (r *chatTurnRuntime) currentRealtimeStreaming() bool {
+	if engine, ok := r.engine.(*Engine); ok {
+		return engine.RuntimeConfig().RealtimeStreaming
+	}
+	return r.realtimeStreaming
 }
 
 func (r *chatTurnRuntime) approvalApplyStage() turn.Stage {
@@ -837,6 +878,7 @@ func (s *journalingSink) Close(ctx context.Context) error {
 
 func outboundJournalPayload(event turn.OutboundEvent) map[string]any {
 	payload := map[string]any{"outbound_type": event.Type}
+	addSafeOutboundPayload(payload, event.Payload, "group_id", "segment_id", "segment_index", "segment_total", "reply_strategy")
 	if event.Tool != nil {
 		payload["tool"] = event.Tool.Name
 		payload["tool_status"] = event.Tool.Status
@@ -853,6 +895,22 @@ func outboundJournalPayload(event turn.OutboundEvent) map[string]any {
 		payload["status"] = event.Approval.Request.Status
 	}
 	return payload
+}
+
+func addSafeOutboundPayload(payload map[string]any, source map[string]any, keys ...string) {
+	if len(source) == 0 {
+		return
+	}
+	safe := make(map[string]any)
+	for _, key := range keys {
+		if value, ok := source[key]; ok {
+			payload[key] = value
+			safe[key] = value
+		}
+	}
+	if len(safe) > 0 {
+		payload["payload"] = safe
+	}
 }
 
 func safeWorkToolSummary(toolName, preview string) map[string]any {

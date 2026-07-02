@@ -15,8 +15,10 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 	"github.com/longyisang/emoagent/internal/config"
+	contextutil "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/protocol"
+	"github.com/longyisang/emoagent/internal/replydelivery"
 	"github.com/longyisang/emoagent/internal/storage"
 	"github.com/longyisang/emoagent/internal/turn"
 )
@@ -232,6 +234,129 @@ func TestHandlerStreamsAssistantResponse(t *testing.T) {
 	}
 	if engine.sendContent != "How are you?" {
 		t.Fatalf("sendContent = %q, want user message", engine.sendContent)
+	}
+}
+
+func TestHandlerEmitsAssistantSegmentsForCasualReply(t *testing.T) {
+	replyCfg := config.DefaultReplyDeliveryConfig()
+	replyCfg.Enabled = true
+	replyCfg.Timing.Enabled = false
+	handler, engine := newTestHandlerWithOptions(WithReplyDeliveryConfig(replyCfg))
+	engine.sendReply = "第一句。第二句。"
+	engine.sendHook = func(ctx context.Context) {
+		replydelivery.RecordPromptMode(ctx, contextutil.PromptModeCasualChat)
+	}
+
+	conn := dialTestWS(t, handler)
+	defer conn.Close(websocket.StatusNormalClosure, "bye")
+
+	var msg WSMessage
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(session_ready): %v", err)
+	}
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(greeting): %v", err)
+	}
+	if err := wsjson.Write(context.Background(), conn, WSMessage{Type: "message", Content: "hello"}); err != nil {
+		t.Fatalf("Write(message): %v", err)
+	}
+
+	var got []WSMessage
+	for len(got) < 4 {
+		msg = WSMessage{}
+		if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+			t.Fatalf("Read(stream): %v", err)
+		}
+		got = append(got, msg)
+	}
+	wantTypes := []string{"stream_start", "assistant_segment", "assistant_segment", "stream_end"}
+	for i, want := range wantTypes {
+		if got[i].Type != want {
+			t.Fatalf("types[%d] = %q, want %q (all=%#v)", i, got[i].Type, want, got)
+		}
+	}
+	if got[1].Content != "第一句。" || got[2].Content != "第二句。" || got[1].SegmentIndex != 0 || got[2].SegmentTotal != 2 {
+		t.Fatalf("segment messages = %#v, want indexed split segments", got)
+	}
+}
+
+func TestHandlerFallsBackToStreamDeltaForWorkModeReplyDelivery(t *testing.T) {
+	replyCfg := config.DefaultReplyDeliveryConfig()
+	replyCfg.Enabled = true
+	replyCfg.Timing.Enabled = false
+	handler, engine := newTestHandlerWithOptions(WithReplyDeliveryConfig(replyCfg))
+	engine.sendReply = "第一句。第二句。"
+	engine.sendHook = func(ctx context.Context) {
+		replydelivery.RecordPromptMode(ctx, contextutil.PromptModeWorkMode)
+	}
+
+	conn := dialTestWS(t, handler)
+	defer conn.Close(websocket.StatusNormalClosure, "bye")
+
+	var msg WSMessage
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(session_ready): %v", err)
+	}
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(greeting): %v", err)
+	}
+	if err := wsjson.Write(context.Background(), conn, WSMessage{Type: "message", Content: "hello"}); err != nil {
+		t.Fatalf("Write(message): %v", err)
+	}
+
+	want := []WSMessage{
+		{Type: "stream_start"},
+		{Type: "stream_delta", Content: "第一句。第二句。"},
+		{Type: "stream_end"},
+	}
+	for i := range want {
+		msg = WSMessage{}
+		if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+			t.Fatalf("Read(stream %d): %v", i, err)
+		}
+		if msg.Type != want[i].Type || msg.Content != want[i].Content {
+			t.Fatalf("message[%d] = %#v, want %#v", i, msg, want[i])
+		}
+	}
+}
+
+func TestHandlerFallsBackToStreamDeltaForRealtimeReplyDelivery(t *testing.T) {
+	replyCfg := config.DefaultReplyDeliveryConfig()
+	replyCfg.Enabled = true
+	replyCfg.Timing.Enabled = false
+	handler, engine := newTestHandlerWithOptions(WithReplyDeliveryConfig(replyCfg), WithRealtimeStreaming(true))
+	engine.sendReply = "第一句。第二句。"
+	engine.sendHook = func(ctx context.Context) {
+		replydelivery.RecordPromptMode(ctx, contextutil.PromptModeCasualChat)
+	}
+
+	conn := dialTestWS(t, handler)
+	defer conn.Close(websocket.StatusNormalClosure, "bye")
+
+	var msg WSMessage
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(session_ready): %v", err)
+	}
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(greeting): %v", err)
+	}
+	if err := wsjson.Write(context.Background(), conn, WSMessage{Type: "message", Content: "hello"}); err != nil {
+		t.Fatalf("Write(message): %v", err)
+	}
+
+	want := []WSMessage{
+		{Type: "stream_start"},
+		{Type: "stream_delta", Content: "第一句。第二句。"},
+		{Type: "stream_end"},
+	}
+	for i := range want {
+		msg = WSMessage{}
+		if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+			t.Fatalf("Read(stream %d): %v", i, err)
+		}
+		if msg.Type != want[i].Type || msg.Content != want[i].Content {
+			t.Fatalf("message[%d] = %#v, want %#v", i, msg, want[i])
+		}
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 	"github.com/longyisang/emoagent/internal/progress"
 	"github.com/longyisang/emoagent/internal/promptcenter"
 	"github.com/longyisang/emoagent/internal/protocol"
+	"github.com/longyisang/emoagent/internal/replydelivery"
 	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/storage"
 	"github.com/longyisang/emoagent/internal/tokenmeter"
@@ -79,6 +80,7 @@ type EngineConfig struct {
 	Temperature         float64
 	ContextConfig       config.ContextConfig
 	PromptRouter        config.PromptRouterConfig
+	ReplyDelivery       config.ReplyDeliveryConfig
 	Provider            string           // "openai" or "anthropic", needed by ResultsToMessages
 	ProviderID          string           // configured provider id for model capability lookup
 	ProviderName        string           // display name for UI metadata
@@ -118,6 +120,7 @@ type RuntimeConfig struct {
 	Temperature        float64
 	ContextConfig      config.ContextConfig
 	PromptRouter       config.PromptRouterConfig
+	ReplyDelivery      config.ReplyDeliveryConfig
 	RealtimeStreaming  bool
 	UserAddress        config.AgentUserAddressConfig
 }
@@ -139,6 +142,7 @@ type Engine struct {
 	temperature          float64
 	contextCfg           config.ContextConfig
 	promptRouter         config.PromptRouterConfig
+	replyDelivery        config.ReplyDeliveryConfig
 	provider             string
 	providerID           string
 	providerName         string
@@ -232,6 +236,12 @@ func (e *Engine) UpdatePromptRouterConfig(cfg config.PromptRouterConfig) {
 	e.promptRouter = normalizePromptRouterConfig(cfg)
 }
 
+func (e *Engine) UpdateReplyDeliveryConfig(cfg config.ReplyDeliveryConfig) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.replyDelivery = config.NormalizeReplyDeliveryConfig(cfg)
+}
+
 // NewEngine creates a chat engine from configuration.
 func NewEngine(cfg EngineConfig) *Engine {
 	contextCfg := cfg.ContextConfig
@@ -271,6 +281,7 @@ func NewEngine(cfg EngineConfig) *Engine {
 		temperature:          cfg.Temperature,
 		contextCfg:           contextCfg,
 		promptRouter:         promptRouter,
+		replyDelivery:        config.NormalizeReplyDeliveryConfig(cfg.ReplyDelivery),
 		provider:             cfg.Provider,
 		providerID:           firstNonEmptyString(cfg.ProviderID, cfg.Provider),
 		providerName:         providerDisplayName(cfg.ProviderName, cfg.Provider),
@@ -386,6 +397,7 @@ func (e *Engine) RuntimeConfig() RuntimeConfig {
 		Temperature:        e.temperature,
 		ContextConfig:      e.contextCfg,
 		PromptRouter:       e.promptRouter,
+		ReplyDelivery:      e.replyDelivery,
 		RealtimeStreaming:  e.realtimeStreaming,
 		UserAddress:        e.userAddress,
 	}
@@ -500,6 +512,7 @@ type deferredTurnOutput struct {
 	memorySnapshot   *memoryPromptSnapshot
 	memorySegment    MemorySegmentRef
 	hasMemorySegment bool
+	replyDelivery    *replydelivery.Metadata
 }
 
 type thinkingBlockMetadata struct {
@@ -682,6 +695,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	temperature := e.temperature
 	contextCfg := e.contextCfg
 	promptRouterCfg := e.promptRouter
+	replyDeliveryCfg := e.replyDelivery
 	provider := e.provider
 	providerID := e.providerID
 	providerName := providerDisplayName(e.providerName, provider)
@@ -841,6 +855,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 		InboundKind:         inboundKind,
 	}, promptRouterCfg, summaryClient, summaryRequestModel, summaryParams, e.logger)
 	ApplyPromptRouteDecision(state, routeDecision, promptRouterCfg)
+	replydelivery.RecordPromptMode(ctx, routeDecision.Mode)
 	contextOptions := contextutil.EmotionContextOptions{PromptMode: routeDecision.Mode}
 
 	var assembled contextutil.AssembledContext
@@ -1319,13 +1334,18 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 		memorySegment:    memorySegment,
 		hasMemorySegment: hasMemorySegment,
 	}
+	if replyDeliveryCfg.Enabled {
+		plan := replydelivery.BuildPlan(replyDeliveryCfg, string(routeDecision.Mode), realtimeStreaming, assistantContent)
+		metadata := plan.Metadata()
+		output.replyDelivery = &metadata
+	}
 	if opts.deferCommit {
 		if opts.output != nil {
 			*opts.output = output
 		}
 		return assistantContent, nil
 	}
-	if err := e.commitTurnOutput(ctx, sessionID, output.assistantContent, output.thinkingBlocks, output.memorySnapshot, output.memorySegment, output.hasMemorySegment); err != nil {
+	if err := e.commitTurnOutput(ctx, sessionID, output); err != nil {
 		return "", err
 	}
 
@@ -2036,17 +2056,17 @@ func (e *Engine) prepareInputAndMemoryAnchor(ctx context.Context, sessionID stri
 	return anchor, nil
 }
 
-func (e *Engine) commitTurnOutput(ctx context.Context, sessionID string, assistantContent string, thinkingBlocks []thinkingBlockMetadata, memorySnapshot *memoryPromptSnapshot, memorySegment MemorySegmentRef, hasMemorySegment bool) error {
+func (e *Engine) commitTurnOutput(ctx context.Context, sessionID string, output deferredTurnOutput) error {
 	assistantMessageID := uuid.NewString()
-	if err := e.db.AddMessageWithMetadata(ctx, assistantMessageID, sessionID, "assistant", assistantContent, visibleMessageMetadataWithThinkingAndMemory("assistant", assistantContent, thinkingBlocks, memorySnapshot)); err != nil {
+	if err := e.db.AddMessageWithMetadata(ctx, assistantMessageID, sessionID, "assistant", output.assistantContent, visibleMessageMetadataWithThinkingMemoryAndReplyDelivery("assistant", output.assistantContent, output.thinkingBlocks, output.memorySnapshot, output.replyDelivery)); err != nil {
 		e.logger.Error("failed to store assistant message", "session", sessionID, "error", err)
 		return err
 	}
-	if !hasMemorySegment {
-		memorySegment, hasMemorySegment = e.ensureMemorySegment(ctx, sessionID)
+	if !output.hasMemorySegment {
+		output.memorySegment, output.hasMemorySegment = e.ensureMemorySegment(ctx, sessionID)
 	}
-	if hasMemorySegment {
-		if _, err := e.memory.AppendAssistantEpisode(ctx, memorySegment.SegmentID, assistantMessageID, assistantContent); err != nil {
+	if output.hasMemorySegment {
+		if _, err := e.memory.AppendAssistantEpisode(ctx, output.memorySegment.SegmentID, assistantMessageID, output.assistantContent); err != nil {
 			e.logMemoryWarning("append assistant memory episode", sessionID, err)
 		}
 	}
@@ -2185,12 +2205,19 @@ func visibleMessageMetadataWithThinking(role, content string, thinkingBlocks []t
 }
 
 func visibleMessageMetadataWithThinkingAndMemory(role, content string, thinkingBlocks []thinkingBlockMetadata, memorySnapshot *memoryPromptSnapshot) map[string]any {
+	return visibleMessageMetadataWithThinkingMemoryAndReplyDelivery(role, content, thinkingBlocks, memorySnapshot, nil)
+}
+
+func visibleMessageMetadataWithThinkingMemoryAndReplyDelivery(role, content string, thinkingBlocks []thinkingBlockMetadata, memorySnapshot *memoryPromptSnapshot, replyDelivery *replydelivery.Metadata) map[string]any {
 	metadata := visibleMessageMetadata(role, content)
 	if len(thinkingBlocks) > 0 {
 		metadata["thinking_blocks"] = thinkingBlocks
 	}
 	if memorySnapshot != nil && memorySnapshot.RecordMetadata {
 		metadata["memory_pipeline"] = memoryPipelineMetadata(memorySnapshot)
+	}
+	if replyDelivery != nil {
+		metadata["reply_delivery"] = replyDelivery
 	}
 	return metadata
 }

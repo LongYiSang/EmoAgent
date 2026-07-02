@@ -18,6 +18,7 @@ import (
 	"github.com/longyisang/emoagent/internal/progress"
 	"github.com/longyisang/emoagent/internal/promptcenter"
 	"github.com/longyisang/emoagent/internal/protocol"
+	"github.com/longyisang/emoagent/internal/replydelivery"
 	"github.com/longyisang/emoagent/internal/storage"
 	"github.com/longyisang/emoagent/internal/tool"
 	"github.com/longyisang/emoagent/internal/tool/resultv2"
@@ -740,7 +741,7 @@ func TestEngineCommitTurnOutputPersistsAssistantAndEpisode(t *testing.T) {
 	}
 	bridge.ensureCalls = nil
 
-	if err := engine.commitTurnOutput(ctx, sessionID, "Hi there", nil, nil, MemorySegmentRef{}, false); err != nil {
+	if err := engine.commitTurnOutput(ctx, sessionID, deferredTurnOutput{assistantContent: "Hi there"}); err != nil {
 		t.Fatalf("commitTurnOutput: %v", err)
 	}
 	messages, err := db.GetAllMessages(ctx, sessionID)
@@ -1841,6 +1842,91 @@ func TestEnginePromptRouterAutoLLMWorkBuildsWorkPromptAndResetsSticky(t *testing
 	}
 	if state.PromptRoute.LastMode != contextutil.PromptModeWorkMode || state.PromptRoute.WorkStickyRemaining != 4 {
 		t.Fatalf("PromptRoute = %#v, want work sticky 4", state.PromptRoute)
+	}
+}
+
+func TestEngineStoresReplyDeliveryMetadataAndKeepsMemoryWhole(t *testing.T) {
+	client := &fakeLLMClient{
+		response: endTurnResponse("第一句。第二句。"),
+	}
+	engine, db, _ := newTestEngineWithPromptRouter(t, client, nil, nil, config.PromptRouterConfig{Mode: config.PromptRouterModeAlwaysCasual})
+	replyCfg := config.DefaultReplyDeliveryConfig()
+	replyCfg.Enabled = true
+	replyCfg.Timing.Enabled = false
+	engine.UpdateReplyDeliveryConfig(replyCfg)
+	bridge := &fakeMemoryBridge{ensureResult: MemorySegmentRef{SegmentID: "segment-current", MemorySessionID: "memory-current"}}
+	engine.memory = bridge
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	reply, err := engine.SendMessage(context.Background(), sessionID, &config.Persona{Name: "default", SystemPrompt: "system"}, "hello", nil)
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if reply != "第一句。第二句。" {
+		t.Fatalf("reply = %q", reply)
+	}
+
+	messages, err := db.GetRecentMessages(context.Background(), sessionID, 10)
+	if err != nil {
+		t.Fatalf("GetRecentMessages: %v", err)
+	}
+	if len(messages) != 2 || messages[1].Role != "assistant" {
+		t.Fatalf("messages = %#v, want user plus assistant", messages)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(messages[1].Metadata), &metadata); err != nil {
+		t.Fatalf("Unmarshal metadata: %v; raw=%s", err, messages[1].Metadata)
+	}
+	rawReplyDelivery, ok := metadata["reply_delivery"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata = %#v, want reply_delivery object", metadata)
+	}
+	if rawReplyDelivery["schema_version"] != replydelivery.SchemaVersion || rawReplyDelivery["suppressed"] != false {
+		t.Fatalf("reply_delivery = %#v, want v0.1 unsuppressed", rawReplyDelivery)
+	}
+	segments, ok := rawReplyDelivery["segments"].([]any)
+	if !ok || len(segments) != 2 || segments[0] != "第一句。" || segments[1] != "第二句。" {
+		t.Fatalf("segments = %#v, want split display segments", rawReplyDelivery["segments"])
+	}
+	if len(bridge.assistEpisodes) != 1 || bridge.assistEpisodes[0].Content != "第一句。第二句。" {
+		t.Fatalf("assistant episodes = %#v, want one full assistant episode", bridge.assistEpisodes)
+	}
+}
+
+func TestEngineSuppressesReplyDeliveryMetadataForWorkMode(t *testing.T) {
+	client := &fakeLLMClient{
+		response: endTurnResponse("第一句。第二句。"),
+	}
+	engine, db, _ := newTestEngineWithPromptRouter(t, client, nil, nil, config.PromptRouterConfig{Mode: config.PromptRouterModeAlwaysWork})
+	replyCfg := config.DefaultReplyDeliveryConfig()
+	replyCfg.Enabled = true
+	engine.UpdateReplyDeliveryConfig(replyCfg)
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if _, err := engine.SendMessage(context.Background(), sessionID, &config.Persona{Name: "default", SystemPrompt: "system"}, "hello", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	messages, err := db.GetRecentMessages(context.Background(), sessionID, 10)
+	if err != nil {
+		t.Fatalf("GetRecentMessages: %v", err)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(messages[1].Metadata), &metadata); err != nil {
+		t.Fatalf("Unmarshal metadata: %v", err)
+	}
+	rawReplyDelivery, ok := metadata["reply_delivery"].(map[string]any)
+	if !ok || rawReplyDelivery["suppressed"] != true || rawReplyDelivery["suppress_reason"] != "work_mode" {
+		t.Fatalf("reply_delivery = %#v, want work mode suppression", rawReplyDelivery)
+	}
+	if _, ok := rawReplyDelivery["segments"]; ok {
+		t.Fatalf("reply_delivery segments = %#v, want omitted for suppressed metadata", rawReplyDelivery["segments"])
 	}
 }
 

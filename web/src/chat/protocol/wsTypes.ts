@@ -115,6 +115,7 @@ export type WSIncoming =
   | { type: 'greeting'; content?: string }
   | { type: 'stream_start' }
   | { type: 'stream_delta'; content?: string }
+  | { type: 'assistant_segment'; content?: string; turn_id?: string; turnID?: string; group_id?: string; groupID?: string; segment_id?: string; segmentID?: string; segment_index?: number; segmentIndex?: number; segment_total?: number; segmentTotal?: number }
   | { type: 'stream_end' }
   | { type: 'context_stats'; payload?: ContextStats; Payload?: ContextStats }
   | { type: 'tool_call_start'; tool?: ToolActivity; Tool?: ToolActivity }

@@ -38,6 +38,7 @@ func applyRuntimeSetting(cfg *config.Config, setting storage.RuntimeSetting) err
 		if err := overlayJSONSetting(&cfg.Chat, setting); err != nil {
 			return err
 		}
+		cfg.Chat = config.NormalizeChatConfig(cfg.Chat)
 		if err := cfg.Chat.PromptRouter.Validate(); err != nil {
 			return fmt.Errorf("prompt_router.%w", err)
 		}

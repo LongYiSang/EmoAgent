@@ -6,7 +6,7 @@ import type { MemoryJob, MemorySegment } from '../protocol/memoryApi';
 export type MessageStatus = 'sent' | 'pending' | 'failed';
 
 export type TimelineItem =
-  | { kind: 'message'; id: string; role: string; content: string; createdAt: string; status?: MessageStatus; parts?: ContentPart[]; displayParts?: MessageDisplayPart[] }
+  | { kind: 'message'; id: string; role: string; content: string; createdAt: string; status?: MessageStatus; parts?: ContentPart[]; displayParts?: MessageDisplayPart[]; groupID?: string; segmentIndex?: number; segmentTotal?: number }
   | { kind: 'approval'; id: string; approval: ApprovalRequest; createdAt: string }
   | { kind: 'tool'; id: string; tool: ToolActivity; createdAt: string; collapsed: boolean }
   | { kind: 'reasoning'; id: string; reasoning: ReasoningActivity; createdAt: string; collapsed: boolean }
@@ -46,6 +46,7 @@ export type ChatAction =
   | { type: 'SET_MESSAGE_STATUS'; id: string; status: MessageStatus }
   | { type: 'STREAM_START' }
   | { type: 'STREAM_DELTA'; content: string }
+  | { type: 'ASSISTANT_SEGMENT'; content: string; id?: string; groupID?: string; segmentIndex?: number; segmentTotal?: number; createdAt?: string }
   | { type: 'STREAM_END' }
   | { type: 'UPSERT_TOOL'; tool: ToolActivity; collapsed: boolean }
   | { type: 'UPSERT_REASONING'; reasoning: ReasoningActivity; collapsed: boolean; append: boolean; createdAt?: string }

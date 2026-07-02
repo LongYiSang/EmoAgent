@@ -6,6 +6,7 @@ const (
 	EventStreamStart      = "stream_start"
 	EventStreamDelta      = "stream_delta"
 	EventStreamEnd        = "stream_end"
+	EventAssistantSegment = "assistant_segment"
 	EventToolCallStart    = "tool_call_start"
 	EventToolCallEnd      = "tool_call_end"
 	EventReasoningStart   = "reasoning_start"

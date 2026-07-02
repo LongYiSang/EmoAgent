@@ -1429,9 +1429,40 @@ type ServerConfig struct {
 }
 
 type ChatConfig struct {
-	RealtimeStreaming bool               `yaml:"realtime_streaming" json:"realtime_streaming"`
-	TurnPipeline      TurnPipelineConfig `yaml:"turn_pipeline" json:"turn_pipeline"`
-	PromptRouter      PromptRouterConfig `yaml:"prompt_router" json:"prompt_router"`
+	RealtimeStreaming bool                `yaml:"realtime_streaming" json:"realtime_streaming"`
+	TurnPipeline      TurnPipelineConfig  `yaml:"turn_pipeline" json:"turn_pipeline"`
+	PromptRouter      PromptRouterConfig  `yaml:"prompt_router" json:"prompt_router"`
+	ReplyDelivery     ReplyDeliveryConfig `yaml:"reply_delivery" json:"reply_delivery"`
+}
+
+type ReplyDeliveryConfig struct {
+	Enabled                      bool               `yaml:"enabled" json:"enabled"`
+	ApplyPromptModes             []string           `yaml:"apply_prompt_modes" json:"apply_prompt_modes"`
+	DisableWhenRealtimeStreaming bool               `yaml:"disable_when_realtime_streaming" json:"disable_when_realtime_streaming"`
+	Segment                      ReplySegmentConfig `yaml:"segment" json:"segment"`
+	Timing                       ReplyTimingConfig  `yaml:"timing" json:"timing"`
+}
+
+type ReplySegmentConfig struct {
+	SplitMode             string   `yaml:"split_mode" json:"split_mode"`
+	SplitWords            []string `yaml:"split_words" json:"split_words"`
+	Regex                 string   `yaml:"regex" json:"regex"`
+	CleanupRegex          string   `yaml:"cleanup_regex" json:"cleanup_regex"`
+	LongTextThreshold     int      `yaml:"long_text_threshold" json:"long_text_threshold"`
+	MaxSegments           int      `yaml:"max_segments" json:"max_segments"`
+	ProtectCodeBlocks     bool     `yaml:"protect_code_blocks" json:"protect_code_blocks"`
+	ProtectMarkdownTables bool     `yaml:"protect_markdown_tables" json:"protect_markdown_tables"`
+	ProtectURLs           bool     `yaml:"protect_urls" json:"protect_urls"`
+}
+
+type ReplyTimingConfig struct {
+	Enabled             bool    `yaml:"enabled" json:"enabled"`
+	LogBase             float64 `yaml:"log_base" json:"log_base"`
+	LogScaleMS          int     `yaml:"log_scale_ms" json:"log_scale_ms"`
+	RandomIntervalMinMS int     `yaml:"random_interval_min_ms" json:"random_interval_min_ms"`
+	RandomIntervalMaxMS int     `yaml:"random_interval_max_ms" json:"random_interval_max_ms"`
+	MinDelayMS          int     `yaml:"min_delay_ms" json:"min_delay_ms"`
+	MaxDelayMS          int     `yaml:"max_delay_ms" json:"max_delay_ms"`
 }
 
 type PromptRouterConfig struct {
@@ -1634,6 +1665,7 @@ func DefaultConfig() *Config {
 		},
 		Chat: ChatConfig{
 			RealtimeStreaming: false,
+			ReplyDelivery:     DefaultReplyDeliveryConfig(),
 			PromptRouter: PromptRouterConfig{
 				Mode:            PromptRouterModeAuto,
 				StickyTurns:     5,
@@ -2065,6 +2097,93 @@ func (c *Config) applyPythonToolchainLegacyMigration() {
 func (c *ChatConfig) applyDefaults() {
 	c.TurnPipeline.applyDefaults()
 	c.PromptRouter.applyDefaults()
+	c.ReplyDelivery = NormalizeReplyDeliveryConfig(c.ReplyDelivery)
+}
+
+func NormalizeChatConfig(cfg ChatConfig) ChatConfig {
+	cfg.applyDefaults()
+	return cfg
+}
+
+func DefaultReplyDeliveryConfig() ReplyDeliveryConfig {
+	return ReplyDeliveryConfig{
+		Enabled:                      false,
+		ApplyPromptModes:             []string{"casual_chat"},
+		DisableWhenRealtimeStreaming: true,
+		Segment: ReplySegmentConfig{
+			SplitMode:             "natural",
+			SplitWords:            []string{"。", "？", "！", "!", "?", "~", "～", "…", "\n"},
+			Regex:                 `.*?[。？！!?~～…]+|.+$`,
+			CleanupRegex:          "",
+			LongTextThreshold:     500,
+			MaxSegments:           8,
+			ProtectCodeBlocks:     true,
+			ProtectMarkdownTables: true,
+			ProtectURLs:           true,
+		},
+		Timing: ReplyTimingConfig{
+			Enabled:             true,
+			LogBase:             2.6,
+			LogScaleMS:          1000,
+			RandomIntervalMinMS: 250,
+			RandomIntervalMaxMS: 900,
+			MinDelayMS:          300,
+			MaxDelayMS:          5000,
+		},
+	}
+}
+
+func NormalizeReplyDeliveryConfig(cfg ReplyDeliveryConfig) ReplyDeliveryConfig {
+	defaults := DefaultReplyDeliveryConfig()
+	if len(cfg.ApplyPromptModes) == 0 {
+		cfg.ApplyPromptModes = append([]string(nil), defaults.ApplyPromptModes...)
+	}
+	if strings.TrimSpace(cfg.Segment.SplitMode) == "" {
+		cfg.Segment.SplitMode = defaults.Segment.SplitMode
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.Segment.SplitMode)) {
+	case "natural", "regex":
+		cfg.Segment.SplitMode = strings.ToLower(strings.TrimSpace(cfg.Segment.SplitMode))
+	default:
+		cfg.Segment.SplitMode = defaults.Segment.SplitMode
+	}
+	if len(cfg.Segment.SplitWords) == 0 {
+		cfg.Segment.SplitWords = append([]string(nil), defaults.Segment.SplitWords...)
+	}
+	if strings.TrimSpace(cfg.Segment.Regex) == "" {
+		cfg.Segment.Regex = defaults.Segment.Regex
+	}
+	if cfg.Segment.LongTextThreshold <= 0 {
+		cfg.Segment.LongTextThreshold = defaults.Segment.LongTextThreshold
+	}
+	if cfg.Segment.MaxSegments <= 0 {
+		cfg.Segment.MaxSegments = defaults.Segment.MaxSegments
+	}
+	if cfg.Timing.LogBase <= 1.0 {
+		cfg.Timing.LogBase = defaults.Timing.LogBase
+	}
+	if cfg.Timing.LogScaleMS < 0 {
+		cfg.Timing.LogScaleMS = defaults.Timing.LogScaleMS
+	}
+	if cfg.Timing.RandomIntervalMinMS < 0 {
+		cfg.Timing.RandomIntervalMinMS = 0
+	}
+	if cfg.Timing.RandomIntervalMaxMS < 0 {
+		cfg.Timing.RandomIntervalMaxMS = 0
+	}
+	if cfg.Timing.RandomIntervalMaxMS < cfg.Timing.RandomIntervalMinMS {
+		cfg.Timing.RandomIntervalMinMS, cfg.Timing.RandomIntervalMaxMS = cfg.Timing.RandomIntervalMaxMS, cfg.Timing.RandomIntervalMinMS
+	}
+	if cfg.Timing.MinDelayMS < 0 {
+		cfg.Timing.MinDelayMS = 0
+	}
+	if cfg.Timing.MaxDelayMS < 0 {
+		cfg.Timing.MaxDelayMS = 0
+	}
+	if cfg.Timing.MaxDelayMS < cfg.Timing.MinDelayMS {
+		cfg.Timing.MaxDelayMS = cfg.Timing.MinDelayMS
+	}
+	return cfg
 }
 
 func (c *PromptRouterConfig) applyDefaults() {
@@ -2177,6 +2296,7 @@ func (c *Config) applyTimezoneDefaults(explicitMemoryExtractionTimezone bool, me
 
 // Validate checks that required fields are set.
 func (c *Config) Validate() error {
+	c.Chat.ReplyDelivery = NormalizeReplyDeliveryConfig(c.Chat.ReplyDelivery)
 	if c.Server.Port < 1 || c.Server.Port > 65535 {
 		return fmt.Errorf("server.port must be 1-65535, got %d", c.Server.Port)
 	}

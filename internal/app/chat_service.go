@@ -94,6 +94,7 @@ func (s *ChatService) BuildEngine(dispatcher *tool.Dispatcher) *chat.Engine {
 		Temperature:        temperature,
 		ContextConfig:      contextCfg,
 		PromptRouter:       cfg.Chat.PromptRouter,
+		ReplyDelivery:      cfg.Chat.ReplyDelivery,
 		Provider:           provider,
 		ProviderID:         providerID,
 		ProviderName:       providerName,
@@ -120,6 +121,8 @@ func (s *ChatService) HandlerOptions() []chat.HandlerOption {
 	cfg := s.infra.Config
 	options := []chat.HandlerOption{
 		chat.WithTurnPipelineConfig(cfg.Chat.TurnPipeline),
+		chat.WithRealtimeStreaming(cfg.Chat.RealtimeStreaming),
+		chat.WithReplyDeliveryConfig(cfg.Chat.ReplyDelivery),
 		chat.WithTurnTimezone(cfg.Time.Timezone),
 	}
 	if s.infra.DB != nil {
@@ -140,6 +143,12 @@ func (s *ChatService) UpdateRealtimeStreaming(enabled bool) {
 func (s *ChatService) UpdatePromptRouterConfig(cfg config.PromptRouterConfig) {
 	if s.engine != nil {
 		s.engine.UpdatePromptRouterConfig(cfg)
+	}
+}
+
+func (s *ChatService) UpdateReplyDeliveryConfig(cfg config.ReplyDeliveryConfig) {
+	if s.engine != nil {
+		s.engine.UpdateReplyDeliveryConfig(cfg)
 	}
 }
 

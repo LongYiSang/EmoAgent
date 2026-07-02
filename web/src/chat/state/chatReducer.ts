@@ -83,6 +83,20 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       };
       return { ...state, pendingAssistantId: id, timeline: orderTimeline([...state.timeline, item]) };
     }
+    case 'ASSISTANT_SEGMENT': {
+      if (!action.content) return state;
+      const item: TimelineItem = {
+        kind: 'message',
+        id: action.id || crypto.randomUUID(),
+        role: 'assistant',
+        content: action.content,
+        createdAt: action.createdAt || new Date().toISOString(),
+        groupID: action.groupID,
+        segmentIndex: action.segmentIndex,
+        segmentTotal: action.segmentTotal,
+      };
+      return { ...state, pendingAssistantId: '', timeline: orderTimeline([...state.timeline, item]) };
+    }
     case 'STREAM_END':
       return { ...state, sending: false, pendingAssistantId: '', pendingApprovalIDs: [] };
     case 'UPSERT_TOOL':
@@ -152,11 +166,38 @@ function historyToTimeline(messages: MessageRecord[]): TimelineItem[] {
     if (role === 'assistant') {
       items.push(...thinkingBlocksToTimeline(metadata, createdAt, id));
     }
+    const replySegments = role === 'assistant' && displayParts.length === 0 ? replyDeliverySegments(metadata) : [];
+    if (replySegments.length > 1) {
+      for (let i = 0; i < replySegments.length; i++) {
+        items.push({
+          kind: 'message',
+          id: `${id}:segment:${i}`,
+          role,
+          content: replySegments[i],
+          createdAt: createdAtWithOffset(createdAt, i),
+          groupID: id,
+          segmentIndex: i,
+          segmentTotal: replySegments.length,
+        });
+      }
+      continue;
+    }
     if (content || displayParts.length > 0) {
       items.push({ kind: 'message', id, role, content, createdAt, displayParts: displayParts.length > 0 ? displayParts : undefined });
     }
   }
   return orderTimeline(items);
+}
+
+function replyDeliverySegments(metadata: AnyRecord): string[] {
+  const replyDelivery = field<AnyRecord>(metadata, 'reply_delivery', field<AnyRecord>(metadata, 'replyDelivery', {}));
+  const rawSegments = field<unknown>(replyDelivery, 'segments', []);
+  if (!Array.isArray(rawSegments)) return [];
+  return rawSegments.map(item => typeof item === 'string' ? item.trim() : '').filter(Boolean);
+}
+
+function createdAtWithOffset(createdAt: string, index: number): string {
+  return new Date(timelineMillis(createdAt) + index).toISOString();
 }
 
 function messageDisplayParts(message: MessageRecord): MessageDisplayPart[] {

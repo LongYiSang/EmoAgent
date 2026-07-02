@@ -42,6 +42,18 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Chat.PromptRouter.MaxOutputTokens != 64 {
 		t.Errorf("default chat.prompt_router.max_output_tokens = %d, want 64", cfg.Chat.PromptRouter.MaxOutputTokens)
 	}
+	if cfg.Chat.ReplyDelivery.Enabled {
+		t.Error("default chat.reply_delivery.enabled = true, want false")
+	}
+	if got := cfg.Chat.ReplyDelivery.ApplyPromptModes; !reflect.DeepEqual(got, []string{"casual_chat"}) {
+		t.Errorf("default chat.reply_delivery.apply_prompt_modes = %#v, want casual_chat", got)
+	}
+	if cfg.Chat.ReplyDelivery.Segment.LongTextThreshold != 500 || cfg.Chat.ReplyDelivery.Segment.MaxSegments != 8 {
+		t.Errorf("default chat.reply_delivery.segment = %#v, want threshold 500 max 8", cfg.Chat.ReplyDelivery.Segment)
+	}
+	if cfg.Chat.ReplyDelivery.Timing.LogBase != 2.6 || cfg.Chat.ReplyDelivery.Timing.MinDelayMS != 300 {
+		t.Errorf("default chat.reply_delivery.timing = %#v, want log_base 2.6 min 300", cfg.Chat.ReplyDelivery.Timing)
+	}
 	if cfg.Chat.TurnPipeline.Shadow {
 		t.Error("default chat.turn_pipeline.shadow = true, want false")
 	}
@@ -439,6 +451,37 @@ chat:
 	}
 	if cfg.Chat.PromptRouter.ContextTurns != 6 || cfg.Chat.PromptRouter.MaxContextChars != 6000 || cfg.Chat.PromptRouter.TimeoutMS != 2000 || cfg.Chat.PromptRouter.MaxOutputTokens != 64 {
 		t.Fatalf("chat.prompt_router defaults = %#v", cfg.Chat.PromptRouter)
+	}
+}
+
+func TestNormalizeReplyDeliveryConfigRepairsInvalidValues(t *testing.T) {
+	cfg := DefaultReplyDeliveryConfig()
+	cfg.Segment.SplitMode = "bad"
+	cfg.Segment.SplitWords = nil
+	cfg.Segment.LongTextThreshold = -1
+	cfg.Segment.MaxSegments = 0
+	cfg.Timing.LogBase = 1
+	cfg.Timing.LogScaleMS = -1
+	cfg.Timing.RandomIntervalMinMS = 900
+	cfg.Timing.RandomIntervalMaxMS = 250
+	cfg.Timing.MinDelayMS = -10
+	cfg.Timing.MaxDelayMS = -20
+
+	got := NormalizeReplyDeliveryConfig(cfg)
+	if got.Segment.SplitMode != "natural" {
+		t.Fatalf("split_mode = %q, want natural", got.Segment.SplitMode)
+	}
+	if len(got.Segment.SplitWords) == 0 || got.Segment.LongTextThreshold != 500 || got.Segment.MaxSegments != 8 {
+		t.Fatalf("segment defaults = %#v", got.Segment)
+	}
+	if got.Timing.LogBase != 2.6 || got.Timing.LogScaleMS != 1000 {
+		t.Fatalf("timing log defaults = %#v", got.Timing)
+	}
+	if got.Timing.RandomIntervalMinMS != 250 || got.Timing.RandomIntervalMaxMS != 900 {
+		t.Fatalf("random interval = %#v, want swapped 250..900", got.Timing)
+	}
+	if got.Timing.MinDelayMS != 0 || got.Timing.MaxDelayMS != 0 {
+		t.Fatalf("delay clamp = %#v, want min=max=0", got.Timing)
 	}
 }
 

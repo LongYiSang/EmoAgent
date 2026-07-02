@@ -177,6 +177,22 @@ export function useChatWebSocket({ dispatch, contextRef, refreshSessions, refres
         case 'stream_delta':
           queueStreamDelta(payload.content || '');
           break;
+        case 'assistant_segment': {
+          flushPendingStreamDelta();
+          const segmentID = payload.segment_id || payload.segmentID;
+          const groupID = payload.group_id || payload.groupID || payload.turn_id || payload.turnID;
+          const segmentIndex = payload.segment_index ?? payload.segmentIndex;
+          const segmentTotal = payload.segment_total ?? payload.segmentTotal;
+          dispatch({
+            type: 'ASSISTANT_SEGMENT',
+            id: segmentID,
+            groupID,
+            segmentIndex,
+            segmentTotal,
+            content: payload.content || '',
+          });
+          break;
+        }
         case 'context_stats':
           dispatch({ type: 'SET_CONTEXT_STATS', stats: payload.payload || payload.Payload || null });
           break;

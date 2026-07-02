@@ -995,7 +995,10 @@ func TestUpdateChatSettingsPersistsRuntimeOverrideAndHotUpdatesEngine(t *testing
 	router := config.DefaultConfig().Chat.PromptRouter
 	router.Mode = config.PromptRouterModeAlwaysCasual
 	router.StickyTurns = 3
-	if err := a.UpdateChatSettings(config.ChatConfig{RealtimeStreaming: true, PromptRouter: router}); err != nil {
+	replyDelivery := config.DefaultConfig().Chat.ReplyDelivery
+	replyDelivery.Enabled = true
+	replyDelivery.Segment.MaxSegments = 3
+	if err := a.UpdateChatSettings(config.ChatConfig{RealtimeStreaming: true, PromptRouter: router, ReplyDelivery: replyDelivery}); err != nil {
 		t.Fatalf("UpdateChatSettings: %v", err)
 	}
 
@@ -1007,8 +1010,9 @@ func TestUpdateChatSettingsPersistsRuntimeOverrideAndHotUpdatesEngine(t *testing
 		t.Fatal("runtime setting chat/config missing")
 	}
 	var persisted struct {
-		RealtimeStreaming bool                      `json:"realtime_streaming"`
-		PromptRouter      config.PromptRouterConfig `json:"prompt_router"`
+		RealtimeStreaming bool                       `json:"realtime_streaming"`
+		PromptRouter      config.PromptRouterConfig  `json:"prompt_router"`
+		ReplyDelivery     config.ReplyDeliveryConfig `json:"reply_delivery"`
 	}
 	if err := json.Unmarshal([]byte(setting.ValueJSON), &persisted); err != nil {
 		t.Fatalf("Unmarshal runtime setting: %v", err)
@@ -1016,17 +1020,26 @@ func TestUpdateChatSettingsPersistsRuntimeOverrideAndHotUpdatesEngine(t *testing
 	if !persisted.RealtimeStreaming || persisted.PromptRouter.Mode != config.PromptRouterModeAlwaysCasual || persisted.PromptRouter.StickyTurns != 3 {
 		t.Fatalf("runtime chat/config = %#v, want realtime true and always_casual sticky 3", persisted)
 	}
+	if !persisted.ReplyDelivery.Enabled || persisted.ReplyDelivery.Segment.MaxSegments != 3 {
+		t.Fatalf("runtime reply_delivery = %#v, want enabled max_segments 3", persisted.ReplyDelivery)
+	}
 	if !testConfig(a).Chat.RealtimeStreaming {
 		t.Fatal("Config.Chat.RealtimeStreaming = false, want true")
 	}
 	if testConfig(a).Chat.PromptRouter.Mode != config.PromptRouterModeAlwaysCasual {
 		t.Fatalf("Config.Chat.PromptRouter = %#v, want always_casual", testConfig(a).Chat.PromptRouter)
 	}
+	if !testConfig(a).Chat.ReplyDelivery.Enabled || testConfig(a).Chat.ReplyDelivery.Segment.MaxSegments != 3 {
+		t.Fatalf("Config.Chat.ReplyDelivery = %#v, want enabled max_segments 3", testConfig(a).Chat.ReplyDelivery)
+	}
 	if !engine.RuntimeConfig().RealtimeStreaming {
 		t.Fatal("engine realtime streaming = false, want true")
 	}
 	if engine.RuntimeConfig().PromptRouter.Mode != config.PromptRouterModeAlwaysCasual {
 		t.Fatalf("engine prompt router = %#v, want always_casual", engine.RuntimeConfig().PromptRouter)
+	}
+	if !engine.RuntimeConfig().ReplyDelivery.Enabled || engine.RuntimeConfig().ReplyDelivery.Segment.MaxSegments != 3 {
+		t.Fatalf("engine reply delivery = %#v, want enabled max_segments 3", engine.RuntimeConfig().ReplyDelivery)
 	}
 	if got := testConfig(a).Chat.TurnPipeline; !got.Shadow || !got.Enabled || !got.MemoryStages || !got.ApprovalStages {
 		t.Fatalf("turn pipeline config = %#v, want preserved", got)

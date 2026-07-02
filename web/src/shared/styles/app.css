@@ -1428,6 +1428,25 @@ code {
   gap: 16px 12px;
 }
 
+.chat-settings-tab .grid.compact {
+  grid-template-columns: repeat(auto-fill, minmax(min(190px, 100%), 1fr));
+  align-items: start;
+}
+
+.chat-settings-tab .field {
+  align-content: start;
+}
+
+.chat-settings-tab .field > label {
+  min-height: 28px;
+  display: flex;
+  align-items: flex-end;
+}
+
+.chat-settings-tab .check {
+  align-self: start;
+}
+
 .grid.two-col {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: start;

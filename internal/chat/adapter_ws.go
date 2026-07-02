@@ -57,6 +57,14 @@ func outboundEventToWSMessage(event turn.OutboundEvent) WSMessage {
 		TurnID:  event.TurnID,
 		Payload: clonePayload(event.Payload),
 	}
+	if groupID, ok := event.Payload["group_id"].(string); ok {
+		msg.GroupID = groupID
+	}
+	if segmentID, ok := event.Payload["segment_id"].(string); ok {
+		msg.SegmentID = segmentID
+	}
+	msg.SegmentIndex = payloadInt(event.Payload, "segment_index")
+	msg.SegmentTotal = payloadInt(event.Payload, "segment_total")
 	if status, ok := event.Payload["status"].(string); ok {
 		msg.Status = status
 	}
@@ -108,6 +116,21 @@ func wsMessageToOutboundEvent(msg WSMessage) turn.OutboundEvent {
 		TurnID:  msg.TurnID,
 		Payload: clonePayload(msg.Payload),
 	}
+	if event.Payload == nil {
+		event.Payload = map[string]any{}
+	}
+	if msg.GroupID != "" {
+		event.Payload["group_id"] = msg.GroupID
+	}
+	if msg.SegmentID != "" {
+		event.Payload["segment_id"] = msg.SegmentID
+	}
+	if msg.SegmentIndex != 0 {
+		event.Payload["segment_index"] = msg.SegmentIndex
+	}
+	if msg.SegmentTotal != 0 {
+		event.Payload["segment_total"] = msg.SegmentTotal
+	}
 	if msg.Tool != nil {
 		event.Tool = &turn.ToolActivity{
 			ID:                   msg.Tool.ID,
@@ -144,6 +167,22 @@ func wsMessageToOutboundEvent(msg WSMessage) turn.OutboundEvent {
 		event.Approval = &turn.ApprovalActivity{Request: msg.Approval}
 	}
 	return event
+}
+
+func payloadInt(payload map[string]any, key string) int {
+	if payload == nil {
+		return 0
+	}
+	switch value := payload[key].(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	default:
+		return 0
+	}
 }
 
 func clonePayload(payload map[string]any) map[string]any {

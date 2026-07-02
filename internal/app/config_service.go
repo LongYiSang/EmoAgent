@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -88,6 +89,12 @@ func (s *ConfigService) UpdateChatSettings(settings config.ChatConfig, chat *Cha
 	if settings.PromptRouter != (config.PromptRouterConfig{}) {
 		next.PromptRouter = settings.PromptRouter
 	}
+	if !replyDeliveryConfigIsZero(settings.ReplyDelivery) {
+		next.ReplyDelivery = config.NormalizeReplyDeliveryConfig(settings.ReplyDelivery)
+	}
+	if replyDeliveryConfigIsZero(next.ReplyDelivery) {
+		next.ReplyDelivery = config.DefaultConfig().Chat.ReplyDelivery
+	}
 	if next.PromptRouter == (config.PromptRouterConfig{}) {
 		next.PromptRouter = config.DefaultConfig().Chat.PromptRouter
 	}
@@ -98,11 +105,13 @@ func (s *ConfigService) UpdateChatSettings(settings config.ChatConfig, chat *Cha
 	}
 
 	payload, err := json.Marshal(struct {
-		RealtimeStreaming bool                      `json:"realtime_streaming"`
-		PromptRouter      config.PromptRouterConfig `json:"prompt_router"`
+		RealtimeStreaming bool                       `json:"realtime_streaming"`
+		PromptRouter      config.PromptRouterConfig  `json:"prompt_router"`
+		ReplyDelivery     config.ReplyDeliveryConfig `json:"reply_delivery"`
 	}{
 		RealtimeStreaming: next.RealtimeStreaming,
 		PromptRouter:      next.PromptRouter,
+		ReplyDelivery:     next.ReplyDelivery,
 	})
 	if err != nil {
 		return err
@@ -116,11 +125,17 @@ func (s *ConfigService) UpdateChatSettings(settings config.ChatConfig, chat *Cha
 	}
 	s.infra.Config.Chat.RealtimeStreaming = next.RealtimeStreaming
 	s.infra.Config.Chat.PromptRouter = next.PromptRouter
+	s.infra.Config.Chat.ReplyDelivery = next.ReplyDelivery
 	if chat != nil {
 		chat.UpdateRealtimeStreaming(next.RealtimeStreaming)
 		chat.UpdatePromptRouterConfig(next.PromptRouter)
+		chat.UpdateReplyDeliveryConfig(next.ReplyDelivery)
 	}
 	return nil
+}
+
+func replyDeliveryConfigIsZero(cfg config.ReplyDeliveryConfig) bool {
+	return reflect.DeepEqual(cfg, config.ReplyDeliveryConfig{})
 }
 
 func (s *ConfigService) GetEffective(ctx context.Context) (configcenter.EffectiveConfig, error) {

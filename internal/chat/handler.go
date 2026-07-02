@@ -14,31 +14,37 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 	"github.com/longyisang/emoagent/internal/config"
+	contextutil "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/protocol"
+	"github.com/longyisang/emoagent/internal/replydelivery"
 	"github.com/longyisang/emoagent/internal/storage"
 	"github.com/longyisang/emoagent/internal/turn"
 )
 
 // WSMessage is the JSON envelope used for WebSocket chat events.
 type WSMessage struct {
-	Type      string                    `json:"type"`
-	Content   string                    `json:"content,omitempty"`
-	Parts     []llm.ContentBlock        `json:"parts,omitempty"`
-	SessionID string                    `json:"session_id,omitempty"`
-	TurnID    string                    `json:"turn_id,omitempty"`
-	Status    string                    `json:"status,omitempty"`
-	ErrorKind string                    `json:"error_kind,omitempty"`
-	Persona   string                    `json:"persona,omitempty"`
-	IsNew     bool                      `json:"is_new,omitempty"`
-	Messages  []storage.MessageRecord   `json:"messages,omitempty"`
-	RequestID string                    `json:"request_id,omitempty"`
-	Action    string                    `json:"action,omitempty"`
-	OptionID  string                    `json:"option_id,omitempty"`
-	Approval  *protocol.ApprovalRequest `json:"approval,omitempty"`
-	Tool      *ToolActivity             `json:"tool,omitempty"`
-	Reasoning *ReasoningActivity        `json:"reasoning,omitempty"`
-	Payload   map[string]any            `json:"payload,omitempty"`
+	Type         string                    `json:"type"`
+	Content      string                    `json:"content,omitempty"`
+	Parts        []llm.ContentBlock        `json:"parts,omitempty"`
+	SessionID    string                    `json:"session_id,omitempty"`
+	TurnID       string                    `json:"turn_id,omitempty"`
+	GroupID      string                    `json:"group_id,omitempty"`
+	SegmentID    string                    `json:"segment_id,omitempty"`
+	SegmentIndex int                       `json:"segment_index,omitempty"`
+	SegmentTotal int                       `json:"segment_total,omitempty"`
+	Status       string                    `json:"status,omitempty"`
+	ErrorKind    string                    `json:"error_kind,omitempty"`
+	Persona      string                    `json:"persona,omitempty"`
+	IsNew        bool                      `json:"is_new,omitempty"`
+	Messages     []storage.MessageRecord   `json:"messages,omitempty"`
+	RequestID    string                    `json:"request_id,omitempty"`
+	Action       string                    `json:"action,omitempty"`
+	OptionID     string                    `json:"option_id,omitempty"`
+	Approval     *protocol.ApprovalRequest `json:"approval,omitempty"`
+	Tool         *ToolActivity             `json:"tool,omitempty"`
+	Reasoning    *ReasoningActivity        `json:"reasoning,omitempty"`
+	Payload      map[string]any            `json:"payload,omitempty"`
 }
 
 // ToolActivity is the compact, UI-safe description of a live tool call.
@@ -92,16 +98,18 @@ type conversationEngine interface {
 
 // Handler serves the WebSocket chat protocol.
 type Handler struct {
-	engine       conversationEngine
-	app          AppInterface
-	logger       *slog.Logger
-	turnConfig   config.TurnPipelineConfig
-	turnTimezone string
-	turnDB       *sql.DB
-	turnJournal  turn.TurnJournal
-	turnIDs      turn.IdempotencyStore
-	turnRuntime  *chatTurnRuntime
-	pluginHost   turnPluginHost
+	engine            conversationEngine
+	app               AppInterface
+	logger            *slog.Logger
+	turnConfig        config.TurnPipelineConfig
+	turnTimezone      string
+	turnDB            *sql.DB
+	turnJournal       turn.TurnJournal
+	turnIDs           turn.IdempotencyStore
+	turnRuntime       *chatTurnRuntime
+	pluginHost        turnPluginHost
+	realtimeStreaming bool
+	replyDelivery     config.ReplyDeliveryConfig
 }
 
 type HandlerOption func(*Handler)
@@ -109,6 +117,18 @@ type HandlerOption func(*Handler)
 func WithTurnPipelineConfig(cfg config.TurnPipelineConfig) HandlerOption {
 	return func(h *Handler) {
 		h.turnConfig = cfg
+	}
+}
+
+func WithRealtimeStreaming(enabled bool) HandlerOption {
+	return func(h *Handler) {
+		h.realtimeStreaming = enabled
+	}
+}
+
+func WithReplyDeliveryConfig(cfg config.ReplyDeliveryConfig) HandlerOption {
+	return func(h *Handler) {
+		h.replyDelivery = config.NormalizeReplyDeliveryConfig(cfg)
 	}
 }
 
@@ -159,6 +179,8 @@ func NewHandler(engine conversationEngine, app AppInterface, logger *slog.Logger
 		setter.SetTurnJournal(h.turnJournal)
 	}
 	h.turnRuntime = newChatTurnRuntimeWithStore(engine, h.turnConfig, h.turnJournal, h.turnIDs, logger, h.pluginHost)
+	h.turnRuntime.realtimeStreaming = h.realtimeStreaming
+	h.turnRuntime.replyDelivery = config.NormalizeReplyDeliveryConfig(h.replyDelivery)
 	return h
 }
 
@@ -291,13 +313,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			})
 
 			streamedDelta := false
+			replyCfg := h.currentReplyDeliveryConfig()
+			realtimeStreaming := h.currentRealtimeStreaming()
+			useReplyDelivery := replyDeliveryEnabled(replyCfg, realtimeStreaming)
+			var promptMode contextutil.PromptMode
+			if useReplyDelivery {
+				msgCtx = replydelivery.WithPromptModeRecorder(msgCtx, func(mode contextutil.PromptMode) {
+					promptMode = mode
+				})
+			}
 			send := h.engine.SendMessage
 			if len(msg.Parts) > 0 {
 				send = func(ctx context.Context, sessionID string, persona *config.Persona, _ string, cb func(delta string)) (string, error) {
 					return h.engine.SendMessageParts(ctx, sessionID, persona, msg.Parts, cb)
 				}
 			}
-			reply, err := send(msgCtx, sessionID, persona, msg.Content, func(delta string) {
+			deltaCB := func(delta string) {
 				if delta == "" {
 					return
 				}
@@ -308,12 +339,37 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					}
 					cancel()
 				}
-			})
+			}
+			if useReplyDelivery {
+				deltaCB = nil
+			}
+			reply, err := send(msgCtx, sessionID, persona, msg.Content, deltaCB)
 			if err != nil && !errors.Is(err, errApprovalPending) {
 				if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: err.Error()}, &writeMu); writeErr != nil {
 					return
 				}
 				continue
+			}
+			if err == nil && useReplyDelivery && reply != "" {
+				plan := replydelivery.BuildPlan(replyCfg, string(promptMode), realtimeStreaming, reply)
+				sink := turn.SinkFunc(func(_ context.Context, event turn.OutboundEvent) error {
+					return writeWSMessage(ctx, conn, outboundEventToWSMessage(event), &writeMu)
+				})
+				groupID := msg.RequestID
+				if groupID == "" {
+					groupID = sessionID
+				}
+				emitted, emitErr := emitReplyDeliverySegments(ctx, sink, replyCfg, plan, groupID)
+				if emitErr != nil {
+					if !errors.Is(ctx.Err(), context.Canceled) {
+						h.logger.Warn("ws assistant segment write failed", "session", sessionID, "error", emitErr)
+					}
+					cancel()
+					return
+				}
+				if emitted {
+					streamedDelta = true
+				}
 			}
 			if err == nil && !streamedDelta && reply != "" {
 				if writeErr := writeWSMessage(ctx, conn, WSMessage{Type: "stream_delta", Content: reply}, &writeMu); writeErr != nil {
@@ -442,6 +498,20 @@ func (h *Handler) newWSOutboundSink(ctx context.Context, conn *websocket.Conn, m
 		logger: h.logger,
 	}
 	return turn.NewBoundedOutboundSink(raw, turn.BoundedOutboundOptions{})
+}
+
+func (h *Handler) currentReplyDeliveryConfig() config.ReplyDeliveryConfig {
+	if engine, ok := h.engine.(*Engine); ok {
+		return engine.RuntimeConfig().ReplyDelivery
+	}
+	return config.NormalizeReplyDeliveryConfig(h.replyDelivery)
+}
+
+func (h *Handler) currentRealtimeStreaming() bool {
+	if engine, ok := h.engine.(*Engine); ok {
+		return engine.RuntimeConfig().RealtimeStreaming
+	}
+	return h.realtimeStreaming
 }
 
 type wsBestEffortOutboundSink struct {

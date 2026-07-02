@@ -1504,7 +1504,10 @@ func TestHandleCreateAgentConfigParsesBindings(t *testing.T) {
 func TestHandleChatSettingsRoundTrip(t *testing.T) {
 	router := config.DefaultConfig().Chat.PromptRouter
 	router.Mode = config.PromptRouterModeAlwaysWork
-	app := &fakeAdminApp{chatSettings: config.ChatConfig{RealtimeStreaming: true, PromptRouter: router}}
+	replyDelivery := config.DefaultConfig().Chat.ReplyDelivery
+	replyDelivery.Enabled = true
+	replyDelivery.Segment.MaxSegments = 3
+	app := &fakeAdminApp{chatSettings: config.ChatConfig{RealtimeStreaming: true, PromptRouter: router, ReplyDelivery: replyDelivery}}
 	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	getReq := httptest.NewRequest(http.MethodGet, "/api/settings/chat", nil)
@@ -1515,8 +1518,9 @@ func TestHandleChatSettingsRoundTrip(t *testing.T) {
 		t.Fatalf("GET status = %d, want 200", getRec.Code)
 	}
 	var getResp struct {
-		RealtimeStreaming bool                      `json:"realtime_streaming"`
-		PromptRouter      config.PromptRouterConfig `json:"prompt_router"`
+		RealtimeStreaming bool                       `json:"realtime_streaming"`
+		PromptRouter      config.PromptRouterConfig  `json:"prompt_router"`
+		ReplyDelivery     config.ReplyDeliveryConfig `json:"reply_delivery"`
 	}
 	if err := json.NewDecoder(getRec.Body).Decode(&getResp); err != nil {
 		t.Fatalf("Decode GET: %v", err)
@@ -1527,8 +1531,11 @@ func TestHandleChatSettingsRoundTrip(t *testing.T) {
 	if getResp.PromptRouter.Mode != config.PromptRouterModeAlwaysWork {
 		t.Fatalf("GET prompt_router = %#v, want always_work", getResp.PromptRouter)
 	}
+	if !getResp.ReplyDelivery.Enabled || getResp.ReplyDelivery.Segment.MaxSegments != 3 {
+		t.Fatalf("GET reply_delivery = %#v, want enabled max_segments 3", getResp.ReplyDelivery)
+	}
 
-	putReq := httptest.NewRequest(http.MethodPut, "/api/settings/chat", bytes.NewBufferString(`{"realtime_streaming":false,"prompt_router":{"mode":"always_casual","sticky_turns":3,"context_turns":6,"max_context_chars":6000,"timeout_ms":2000,"max_output_tokens":64}}`))
+	putReq := httptest.NewRequest(http.MethodPut, "/api/settings/chat", bytes.NewBufferString(`{"realtime_streaming":false,"prompt_router":{"mode":"always_casual","sticky_turns":3,"context_turns":6,"max_context_chars":6000,"timeout_ms":2000,"max_output_tokens":64},"reply_delivery":{"enabled":true,"apply_prompt_modes":["casual_chat"],"disable_when_realtime_streaming":true,"segment":{"split_mode":"natural","split_words":["。"],"regex":".*?[。]+|.+$","long_text_threshold":500,"max_segments":4,"protect_code_blocks":true,"protect_markdown_tables":true,"protect_urls":true},"timing":{"enabled":false,"log_base":2.6,"log_scale_ms":1000,"random_interval_min_ms":0,"random_interval_max_ms":0,"min_delay_ms":0,"max_delay_ms":0}}}`))
 	putRec := httptest.NewRecorder()
 	handler.HandleUpdateChatSettings(putRec, putReq)
 
@@ -1540,6 +1547,9 @@ func TestHandleChatSettingsRoundTrip(t *testing.T) {
 	}
 	if app.lastChatSettings.PromptRouter.Mode != config.PromptRouterModeAlwaysCasual || app.lastChatSettings.PromptRouter.StickyTurns != 3 {
 		t.Fatalf("UpdateChatSettings prompt_router = %#v, want always_casual sticky 3", app.lastChatSettings.PromptRouter)
+	}
+	if !app.lastChatSettings.ReplyDelivery.Enabled || app.lastChatSettings.ReplyDelivery.Segment.MaxSegments != 4 || app.lastChatSettings.ReplyDelivery.Timing.Enabled {
+		t.Fatalf("UpdateChatSettings reply_delivery = %#v, want enabled max_segments 4 timing disabled", app.lastChatSettings.ReplyDelivery)
 	}
 }
 
