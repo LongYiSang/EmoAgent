@@ -45,12 +45,14 @@ func (s *ChatService) BuildEngine(dispatcher *tool.Dispatcher) *chat.Engine {
 	providerName := ""
 	agentID := ""
 	personaKey := ""
+	userAddress := config.AgentUserAddressConfig{}
 	currentClient := s.infra.LLM
 	summaryClient := s.infra.LLM
 	contextCfg := s.agentRuntime.GlobalContextConfig()
 	if activeRuntime != nil {
 		agentID = activeRuntime.ID
 		personaKey = activeRuntime.PersonaKey
+		userAddress = activeRuntime.UserAddress
 		currentClient = activeRuntime.EmotionMain.Client
 		summaryClient = activeRuntime.EmotionSummary.Client
 		model = activeRuntime.EmotionMain.Model
@@ -104,6 +106,7 @@ func (s *ChatService) BuildEngine(dispatcher *tool.Dispatcher) *chat.Engine {
 		Memory:             s.memory.Bridge(),
 		MemoryRetrieval:    cfg.Memory.Retrieval,
 		AgentAffect:        affectRuntime,
+		UserAddress:        userAddress,
 		MediaStore:         mediaStore,
 		MediaResolver:      mediaResolver,
 		AgentID:            agentID,
@@ -163,6 +166,7 @@ func (s *ChatService) UpdateAgentRuntime(runtime *ActiveAgentRuntime) {
 		runtime.EmotionSummary.Model,
 		runtime.EmotionSummary.Params,
 		runtime.Context,
+		runtime.UserAddress,
 	)
 	s.UpdateAgentAffect()
 }

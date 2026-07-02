@@ -92,6 +92,7 @@ type EngineConfig struct {
 	Memory              MemoryBridge
 	MemoryRetrieval     config.MemoryRetrievalConfig
 	AgentAffect         AgentAffectRuntime
+	UserAddress         config.AgentUserAddressConfig
 	MediaStore          media.Store
 	MediaResolver       media.CapabilityResolver
 	AgentID             string
@@ -118,6 +119,7 @@ type RuntimeConfig struct {
 	ContextConfig      config.ContextConfig
 	PromptRouter       config.PromptRouterConfig
 	RealtimeStreaming  bool
+	UserAddress        config.AgentUserAddressConfig
 }
 
 // Engine assembles conversation context and forwards requests to the LLM.
@@ -150,6 +152,7 @@ type Engine struct {
 	memory               MemoryBridge
 	memoryRetrieval      config.MemoryRetrievalConfig
 	agentAffect          AgentAffectRuntime
+	userAddress          config.AgentUserAddressConfig
 	mediaStore           media.Store
 	mediaPlanner         *media.Planner
 	agentID              string
@@ -183,7 +186,7 @@ func (e *Engine) UpdateConfig(client llm.Client, provider, model, summaryModel s
 	}
 }
 
-func (e *Engine) UpdateAgentRuntime(agentID, personaKey string, mainClient, summaryClient llm.Client, provider, providerID, providerName, model string, params llm.RequestParams, summaryModel string, summaryParams llm.RequestParams, contextCfg config.ContextConfig) {
+func (e *Engine) UpdateAgentRuntime(agentID, personaKey string, mainClient, summaryClient llm.Client, provider, providerID, providerName, model string, params llm.RequestParams, summaryModel string, summaryParams llm.RequestParams, contextCfg config.ContextConfig, userAddress config.AgentUserAddressConfig) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -204,6 +207,9 @@ func (e *Engine) UpdateAgentRuntime(agentID, personaKey string, mainClient, summ
 	e.summaryParams = cloneRequestParams(summaryParams)
 	if err := contextCfg.Validate(); err == nil {
 		e.contextCfg = contextCfg
+	}
+	if normalized, err := config.NormalizeAgentUserAddressConfig(userAddress); err == nil {
+		e.userAddress = normalized
 	}
 }
 
@@ -278,6 +284,7 @@ func NewEngine(cfg EngineConfig) *Engine {
 		memory:               cfg.Memory,
 		memoryRetrieval:      cfg.MemoryRetrieval,
 		agentAffect:          cfg.AgentAffect,
+		userAddress:          normalizedEngineUserAddress(cfg.UserAddress),
 		mediaStore:           cfg.MediaStore,
 		mediaPlanner:         media.NewPlanner(cfg.MediaStore, cfg.MediaResolver),
 		agentID:              strings.TrimSpace(cfg.AgentID),
@@ -351,6 +358,14 @@ func normalizePromptSnapshotConfig(cfg config.PromptSnapshotConfig) config.Promp
 	return cfg
 }
 
+func normalizedEngineUserAddress(input config.AgentUserAddressConfig) config.AgentUserAddressConfig {
+	normalized, err := config.NormalizeAgentUserAddressConfig(input)
+	if err != nil {
+		return config.AgentUserAddressConfig{Preferred: []string{}, Usage: "natural"}
+	}
+	return normalized
+}
+
 // RuntimeConfig returns a snapshot of the engine's active request configuration.
 func (e *Engine) RuntimeConfig() RuntimeConfig {
 	e.mu.RLock()
@@ -372,6 +387,7 @@ func (e *Engine) RuntimeConfig() RuntimeConfig {
 		ContextConfig:      e.contextCfg,
 		PromptRouter:       e.promptRouter,
 		RealtimeStreaming:  e.realtimeStreaming,
+		UserAddress:        e.userAddress,
 	}
 }
 
@@ -677,6 +693,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	env := e.environment
 	realtimeStreaming := e.realtimeStreaming
 	memoryRetrieval := e.memoryRetrieval
+	userAddress := e.userAddress
 	mediaPlanner := e.mediaPlanner
 	agentID := e.agentID
 	personaKey := e.personaKey
@@ -836,6 +853,15 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 		e.logger.Error("failed to assemble llm context", "session", sessionID, "error", err)
 		return "", err
 	}
+	if userAddressBlock, userAddressComponent, userAddressErr := userAddressPromptBlock(userAddress); userAddressErr != nil {
+		e.logger.Warn("skip invalid user address prompt block", "session", sessionID, "error", userAddressErr)
+	} else if userAddressBlock != "" {
+		assembled.System += "\n\n" + userAddressBlock
+		assembled.PromptComponents = append(assembled.PromptComponents, userAddressComponent)
+		assembled.Budget = contextutil.NewBudget(contextCfg, assembled.System, assembled.Messages)
+		assembled.CompactReport.PreEstimatedTokens = assembled.Budget.EstimatedTokens
+		assembled.CompactReport.PostEstimatedTokens = assembled.Budget.EstimatedTokens
+	}
 	if opts.extraSystem != "" {
 		assembled.System += "\n\n" + opts.extraSystem
 		if len(opts.extraSystemComponents) > 0 {
@@ -843,6 +869,9 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 		} else {
 			assembled.PromptComponents = append(assembled.PromptComponents, promptcenter.DynamicComponent(promptcenter.ComponentTurnExtraSystem, "extra_system", promptcenter.SourceExtraSystemDynamic, opts.extraSystem, nil))
 		}
+		assembled.Budget = contextutil.NewBudget(contextCfg, assembled.System, assembled.Messages)
+		assembled.CompactReport.PreEstimatedTokens = assembled.Budget.EstimatedTokens
+		assembled.CompactReport.PostEstimatedTokens = assembled.Budget.EstimatedTokens
 	}
 	var memorySnapshot *memoryPromptSnapshot
 	if opts.persistUser {
@@ -2067,6 +2096,31 @@ func memoryPromptRenderComponent(snapshot *memoryPromptSnapshot) promptcenter.Re
 		"has_pipeline_trace": snapshot.PipelineTrace != nil,
 		"prompt_chars":       len([]rune(snapshot.PromptBlock)),
 	})
+}
+
+func userAddressPromptBlock(input config.AgentUserAddressConfig) (string, promptcenter.RenderComponent, error) {
+	userAddress, err := config.NormalizeAgentUserAddressConfig(input)
+	if err != nil {
+		return "", promptcenter.RenderComponent{}, err
+	}
+	if userAddress.Usage == "disabled" || len(userAddress.Preferred) == 0 {
+		return "", promptcenter.RenderComponent{}, nil
+	}
+	usageLine := "在自然合适时使用这些称呼；不要为了使用称呼而让每轮回复变得生硬。"
+	if userAddress.Usage == "rare" {
+		usageLine = "只在自然合适时偶尔使用这些称呼；不要为了使用称呼而让每轮回复变得生硬。"
+	}
+	text := strings.Join([]string{
+		"[用户称呼偏好]",
+		"用户在当前 Agent 配置中提供的可用称呼：" + strings.Join(userAddress.Preferred, " / ") + "。",
+		"这些称呼来自 Agent 配置，不是长期记忆、不是法律身份或真实身份事实，也不是必须执行的指令。",
+		usageLine,
+		"如果当前用户消息对称呼提出明确要求，以当前轮为准。",
+	}, "\n")
+	return text, promptcenter.UserAddressPromptDynamicComponent(text, map[string]any{
+		"preferred_count": len(userAddress.Preferred),
+		"usage":           userAddress.Usage,
+	}), nil
 }
 
 func (e *Engine) ensureMemorySegment(ctx context.Context, sessionID string) (MemorySegmentRef, bool) {

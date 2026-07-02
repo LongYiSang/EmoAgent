@@ -45,6 +45,8 @@ type AdminApp interface {
 	UpdateAgentConfig(id string, agent config.AgentConfig) error
 	ActivateAgentConfig(id string) error
 	DeleteAgentConfig(id string) error
+	PreviewUserAddressMigration(ctx context.Context, id string) (UserAddressMigrationPreviewResponse, error)
+	ExecuteUserAddressMigration(ctx context.Context, id string, req UserAddressMigrationExecuteRequest) (UserAddressMigrationExecuteResponse, error)
 	ListPersonas() map[string]*config.Persona
 	GetPersona(name string) (*config.Persona, bool)
 	CreatePersona(key string, p *config.Persona) error
@@ -143,6 +145,36 @@ type llmProviderPresetsResponse struct {
 type agentConfigsResponse struct {
 	ActiveID string               `json:"active_id"`
 	Configs  []config.AgentConfig `json:"configs"`
+}
+
+type UserAddressLegacyFact struct {
+	FactID  string `json:"fact_id"`
+	Value   string `json:"value"`
+	Summary string `json:"summary,omitempty"`
+}
+
+type UserAddressMigrationPreviewResponse struct {
+	AgentID   string                        `json:"agent_id"`
+	PersonaID string                        `json:"persona_id"`
+	Existing  config.AgentUserAddressConfig `json:"existing"`
+	Legacy    []UserAddressLegacyFact       `json:"legacy"`
+	Merged    config.AgentUserAddressConfig `json:"merged"`
+	Warnings  []string                      `json:"warnings,omitempty"`
+}
+
+type UserAddressMigrationExecuteRequest struct {
+	DryRun        bool   `json:"dry_run"`
+	HideLegacy    bool   `json:"hide_legacy"`
+	MergeStrategy string `json:"merge_strategy"`
+}
+
+type UserAddressMigrationExecuteResponse struct {
+	UserAddressMigrationPreviewResponse
+	DryRun      bool     `json:"dry_run"`
+	Updated     bool     `json:"updated"`
+	HideLegacy  bool     `json:"hide_legacy"`
+	HiddenCount int      `json:"hidden_count"`
+	HideErrors  []string `json:"hide_errors,omitempty"`
 }
 
 type providerModelsResponse struct {
@@ -634,6 +666,29 @@ func (h *APIHandler) HandleDeleteAgentConfig(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+func (h *APIHandler) HandlePreviewUserAddressMigration(w http.ResponseWriter, r *http.Request) {
+	resp, err := h.app.PreviewUserAddressMigration(r.Context(), r.PathValue("id"))
+	if err != nil {
+		h.writeUserAddressMigrationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *APIHandler) HandleExecuteUserAddressMigration(w http.ResponseWriter, r *http.Request) {
+	var req UserAddressMigrationExecuteRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	resp, err := h.app.ExecuteUserAddressMigration(r.Context(), r.PathValue("id"), req)
+	if err != nil {
+		h.writeUserAddressMigrationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (h *APIHandler) HandleGetChatSettings(w http.ResponseWriter, r *http.Request) {
 	settings := h.app.GetChatSettings()
 	writeJSON(w, http.StatusOK, chatSettingsResponseFromConfig(settings))
@@ -1104,6 +1159,18 @@ func (h *APIHandler) writeAgentConfigError(w http.ResponseWriter, err error) {
 	}
 }
 
+func (h *APIHandler) writeUserAddressMigrationError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, apperrors.ErrAgentConfigNotFound):
+		writeError(w, http.StatusNotFound, err.Error())
+	case isAgentConfigValidationError(err), isUserAddressMigrationValidationError(err):
+		writeError(w, http.StatusBadRequest, err.Error())
+	default:
+		h.logger.Error("user address migration internal error", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+	}
+}
+
 func (h *APIHandler) writePersonaError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, apperrors.ErrPersonaExists):
@@ -1183,11 +1250,22 @@ func isAgentConfigValidationError(err error) bool {
 		strings.Contains(message, "model is required"),
 		strings.Contains(message, "persona_key is required"),
 		strings.Contains(message, "params.max_tokens must be >= 0"),
+		strings.Contains(message, "user_address"),
 		strings.Contains(message, "unsupported key"):
 		return true
 	default:
 		return false
 	}
+}
+
+func isUserAddressMigrationValidationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "memorycore is not configured") ||
+		strings.Contains(message, "merge_strategy") ||
+		strings.Contains(message, "user address migration")
 }
 
 func isPersonaValidationError(err error) bool {

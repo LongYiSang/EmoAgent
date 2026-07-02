@@ -1385,6 +1385,10 @@ CREATE INDEX IF NOT EXISTS idx_pending_direct_tool_calls_tool
     ON pending_direct_tool_calls(tool_name, created_at DESC);
 `,
 	},
+	{
+		Version: 36,
+		SQL:     `SELECT 1;`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.
@@ -1453,6 +1457,9 @@ func ApplySchemaRepairs(db *sql.DB) error {
 	if err := ensureLLMProvidersSchema(db); err != nil {
 		return err
 	}
+	if err := ensureAgentConfigsSchema(db); err != nil {
+		return err
+	}
 	if err := ensurePluginRuntimeSchema(db); err != nil {
 		return err
 	}
@@ -1467,6 +1474,28 @@ func ApplySchemaRepairs(db *sql.DB) error {
 	}
 	if err := ensureNoImageBase64Guards(db); err != nil {
 		return err
+	}
+	return nil
+}
+
+func ensureAgentConfigsSchema(db *sql.DB) error {
+	columns, err := tableColumns(db, "agent_configs")
+	if err != nil {
+		return fmt.Errorf("read agent_configs columns: %w", err)
+	}
+	if len(columns) == 0 {
+		return nil
+	}
+	repairs := map[string][]struct {
+		name string
+		sql  string
+	}{
+		"agent_configs": {
+			{"user_address_json", "ALTER TABLE agent_configs ADD COLUMN user_address_json TEXT NOT NULL DEFAULT '{}'"},
+		},
+	}
+	if err := ensureTableColumns(db, repairs); err != nil {
+		return fmt.Errorf("repair agent_configs schema: %w", err)
 	}
 	return nil
 }

@@ -382,6 +382,14 @@ func (d *DB) UpsertAgentConfig(agent config.AgentConfig) error {
 	if err != nil {
 		return fmt.Errorf("context_overrides: %w", err)
 	}
+	userAddress, err := config.NormalizeAgentUserAddressConfig(agent.UserAddress)
+	if err != nil {
+		return err
+	}
+	userAddressJSON, err := encodeJSONObject(userAddress)
+	if err != nil {
+		return fmt.Errorf("user_address: %w", err)
+	}
 	now := d.nowText()
 
 	_, err = d.db.Exec(`
@@ -391,9 +399,9 @@ func (d *DB) UpsertAgentConfig(agent config.AgentConfig) error {
 			emotion_summary_provider_id, emotion_summary_model, emotion_summary_params_json,
 			work_main_provider_id, work_main_model, work_main_params_json,
 			work_summary_provider_id, work_summary_model, work_summary_params_json,
-			context_overrides_json, updated_at
+			context_overrides_json, user_address_json, updated_at
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			persona_key = excluded.persona_key,
@@ -410,13 +418,14 @@ func (d *DB) UpsertAgentConfig(agent config.AgentConfig) error {
 			work_summary_model = excluded.work_summary_model,
 			work_summary_params_json = excluded.work_summary_params_json,
 			context_overrides_json = excluded.context_overrides_json,
+			user_address_json = excluded.user_address_json,
 			updated_at = excluded.updated_at
 	`, agent.ID, agent.Name, agent.PersonaKey,
 		agent.Emotion.Main.ProviderID, agent.Emotion.Main.Model, emotionMainParams,
 		agent.Emotion.Summary.ProviderID, agent.Emotion.Summary.Model, emotionSummaryParams,
 		agent.Work.Main.ProviderID, agent.Work.Main.Model, workMainParams,
 		agent.Work.Summary.ProviderID, agent.Work.Summary.Model, workSummaryParams,
-		contextOverrides, now)
+		contextOverrides, userAddressJSON, now)
 	return err
 }
 
@@ -871,13 +880,13 @@ func agentConfigSelectSQL() string {
 		       emotion_summary_provider_id, emotion_summary_model, emotion_summary_params_json,
 		       work_main_provider_id, work_main_model, work_main_params_json,
 		       work_summary_provider_id, work_summary_model, work_summary_params_json,
-		       context_overrides_json
+		       context_overrides_json, user_address_json
 		FROM agent_configs`
 }
 
 func scanAgentConfig(row scanner) (config.AgentConfig, error) {
 	var agent config.AgentConfig
-	var emotionMainParams, emotionSummaryParams, workMainParams, workSummaryParams, contextOverrides string
+	var emotionMainParams, emotionSummaryParams, workMainParams, workSummaryParams, contextOverrides, userAddressJSON string
 	if err := row.Scan(
 		&agent.ID,
 		&agent.Name,
@@ -895,6 +904,7 @@ func scanAgentConfig(row scanner) (config.AgentConfig, error) {
 		&agent.Work.Summary.Model,
 		&workSummaryParams,
 		&contextOverrides,
+		&userAddressJSON,
 	); err != nil {
 		return config.AgentConfig{}, err
 	}
@@ -913,6 +923,14 @@ func scanAgentConfig(row scanner) (config.AgentConfig, error) {
 	if err := decodeJSONObject(contextOverrides, &agent.ContextOverrides); err != nil {
 		return config.AgentConfig{}, fmt.Errorf("context_overrides_json: %w", err)
 	}
+	if err := decodeJSONObject(userAddressJSON, &agent.UserAddress); err != nil {
+		return config.AgentConfig{}, fmt.Errorf("user_address_json: %w", err)
+	}
+	userAddress, err := config.NormalizeAgentUserAddressConfig(agent.UserAddress)
+	if err != nil {
+		return config.AgentConfig{}, fmt.Errorf("user_address_json: %w", err)
+	}
+	agent.UserAddress = userAddress
 	if agent.ContextOverrides == nil {
 		agent.ContextOverrides = map[string]any{}
 	}

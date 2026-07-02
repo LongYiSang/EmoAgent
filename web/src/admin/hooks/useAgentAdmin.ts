@@ -3,9 +3,13 @@ import { field } from '../../shared/lib/data';
 import {
   activateAgent,
   deleteAgent,
+  executeUserAddressMigration,
   loadAgents,
+  previewUserAddressMigration,
   saveAgent,
   type AgentConfig,
+  type UserAddressMigrationExecuteReport,
+  type UserAddressMigrationPreview,
 } from '../protocol/adminApi';
 import { cloneRecord, emptyAgent, setNestedValue } from '../lib/adminData';
 import type { AdminStatusControls } from './useAdminStatus';
@@ -17,6 +21,7 @@ export function useAgentAdmin({ setStatus, showError }: AgentAdminOptions) {
   const [activeAgentID, setActiveAgentID] = useState('');
   const [selectedAgent, setSelectedAgent] = useState('');
   const [agentDraft, setAgentDraft] = useState<AgentConfig>(emptyAgent());
+  const [userAddressMigration, setUserAddressMigration] = useState<UserAddressMigrationPreview | UserAddressMigrationExecuteReport | null>(null);
 
   const activePersona = useMemo(() => String(field(agents.find(item => item.id === activeAgentID), 'persona_key', '')), [agents, activeAgentID]);
 
@@ -24,6 +29,7 @@ export function useAgentAdmin({ setStatus, showError }: AgentAdminOptions) {
     const agent = source.find(item => item.id === id);
     setSelectedAgent(id);
     setAgentDraft(agent ? cloneRecord(agent) : emptyAgent());
+    setUserAddressMigration(null);
   }, [agents]);
 
   const reloadAgents = useCallback(async (preferredID = selectedAgent) => {
@@ -52,6 +58,7 @@ export function useAgentAdmin({ setStatus, showError }: AgentAdminOptions) {
   const newAgent = useCallback(() => {
     setSelectedAgent('');
     setAgentDraft(emptyAgent());
+    setUserAddressMigration(null);
   }, []);
 
   const submitAgent = useCallback(async (event: FormEvent) => {
@@ -87,12 +94,43 @@ export function useAgentAdmin({ setStatus, showError }: AgentAdminOptions) {
     }
   }, [selectedAgent, reloadAgents, showError]);
 
+  const previewSelectedUserAddressMigration = useCallback(async () => {
+    if (!selectedAgent) return;
+    try {
+      const report = await previewUserAddressMigration(selectedAgent);
+      setUserAddressMigration(report);
+      setStatus(`找到 ${report.legacy?.length || 0} 条旧称呼事实`);
+    } catch (error) {
+      showError(error);
+    }
+  }, [selectedAgent, setStatus, showError]);
+
+  const executeSelectedUserAddressMigration = useCallback(async () => {
+    if (!selectedAgent) return;
+    try {
+      const report = await executeUserAddressMigration(selectedAgent, {
+        dry_run: false,
+        hide_legacy: true,
+        merge_strategy: 'append_legacy_after_existing',
+      });
+      if (report.merged) {
+        setAgentDraft(current => ({ ...current, user_address: report.merged }));
+      }
+      await reloadAgents(selectedAgent);
+      setUserAddressMigration(report);
+      setStatus(`称呼迁移完成，隐藏 ${report.hidden_count || 0} 条旧事实`);
+    } catch (error) {
+      showError(error);
+    }
+  }, [selectedAgent, reloadAgents, setStatus, showError]);
+
   return useMemo(() => ({
     agents,
     activeAgentID,
     activePersona,
     selectedAgent,
     agentDraft,
+    userAddressMigration,
     reloadAgents,
     selectAgent,
     patchAgentDraft,
@@ -102,12 +140,15 @@ export function useAgentAdmin({ setStatus, showError }: AgentAdminOptions) {
     submitAgent,
     activateSelectedAgent,
     deleteSelectedAgent,
+    previewSelectedUserAddressMigration,
+    executeSelectedUserAddressMigration,
   }), [
     agents,
     activeAgentID,
     activePersona,
     selectedAgent,
     agentDraft,
+    userAddressMigration,
     reloadAgents,
     selectAgent,
     patchAgentDraft,
@@ -117,6 +158,8 @@ export function useAgentAdmin({ setStatus, showError }: AgentAdminOptions) {
     submitAgent,
     activateSelectedAgent,
     deleteSelectedAgent,
+    previewSelectedUserAddressMigration,
+    executeSelectedUserAddressMigration,
   ]);
 }
 

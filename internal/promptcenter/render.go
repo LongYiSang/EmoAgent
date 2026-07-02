@@ -44,6 +44,18 @@ func MemoryPromptDynamicComponent(text string, metadata map[string]any) RenderCo
 	return DynamicComponent(ComponentMemoryPromptBlock, "memory_context", SourceMemoryDynamic, text, memoryPromptMetadata(metadata))
 }
 
+func UserAddressPromptDynamicComponent(text string, metadata map[string]any) RenderComponent {
+	out := make(map[string]any, len(metadata)+4)
+	for key, value := range metadata {
+		out[key] = value
+	}
+	out["producer_kind"] = "agent_config"
+	out["origin"] = "agent_config"
+	out["instruction_authority"] = resultv2.InstructionDataOnly
+	out["can_host_control"] = false
+	return DynamicComponent(ComponentUserAddressPromptBlock, "user_address", SourceAgentConfigDynamic, text, out)
+}
+
 func memoryPromptMetadata(metadata map[string]any) map[string]any {
 	out := make(map[string]any, len(metadata)+4)
 	for key, value := range metadata {

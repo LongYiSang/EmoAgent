@@ -65,7 +65,7 @@ export function emptyProvider(): Provider {
 }
 
 export function emptyAgent(): AgentConfig {
-  return { emotion: { main: {}, summary: {} }, work: { main: {}, summary: {} }, context_overrides: {} };
+  return { emotion: { main: {}, summary: {} }, work: { main: {}, summary: {} }, context_overrides: {}, user_address: { preferred: [], usage: 'natural' } };
 }
 
 export function emptyPersona(): Persona {

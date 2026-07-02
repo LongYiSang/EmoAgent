@@ -16,6 +16,7 @@ func cloneActiveAgentRuntime(runtime *ActiveAgentRuntime) *ActiveAgentRuntime {
 	cp.EmotionSummary = cloneModelRuntime(runtime.EmotionSummary)
 	cp.WorkMain = cloneModelRuntime(runtime.WorkMain)
 	cp.WorkSummary = cloneModelRuntime(runtime.WorkSummary)
+	cp.UserAddress.Preferred = append([]string(nil), runtime.UserAddress.Preferred...)
 	return &cp
 }
 

@@ -36,22 +36,6 @@ func TestDefaultManualRulesMatchPinTemplates(t *testing.T) {
 			summary:   "用户不喜欢早会。",
 		},
 		{
-			name:      "call me",
-			input:     "以后叫我 Long",
-			predicate: "prefers_name",
-			factType:  memorycore.FactTypeCoreIdentity,
-			object:    "Long",
-			summary:   "用户偏好被称呼为 Long。",
-		},
-		{
-			name:      "my name is",
-			input:     "我的名字是 Yi",
-			predicate: "prefers_name",
-			factType:  memorycore.FactTypeCoreIdentity,
-			object:    "Yi",
-			summary:   "用户偏好被称呼为 Yi。",
-		},
-		{
 			name:      "prefer more",
 			input:     "我更喜欢拿铁",
 			predicate: "likes",
@@ -88,6 +72,16 @@ func TestDefaultManualRulesMatchPinTemplates(t *testing.T) {
 				t.Fatalf("summary = %q, want %q", intent.Candidate.ContentSummary, tt.summary)
 			}
 		})
+	}
+}
+
+func TestDefaultManualRulesDoNotWriteUserAddressPreference(t *testing.T) {
+	rules := DefaultManualRules()
+	for _, input := range []string{"以后叫我 Long", "我的名字是 Yi"} {
+		intent := rules.Match(input)
+		if intent.Kind != ManualMemoryIntentNone {
+			t.Fatalf("intent for %q = %#v, want none", input, intent)
+		}
 	}
 }
 

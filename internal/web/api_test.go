@@ -27,93 +27,97 @@ import (
 )
 
 type fakeAdminApp struct {
-	providers              []config.LLMProvider
-	agentConfigs           []config.AgentConfig
-	activeAgent            *config.AgentConfig
-	personas               map[string]*config.Persona
-	progressPhrases        map[string]map[string][]string
-	sessions               []storage.SessionSummary
-	sessionDetail          *storage.SessionRecord
-	sessionMessages        []storage.MessageRecord
-	createErr              error
-	activateErr            error
-	sessionErr             error
-	deleteSessionErr       error
-	approvals              []protocol.ApprovalRequest
-	lastProvider           config.LLMProvider
-	lastAgentConfig        config.AgentConfig
-	lastActivate           string
-	lastPersonaKey         string
-	lastPersona            *config.Persona
-	lastSessionPersona     string
-	lastSessionLimit       int
-	lastDeleteSessionID    string
-	lastPhrasesKey         string
-	lastPhrasesValue       map[string][]string
-	lastApprovalSession    string
-	lastExtractionReq      MemoryExtractionRequest
-	lastExtractionList     MemoryExtractionListRequest
-	extractionJobs         []storage.MemoryExtractionJob
-	lastNaturalReq         NaturalMemoryRunRequest
-	naturalRunResp         memoryhost.NaturalMemoryRunResponse
-	naturalRunErr          error
-	latestNaturalResp      *memoryhost.NaturalMemoryRunResponse
-	lastSegmentSession     string
-	memorySegments         []storage.MemorySegment
-	chatSettings           config.ChatConfig
-	lastChatSettings       config.ChatConfig
-	updateChatErr          error
-	messageParts           map[string][]storage.MessagePartRecord
-	mediaAssets            map[string]*media.MediaAsset
-	openMediaBytes         []byte
-	openMediaAsset         *media.MediaAsset
-	openMediaErr           error
-	effectiveConfig        configcenter.EffectiveConfig
-	configIssues           []configcenter.ConfigIssue
-	providerEnvStatus      configcenter.ProviderEnvStatus
-	memoryConfig           configcenter.MemoryConfigResponse
-	lastMemoryConfig       config.MemoryConfig
-	webSearchConfig        configcenter.WebSearchConfigResponse
-	lastWebSearchConfig    config.WebSearchConfig
-	updateWebSearchErr     error
-	sidecarStatus          sidecarruntime.Status
-	sidecarConfig          string
-	sidecarLogs            string
-	agentAffectConfig      AgentAffectConfigResponse
-	updateAgentAffectErr   error
-	lastAgentAffectConfig  config.AgentAffectConfig
-	agentAffectCurrent     AgentAffectCurrentResponse
-	agentAffectProfile     AgentAffectProfileResponse
-	lastAgentAffectProfile AgentAffectProfileResponse
-	agentAffectHistory     AgentAffectHistoryResponse
-	lastAgentAffectHistory AgentAffectHistoryRequest
-	agentAffectWrites      AgentAffectPluginWritesResponse
-	lastAgentAffectWrites  AgentAffectPluginWritesRequest
-	lastAgentAffectEval    AgentAffectEvaluateRequest
-	agentAffectEvalResp    AgentAffectEvaluateResponse
-	lastAgentAffectSubmit  AgentAffectSubmitRequest
-	agentAffectSubmitResp  AgentAffectSubmitResponse
-	lastAgentAffectDelta   AgentAffectDeltaRequest
-	agentAffectDeltaResp   AgentAffectDeltaResponse
-	lastAgentAffectReset   AgentAffectResetRequest
-	agentAffectResetResp   AgentAffectResetResponse
-	lastAgentAffectPrompt  AgentAffectPromptPreviewRequest
-	agentAffectPromptResp  AgentAffectPromptPreviewResponse
-	lastAgentAffectQueue   AgentAffectQueueRequest
-	agentAffectQueueResp   AgentAffectQueueResponse
-	agentAffectProcessResp AgentAffectProcessOnceResponse
-	lastAgentAffectClear   AgentAffectQueueRequest
-	agentAffectClearResp   AgentAffectClearFailedResponse
-	lastAgentAffectSupers  AgentAffectQueueRequest
-	agentAffectSupersResp  AgentAffectSupersedePendingResponse
-	uploadAsset            *media.MediaAsset
-	usageEvents            []storage.LLMUsageEvent
-	lastUsageFilter        storage.LLMUsageEventFilter
-	usageSummary           []storage.LLMUsageSummaryRow
-	lastUsageSummaryFilter storage.LLMUsageSummaryFilter
-	calibrations           []storage.TokenEstimatorCalibration
-	lastCalibrationFilter  storage.TokenEstimatorCalibrationFilter
-	refreshCalibrationRows int
+	providers               []config.LLMProvider
+	agentConfigs            []config.AgentConfig
+	activeAgent             *config.AgentConfig
+	personas                map[string]*config.Persona
+	progressPhrases         map[string]map[string][]string
+	sessions                []storage.SessionSummary
+	sessionDetail           *storage.SessionRecord
+	sessionMessages         []storage.MessageRecord
+	createErr               error
+	activateErr             error
+	sessionErr              error
+	deleteSessionErr        error
+	approvals               []protocol.ApprovalRequest
+	lastProvider            config.LLMProvider
+	lastAgentConfig         config.AgentConfig
+	lastActivate            string
+	userAddressPreview      UserAddressMigrationPreviewResponse
+	userAddressExecute      UserAddressMigrationExecuteResponse
+	lastUserAddressExecute  UserAddressMigrationExecuteRequest
+	userAddressMigrationErr error
+	lastPersonaKey          string
+	lastPersona             *config.Persona
+	lastSessionPersona      string
+	lastSessionLimit        int
+	lastDeleteSessionID     string
+	lastPhrasesKey          string
+	lastPhrasesValue        map[string][]string
+	lastApprovalSession     string
+	lastExtractionReq       MemoryExtractionRequest
+	lastExtractionList      MemoryExtractionListRequest
+	extractionJobs          []storage.MemoryExtractionJob
+	lastNaturalReq          NaturalMemoryRunRequest
+	naturalRunResp          memoryhost.NaturalMemoryRunResponse
+	naturalRunErr           error
+	latestNaturalResp       *memoryhost.NaturalMemoryRunResponse
+	lastSegmentSession      string
+	memorySegments          []storage.MemorySegment
+	chatSettings            config.ChatConfig
+	lastChatSettings        config.ChatConfig
+	updateChatErr           error
+	messageParts            map[string][]storage.MessagePartRecord
+	mediaAssets             map[string]*media.MediaAsset
+	openMediaBytes          []byte
+	openMediaAsset          *media.MediaAsset
+	openMediaErr            error
+	effectiveConfig         configcenter.EffectiveConfig
+	configIssues            []configcenter.ConfigIssue
+	providerEnvStatus       configcenter.ProviderEnvStatus
+	memoryConfig            configcenter.MemoryConfigResponse
+	lastMemoryConfig        config.MemoryConfig
+	webSearchConfig         configcenter.WebSearchConfigResponse
+	lastWebSearchConfig     config.WebSearchConfig
+	updateWebSearchErr      error
+	sidecarStatus           sidecarruntime.Status
+	sidecarConfig           string
+	sidecarLogs             string
+	agentAffectConfig       AgentAffectConfigResponse
+	updateAgentAffectErr    error
+	lastAgentAffectConfig   config.AgentAffectConfig
+	agentAffectCurrent      AgentAffectCurrentResponse
+	agentAffectProfile      AgentAffectProfileResponse
+	lastAgentAffectProfile  AgentAffectProfileResponse
+	agentAffectHistory      AgentAffectHistoryResponse
+	lastAgentAffectHistory  AgentAffectHistoryRequest
+	agentAffectWrites       AgentAffectPluginWritesResponse
+	lastAgentAffectWrites   AgentAffectPluginWritesRequest
+	lastAgentAffectEval     AgentAffectEvaluateRequest
+	agentAffectEvalResp     AgentAffectEvaluateResponse
+	lastAgentAffectSubmit   AgentAffectSubmitRequest
+	agentAffectSubmitResp   AgentAffectSubmitResponse
+	lastAgentAffectDelta    AgentAffectDeltaRequest
+	agentAffectDeltaResp    AgentAffectDeltaResponse
+	lastAgentAffectReset    AgentAffectResetRequest
+	agentAffectResetResp    AgentAffectResetResponse
+	lastAgentAffectPrompt   AgentAffectPromptPreviewRequest
+	agentAffectPromptResp   AgentAffectPromptPreviewResponse
+	lastAgentAffectQueue    AgentAffectQueueRequest
+	agentAffectQueueResp    AgentAffectQueueResponse
+	agentAffectProcessResp  AgentAffectProcessOnceResponse
+	lastAgentAffectClear    AgentAffectQueueRequest
+	agentAffectClearResp    AgentAffectClearFailedResponse
+	lastAgentAffectSupers   AgentAffectQueueRequest
+	agentAffectSupersResp   AgentAffectSupersedePendingResponse
+	uploadAsset             *media.MediaAsset
+	usageEvents             []storage.LLMUsageEvent
+	lastUsageFilter         storage.LLMUsageEventFilter
+	usageSummary            []storage.LLMUsageSummaryRow
+	lastUsageSummaryFilter  storage.LLMUsageSummaryFilter
+	calibrations            []storage.TokenEstimatorCalibration
+	lastCalibrationFilter   storage.TokenEstimatorCalibrationFilter
+	refreshCalibrationRows  int
 }
 
 func (f *fakeAdminApp) ListLLMProviders() ([]config.LLMProvider, error) {
@@ -423,7 +427,29 @@ func (f *fakeAdminApp) ActivateAgentConfig(id string) error {
 	f.lastActivate = id
 	return f.activateErr
 }
-func (f *fakeAdminApp) DeleteAgentConfig(id string) error        { return nil }
+func (f *fakeAdminApp) DeleteAgentConfig(id string) error { return nil }
+func (f *fakeAdminApp) PreviewUserAddressMigration(_ context.Context, id string) (UserAddressMigrationPreviewResponse, error) {
+	if f.userAddressMigrationErr != nil {
+		return UserAddressMigrationPreviewResponse{}, f.userAddressMigrationErr
+	}
+	resp := f.userAddressPreview
+	resp.AgentID = id
+	return resp, nil
+}
+func (f *fakeAdminApp) ExecuteUserAddressMigration(_ context.Context, id string, req UserAddressMigrationExecuteRequest) (UserAddressMigrationExecuteResponse, error) {
+	f.lastUserAddressExecute = req
+	if f.userAddressMigrationErr != nil {
+		return UserAddressMigrationExecuteResponse{}, f.userAddressMigrationErr
+	}
+	resp := f.userAddressExecute
+	if resp.AgentID == "" {
+		resp.UserAddressMigrationPreviewResponse = f.userAddressPreview
+	}
+	resp.AgentID = id
+	resp.DryRun = req.DryRun
+	resp.HideLegacy = req.HideLegacy
+	return resp, nil
+}
 func (f *fakeAdminApp) ListPersonas() map[string]*config.Persona { return f.personas }
 func (f *fakeAdminApp) GetPersona(name string) (*config.Persona, bool) {
 	p, ok := f.personas[name]
@@ -683,6 +709,68 @@ func (f *fakeAdminApp) ClearAgentAffectFailedJobs(ctx context.Context, req Agent
 func (f *fakeAdminApp) SupersedeAgentAffectPendingJobs(ctx context.Context, req AgentAffectQueueRequest) (AgentAffectSupersedePendingResponse, error) {
 	f.lastAgentAffectSupers = req
 	return f.agentAffectSupersResp, nil
+}
+
+func TestHandlePreviewUserAddressMigration(t *testing.T) {
+	app := &fakeAdminApp{
+		userAddressPreview: UserAddressMigrationPreviewResponse{
+			PersonaID: "default",
+			Existing:  config.AgentUserAddressConfig{Preferred: []string{"阿屿"}, Usage: "natural"},
+			Legacy:    []UserAddressLegacyFact{{FactID: "fact-1", Value: "Long"}},
+			Merged:    config.AgentUserAddressConfig{Preferred: []string{"阿屿", "Long"}, Usage: "natural"},
+		},
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	req := httptest.NewRequest(http.MethodGet, "/api/agent-configs/agent-1/user-address-migration/preview", nil)
+	req.SetPathValue("id", "agent-1")
+	rec := httptest.NewRecorder()
+
+	handler.HandlePreviewUserAddressMigration(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp UserAddressMigrationPreviewResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.AgentID != "agent-1" || len(resp.Legacy) != 1 || resp.Merged.Preferred[1] != "Long" {
+		t.Fatalf("response = %#v", resp)
+	}
+}
+
+func TestHandleExecuteUserAddressMigration(t *testing.T) {
+	app := &fakeAdminApp{
+		userAddressPreview: UserAddressMigrationPreviewResponse{
+			PersonaID: "default",
+			Merged:    config.AgentUserAddressConfig{Preferred: []string{"Long"}, Usage: "natural"},
+		},
+		userAddressExecute: UserAddressMigrationExecuteResponse{HiddenCount: 1, Updated: true},
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	req := httptest.NewRequest(http.MethodPost, "/api/agent-configs/agent-1/user-address-migration/execute", bytes.NewBufferString(`{
+		"dry_run": false,
+		"hide_legacy": true,
+		"merge_strategy": "append_legacy_after_existing"
+	}`))
+	req.SetPathValue("id", "agent-1")
+	rec := httptest.NewRecorder()
+
+	handler.HandleExecuteUserAddressMigration(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if app.lastUserAddressExecute.MergeStrategy != "append_legacy_after_existing" || !app.lastUserAddressExecute.HideLegacy {
+		t.Fatalf("execute request = %#v", app.lastUserAddressExecute)
+	}
+	var resp UserAddressMigrationExecuteResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.AgentID != "agent-1" || !resp.Updated || resp.HiddenCount != 1 {
+		t.Fatalf("response = %#v", resp)
+	}
 }
 
 func TestHandleAgentAffectConfig(t *testing.T) {

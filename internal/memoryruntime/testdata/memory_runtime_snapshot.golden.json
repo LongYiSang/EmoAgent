@@ -36,7 +36,10 @@
       "final_memory_count": 8,
       "context_budget_tokens": 1500,
       "use_fts": true,
-      "use_mirror": true
+      "use_mirror": true,
+      "excluded_predicates": [
+        "prefers_name"
+      ]
     },
     "memorycore_default_policy": {
       "source": "memorycore.effective_config",

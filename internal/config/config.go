@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	memconfig "github.com/longyisang/emoagent-memorycore/config"
 	"github.com/longyisang/emoagent/internal/llm"
@@ -444,12 +446,18 @@ type MemoryExtractionThinkingConfig struct {
 }
 
 type AgentConfig struct {
-	ID               string          `yaml:"id" json:"id"`
-	Name             string          `yaml:"name" json:"name"`
-	PersonaKey       string          `yaml:"persona_key" json:"persona_key"`
-	Emotion          AgentModelGroup `yaml:"emotion" json:"emotion"`
-	Work             AgentModelGroup `yaml:"work" json:"work"`
-	ContextOverrides map[string]any  `yaml:"context_overrides" json:"context_overrides"`
+	ID               string                 `yaml:"id" json:"id"`
+	Name             string                 `yaml:"name" json:"name"`
+	PersonaKey       string                 `yaml:"persona_key" json:"persona_key"`
+	UserAddress      AgentUserAddressConfig `yaml:"user_address" json:"user_address"`
+	Emotion          AgentModelGroup        `yaml:"emotion" json:"emotion"`
+	Work             AgentModelGroup        `yaml:"work" json:"work"`
+	ContextOverrides map[string]any         `yaml:"context_overrides" json:"context_overrides"`
+}
+
+type AgentUserAddressConfig struct {
+	Preferred []string `yaml:"preferred" json:"preferred"`
+	Usage     string   `yaml:"usage,omitempty" json:"usage,omitempty"`
 }
 
 type AgentModelGroup struct {
@@ -2030,6 +2038,13 @@ func Load(path string) (*Config, error) {
 		}
 		cfg.LLMProviders[i] = provider
 	}
+	for i := range cfg.AgentConfigs {
+		userAddress, err := NormalizeAgentUserAddressConfig(cfg.AgentConfigs[i].UserAddress)
+		if err != nil {
+			return nil, fmt.Errorf("agent_configs[%d]: %w", i, err)
+		}
+		cfg.AgentConfigs[i].UserAddress = userAddress
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("validate config: %w", err)
@@ -2831,7 +2846,57 @@ func (a AgentConfig) Validate() error {
 	if err := a.Work.Summary.Validate(); err != nil {
 		return fmt.Errorf("work.summary: %w", err)
 	}
+	if _, err := NormalizeAgentUserAddressConfig(a.UserAddress); err != nil {
+		return err
+	}
 	return nil
+}
+
+func NormalizeAgentUserAddressConfig(input AgentUserAddressConfig) (AgentUserAddressConfig, error) {
+	usage := strings.TrimSpace(input.Usage)
+	if usage == "" {
+		usage = "natural"
+	}
+	switch usage {
+	case "natural", "rare", "disabled":
+	default:
+		return AgentUserAddressConfig{}, fmt.Errorf("user_address.usage must be natural, rare, or disabled")
+	}
+
+	out := AgentUserAddressConfig{Usage: usage}
+	seen := map[string]struct{}{}
+	for i, raw := range input.Preferred {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			continue
+		}
+		if utf8.RuneCountInString(name) > 32 {
+			return AgentUserAddressConfig{}, fmt.Errorf("user_address.preferred[%d] must be at most 32 characters", i)
+		}
+		for _, r := range name {
+			if unicode.IsControl(r) {
+				return AgentUserAddressConfig{}, fmt.Errorf("user_address.preferred[%d] contains unsupported control characters", i)
+			}
+		}
+		lower := strings.ToLower(name)
+		for _, pattern := range []string{"ignore previous", "system:", "<system", "</", "{{", "}}", "```"} {
+			if strings.Contains(lower, pattern) {
+				return AgentUserAddressConfig{}, fmt.Errorf("user_address.preferred[%d] contains unsupported instruction-like text", i)
+			}
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out.Preferred = append(out.Preferred, name)
+		if len(out.Preferred) > 8 {
+			return AgentUserAddressConfig{}, fmt.Errorf("user_address.preferred must contain at most 8 names")
+		}
+	}
+	if out.Preferred == nil {
+		out.Preferred = []string{}
+	}
+	return out, nil
 }
 
 func (b ModelBinding) Validate() error {

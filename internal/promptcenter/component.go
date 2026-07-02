@@ -17,6 +17,7 @@ const (
 	SourcePendingWorkDynamic = "pending_work_dynamic"
 	SourceMemoryDynamic      = "memory_dynamic"
 	SourceAgentAffectDynamic = "agent_affect_dynamic"
+	SourceAgentConfigDynamic = "agent_config_dynamic"
 	SourceExtraSystemDynamic = "extra_system_dynamic"
 )
 
@@ -32,6 +33,7 @@ const (
 	ComponentEmotionPendingWork               = "emotion.pending_work"
 	ComponentMemoryPromptBlock                = "memory.prompt_block"
 	ComponentAgentAffectPromptBlock           = "agent_affect.prompt_block"
+	ComponentUserAddressPromptBlock           = "agent.user_address_prompt_block"
 	ComponentTurnExtraSystem                  = "turn.extra_system"
 	ComponentRunningSummarySystem             = "context.running_summary.system"
 	ComponentRunningSummaryRepair             = "context.running_summary.repair"

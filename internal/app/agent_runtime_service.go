@@ -23,6 +23,7 @@ type ActiveAgentRuntime struct {
 	WorkMain       ModelRuntime
 	WorkSummary    ModelRuntime
 	Context        config.ContextConfig
+	UserAddress    config.AgentUserAddressConfig
 }
 
 type ModelRuntime struct {
@@ -242,6 +243,7 @@ func (s *AgentRuntimeService) Build(id string, requireClient bool) (*ActiveAgent
 		WorkMain:       workMain,
 		WorkSummary:    workSummary,
 		Context:        contextCfg,
+		UserAddress:    agent.UserAddress,
 	}, nil
 }
 

@@ -101,6 +101,12 @@ func (a *routeTestAdminApp) ActivateAgentConfig(id string) error {
 	return nil
 }
 func (a *routeTestAdminApp) DeleteAgentConfig(id string) error { return nil }
+func (a *routeTestAdminApp) PreviewUserAddressMigration(ctx context.Context, id string) (web.UserAddressMigrationPreviewResponse, error) {
+	return web.UserAddressMigrationPreviewResponse{}, nil
+}
+func (a *routeTestAdminApp) ExecuteUserAddressMigration(ctx context.Context, id string, req web.UserAddressMigrationExecuteRequest) (web.UserAddressMigrationExecuteResponse, error) {
+	return web.UserAddressMigrationExecuteResponse{}, nil
+}
 func (a *routeTestAdminApp) ListPersonas() map[string]*config.Persona {
 	return map[string]*config.Persona{}
 }
@@ -1476,6 +1482,10 @@ func TestActivateAgentConfigBuildsRuntimeAndHotUpdatesEngine(t *testing.T) {
 			Summary: config.ModelBinding{ProviderID: "moonshot", Model: "work-summary", Params: llm.RequestParams{MaxTokens: 444, Temperature: &summaryTemp, Stream: &streamSummary}},
 		},
 		ContextOverrides: map[string]any{"input_budget_tokens": float64(9000)},
+		UserAddress: config.AgentUserAddressConfig{
+			Preferred: []string{" 阿屿 ", "小屿", "阿屿"},
+			Usage:     "",
+		},
 	}
 	if err := db.UpsertAgentConfig(agent); err != nil {
 		t.Fatalf("UpsertAgentConfig: %v", err)
@@ -1494,6 +1504,8 @@ func TestActivateAgentConfigBuildsRuntimeAndHotUpdatesEngine(t *testing.T) {
 	}
 	if runtime := testActiveRuntime(a); runtime == nil || runtime.WorkSummary.Model != "work-summary" {
 		t.Fatalf("ActiveAgentRuntime = %#v", runtime)
+	} else if runtime.UserAddress.Usage != "natural" || strings.Join(runtime.UserAddress.Preferred, ",") != "阿屿,小屿" {
+		t.Fatalf("ActiveAgentRuntime.UserAddress = %#v", runtime.UserAddress)
 	}
 	runtimeCfg := engine.RuntimeConfig()
 	if runtimeCfg.Model != "emotion-main" || runtimeCfg.SummaryModel != "emotion-summary" {
@@ -1507,6 +1519,9 @@ func TestActivateAgentConfigBuildsRuntimeAndHotUpdatesEngine(t *testing.T) {
 	}
 	if runtimeCfg.ContextConfig.InputBudgetTokens != 9000 {
 		t.Fatalf("context input budget = %d, want 9000", runtimeCfg.ContextConfig.InputBudgetTokens)
+	}
+	if runtimeCfg.UserAddress.Usage != "natural" || strings.Join(runtimeCfg.UserAddress.Preferred, ",") != "阿屿,小屿" {
+		t.Fatalf("engine user address = %#v", runtimeCfg.UserAddress)
 	}
 }
 

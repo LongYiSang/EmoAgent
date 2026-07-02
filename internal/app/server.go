@@ -133,6 +133,8 @@ func registerRoutes(mux *http.ServeMux, api *web.APIHandler, chatHandler http.Ha
 	mux.HandleFunc("PUT /api/agent-configs/{id}", api.HandleUpdateAgentConfig)
 	mux.HandleFunc("DELETE /api/agent-configs/{id}", api.HandleDeleteAgentConfig)
 	mux.HandleFunc("POST /api/agent-configs/{id}/activate", api.HandleActivateAgentConfig)
+	mux.HandleFunc("GET /api/agent-configs/{id}/user-address-migration/preview", api.HandlePreviewUserAddressMigration)
+	mux.HandleFunc("POST /api/agent-configs/{id}/user-address-migration/execute", api.HandleExecuteUserAddressMigration)
 	mux.HandleFunc("GET /api/prompts/components", api.HandleListPromptComponents)
 	mux.HandleFunc("GET /api/prompts/components/{component_id}", api.HandleGetPromptComponent)
 	mux.HandleFunc("PUT /api/prompts/overrides", api.HandleUpsertPromptOverride)

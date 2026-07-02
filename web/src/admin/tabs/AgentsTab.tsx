@@ -1,6 +1,6 @@
 import { memo, useState } from 'react';
 import { classNames } from '../../shared/lib/classNames';
-import { field, toInt } from '../../shared/lib/data';
+import { field, pretty, toInt } from '../../shared/lib/data';
 import type { AgentAdmin } from '../hooks/useAgentAdmin';
 import type { Persona, Provider, ProviderPreset } from '../protocol/adminApi';
 import { matchesQuery, slotDefs } from '../lib/adminData';
@@ -13,6 +13,7 @@ export type AgentsTabProps = Pick<AgentAdmin,
   'activeAgentID' |
   'selectedAgent' |
   'agentDraft' |
+  'userAddressMigration' |
   'reloadAgents' |
   'selectAgent' |
   'patchAgentDraft' |
@@ -21,7 +22,9 @@ export type AgentsTabProps = Pick<AgentAdmin,
   'newAgent' |
   'submitAgent' |
   'activateSelectedAgent' |
-  'deleteSelectedAgent'
+  'deleteSelectedAgent' |
+  'previewSelectedUserAddressMigration' |
+  'executeSelectedUserAddressMigration'
 > & {
   providers: Provider[];
   providerPresets: ProviderPreset[];
@@ -34,6 +37,7 @@ export default memo(function AgentsTab({
   activeAgentID,
   selectedAgent,
   agentDraft,
+  userAddressMigration,
   reloadAgents,
   selectAgent,
   patchAgentDraft,
@@ -43,6 +47,8 @@ export default memo(function AgentsTab({
   submitAgent,
   activateSelectedAgent,
   deleteSelectedAgent,
+  previewSelectedUserAddressMigration,
+  executeSelectedUserAddressMigration,
   providers,
   providerPresets,
   modelOptions,
@@ -50,6 +56,8 @@ export default memo(function AgentsTab({
 }: AgentsTabProps) {
   const [query, setQuery] = useState('');
   const visibleAgents = agents.filter(agent => matchesQuery(query, agent.id, agent.name, agent.persona_key));
+  const userAddress = field(agentDraft, 'user_address', {}) as { preferred?: unknown; usage?: unknown };
+  const preferredAddressText = Array.isArray(userAddress.preferred) ? userAddress.preferred.map(item => String(item)).join('\n') : '';
 
   return (
     <div className="admin-split">
@@ -65,6 +73,12 @@ export default memo(function AgentsTab({
             <div className="field"><label htmlFor="a-persona">Persona</label><select id="a-persona" value={String(agentDraft.persona_key || '')} onChange={event => patchAgentDraft('persona_key', event.target.value)}>{personas.map(persona => <option key={persona.key} value={persona.key}>{persona.name || persona.key}</option>)}</select></div>
             <Field id="ctx-input-budget" type="number" label="输入预算 Token" value={String(field(field(agentDraft, 'context_overrides', {}), 'input_budget_tokens', ''))} onChange={value => updateAgentPath(['context_overrides', 'input_budget_tokens'], toInt(value))} />
             <Field id="ctx-reserve-output" type="number" label="预留输出 Token" value={String(field(field(agentDraft, 'context_overrides', {}), 'reserve_output_tokens', ''))} onChange={value => updateAgentPath(['context_overrides', 'reserve_output_tokens'], toInt(value))} />
+            <div className="field"><label htmlFor="a-user-address">用户称呼</label><textarea id="a-user-address" value={preferredAddressText} rows={3} onChange={event => patchAgentDraft('user_address', { ...userAddress, preferred: event.target.value.split(/\r?\n/) })} /></div>
+            <div className="field"><label htmlFor="a-user-address-usage">称呼频率</label><select id="a-user-address-usage" value={String(userAddress.usage || 'natural')} onChange={event => patchAgentDraft('user_address', { ...userAddress, usage: event.target.value })}><option value="natural">自然使用</option><option value="rare">偶尔使用</option><option value="disabled">禁用</option></select></div>
+          </div>
+          <div className="section nested" id="user-address-migration-card">
+            <div className="hero"><div><h3>旧称呼记忆迁移</h3><div className="meta">从旧 prefers_name fact 合并到当前 Agent 配置</div></div><div className="actions"><button className="btn ghost" id="preview-user-address-migration" type="button" disabled={!selectedAgent} onClick={previewSelectedUserAddressMigration}>预览</button><button className="btn primary" id="execute-user-address-migration" type="button" disabled={!selectedAgent} onClick={executeSelectedUserAddressMigration}>迁移并隐藏旧记忆</button></div></div>
+            <pre className="code" id="user-address-migration-json">{pretty(userAddressMigration || {})}</pre>
           </div>
           <datalist id="model-options">{modelOptions.map(model => <option key={model} value={model} />)}</datalist>
           <div className="slot-grid" id="slot-grid">

@@ -72,14 +72,15 @@ type RetrievalSnapshot struct {
 }
 
 type PolicySnapshot struct {
-	Source                string `json:"source"`
-	SensitivityPermission string `json:"sensitivity_permission"`
-	AllowHistorical       bool   `json:"allow_historical"`
-	AllowDeepArchive      bool   `json:"allow_deep_archive"`
-	FinalMemoryCount      int    `json:"final_memory_count"`
-	ContextBudgetTokens   int    `json:"context_budget_tokens"`
-	UseFTS                bool   `json:"use_fts"`
-	UseMirror             bool   `json:"use_mirror"`
+	Source                string   `json:"source"`
+	SensitivityPermission string   `json:"sensitivity_permission"`
+	AllowHistorical       bool     `json:"allow_historical"`
+	AllowDeepArchive      bool     `json:"allow_deep_archive"`
+	FinalMemoryCount      int      `json:"final_memory_count"`
+	ContextBudgetTokens   int      `json:"context_budget_tokens"`
+	UseFTS                bool     `json:"use_fts"`
+	UseMirror             bool     `json:"use_mirror"`
+	ExcludedPredicates    []string `json:"excluded_predicates,omitempty"`
 }
 
 type QueryAnalysisSnapshot struct {
@@ -228,6 +229,7 @@ func ChatPromptRetrievalPolicy(cfg config.MemoryRetrievalConfig) memorycore.Retr
 		ContextBudgetTokens:   cfg.ContextBudgetTokens,
 		UseFTS:                cfg.UseFTS,
 		UseMirror:             cfg.UseMirror,
+		ExcludedPredicates:    []string{"prefers_name"},
 	}
 }
 
@@ -241,6 +243,7 @@ func policySnapshot(source string, policy memorycore.RetrievalPolicy) PolicySnap
 		ContextBudgetTokens:   policy.ContextBudgetTokens,
 		UseFTS:                policy.UseFTS,
 		UseMirror:             policy.UseMirror,
+		ExcludedPredicates:    append([]string(nil), policy.ExcludedPredicates...),
 	}
 }
 

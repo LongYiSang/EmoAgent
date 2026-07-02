@@ -161,6 +161,9 @@ func TestChatPromptRetrievalPolicyLocksArchiveDefaults(t *testing.T) {
 	if !policy.UseFTS || !policy.UseMirror || policy.FinalMemoryCount != 6 || policy.ContextBudgetTokens != 2048 {
 		t.Fatalf("policy = %#v", policy)
 	}
+	if got := strings.Join(policy.ExcludedPredicates, ","); got != "prefers_name" {
+		t.Fatalf("ExcludedPredicates = %#v, want prefers_name", policy.ExcludedPredicates)
+	}
 }
 
 func mustMarshalSnapshot(t *testing.T, snapshot Snapshot) string {

@@ -47,6 +47,9 @@ func TestExtractionWorkerRunsQueuedJobAndUpdatesSegment(t *testing.T) {
 	if req.Build == nil || req.Build.SessionID == nil || *req.Build.SessionID != fixture.segment.MemorySessionID || req.Build.Until == nil {
 		t.Fatalf("RunExtraction build = %#v", req.Build)
 	}
+	if got := strings.Join(req.Policy.DisallowedPredicates, ","); got != "prefers_name" {
+		t.Fatalf("RunExtraction disallowed predicates = %#v, want prefers_name", req.Policy.DisallowedPredicates)
+	}
 	if fixture.service.mirrorSyncCalls != 1 {
 		t.Fatalf("RunMirrorSync calls = %d, want 1", fixture.service.mirrorSyncCalls)
 	}

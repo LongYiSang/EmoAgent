@@ -81,6 +81,7 @@ export function AdminApp() {
             activeAgentID={agents.activeAgentID}
             selectedAgent={agents.selectedAgent}
             agentDraft={agents.agentDraft}
+            userAddressMigration={agents.userAddressMigration}
             reloadAgents={agents.reloadAgents}
             selectAgent={agents.selectAgent}
             patchAgentDraft={agents.patchAgentDraft}
@@ -90,6 +91,8 @@ export function AdminApp() {
             submitAgent={agents.submitAgent}
             activateSelectedAgent={agents.activateSelectedAgent}
             deleteSelectedAgent={agents.deleteSelectedAgent}
+            previewSelectedUserAddressMigration={agents.previewSelectedUserAddressMigration}
+            executeSelectedUserAddressMigration={agents.executeSelectedUserAddressMigration}
             providers={providers.providers}
             providerPresets={providers.providerPresets}
             modelOptions={providers.modelOptions}

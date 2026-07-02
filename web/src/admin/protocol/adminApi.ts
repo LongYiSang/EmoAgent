@@ -2,7 +2,25 @@ import { requestJSON, type AnyRecord } from '../../shared/lib/api';
 
 export type ProviderPreset = AnyRecord & { id?: string; name?: string; provider_capabilities?: string[] };
 export type Provider = AnyRecord & { id?: string; name?: string; capabilities?: string[] };
-export type AgentConfig = AnyRecord & { id?: string; name?: string; persona_key?: string };
+export type AgentUserAddressConfig = { preferred?: string[]; usage?: string };
+export type AgentConfig = AnyRecord & { id?: string; name?: string; persona_key?: string; user_address?: AgentUserAddressConfig };
+export type UserAddressLegacyFact = { fact_id?: string; value?: string; summary?: string };
+export type UserAddressMigrationPreview = AnyRecord & {
+  agent_id?: string;
+  persona_id?: string;
+  existing?: AgentUserAddressConfig;
+  legacy?: UserAddressLegacyFact[];
+  merged?: AgentUserAddressConfig;
+  warnings?: string[];
+};
+export type UserAddressMigrationExecuteRequest = { dry_run?: boolean; hide_legacy?: boolean; merge_strategy?: string };
+export type UserAddressMigrationExecuteReport = UserAddressMigrationPreview & {
+  dry_run?: boolean;
+  updated?: boolean;
+  hide_legacy?: boolean;
+  hidden_count?: number;
+  hide_errors?: string[];
+};
 export type Persona = AnyRecord & { key?: string; name?: string };
 
 export async function loadProviderPresets(): Promise<ProviderPreset[]> {
@@ -62,6 +80,17 @@ export async function activateAgent(id: string): Promise<void> {
 
 export async function deleteAgent(id: string): Promise<void> {
   await requestJSON(`/api/agent-configs/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export async function previewUserAddressMigration(id: string): Promise<UserAddressMigrationPreview> {
+  return requestJSON<UserAddressMigrationPreview>(`/api/agent-configs/${encodeURIComponent(id)}/user-address-migration/preview`);
+}
+
+export async function executeUserAddressMigration(id: string, req: UserAddressMigrationExecuteRequest): Promise<UserAddressMigrationExecuteReport> {
+  return requestJSON<UserAddressMigrationExecuteReport>(`/api/agent-configs/${encodeURIComponent(id)}/user-address-migration/execute`, {
+    method: 'POST',
+    body: req,
+  });
 }
 
 export async function loadChatSettings(): Promise<AnyRecord> {

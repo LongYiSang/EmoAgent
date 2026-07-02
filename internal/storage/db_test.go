@@ -84,6 +84,13 @@ func TestOpenAndMigrate(t *testing.T) {
 			t.Errorf("table %q not found: %v", table, err)
 		}
 	}
+	columns, err := tableColumns(db.SqlDB(), "agent_configs")
+	if err != nil {
+		t.Fatalf("read agent_configs columns: %v", err)
+	}
+	if !columns["user_address_json"] {
+		t.Fatalf("agent_configs.user_address_json column missing")
+	}
 
 	rows, err := db.SqlDB().Query("PRAGMA table_info(personas)")
 	if err != nil {
@@ -139,8 +146,8 @@ func TestOpenAndMigrate(t *testing.T) {
 	if err := db.SqlDB().QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_version").Scan(&latestVersion); err != nil {
 		t.Fatalf("read latest schema_version: %v", err)
 	}
-	if latestVersion != 35 {
-		t.Fatalf("latest schema_version = %d, want 35", latestVersion)
+	if latestVersion != 36 {
+		t.Fatalf("latest schema_version = %d, want 36", latestVersion)
 	}
 }
 
@@ -1238,6 +1245,10 @@ func TestProviderAndAgentConfigCRUD(t *testing.T) {
 			Summary: config.ModelBinding{ProviderID: "moonshot", Model: "kimi-k2.6", Params: llmParams(2048, &temperature, &stream)},
 		},
 		ContextOverrides: map[string]any{"input_budget_tokens": float64(12000)},
+		UserAddress: config.AgentUserAddressConfig{
+			Preferred: []string{" 阿屿 ", "小屿", "阿屿"},
+			Usage:     "",
+		},
 	}
 	if err := db.UpsertAgentConfig(agent); err != nil {
 		t.Fatalf("UpsertAgentConfig: %v", err)
@@ -1258,6 +1269,9 @@ func TestProviderAndAgentConfigCRUD(t *testing.T) {
 	}
 	if got == nil || got.Emotion.Summary.Params.Temperature == nil || *got.Emotion.Summary.Params.Temperature != 0.1 {
 		t.Fatalf("agent config round trip = %#v", got)
+	}
+	if got.UserAddress.Usage != "natural" || strings.Join(got.UserAddress.Preferred, ",") != "阿屿,小屿" {
+		t.Fatalf("agent user_address round trip = %#v", got.UserAddress)
 	}
 	if err := db.DeleteLLMProvider("moonshot"); !errors.Is(err, ErrProviderInUse) {
 		t.Fatalf("DeleteLLMProvider referenced error = %v, want ErrProviderInUse", err)

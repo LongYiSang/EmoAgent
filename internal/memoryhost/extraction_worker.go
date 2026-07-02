@@ -149,6 +149,7 @@ func (w *ExtractionWorker) buildRunExtractionRequest(job storage.MemoryExtractio
 			AllowSensitiveExtraction: boolPtr(policy.AllowSensitiveExtraction),
 			MaxFacts:                 intPtr(policy.MaxFacts),
 			MaxLinks:                 intPtr(policy.MaxLinks),
+			DisallowedPredicates:     []string{"prefers_name"},
 		},
 	}
 	if req.Mode == "" {

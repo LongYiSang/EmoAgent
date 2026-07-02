@@ -940,6 +940,77 @@ func TestEngineSendMessageInjectsRetrievedMemoryPromptBlock(t *testing.T) {
 	}
 }
 
+func TestEngineInjectsUserAddressPromptBlockBeforeMemory(t *testing.T) {
+	fakeLLM := &fakeLLMClient{
+		response: endTurnResponse("ok"),
+	}
+	engine, db, _ := newTestEngine(t, fakeLLM)
+	engine.agentID = "agent-a"
+	engine.personaKey = "default"
+	engine.userAddress = config.AgentUserAddressConfig{
+		Preferred: []string{"阿屿", "小屿"},
+		Usage:     "rare",
+	}
+	engine.memory = &fakeMemoryBridge{
+		ensureResult:  MemorySegmentRef{SegmentID: "segment-current", MemorySessionID: "memory-current"},
+		retrieveBlock: "[长期记忆上下文：使用约束]\n\n- 用户喜欢手冲咖啡。",
+	}
+	engine.memoryRetrieval = config.MemoryRetrievalConfig{
+		Enabled:             true,
+		InjectPrompt:        true,
+		UseFTS:              true,
+		FinalMemoryCount:    4,
+		ContextBudgetTokens: 700,
+		FailOpen:            true,
+	}
+
+	ctx := context.Background()
+	sessionID, err := engine.StartSession(ctx, "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if _, err := engine.SendMessage(ctx, sessionID, &config.Persona{Name: "default", SystemPrompt: "system"}, "咖啡", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	addressIndex := strings.Index(fakeLLM.lastRequest.System, "[用户称呼偏好]")
+	memoryIndex := strings.Index(fakeLLM.lastRequest.System, "[长期记忆上下文：使用约束]")
+	if addressIndex < 0 || memoryIndex < 0 || addressIndex > memoryIndex {
+		t.Fatalf("system prompt order invalid:\n%s", fakeLLM.lastRequest.System)
+	}
+	if !strings.Contains(fakeLLM.lastRequest.System, "用户在当前 Agent 配置中提供的可用称呼：阿屿 / 小屿。") {
+		t.Fatalf("system missing configured user addresses:\n%s", fakeLLM.lastRequest.System)
+	}
+	if !strings.Contains(fakeLLM.lastRequest.System, "只在自然合适时偶尔使用") {
+		t.Fatalf("system missing rare usage guidance:\n%s", fakeLLM.lastRequest.System)
+	}
+
+	items, err := db.ListRenderSnapshots(ctx, promptcenter.SnapshotFilter{AgentID: "agent-a", Purpose: "emotion_chat", Limit: 1})
+	if err != nil {
+		t.Fatalf("ListRenderSnapshots: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("snapshots = %#v, want one", items)
+	}
+	snapshot, err := db.GetRenderSnapshot(ctx, items[0].ID)
+	if err != nil {
+		t.Fatalf("GetRenderSnapshot: %v", err)
+	}
+	component := findRenderComponent(snapshot.Components, promptcenter.ComponentUserAddressPromptBlock)
+	if component.ComponentID == "" || component.Source != promptcenter.SourceAgentConfigDynamic {
+		t.Fatalf("user address component = %#v", component)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(component.MetadataJSON), &metadata); err != nil {
+		t.Fatalf("Unmarshal(metadata): %v; raw=%s", err, component.MetadataJSON)
+	}
+	if metadata["origin"] != "agent_config" || metadata["instruction_authority"] != "data_only" || metadata["can_host_control"] != false {
+		t.Fatalf("metadata = %#v, want data-only agent config provenance", metadata)
+	}
+	if metadata["preferred_count"] != float64(2) || metadata["usage"] != "rare" {
+		t.Fatalf("metadata = %#v, want count/usage", metadata)
+	}
+}
+
 func TestEngineSendMessageStoresMemoryPipelineMetadataWhenDebugEnabled(t *testing.T) {
 	fakeLLM := &fakeLLMClient{
 		response: endTurnResponse("ok"),

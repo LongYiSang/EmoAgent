@@ -53,18 +53,6 @@ func DefaultManualRules() *ManualRules {
 				ContentSummary: "用户不喜欢{object}。",
 			},
 			{
-				Prefix:         "以后叫我",
-				Predicate:      "prefers_name",
-				FactType:       memorycore.FactTypeCoreIdentity,
-				ContentSummary: "用户偏好被称呼为 {object}。",
-			},
-			{
-				Prefix:         "我的名字是",
-				Predicate:      "prefers_name",
-				FactType:       memorycore.FactTypeCoreIdentity,
-				ContentSummary: "用户偏好被称呼为 {object}。",
-			},
-			{
 				Prefix:         "我更喜欢",
 				Predicate:      "likes",
 				FactType:       memorycore.FactTypeStablePreference,
