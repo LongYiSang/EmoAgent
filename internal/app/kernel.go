@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/conversation"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/storage"
@@ -45,6 +46,8 @@ type Services struct {
 	Resource     *ResourceService
 	Plugins      *PluginService
 	Work         *WorkService
+	Conversation *ConversationService
+	Commands     *CommandService
 	Chat         *ChatService
 	Sessions     *SessionService
 	PromptCenter *PromptCenterService
@@ -79,6 +82,16 @@ func newServices(infra *Infra) *Services {
 		plugins:      services.Plugins,
 		agentRuntime: services.AgentRuntime,
 	}
+	services.Conversation = &ConversationService{
+		bindings: conversation.NewBindingService(infra.DB, nil),
+		timeline: conversation.NewTimelineEventStore(infra.DB),
+		runs:     conversation.NewRunRegistry(),
+	}
+	services.Commands = NewCommandService()
+	services.Commands.configure(infra, services.Conversation, services.Memory, services.AgentRuntime)
+	services.Commands.LoadCommandConfigs(context.Background())
+	services.Commands.pluginRuntime = services.Plugins
+	services.Plugins.commands = services.Commands
 	services.Chat = &ChatService{
 		infra:        infra,
 		agentRuntime: services.AgentRuntime,
@@ -89,11 +102,41 @@ func newServices(infra *Infra) *Services {
 		media:        services.Media,
 		llmProviders: services.LLMProviders,
 		agentAffect:  services.AgentAffect,
+		conversation: services.Conversation,
+		commands:     services.Commands,
 	}
+	services.Commands.chat = services.Chat
 	services.Sessions = &SessionService{infra: infra, work: services.Work}
 	services.PromptCenter = &PromptCenterService{infra: infra, agentRuntime: services.AgentRuntime, personas: services.Personas, memory: services.Memory, agentAffect: services.AgentAffect}
 	services.AgentRuntime.chat = services.Chat
 	return services
+}
+
+type ConversationService struct {
+	bindings *conversation.BindingService
+	timeline *conversation.TimelineEventStore
+	runs     *conversation.RunRegistry
+}
+
+func (s *ConversationService) Bindings() *conversation.BindingService {
+	if s == nil {
+		return nil
+	}
+	return s.bindings
+}
+
+func (s *ConversationService) Timeline() *conversation.TimelineEventStore {
+	if s == nil {
+		return nil
+	}
+	return s.timeline
+}
+
+func (s *ConversationService) RunRegistry() *conversation.RunRegistry {
+	if s == nil {
+		return nil
+	}
+	return s.runs
 }
 
 func (k *Kernel) Close(ctx context.Context) error {

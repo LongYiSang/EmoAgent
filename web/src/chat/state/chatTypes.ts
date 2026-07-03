@@ -1,5 +1,5 @@
 import type { AnyRecord } from '../../shared/lib/api';
-import type { MessageDisplayPart, MessageRecord, SessionSummary } from '../protocol/sessionApi';
+import type { ConversationEventRecord, MessageDisplayPart, MessageRecord, SessionSummary } from '../protocol/sessionApi';
 import type { ApprovalRequest, ContentPart, ContextStats, ReasoningActivity, ToolActivity } from '../protocol/wsTypes';
 import type { MemoryJob, MemorySegment } from '../protocol/memoryApi';
 
@@ -11,7 +11,9 @@ export type TimelineItem =
   | { kind: 'tool'; id: string; tool: ToolActivity; createdAt: string; collapsed: boolean }
   | { kind: 'reasoning'; id: string; reasoning: ReasoningActivity; createdAt: string; collapsed: boolean }
   | { kind: 'work'; id: string; content: string; createdAt: string }
-  | { kind: 'memory_pipeline'; id: string; snapshot: AnyRecord; createdAt: string };
+  | { kind: 'memory_pipeline'; id: string; snapshot: AnyRecord; createdAt: string }
+  | { kind: 'command_result'; id: string; commandID: string; commandName: string; status: string; content: string; createdAt: string; payload?: AnyRecord }
+  | { kind: 'context_switched'; id: string; reason: string; content: string; createdAt: string; payload?: AnyRecord };
 
 export type ChatState = {
   status: string;
@@ -40,8 +42,10 @@ export type ChatAction =
   | { type: 'SET_SESSIONS'; sessions: SessionSummary[] }
   | { type: 'SET_MEMORY_STATUS'; segments: MemorySegment[]; jobs: MemoryJob[] }
   | { type: 'SET_MEMORY_VISIBLE'; visible: boolean }
-  | { type: 'SET_HISTORY'; messages: MessageRecord[] }
+  | { type: 'SET_HISTORY'; messages: MessageRecord[]; events?: ConversationEventRecord[] }
   | { type: 'CLEAR_TIMELINE' }
+  | { type: 'ADD_COMMAND_RESULT'; commandID?: string; commandName?: string; status?: string; content: string; payload?: AnyRecord; createdAt?: string }
+  | { type: 'ADD_CONTEXT_SWITCHED'; reason?: string; content: string; payload?: AnyRecord; createdAt?: string }
   | { type: 'ADD_MESSAGE'; role: string; content: string; id?: string; createdAt?: string; status?: MessageStatus; parts?: ContentPart[]; displayParts?: MessageDisplayPart[] }
   | { type: 'SET_MESSAGE_STATUS'; id: string; status: MessageStatus }
   | { type: 'STREAM_START' }

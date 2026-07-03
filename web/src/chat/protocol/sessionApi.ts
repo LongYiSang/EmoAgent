@@ -1,4 +1,5 @@
 import { requestJSON } from '../../shared/lib/api';
+import type { AnyRecord } from '../../shared/lib/api';
 import type { ApprovalRequest, ContextStats } from './wsTypes';
 
 export type MessageDisplayPart =
@@ -54,9 +55,51 @@ export type SessionDetail = {
   Persona?: string;
   messages?: MessageRecord[];
   Messages?: MessageRecord[];
+  events?: ConversationEventRecord[];
+  Events?: ConversationEventRecord[];
+  clear_marker?: SessionClearMarker;
+  clearMarker?: SessionClearMarker;
+  ClearMarker?: SessionClearMarker;
   context_stats?: ContextStats;
   contextStats?: ContextStats;
   ContextStats?: ContextStats;
+};
+
+export type ConversationEventRecord = {
+  id?: string;
+  ID?: string;
+  origin_key?: string;
+  originKey?: string;
+  OriginKey?: string;
+  session_id?: string;
+  sessionID?: string;
+  SessionID?: string;
+  persona_key?: string;
+  personaKey?: string;
+  PersonaKey?: string;
+  event_type?: string;
+  eventType?: string;
+  EventType?: string;
+  visible_content?: string;
+  visibleContent?: string;
+  VisibleContent?: string;
+  payload?: AnyRecord;
+  Payload?: AnyRecord;
+  created_at?: string;
+  createdAt?: string;
+  CreatedAt?: string;
+  visibility_status?: string;
+  visibilityStatus?: string;
+  VisibilityStatus?: string;
+};
+
+export type SessionClearMarker = {
+  origin_key?: string;
+  session_id?: string;
+  persona_key?: string;
+  after_message_id?: string;
+  cleared_at?: string;
+  reason?: string;
 };
 
 export async function loadSessions(persona: string): Promise<SessionSummary[]> {
@@ -64,8 +107,9 @@ export async function loadSessions(persona: string): Promise<SessionSummary[]> {
   return data.sessions || [];
 }
 
-export async function loadSessionDetail(id: string): Promise<SessionDetail> {
-  return requestJSON<SessionDetail>(`/api/sessions/${encodeURIComponent(id)}`);
+export async function loadSessionDetail(id: string, originKey?: string): Promise<SessionDetail> {
+  const query = originKey ? `?origin_key=${encodeURIComponent(originKey)}` : '';
+  return requestJSON<SessionDetail>(`/api/sessions/${encodeURIComponent(id)}${query}`);
 }
 
 export async function deleteSession(id: string): Promise<void> {

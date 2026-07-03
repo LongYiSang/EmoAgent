@@ -35,6 +35,7 @@ function estimateTimelineItemSize(item: TimelineItem | undefined) {
   if (item.kind === 'tool') return 160;
   if (item.kind === 'reasoning') return 150;
   if (item.kind === 'work') return 90;
+  if (item.kind === 'command_result' || item.kind === 'context_switched') return 120;
   if (item.kind === 'memory_pipeline') return 180;
   return 140;
 }

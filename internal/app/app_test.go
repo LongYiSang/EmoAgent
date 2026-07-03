@@ -19,6 +19,7 @@ import (
 	"github.com/longyisang/emoagent/internal/agentaffect"
 	"github.com/longyisang/emoagent/internal/apperrors"
 	"github.com/longyisang/emoagent/internal/chat"
+	commandcore "github.com/longyisang/emoagent/internal/command"
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/configcenter"
 	"github.com/longyisang/emoagent/internal/llm"
@@ -39,6 +40,7 @@ type routeTestAdminApp struct {
 	agentConfigs []config.AgentConfig
 	activeAgent  *config.AgentConfig
 	lastActive   string
+	lastCommand  storage.CommandConfigRecord
 }
 
 func (a *routeTestAdminApp) ListLLMProviders() ([]config.LLMProvider, error) {
@@ -131,6 +133,9 @@ func (a *routeTestAdminApp) GetLatestSession(ctx context.Context, persona string
 func (a *routeTestAdminApp) GetSessionDetail(ctx context.Context, id string) (*storage.SessionRecord, []storage.MessageRecord, error) {
 	return nil, nil, nil
 }
+func (a *routeTestAdminApp) GetSessionDetailForOrigin(ctx context.Context, id string, originKey string) (*storage.SessionRecord, []storage.MessageRecord, []storage.ConversationEventRecord, *storage.SessionClearMarkerRecord, error) {
+	return nil, nil, nil, nil, nil
+}
 func (a *routeTestAdminApp) GetSessionMessageParts(ctx context.Context, sessionID string) (map[string][]storage.MessagePartRecord, error) {
 	return map[string][]storage.MessagePartRecord{}, nil
 }
@@ -156,6 +161,19 @@ func (a *routeTestAdminApp) LatestNaturalMemoryRun(ctx context.Context) (*memory
 	return nil, nil
 }
 func (a *routeTestAdminApp) ListMemorySegments(ctx context.Context, sessionID string) ([]storage.MemorySegment, error) {
+	return nil, nil
+}
+func (a *routeTestAdminApp) ListCommands(ctx context.Context) ([]commandcore.CommandDescriptor, []storage.CommandConfigRecord, error) {
+	return nil, nil, nil
+}
+func (a *routeTestAdminApp) UpdateCommandConfig(ctx context.Context, config storage.CommandConfigRecord) error {
+	a.lastCommand = config
+	return nil
+}
+func (a *routeTestAdminApp) ListCommandInvocations(ctx context.Context, filter storage.CommandInvocationFilter) ([]storage.CommandInvocationRecord, error) {
+	return nil, nil
+}
+func (a *routeTestAdminApp) ListCommandConflicts(ctx context.Context) ([]web.CommandConflictResponse, error) {
 	return nil, nil
 }
 func (a *routeTestAdminApp) GetChatSettings() config.ChatConfig {
@@ -809,6 +827,20 @@ func TestRegisterRoutesAgentConfigDispatch(t *testing.T) {
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+	})
+
+	t.Run("command update alias route dispatches", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPut, "/api/commands/plugin.com.example.weather.weather", strings.NewReader(`{"enabled":false}`))
+		rec := httptest.NewRecorder()
+
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d body=%s, want 200", rec.Code, rec.Body.String())
+		}
+		if adminApp.lastCommand.CommandID != "plugin.com.example.weather.weather" || adminApp.lastCommand.Enabled {
+			t.Fatalf("last command = %#v, want disabled plugin command", adminApp.lastCommand)
 		}
 	})
 
@@ -1957,6 +1989,77 @@ func TestGetSessionDetailReturnsMessages(t *testing.T) {
 	}
 	if messages[0].Content != "hello" || messages[1].Content != "hi" {
 		t.Fatalf("messages = %#v, want [hello hi]", messages)
+	}
+}
+
+func TestGetSessionDetailForOriginAppliesClearMarkerAndReturnsEvents(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	a := newTestApp(nil, db, logger)
+	ctx := context.Background()
+	if err := db.CreateSession(ctx, "session-1", "default"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	for _, msg := range []struct {
+		id      string
+		role    string
+		content string
+	}{
+		{id: "msg-1", role: "user", content: "hidden"},
+		{id: "msg-2", role: "assistant", content: "visible"},
+	} {
+		if err := db.AddMessage(ctx, msg.id, "session-1", msg.role, msg.content); err != nil {
+			t.Fatalf("AddMessage(%s): %v", msg.id, err)
+		}
+	}
+	if err := db.UpsertConversationOrigin(ctx, storage.ConversationOriginRecord{
+		OriginKey:    "webui:local:main",
+		SourceType:   "webui",
+		ChannelType:  "web",
+		MetadataJSON: "{}",
+	}); err != nil {
+		t.Fatalf("UpsertConversationOrigin: %v", err)
+	}
+	if err := db.UpsertSessionClearMarker(ctx, storage.SessionClearMarkerRecord{
+		OriginKey:      "webui:local:main",
+		SessionID:      "session-1",
+		PersonaKey:     "default",
+		AfterMessageID: "msg-1",
+		MetadataJSON:   "{}",
+	}); err != nil {
+		t.Fatalf("UpsertSessionClearMarker: %v", err)
+	}
+	if err := db.AddConversationEvent(ctx, storage.ConversationEventRecord{
+		OriginKey:      "webui:local:main",
+		SessionID:      "session-1",
+		PersonaKey:     "default",
+		EventType:      "command_result",
+		VisibleContent: "已清理当前窗口可见历史。",
+		PayloadJSON:    `{"command":"clear"}`,
+	}); err != nil {
+		t.Fatalf("AddConversationEvent: %v", err)
+	}
+
+	session, messages, events, marker, err := a.GetSessionDetailForOrigin(ctx, "session-1", "webui:local:main")
+	if err != nil {
+		t.Fatalf("GetSessionDetailForOrigin: %v", err)
+	}
+	if session == nil || session.ID != "session-1" {
+		t.Fatalf("session = %#v, want session-1", session)
+	}
+	if marker == nil || marker.AfterMessageID != "msg-1" {
+		t.Fatalf("marker = %#v, want after msg-1", marker)
+	}
+	if len(messages) != 1 || messages[0].ID != "msg-2" {
+		t.Fatalf("messages = %#v, want only msg-2", messages)
+	}
+	if len(events) != 1 || events[0].EventType != "command_result" {
+		t.Fatalf("events = %#v, want command_result", events)
 	}
 }
 

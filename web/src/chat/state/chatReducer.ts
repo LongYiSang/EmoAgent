@@ -1,6 +1,6 @@
-import { field, numberField, parseMaybeJSON, stringField, timelineMillis } from '../../shared/lib/data';
+import { arrayField, field, numberField, parseMaybeJSON, stringField, timelineMillis } from '../../shared/lib/data';
 import type { AnyRecord } from '../../shared/lib/api';
-import type { MessageDisplayPart, MessageRecord } from '../protocol/sessionApi';
+import type { ConversationEventRecord, MessageDisplayPart, MessageRecord } from '../protocol/sessionApi';
 import type { ApprovalRequest, ReasoningActivity, ToolActivity } from '../protocol/wsTypes';
 import type { ChatAction, ChatState, TimelineItem } from './chatTypes';
 
@@ -45,9 +45,36 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case 'SET_MEMORY_VISIBLE':
       return { ...state, memoryStatusVisible: action.visible };
     case 'SET_HISTORY':
-      return { ...state, timeline: historyToTimeline(action.messages), pendingAssistantId: '' };
+      return { ...state, timeline: historyToTimeline(action.messages, action.events), pendingAssistantId: '' };
     case 'CLEAR_TIMELINE':
       return { ...state, timeline: [], approvals: [], pendingAssistantId: '', contextStats: undefined };
+    case 'ADD_COMMAND_RESULT':
+      return {
+        ...state,
+        sending: false,
+        timeline: orderTimeline([...state.timeline, {
+          kind: 'command_result',
+          id: crypto.randomUUID(),
+          commandID: action.commandID || '',
+          commandName: action.commandName || '',
+          status: action.status || 'success',
+          content: action.content,
+          createdAt: action.createdAt || new Date().toISOString(),
+          payload: action.payload,
+        }]),
+      };
+    case 'ADD_CONTEXT_SWITCHED':
+      return {
+        ...state,
+        timeline: orderTimeline([...state.timeline, {
+          kind: 'context_switched',
+          id: crypto.randomUUID(),
+          reason: action.reason || '',
+          content: action.content,
+          createdAt: action.createdAt || new Date().toISOString(),
+          payload: action.payload,
+        }]),
+      };
     case 'ADD_MESSAGE': {
       const item: TimelineItem = {
         kind: 'message',
@@ -154,7 +181,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   }
 }
 
-function historyToTimeline(messages: MessageRecord[]): TimelineItem[] {
+function historyToTimeline(messages: MessageRecord[], events: ConversationEventRecord[] = []): TimelineItem[] {
   const items: TimelineItem[] = [];
   for (const message of messages || []) {
     const role = stringField(message, 'role') || 'assistant';
@@ -184,6 +211,35 @@ function historyToTimeline(messages: MessageRecord[]): TimelineItem[] {
     }
     if (content || displayParts.length > 0) {
       items.push({ kind: 'message', id, role, content, createdAt, displayParts: displayParts.length > 0 ? displayParts : undefined });
+    }
+  }
+  for (const event of events || []) {
+    const eventType = stringField(event, 'event_type');
+    const payload = field<AnyRecord>(event, 'payload', {});
+    const createdAt = stringField(event, 'created_at') || new Date().toISOString();
+    const id = stringField(event, 'id') || crypto.randomUUID();
+    if (eventType === 'command_result') {
+      items.push({
+        kind: 'command_result',
+        id,
+        commandID: stringField(payload, 'command_id'),
+        commandName: stringField(payload, 'command_name'),
+        status: stringField(payload, 'status') || 'success',
+        content: stringField(event, 'visible_content'),
+        createdAt,
+        payload,
+      });
+      continue;
+    }
+    if (eventType === 'context_switched') {
+      items.push({
+        kind: 'context_switched',
+        id,
+        reason: stringField(payload, 'reason'),
+        content: stringField(event, 'visible_content'),
+        createdAt,
+        payload,
+      });
     }
   }
   return orderTimeline(items);
@@ -236,7 +292,7 @@ function messageDisplayParts(message: MessageRecord): MessageDisplayPart[] {
 }
 
 function thinkingBlocksToTimeline(metadata: AnyRecord, createdAt: string, messageID: string): TimelineItem[] {
-  const blocks = Array.isArray(metadata.thinking_blocks) ? metadata.thinking_blocks : Array.isArray(metadata.thinkingBlocks) ? metadata.thinkingBlocks : [];
+  const blocks = arrayField<unknown>(metadata, 'thinking_blocks');
   const memoryPipeline = metadata.memory_pipeline || metadata.memoryPipeline;
   if (!blocks.length && memoryPipeline && typeof memoryPipeline === 'object') {
     return [{ kind: 'memory_pipeline', id: `${messageID}:memory-pipeline`, snapshot: memoryPipeline as AnyRecord, createdAt }];

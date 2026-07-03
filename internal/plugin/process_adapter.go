@@ -14,6 +14,7 @@ type ProcessSupervisor interface {
 	EnsureReady(context.Context, string) (*ProcessRuntime, error)
 	InvokeHook(context.Context, string, HookName, HookContext) (HookResult, error)
 	InvokeTool(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
+	InvokeCommand(context.Context, string, CommandInvokeRequest) (CommandInvokeResult, error)
 	Tools(string) []ProcessToolSpec
 }
 

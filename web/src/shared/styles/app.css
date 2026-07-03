@@ -800,6 +800,7 @@ code {
 .progress,
 .tool,
 .reasoning,
+.command-event,
 .memory-pipeline-entry {
   display: grid;
   grid-template-columns: 34px minmax(0, min(760px, 100%));
@@ -846,6 +847,7 @@ code {
 .progress-card,
 .tool-card,
 .reasoning-card,
+.command-card,
 .approval,
 .memory-pipeline-card {
   min-width: 0;
@@ -902,6 +904,44 @@ code {
 .msg.error .bubble {
   color: var(--color-danger-ink);
   background: var(--color-danger-soft);
+}
+
+.command-card {
+  border-color: rgba(125, 185, 168, 0.26);
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.command-event.failed .command-card {
+  border-color: rgba(214, 123, 123, 0.28);
+  color: var(--color-danger-ink);
+  background: var(--color-danger-soft);
+}
+
+.command-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-tooltip-bg);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.command-title code {
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--color-lavender-ink);
+  background: var(--color-lavender-soft);
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.command-content {
+  margin-top: 7px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--color-ink-soft);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .message-status,

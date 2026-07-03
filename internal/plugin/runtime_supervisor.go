@@ -166,6 +166,28 @@ type InitializeResponse struct {
 	Tools []ProcessToolSpec `json:"tools"`
 }
 
+type CommandInvokeResult struct {
+	Status     string         `json:"status,omitempty"`
+	Content    string         `json:"content"`
+	Payload    map[string]any `json:"payload,omitempty"`
+	OutputMode string         `json:"output_mode,omitempty"`
+}
+
+type CommandInvokeContext struct {
+	OriginKey  string `json:"origin_key"`
+	SessionID  string `json:"session_id"`
+	PersonaKey string `json:"persona_key"`
+	ActorRole  string `json:"actor_role"`
+}
+
+type CommandInvokeRequest struct {
+	CommandID string               `json:"command_id"`
+	Handler   string               `json:"handler"`
+	Args      []string             `json:"args"`
+	Flags     map[string]string    `json:"flags"`
+	Context   CommandInvokeContext `json:"context"`
+}
+
 type ProcessToolSpec struct {
 	Name             string                 `json:"name"`
 	Description      string                 `json:"description"`
@@ -793,6 +815,24 @@ func (s *RuntimeSupervisor) InvokeTool(ctx context.Context, pluginID string, nam
 	if err := runtime.Call(ctx, "invoke_tool", toolInvokeRequest{Tool: name, Input: input}, &result); err != nil {
 		s.finishRuntimeUse(pluginID, runtime, generation, err)
 		return nil, err
+	}
+	s.finishRuntimeUse(pluginID, runtime, generation, nil)
+	return result, nil
+}
+
+func (s *RuntimeSupervisor) InvokeCommand(ctx context.Context, pluginID string, req CommandInvokeRequest) (CommandInvokeResult, error) {
+	runtime, err := s.EnsureReady(ctx, pluginID)
+	if err != nil {
+		return CommandInvokeResult{}, err
+	}
+	generation, err := s.beginRuntimeUse(pluginID, runtime)
+	if err != nil {
+		return CommandInvokeResult{}, err
+	}
+	var result CommandInvokeResult
+	if err := runtime.Call(ctx, "invoke_command", req, &result); err != nil {
+		s.finishRuntimeUse(pluginID, runtime, generation, err)
+		return CommandInvokeResult{}, err
 	}
 	s.finishRuntimeUse(pluginID, runtime, generation, nil)
 	return result, nil

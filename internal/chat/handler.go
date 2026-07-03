@@ -15,6 +15,7 @@ import (
 	"github.com/coder/websocket/wsjson"
 	"github.com/longyisang/emoagent/internal/config"
 	contextutil "github.com/longyisang/emoagent/internal/context"
+	"github.com/longyisang/emoagent/internal/conversation"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/replydelivery"
@@ -24,27 +25,55 @@ import (
 
 // WSMessage is the JSON envelope used for WebSocket chat events.
 type WSMessage struct {
-	Type         string                    `json:"type"`
-	Content      string                    `json:"content,omitempty"`
-	Parts        []llm.ContentBlock        `json:"parts,omitempty"`
-	SessionID    string                    `json:"session_id,omitempty"`
-	TurnID       string                    `json:"turn_id,omitempty"`
-	GroupID      string                    `json:"group_id,omitempty"`
-	SegmentID    string                    `json:"segment_id,omitempty"`
-	SegmentIndex int                       `json:"segment_index,omitempty"`
-	SegmentTotal int                       `json:"segment_total,omitempty"`
-	Status       string                    `json:"status,omitempty"`
-	ErrorKind    string                    `json:"error_kind,omitempty"`
-	Persona      string                    `json:"persona,omitempty"`
-	IsNew        bool                      `json:"is_new,omitempty"`
-	Messages     []storage.MessageRecord   `json:"messages,omitempty"`
-	RequestID    string                    `json:"request_id,omitempty"`
-	Action       string                    `json:"action,omitempty"`
-	OptionID     string                    `json:"option_id,omitempty"`
-	Approval     *protocol.ApprovalRequest `json:"approval,omitempty"`
-	Tool         *ToolActivity             `json:"tool,omitempty"`
-	Reasoning    *ReasoningActivity        `json:"reasoning,omitempty"`
-	Payload      map[string]any            `json:"payload,omitempty"`
+	Type          string                    `json:"type"`
+	Content       string                    `json:"content,omitempty"`
+	Parts         []llm.ContentBlock        `json:"parts,omitempty"`
+	SessionID     string                    `json:"session_id,omitempty"`
+	TurnID        string                    `json:"turn_id,omitempty"`
+	GroupID       string                    `json:"group_id,omitempty"`
+	SegmentID     string                    `json:"segment_id,omitempty"`
+	SegmentIndex  int                       `json:"segment_index,omitempty"`
+	SegmentTotal  int                       `json:"segment_total,omitempty"`
+	Status        string                    `json:"status,omitempty"`
+	ErrorKind     string                    `json:"error_kind,omitempty"`
+	Persona       string                    `json:"persona,omitempty"`
+	OriginKey     string                    `json:"origin_key,omitempty"`
+	IsNew         bool                      `json:"is_new,omitempty"`
+	CommandID     string                    `json:"command_id,omitempty"`
+	CommandName   string                    `json:"command_name,omitempty"`
+	ReloadHistory bool                      `json:"reload_history,omitempty"`
+	ReloadMemory  bool                      `json:"reload_memory,omitempty"`
+	Messages      []storage.MessageRecord   `json:"messages,omitempty"`
+	RequestID     string                    `json:"request_id,omitempty"`
+	Action        string                    `json:"action,omitempty"`
+	OptionID      string                    `json:"option_id,omitempty"`
+	Approval      *protocol.ApprovalRequest `json:"approval,omitempty"`
+	Tool          *ToolActivity             `json:"tool,omitempty"`
+	Reasoning     *ReasoningActivity        `json:"reasoning,omitempty"`
+	Payload       map[string]any            `json:"payload,omitempty"`
+}
+
+type CommandRequest struct {
+	Content    string
+	Origin     conversation.Origin
+	SessionID  string
+	PersonaKey string
+	ActorRole  string
+}
+
+type CommandResponse struct {
+	Messages   []WSMessage
+	SessionID  string
+	PersonaKey string
+}
+
+type CommandHandler interface {
+	TryHandle(ctx context.Context, req CommandRequest) (CommandResponse, bool, error)
+}
+
+type ConversationBindings interface {
+	EnsureCurrent(ctx context.Context, origin conversation.Origin, personaKey string) (conversation.Binding, error)
+	BindSession(ctx context.Context, origin conversation.Origin, personaKey string, sessionID string, isNew bool) (conversation.Binding, error)
 }
 
 // ToolActivity is the compact, UI-safe description of a live tool call.
@@ -108,6 +137,9 @@ type Handler struct {
 	turnIDs           turn.IdempotencyStore
 	turnRuntime       *chatTurnRuntime
 	pluginHost        turnPluginHost
+	bindings          ConversationBindings
+	commandHandler    CommandHandler
+	runs              *conversation.RunRegistry
 	realtimeStreaming bool
 	replyDelivery     config.ReplyDeliveryConfig
 }
@@ -156,6 +188,24 @@ func WithPluginHost(host turnPluginHost) HandlerOption {
 	}
 }
 
+func WithCommandHandler(handler CommandHandler) HandlerOption {
+	return func(h *Handler) {
+		h.commandHandler = handler
+	}
+}
+
+func WithConversationBindings(bindings ConversationBindings) HandlerOption {
+	return func(h *Handler) {
+		h.bindings = bindings
+	}
+}
+
+func WithRunRegistry(runs *conversation.RunRegistry) HandlerOption {
+	return func(h *Handler) {
+		h.runs = runs
+	}
+}
+
 // NewHandler creates a WebSocket chat handler.
 func NewHandler(engine conversationEngine, app AppInterface, logger *slog.Logger, options ...HandlerOption) *Handler {
 	h := &Handler{engine: engine, app: app, logger: logger}
@@ -196,6 +246,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	origin, err := resolveWSOrigin(r)
+	if err != nil {
+		_ = writeWSMessage(ctx, conn, WSMessage{Type: "error", Content: err.Error()}, nil)
+		return
+	}
 	personaName := h.resolvePersonaName(r)
 	persona, ok := h.app.GetPersona(personaName)
 	if !ok || persona == nil {
@@ -206,17 +261,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.logger.Info("ws connected", "remote", r.RemoteAddr, "persona", personaName)
 
 	requestedSessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
-	sessionID, resumed, err := h.engine.ResumeSession(ctx, requestedSessionID, personaName)
+	sessionID, resumed, err := h.bootstrapSession(ctx, origin, personaName, requestedSessionID)
 	if err != nil {
 		_ = writeWSMessage(ctx, conn, WSMessage{Type: "error", Content: err.Error()}, nil)
 		return
-	}
-	if !resumed {
-		sessionID, err = h.engine.StartSession(ctx, personaName)
-		if err != nil {
-			_ = writeWSMessage(ctx, conn, WSMessage{Type: "error", Content: err.Error()}, nil)
-			return
-		}
 	}
 	h.logger.Info("ws session ready", "session", sessionID, "persona", personaName, "resumed", resumed)
 	defer h.logger.Info("ws disconnected", "remote", r.RemoteAddr, "session", sessionID)
@@ -226,6 +274,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Type:      "session_ready",
 		SessionID: sessionID,
 		Persona:   personaName,
+		OriginKey: origin.OriginKey,
 		IsNew:     !resumed,
 	}, &writeMu); err != nil {
 		cancel()
@@ -241,6 +290,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	activeRun := &wsActiveRun{}
 	for {
 		var msg WSMessage
 		if err := wsjson.Read(ctx, conn, &msg); err != nil {
@@ -257,139 +307,36 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if !hasMessageInput(msg) {
 				continue
 			}
-			if len(msg.Parts) > 0 {
-				parts, err := normalizeUserParts(msg.Content, msg.Parts)
-				if err != nil {
-					if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: err.Error()}, &writeMu); writeErr != nil {
-						return
-					}
-					continue
-				}
-				msg.Parts = parts
-				msg.Content = renderUserParts(parts, llm.RenderForHistory)
-			}
-			usePipeline := shouldUseTurnPipeline(h.turnConfig, personaName, sessionID)
-			if pluginHostEnabled(h.pluginHost) && !usePipeline {
-				_ = writeWSMessage(ctx, conn, WSMessage{Type: "error", Content: "plugins.enabled requires Turn Pipeline for this session/persona"}, &writeMu)
+			if currentSessionID, err := h.currentSession(ctx, origin, personaName, sessionID); err != nil {
+				_ = writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: err.Error()}, &writeMu)
 				continue
+			} else {
+				sessionID = currentSessionID
 			}
-			if h.turnConfig.Shadow && !usePipeline {
-				env, err := wsMessageToInbound(msg, sessionID, personaName)
-				if err == nil {
-					_, _ = h.turnRuntime.Shadow(ctx, env)
-				}
-			}
-			if usePipeline {
-				turnCtx := context.WithoutCancel(ctx)
-				sink := h.newWSOutboundSink(ctx, conn, &writeMu)
-				env, err := wsMessageToInbound(msg, sessionID, personaName)
-				if err != nil {
-					if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: err.Error()}, &writeMu); writeErr != nil {
-						return
-					}
-					closeOutboundSink(turnCtx, sink)
-					continue
-				}
-				if _, err := h.turnRuntime.Execute(turnCtx, env, persona, sink); err != nil {
-					if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: err.Error()}, &writeMu); writeErr != nil {
-						return
-					}
-				}
-				closeOutboundSink(turnCtx, sink)
-				continue
-			}
-			if err := writeWSMessage(ctx, conn, WSMessage{Type: "stream_start"}, &writeMu); err != nil {
-				cancel()
-				return
-			}
-
-			msgCtx := withWSWriter(ctx, func(progressMsg WSMessage) {
-				if writeErr := writeWSMessage(ctx, conn, progressMsg, &writeMu); writeErr != nil {
-					if !errors.Is(ctx.Err(), context.Canceled) {
-						h.logger.Warn("ws progress write failed", "session", sessionID, "error", writeErr)
-					}
-					cancel()
-				}
-			})
-
-			streamedDelta := false
-			replyCfg := h.currentReplyDeliveryConfig()
-			realtimeStreaming := h.currentRealtimeStreaming()
-			useReplyDelivery := replyDeliveryEnabled(replyCfg, realtimeStreaming)
-			var promptMode contextutil.PromptMode
-			if useReplyDelivery {
-				msgCtx = replydelivery.WithPromptModeRecorder(msgCtx, func(mode contextutil.PromptMode) {
-					promptMode = mode
-				})
-			}
-			send := h.engine.SendMessage
-			if len(msg.Parts) > 0 {
-				send = func(ctx context.Context, sessionID string, persona *config.Persona, _ string, cb func(delta string)) (string, error) {
-					return h.engine.SendMessageParts(ctx, sessionID, persona, msg.Parts, cb)
-				}
-			}
-			deltaCB := func(delta string) {
-				if delta == "" {
-					return
-				}
-				streamedDelta = true
-				if writeErr := writeWSMessage(ctx, conn, WSMessage{Type: "stream_delta", Content: delta}, &writeMu); writeErr != nil {
-					if !errors.Is(ctx.Err(), context.Canceled) {
-						h.logger.Warn("ws stream write failed", "session", sessionID, "error", writeErr)
-					}
-					cancel()
-				}
-			}
-			if useReplyDelivery {
-				deltaCB = nil
-			}
-			reply, err := send(msgCtx, sessionID, persona, msg.Content, deltaCB)
-			if err != nil && !errors.Is(err, errApprovalPending) {
-				if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: err.Error()}, &writeMu); writeErr != nil {
-					return
+			if handled, commandSessionID := h.tryHandleCommand(ctx, conn, &writeMu, msg, origin, sessionID, personaName); handled {
+				if commandSessionID != "" {
+					sessionID = commandSessionID
 				}
 				continue
 			}
-			if err == nil && useReplyDelivery && reply != "" {
-				plan := replydelivery.BuildPlan(replyCfg, string(promptMode), realtimeStreaming, reply)
-				sink := turn.SinkFunc(func(_ context.Context, event turn.OutboundEvent) error {
-					return writeWSMessage(ctx, conn, outboundEventToWSMessage(event), &writeMu)
-				})
-				groupID := msg.RequestID
-				if groupID == "" {
-					groupID = sessionID
-				}
-				emitted, emitErr := emitReplyDeliverySegments(ctx, sink, replyCfg, plan, groupID)
-				if emitErr != nil {
-					if !errors.Is(ctx.Err(), context.Canceled) {
-						h.logger.Warn("ws assistant segment write failed", "session", sessionID, "error", emitErr)
-					}
-					cancel()
-					return
-				}
-				if emitted {
-					streamedDelta = true
-				}
+			if !activeRun.TryStart() {
+				_ = writeWSMessage(ctx, conn, WSMessage{Type: "error", Content: "已有回复正在运行，请先 /stop。"}, &writeMu)
+				continue
 			}
-			if err == nil && !streamedDelta && reply != "" {
-				if writeErr := writeWSMessage(ctx, conn, WSMessage{Type: "stream_delta", Content: reply}, &writeMu); writeErr != nil {
-					if !errors.Is(ctx.Err(), context.Canceled) {
-						h.logger.Warn("ws stream write failed", "session", sessionID, "error", writeErr)
-					}
-					cancel()
-					return
-				}
-			}
-			if err := writeWSMessage(ctx, conn, WSMessage{Type: "stream_end"}, &writeMu); err != nil {
-				cancel()
-				return
-			}
-			if err := h.emitApprovalEvents(ctx, conn, &writeMu, sessionID); err != nil {
-				cancel()
-				return
-			}
+			runMsg := msg
+			runSessionID := sessionID
+			go func() {
+				defer activeRun.Done()
+				h.runWSMessage(ctx, cancel, conn, &writeMu, origin, runSessionID, personaName, persona, runMsg)
+			}()
 
 		case "approval_action":
+			if currentSessionID, err := h.currentSession(ctx, origin, personaName, sessionID); err != nil {
+				_ = writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: err.Error()}, &writeMu)
+				continue
+			} else {
+				sessionID = currentSessionID
+			}
 			useApprovalPipeline := shouldUseTurnPipeline(h.turnConfig, personaName, sessionID) && h.turnConfig.ApprovalStages
 			if pluginHostEnabled(h.pluginHost) && !useApprovalPipeline {
 				_ = writeWSMessage(ctx, conn, WSMessage{Type: "error", Content: "plugins.enabled requires Turn Pipeline approval stages for this session/persona"}, &writeMu)
@@ -403,6 +350,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			if useApprovalPipeline {
 				turnCtx := context.WithoutCancel(ctx)
+				turnCtx, done := h.registerRun(turnCtx, origin, sessionID, "approval_turn")
 				sink := h.newWSOutboundSink(ctx, conn, &writeMu)
 				env, err := wsMessageToInbound(msg, sessionID, personaName)
 				if err != nil {
@@ -410,6 +358,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						return
 					}
 					closeOutboundSink(turnCtx, sink)
+					done()
 					continue
 				}
 				if _, err := h.turnRuntime.Execute(turnCtx, env, persona, sink); err != nil {
@@ -418,6 +367,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				closeOutboundSink(turnCtx, sink)
+				done()
 				continue
 			}
 			if strings.TrimSpace(msg.RequestID) == "" {
@@ -487,6 +437,183 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+	}
+}
+
+type wsActiveRun struct {
+	mu     sync.Mutex
+	active bool
+}
+
+func (r *wsActiveRun) TryStart() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.active {
+		return false
+	}
+	r.active = true
+	return true
+}
+
+func (r *wsActiveRun) Done() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.active = false
+}
+
+func (h *Handler) runWSMessage(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, writeMu *sync.Mutex, origin conversation.Origin, sessionID string, personaName string, persona *config.Persona, msg WSMessage) {
+	if len(msg.Parts) > 0 {
+		parts, err := normalizeUserParts(msg.Content, msg.Parts)
+		if err != nil {
+			if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: err.Error()}, writeMu); writeErr != nil {
+				cancel()
+			}
+			return
+		}
+		msg.Parts = parts
+		msg.Content = renderUserParts(parts, llm.RenderForHistory)
+	}
+	usePipeline := shouldUseTurnPipeline(h.turnConfig, personaName, sessionID)
+	if pluginHostEnabled(h.pluginHost) && !usePipeline {
+		if err := writeWSMessage(ctx, conn, WSMessage{Type: "error", Content: "plugins.enabled requires Turn Pipeline for this session/persona"}, writeMu); err != nil {
+			cancel()
+		}
+		return
+	}
+	if h.turnConfig.Shadow && !usePipeline {
+		env, err := wsMessageToInbound(msg, sessionID, personaName)
+		if err == nil {
+			_, _ = h.turnRuntime.Shadow(ctx, env)
+		}
+	}
+	if usePipeline {
+		turnCtx := context.WithoutCancel(ctx)
+		turnCtx, done := h.registerRun(turnCtx, origin, sessionID, "turn_pipeline")
+		sink := h.newWSOutboundSink(ctx, conn, writeMu)
+		defer func() {
+			closeOutboundSink(turnCtx, sink)
+			done()
+		}()
+		env, err := wsMessageToInbound(msg, sessionID, personaName)
+		if err != nil {
+			if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: err.Error()}, writeMu); writeErr != nil {
+				cancel()
+			}
+			return
+		}
+		if _, err := h.turnRuntime.Execute(turnCtx, env, persona, sink); err != nil {
+			if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: err.Error()}, writeMu); writeErr != nil {
+				cancel()
+			}
+		}
+		return
+	}
+	if err := writeWSMessage(ctx, conn, WSMessage{Type: "stream_start"}, writeMu); err != nil {
+		cancel()
+		return
+	}
+
+	runCtx, done := h.registerRun(ctx, origin, sessionID, "emotion_turn")
+	msgCtx := withWSWriter(runCtx, func(progressMsg WSMessage) {
+		if writeErr := writeWSMessage(ctx, conn, progressMsg, writeMu); writeErr != nil {
+			if !errors.Is(ctx.Err(), context.Canceled) {
+				h.logger.Warn("ws progress write failed", "session", sessionID, "error", writeErr)
+			}
+			cancel()
+		}
+	})
+
+	streamedDelta := false
+	replyCfg := h.currentReplyDeliveryConfig()
+	realtimeStreaming := h.currentRealtimeStreaming()
+	useReplyDelivery := replyDeliveryEnabled(replyCfg, realtimeStreaming)
+	var promptMode contextutil.PromptMode
+	if useReplyDelivery {
+		msgCtx = replydelivery.WithPromptModeRecorder(msgCtx, func(mode contextutil.PromptMode) {
+			promptMode = mode
+		})
+	}
+	send := h.engine.SendMessage
+	if len(msg.Parts) > 0 {
+		send = func(ctx context.Context, sessionID string, persona *config.Persona, _ string, cb func(delta string)) (string, error) {
+			return h.engine.SendMessageParts(ctx, sessionID, persona, msg.Parts, cb)
+		}
+	}
+	deltaCB := func(delta string) {
+		if delta == "" {
+			return
+		}
+		streamedDelta = true
+		if writeErr := writeWSMessage(ctx, conn, WSMessage{Type: "stream_delta", Content: delta}, writeMu); writeErr != nil {
+			if !errors.Is(ctx.Err(), context.Canceled) {
+				h.logger.Warn("ws stream write failed", "session", sessionID, "error", writeErr)
+			}
+			cancel()
+		}
+	}
+	if useReplyDelivery {
+		deltaCB = nil
+	}
+	reply, err := send(msgCtx, sessionID, persona, msg.Content, deltaCB)
+	done()
+	if err != nil && !errors.Is(err, errApprovalPending) {
+		if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: err.Error()}, writeMu); writeErr != nil {
+			cancel()
+		}
+		return
+	}
+	if err == nil && useReplyDelivery && reply != "" {
+		plan := replydelivery.BuildPlan(replyCfg, string(promptMode), realtimeStreaming, reply)
+		sink := turn.SinkFunc(func(_ context.Context, event turn.OutboundEvent) error {
+			return writeWSMessage(ctx, conn, outboundEventToWSMessage(event), writeMu)
+		})
+		groupID := msg.RequestID
+		if groupID == "" {
+			groupID = sessionID
+		}
+		emitted, emitErr := emitReplyDeliverySegments(ctx, sink, replyCfg, plan, groupID)
+		if emitErr != nil {
+			if !errors.Is(ctx.Err(), context.Canceled) {
+				h.logger.Warn("ws assistant segment write failed", "session", sessionID, "error", emitErr)
+			}
+			cancel()
+			return
+		}
+		if emitted {
+			streamedDelta = true
+		}
+	}
+	if err == nil && !streamedDelta && reply != "" {
+		if writeErr := writeWSMessage(ctx, conn, WSMessage{Type: "stream_delta", Content: reply}, writeMu); writeErr != nil {
+			if !errors.Is(ctx.Err(), context.Canceled) {
+				h.logger.Warn("ws stream write failed", "session", sessionID, "error", writeErr)
+			}
+			cancel()
+			return
+		}
+	}
+	if err := writeWSMessage(ctx, conn, WSMessage{Type: "stream_end"}, writeMu); err != nil {
+		cancel()
+		return
+	}
+	if err := h.emitApprovalEvents(ctx, conn, writeMu, sessionID); err != nil {
+		cancel()
+	}
+}
+
+func (h *Handler) registerRun(ctx context.Context, origin conversation.Origin, sessionID string, kind string) (context.Context, func()) {
+	if h == nil || h.runs == nil {
+		return ctx, func() {}
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	unregister := h.runs.Register(conversation.RunRef{
+		OriginKey: origin.OriginKey,
+		SessionID: sessionID,
+		Kind:      kind,
+	}, cancel)
+	return runCtx, func() {
+		unregister()
+		cancel()
 	}
 }
 
@@ -743,6 +870,96 @@ func (h *Handler) resolvePersonaName(r *http.Request) string {
 		return personaName
 	}
 	return h.app.GetDefaultPersonaName()
+}
+
+func resolveWSOrigin(r *http.Request) (conversation.Origin, error) {
+	query := r.URL.Query()
+	return conversation.ResolveOrigin(conversation.OriginRequest{
+		OriginKey:  strings.TrimSpace(query.Get("origin_key")),
+		SourceType: strings.TrimSpace(query.Get("source")),
+	})
+}
+
+func (h *Handler) bootstrapSession(ctx context.Context, origin conversation.Origin, personaName string, requestedSessionID string) (string, bool, error) {
+	if h.bindings == nil {
+		sessionID, resumed, err := h.engine.ResumeSession(ctx, requestedSessionID, personaName)
+		if err != nil {
+			return "", false, err
+		}
+		if resumed {
+			return sessionID, true, nil
+		}
+		sessionID, err = h.engine.StartSession(ctx, personaName)
+		return sessionID, false, err
+	}
+	if requestedSessionID != "" {
+		sessionID, resumed, err := h.engine.ResumeSession(ctx, requestedSessionID, personaName)
+		if err != nil {
+			return "", false, err
+		}
+		if !resumed {
+			sessionID, err = h.engine.StartSession(ctx, personaName)
+			if err != nil {
+				return "", false, err
+			}
+		}
+		binding, err := h.bindings.BindSession(ctx, origin, personaName, sessionID, !resumed)
+		if err != nil {
+			return "", false, err
+		}
+		return binding.SessionID, !binding.IsNew, nil
+	}
+	binding, err := h.bindings.EnsureCurrent(ctx, origin, personaName)
+	if err != nil {
+		return "", false, err
+	}
+	return binding.SessionID, !binding.IsNew, nil
+}
+
+func (h *Handler) currentSession(ctx context.Context, origin conversation.Origin, personaName string, fallback string) (string, error) {
+	if h == nil || h.bindings == nil {
+		return fallback, nil
+	}
+	binding, err := h.bindings.EnsureCurrent(ctx, origin, personaName)
+	if err != nil {
+		return "", err
+	}
+	return binding.SessionID, nil
+}
+
+func (h *Handler) tryHandleCommand(ctx context.Context, conn *websocket.Conn, mu *sync.Mutex, msg WSMessage, origin conversation.Origin, sessionID, personaName string) (bool, string) {
+	if h == nil || h.commandHandler == nil || len(msg.Parts) > 0 {
+		return false, ""
+	}
+	response, handled, err := h.commandHandler.TryHandle(ctx, CommandRequest{
+		Content:    msg.Content,
+		Origin:     origin,
+		SessionID:  sessionID,
+		PersonaKey: personaName,
+		ActorRole:  "member",
+	})
+	if !handled {
+		return false, ""
+	}
+	if err != nil {
+		_ = writeWSMessage(context.Background(), conn, WSMessage{Type: "command_result", Status: "failed", Content: err.Error(), ErrorKind: "internal_error"}, mu)
+		return true, ""
+	}
+	for _, out := range response.Messages {
+		if out.OriginKey == "" {
+			out.OriginKey = origin.OriginKey
+		}
+		if out.SessionID == "" {
+			out.SessionID = sessionID
+		}
+		if out.Persona == "" {
+			out.Persona = personaName
+		}
+		if err := writeWSMessage(ctx, conn, out, mu); err != nil {
+			return true, response.SessionID
+		}
+	}
+	return true, response.SessionID
 }
 
 func writeWSMessage(ctx context.Context, conn *websocket.Conn, msg WSMessage, mu *sync.Mutex) error {

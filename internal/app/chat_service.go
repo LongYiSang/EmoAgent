@@ -20,6 +20,8 @@ type ChatService struct {
 	media        *MediaService
 	llmProviders *LLMProviderService
 	agentAffect  *AgentAffectService
+	conversation *ConversationService
+	commands     *CommandService
 	engine       *chat.Engine
 }
 
@@ -114,6 +116,9 @@ func (s *ChatService) BuildEngine(dispatcher *tool.Dispatcher) *chat.Engine {
 		PersonaKey:         personaKey,
 		PromptSnapshots:    cfg.PromptCenter.Snapshots,
 	})
+	if s.conversation != nil && s.conversation.Bindings() != nil {
+		s.conversation.Bindings().SetSessionStarter(s.engine)
+	}
 	return s.engine
 }
 
@@ -127,6 +132,13 @@ func (s *ChatService) HandlerOptions() []chat.HandlerOption {
 	}
 	if s.infra.DB != nil {
 		options = append(options, chat.WithTurnDB(s.infra.DB.SqlDB()))
+	}
+	if s.conversation != nil {
+		options = append(options, chat.WithConversationBindings(s.conversation.Bindings()))
+		options = append(options, chat.WithRunRegistry(s.conversation.RunRegistry()))
+	}
+	if s.commands != nil {
+		options = append(options, chat.WithCommandHandler(s.commands))
 	}
 	if s.plugins.Host() != nil && s.plugins.Host().Enabled() {
 		options = append(options, chat.WithPluginHost(s.plugins.Host()))

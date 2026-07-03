@@ -42,6 +42,7 @@ const (
 	CapabilityOutboundDecorate        Capability = "outbound.decorate"
 	CapabilityOutboundSafeDebug       Capability = "outbound.emit.safe_debug"
 	CapabilityToolRegister            Capability = "tool.register"
+	CapabilityCommandRegister         Capability = "command.register"
 	CapabilityToolObserve             Capability = "tool.observe"
 	CapabilityToolRequireApproval     Capability = "tool.require_approval"
 	CapabilityAgentAffectRead         Capability = "agent_affect.read"
@@ -218,6 +219,7 @@ func KnownCapability(capability Capability) bool {
 		CapabilityOutboundDecorate,
 		CapabilityOutboundSafeDebug,
 		CapabilityToolRegister,
+		CapabilityCommandRegister,
 		CapabilityToolObserve,
 		CapabilityToolRequireApproval,
 		CapabilityAgentAffectRead,

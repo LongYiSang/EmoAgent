@@ -352,7 +352,7 @@ func (b *Bridge) applyManualForgetIntent(ctx context.Context, segment *storage.M
 	if strings.TrimSpace(preview.ScopeMode) == "" {
 		preview.ScopeMode = memorycore.ForgetScopeSemanticQuery
 	}
-	b.queueManualMemoryNotice(segment.ChatSessionID, buildManualForgetPreviewNotice(*preview))
+	b.queueManualMemoryNotice(segment.ChatSessionID, BuildManualForgetPreviewNotice(*preview))
 	return nil
 }
 
@@ -486,7 +486,7 @@ func exactForgetTargets(targets []memorycore.ForgetResolvedTarget) []memorycore.
 	return out
 }
 
-func buildManualForgetPreviewNotice(preview memorycore.ForgetPreviewResult) string {
+func BuildManualForgetPreviewNotice(preview memorycore.ForgetPreviewResult) string {
 	var lines []string
 	for _, target := range preview.Targets {
 		summary := strings.TrimSpace(target.SafeSummary)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -32,6 +33,19 @@ type ManifestV2 struct {
 	Provider        ManifestV2Provider  `json:"provider,omitempty" yaml:"provider"`
 	Container       ManifestV2Container `json:"container,omitempty" yaml:"container"`
 	Settings        *ManifestV2Settings `json:"settings,omitempty" yaml:"settings"`
+	Commands        []ManifestV2Command `json:"commands,omitempty" yaml:"commands"`
+}
+
+type ManifestV2Command struct {
+	Name       string   `json:"name" yaml:"name"`
+	RootName   string   `json:"root_name,omitempty" yaml:"root_name"`
+	Aliases    []string `json:"aliases,omitempty" yaml:"aliases"`
+	Summary    string   `json:"summary" yaml:"summary"`
+	Usage      string   `json:"usage,omitempty" yaml:"usage"`
+	Permission string   `json:"permission,omitempty" yaml:"permission"`
+	Handler    string   `json:"handler" yaml:"handler"`
+	OutputMode string   `json:"output_mode,omitempty" yaml:"output_mode"`
+	TimeoutMS  int      `json:"timeout_ms,omitempty" yaml:"timeout_ms"`
 }
 
 type ManifestV2Runtime struct {
@@ -137,6 +151,9 @@ func (m ManifestV2) Validate(options ManifestValidationOptions) error {
 			return err
 		}
 	}
+	if err := m.validateCommands(options); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -149,6 +166,82 @@ func (m ManifestV2) CompatManifest() Manifest {
 		EmoAgentVersion: m.EmoAgentVersion,
 		Capabilities:    append([]Capability(nil), m.Access.Capabilities...),
 		Hooks:           append([]HookSpec(nil), m.Hooks...),
+	}
+}
+
+var manifestCommandNamePattern = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{0,63}$`)
+
+func (m ManifestV2) validateCommands(options ManifestValidationOptions) error {
+	if len(m.Commands) == 0 {
+		return nil
+	}
+	if !manifestHasCapability(m.Access.Capabilities, CapabilityCommandRegister) {
+		return fmt.Errorf("commands require %s capability", CapabilityCommandRegister)
+	}
+	for i, command := range m.Commands {
+		if !manifestCommandNamePattern.MatchString(strings.TrimSpace(command.Name)) {
+			return fmt.Errorf("commands[%d].name is invalid", i)
+		}
+		if strings.TrimSpace(command.Handler) == "" {
+			return fmt.Errorf("commands[%d].handler is required", i)
+		}
+		maxTimeout := 1000
+		if options.MaxTimeoutMS > 0 {
+			maxTimeout = options.MaxTimeoutMS
+		}
+		if command.TimeoutMS < 0 || command.TimeoutMS > maxTimeout {
+			return fmt.Errorf("commands[%d].timeout_ms must be between 0 and %d", i, maxTimeout)
+		}
+		rootName := strings.TrimSpace(command.RootName)
+		if rootName != "" {
+			if !manifestCommandNamePattern.MatchString(rootName) {
+				return fmt.Errorf("commands[%d].root_name is invalid", i)
+			}
+			if manifestReservedCommandRoot(rootName) {
+				return fmt.Errorf("commands[%d].root_name %q is reserved", i, rootName)
+			}
+		}
+		for j, alias := range command.Aliases {
+			alias = strings.TrimSpace(alias)
+			if !manifestCommandNamePattern.MatchString(alias) {
+				return fmt.Errorf("commands[%d].aliases[%d] is invalid", i, j)
+			}
+			if manifestReservedCommandRoot(alias) {
+				return fmt.Errorf("commands[%d].aliases[%d] %q is reserved", i, j, alias)
+			}
+		}
+		outputMode := strings.TrimSpace(command.OutputMode)
+		if outputMode == "" {
+			outputMode = "direct"
+		}
+		switch outputMode {
+		case "direct":
+		case "llm_synthesize":
+			if !manifestHasCapability(m.Access.Capabilities, CapabilityProviderGenerate) {
+				return fmt.Errorf("commands[%d].output_mode llm_synthesize requires %s capability", i, CapabilityProviderGenerate)
+			}
+		default:
+			return fmt.Errorf("commands[%d].output_mode %q is unsupported", i, outputMode)
+		}
+	}
+	return nil
+}
+
+func manifestHasCapability(capabilities []Capability, target Capability) bool {
+	for _, capability := range capabilities {
+		if capability == target {
+			return true
+		}
+	}
+	return false
+}
+
+func manifestReservedCommandRoot(name string) bool {
+	switch strings.ToLower(strings.TrimPrefix(strings.TrimSpace(name), "/")) {
+	case "help", "sid", "new", "switch", "reset", "clear", "compact", "forget", "stop", "set", "unset", "plugin", "plugins", "provider", "model", "memory", "config", "admin":
+		return true
+	default:
+		return false
 	}
 }
 

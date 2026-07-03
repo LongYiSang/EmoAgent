@@ -111,12 +111,14 @@ export type ContextStats = {
 };
 
 export type WSIncoming =
-  | { type: 'session_ready'; session_id?: string; SessionID?: string; persona?: string; Persona?: string; is_new?: boolean; IsNew?: boolean }
+  | { type: 'session_ready'; session_id?: string; SessionID?: string; persona?: string; Persona?: string; origin_key?: string; OriginKey?: string; is_new?: boolean; IsNew?: boolean }
   | { type: 'greeting'; content?: string }
   | { type: 'stream_start' }
   | { type: 'stream_delta'; content?: string }
   | { type: 'assistant_segment'; content?: string; turn_id?: string; turnID?: string; group_id?: string; groupID?: string; segment_id?: string; segmentID?: string; segment_index?: number; segmentIndex?: number; segment_total?: number; segmentTotal?: number }
   | { type: 'stream_end' }
+  | { type: 'command_result'; content?: string; status?: string; error_kind?: string; errorKind?: string; command_id?: string; commandID?: string; command_name?: string; commandName?: string; session_id?: string; SessionID?: string; persona?: string; Persona?: string; origin_key?: string; OriginKey?: string; payload?: AnyRecord; Payload?: AnyRecord; reload_history?: boolean; reloadHistory?: boolean; reload_memory?: boolean; reloadMemory?: boolean }
+  | { type: 'context_switched'; content?: string; status?: string; session_id?: string; SessionID?: string; persona?: string; Persona?: string; origin_key?: string; OriginKey?: string; payload?: AnyRecord; Payload?: AnyRecord; reload_history?: boolean; reloadHistory?: boolean; reload_memory?: boolean; reloadMemory?: boolean }
   | { type: 'context_stats'; payload?: ContextStats; Payload?: ContextStats }
   | { type: 'tool_call_start'; tool?: ToolActivity; Tool?: ToolActivity }
   | { type: 'tool_call_end'; tool?: ToolActivity; Tool?: ToolActivity }

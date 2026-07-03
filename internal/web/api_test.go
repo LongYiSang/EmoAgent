@@ -15,6 +15,7 @@ import (
 
 	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 	"github.com/longyisang/emoagent/internal/apperrors"
+	commandcore "github.com/longyisang/emoagent/internal/command"
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/configcenter"
 	contextutil "github.com/longyisang/emoagent/internal/context"
@@ -35,6 +36,8 @@ type fakeAdminApp struct {
 	sessions                []storage.SessionSummary
 	sessionDetail           *storage.SessionRecord
 	sessionMessages         []storage.MessageRecord
+	sessionEvents           []storage.ConversationEventRecord
+	sessionClearMarker      *storage.SessionClearMarkerRecord
 	createErr               error
 	activateErr             error
 	sessionErr              error
@@ -51,6 +54,7 @@ type fakeAdminApp struct {
 	lastPersona             *config.Persona
 	lastSessionPersona      string
 	lastSessionLimit        int
+	lastSessionDetailOrigin string
 	lastDeleteSessionID     string
 	lastPhrasesKey          string
 	lastPhrasesValue        map[string][]string
@@ -118,6 +122,12 @@ type fakeAdminApp struct {
 	calibrations            []storage.TokenEstimatorCalibration
 	lastCalibrationFilter   storage.TokenEstimatorCalibrationFilter
 	refreshCalibrationRows  int
+	commandDescriptors      []commandcore.CommandDescriptor
+	commandConfigs          []storage.CommandConfigRecord
+	lastCommandConfig       storage.CommandConfigRecord
+	commandInvocations      []storage.CommandInvocationRecord
+	lastCommandFilter       storage.CommandInvocationFilter
+	commandConflicts        []CommandConflictResponse
 }
 
 func (f *fakeAdminApp) ListLLMProviders() ([]config.LLMProvider, error) {
@@ -305,6 +315,64 @@ func TestHandleGetSessionReturnsContextStatsFromMetadata(t *testing.T) {
 	}
 }
 
+func TestHandleGetSessionPassesOriginAndReturnsConversationEvents(t *testing.T) {
+	app := &fakeAdminApp{
+		sessionDetail: &storage.SessionRecord{ID: "session-1", Persona: "default", Title: "chat"},
+		sessionMessages: []storage.MessageRecord{
+			{ID: "msg-2", SessionID: "session-1", Role: "assistant", Content: "visible", CreatedAt: "2026-07-03T00:00:01Z"},
+		},
+		sessionEvents: []storage.ConversationEventRecord{
+			{
+				ID:             "event-1",
+				OriginKey:      "webui:local:main",
+				SessionID:      "session-1",
+				PersonaKey:     "default",
+				EventType:      "command_result",
+				VisibleContent: "已清理当前窗口可见历史。",
+				PayloadJSON:    `{"command":"clear"}`,
+				CreatedAt:      "2026-07-03T00:00:02Z",
+			},
+		},
+		sessionClearMarker: &storage.SessionClearMarkerRecord{
+			OriginKey:      "webui:local:main",
+			SessionID:      "session-1",
+			AfterMessageID: "msg-1",
+		},
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/session-1?origin_key=webui:local:main", nil)
+	req.SetPathValue("id", "session-1")
+	rec := httptest.NewRecorder()
+
+	handler.HandleGetSession(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200", rec.Code, rec.Body.String())
+	}
+	if app.lastSessionDetailOrigin != "webui:local:main" {
+		t.Fatalf("origin = %q, want webui:local:main", app.lastSessionDetailOrigin)
+	}
+	var body struct {
+		Events []struct {
+			ID             string `json:"id"`
+			EventType      string `json:"event_type"`
+			VisibleContent string `json:"visible_content"`
+		} `json:"events"`
+		ClearMarker *struct {
+			AfterMessageID string `json:"after_message_id"`
+		} `json:"clear_marker"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal response: %v", err)
+	}
+	if len(body.Events) != 1 || body.Events[0].EventType != "command_result" {
+		t.Fatalf("events = %#v, want command_result", body.Events)
+	}
+	if body.ClearMarker == nil || body.ClearMarker.AfterMessageID != "msg-1" {
+		t.Fatalf("clear_marker = %#v, want after msg-1", body.ClearMarker)
+	}
+}
+
 func TestHandleGetSessionMediaServesLinkedImage(t *testing.T) {
 	app := &fakeAdminApp{
 		openMediaBytes: []byte("png-bytes"),
@@ -394,6 +462,85 @@ func TestHandleGetSessionMediaRejectsUnlinkedOrNonImage(t *testing.T) {
 			t.Fatalf("status = %d body=%s, want 404", rec.Code, rec.Body.String())
 		}
 	})
+}
+
+func TestCommandAdminAPIListUpdateInvocationsAndConflicts(t *testing.T) {
+	app := &fakeAdminApp{
+		commandDescriptors: []commandcore.CommandDescriptor{{
+			ID:           "plugin.com.example.weather.weather",
+			Name:         "weather",
+			ProviderKind: commandcore.CommandProviderPlugin,
+			PluginID:     "com.example.weather",
+			Permission:   commandcore.CommandPermissionMember,
+			OutputMode:   commandcore.CommandOutputDirect,
+		}},
+		commandConfigs: []storage.CommandConfigRecord{{
+			CommandID:     "plugin.com.example.weather.weather",
+			ProviderKind:  "plugin",
+			PluginID:      "com.example.weather",
+			OriginalName:  "weather",
+			EffectiveName: "weather",
+			Enabled:       true,
+			Permission:    "member",
+			OutputMode:    "direct",
+		}},
+		commandInvocations: []storage.CommandInvocationRecord{{
+			ID:          "inv-1",
+			CommandID:   "plugin.com.example.weather.weather",
+			CommandName: "weather",
+			Status:      "success",
+			ResultText:  "ok",
+		}},
+		commandConflicts: []CommandConflictResponse{{
+			CommandID: "plugin.com.example.bad.reset",
+			PluginID:  "com.example.bad",
+			RootName:  "reset",
+			Reason:    "command root \"reset\" is reserved",
+		}},
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	listRec := httptest.NewRecorder()
+	handler.HandleListCommands(listRec, httptest.NewRequest(http.MethodGet, "/api/commands", nil))
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d body=%s, want 200", listRec.Code, listRec.Body.String())
+	}
+	if !strings.Contains(listRec.Body.String(), `"command_id":"plugin.com.example.weather.weather"`) {
+		t.Fatalf("list body = %s, want command id", listRec.Body.String())
+	}
+
+	updateRec := httptest.NewRecorder()
+	updateReq := httptest.NewRequest(http.MethodPut, "/api/commands/plugin.com.example.weather.weather/config", bytes.NewBufferString(`{"enabled":false,"root_alias":"forecast","permission":"admin","output_mode":"llm_synthesize"}`))
+	updateReq.SetPathValue("id", "plugin.com.example.weather.weather")
+	handler.HandleUpdateCommandConfig(updateRec, updateReq)
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("update status = %d body=%s, want 200", updateRec.Code, updateRec.Body.String())
+	}
+	if app.lastCommandConfig.CommandID != "plugin.com.example.weather.weather" ||
+		app.lastCommandConfig.Enabled ||
+		app.lastCommandConfig.EffectiveName != "forecast" ||
+		app.lastCommandConfig.Permission != "admin" ||
+		app.lastCommandConfig.OutputMode != "llm_synthesize" {
+		t.Fatalf("last command config = %#v, want disabled target with root alias", app.lastCommandConfig)
+	}
+
+	invRec := httptest.NewRecorder()
+	handler.HandleListCommandInvocations(invRec, httptest.NewRequest(http.MethodGet, "/api/commands/invocations?command_id=plugin.com.example.weather.weather&limit=7", nil))
+	if invRec.Code != http.StatusOK {
+		t.Fatalf("invocations status = %d body=%s, want 200", invRec.Code, invRec.Body.String())
+	}
+	if app.lastCommandFilter.CommandID != "plugin.com.example.weather.weather" || app.lastCommandFilter.Limit != 7 {
+		t.Fatalf("invocation filter = %#v", app.lastCommandFilter)
+	}
+
+	conflictRec := httptest.NewRecorder()
+	handler.HandleListCommandConflicts(conflictRec, httptest.NewRequest(http.MethodGet, "/api/commands/conflicts", nil))
+	if conflictRec.Code != http.StatusOK {
+		t.Fatalf("conflicts status = %d body=%s, want 200", conflictRec.Code, conflictRec.Body.String())
+	}
+	if !strings.Contains(conflictRec.Body.String(), `"root_name":"reset"`) {
+		t.Fatalf("conflicts body = %s, want reset conflict", conflictRec.Body.String())
+	}
 }
 func (f *fakeAdminApp) ListAgentConfigs() ([]config.AgentConfig, error) {
 	return append([]config.AgentConfig(nil), f.agentConfigs...), nil
@@ -513,6 +660,18 @@ func (f *fakeAdminApp) GetSessionDetail(_ context.Context, id string) (*storage.
 	}
 	return f.sessionDetail, append([]storage.MessageRecord(nil), f.sessionMessages...), nil
 }
+func (f *fakeAdminApp) GetSessionDetailForOrigin(_ context.Context, id string, originKey string) (*storage.SessionRecord, []storage.MessageRecord, []storage.ConversationEventRecord, *storage.SessionClearMarkerRecord, error) {
+	f.lastSessionDetailOrigin = originKey
+	if f.sessionErr != nil {
+		return nil, nil, nil, nil, f.sessionErr
+	}
+	var marker *storage.SessionClearMarkerRecord
+	if f.sessionClearMarker != nil {
+		copy := *f.sessionClearMarker
+		marker = &copy
+	}
+	return f.sessionDetail, append([]storage.MessageRecord(nil), f.sessionMessages...), append([]storage.ConversationEventRecord(nil), f.sessionEvents...), marker, nil
+}
 func (f *fakeAdminApp) GetSessionMessageParts(_ context.Context, sessionID string) (map[string][]storage.MessagePartRecord, error) {
 	if f.messageParts == nil {
 		return map[string][]storage.MessagePartRecord{}, nil
@@ -566,6 +725,20 @@ func (f *fakeAdminApp) LatestNaturalMemoryRun(_ context.Context) (*memoryhost.Na
 func (f *fakeAdminApp) ListMemorySegments(_ context.Context, sessionID string) ([]storage.MemorySegment, error) {
 	f.lastSegmentSession = sessionID
 	return append([]storage.MemorySegment(nil), f.memorySegments...), nil
+}
+func (f *fakeAdminApp) ListCommands(_ context.Context) ([]commandcore.CommandDescriptor, []storage.CommandConfigRecord, error) {
+	return append([]commandcore.CommandDescriptor(nil), f.commandDescriptors...), append([]storage.CommandConfigRecord(nil), f.commandConfigs...), nil
+}
+func (f *fakeAdminApp) UpdateCommandConfig(_ context.Context, config storage.CommandConfigRecord) error {
+	f.lastCommandConfig = config
+	return nil
+}
+func (f *fakeAdminApp) ListCommandInvocations(_ context.Context, filter storage.CommandInvocationFilter) ([]storage.CommandInvocationRecord, error) {
+	f.lastCommandFilter = filter
+	return append([]storage.CommandInvocationRecord(nil), f.commandInvocations...), nil
+}
+func (f *fakeAdminApp) ListCommandConflicts(_ context.Context) ([]CommandConflictResponse, error) {
+	return append([]CommandConflictResponse(nil), f.commandConflicts...), nil
 }
 func (f *fakeAdminApp) GetChatSettings() config.ChatConfig {
 	return f.chatSettings

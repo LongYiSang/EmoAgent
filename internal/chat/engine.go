@@ -800,6 +800,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 		}
 		state = &defaultState
 	}
+	historyForLLM := contextutil.FilterHistoryAfterResetBarrier(history, state.ResetBarrier)
 
 	if !hasRequestParams(summaryParams) {
 		summaryParams = summaryParamsFromLegacy(summaryMaxTokens, summaryTemperature)
@@ -820,7 +821,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 		Protocol:     provider,
 		Model:        summaryRequestModel,
 	})
-	nextState, report, updateErr := contextutil.UpdateRunningSummaryWithParamsAndPromptResolver(summaryCtx, summaryClient, summaryRequestModel, summaryParams, persona, history, state, contextCfg, promptResolver, promptScope)
+	nextState, report, updateErr := contextutil.UpdateRunningSummaryWithParamsAndPromptResolver(summaryCtx, summaryClient, summaryRequestModel, summaryParams, persona, historyForLLM, state, contextCfg, promptResolver, promptScope)
 	cancelSummary()
 	if updateErr != nil {
 		if nextState != nil {
@@ -850,7 +851,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 		LatestUserMessage:   firstNonEmptyString(memoryAnchor.userHistoryContent, opts.userContent),
 		LastMode:            state.PromptRoute.LastMode,
 		Sticky:              state.PromptRoute,
-		CurrentConversation: buildPromptRouterConversationDigest(history, state, promptRouterCfg),
+		CurrentConversation: buildPromptRouterConversationDigest(historyForLLM, state, promptRouterCfg),
 		PendingWorkCount:    len(pendingDecisions),
 		InboundKind:         inboundKind,
 	}, promptRouterCfg, summaryClient, summaryRequestModel, summaryParams, e.logger)
@@ -860,9 +861,9 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 
 	var assembled contextutil.AssembledContext
 	if len(pendingDecisions) > 0 {
-		assembled, err = contextutil.BuildEmotionContextWithPendingSummariesAndPromptResolverAndOptions(ctx, persona, history, state, pendingDecisions, contextCfg, env, promptResolver, promptScope, contextOptions)
+		assembled, err = contextutil.BuildEmotionContextWithPendingSummariesAndPromptResolverAndOptions(ctx, persona, historyForLLM, state, pendingDecisions, contextCfg, env, promptResolver, promptScope, contextOptions)
 	} else {
-		assembled, err = contextutil.BuildEmotionContextWithStateAndPromptResolverAndOptions(ctx, persona, history, state, contextCfg, env, promptResolver, promptScope, contextOptions)
+		assembled, err = contextutil.BuildEmotionContextWithStateAndPromptResolverAndOptions(ctx, persona, historyForLLM, state, contextCfg, env, promptResolver, promptScope, contextOptions)
 	}
 	if err != nil {
 		e.logger.Error("failed to assemble llm context", "session", sessionID, "error", err)
@@ -1029,7 +1030,7 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 			ProviderID:    providerID,
 			Round:         round,
 			Request:       req,
-			RawHistory:    history,
+			RawHistory:    historyForLLM,
 			ContextConfig: contextCfg,
 			CompactReason: contextStatsCompactReason,
 			Source:        contextStatsSource,

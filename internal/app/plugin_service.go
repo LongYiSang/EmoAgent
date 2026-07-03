@@ -32,6 +32,7 @@ type PluginService struct {
 	tools        *ToolService
 	agentAffect  *AgentAffectService
 	agentRuntime *AgentRuntimeService
+	commands     *CommandService
 	host         *plugin.PluginHost
 	runner       *plugin.BuiltinRunner
 	dispatcher   *tool.Dispatcher
@@ -102,6 +103,20 @@ func (s *PluginService) Close(ctx context.Context) error {
 	}
 	s.host = nil
 	return nil
+}
+
+func (s *PluginService) InvokeCommand(ctx context.Context, pluginID string, req plugin.CommandInvokeRequest) (plugin.CommandInvokeResult, error) {
+	if s == nil || s.supervisor == nil {
+		return plugin.CommandInvokeResult{}, fmt.Errorf("plugin runtime is not configured")
+	}
+	return s.supervisor.InvokeCommand(ctx, pluginID, req)
+}
+
+func (s *PluginService) AuthorizeProviderGenerate(ctx context.Context, pluginID string) error {
+	if s == nil || s.facadeBroker == nil {
+		return fmt.Errorf("plugin facade is not configured")
+	}
+	return s.facadeBroker.AuthorizeCapability(ctx, pluginID, plugin.CapabilityProviderGenerate)
 }
 
 func (s *PluginService) ensureRuntimeLocked() error {
@@ -511,6 +526,9 @@ func (s *PluginService) registerProcessPluginLocked(ctx context.Context, manifes
 		return err
 	}
 	s.registered[manifest.ID] = manifest.Version
+	if s.commands != nil {
+		s.commands.RegisterPluginCommands(ctx, manifest)
+	}
 	return s.recordRuntimeStatus(ctx, manifest, s.supervisor.Status(manifest.ID))
 }
 
@@ -540,6 +558,9 @@ func (s *PluginService) unregisterProcessPluginLocked(ctx context.Context, plugi
 	}
 	if s.providerGateway != nil {
 		s.providerGateway.RemovePlugin(pluginID)
+	}
+	if s.commands != nil {
+		s.commands.UnregisterPluginCommands(pluginID)
 	}
 	delete(s.registered, pluginID)
 	return stopErr

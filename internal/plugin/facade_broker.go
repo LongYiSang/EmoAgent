@@ -105,6 +105,10 @@ func (b *FacadeBroker) Call(ctx context.Context, pluginID string, method string,
 	return output, nil
 }
 
+func (b *FacadeBroker) AuthorizeCapability(ctx context.Context, pluginID string, capability Capability) error {
+	return b.authorize(ctx, pluginID, capability, true)
+}
+
 func (b *FacadeBroker) authorize(ctx context.Context, pluginID string, capability Capability, requiresCapability bool) error {
 	if b == nil {
 		return fmt.Errorf("facade broker is nil")

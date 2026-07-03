@@ -1389,6 +1389,126 @@ CREATE INDEX IF NOT EXISTS idx_pending_direct_tool_calls_tool
 		Version: 36,
 		SQL:     `SELECT 1;`,
 	},
+	{
+		Version: 37,
+		SQL: `
+CREATE TABLE IF NOT EXISTS conversation_origins (
+    id                         TEXT PRIMARY KEY,
+    origin_key                 TEXT NOT NULL UNIQUE,
+    source_type                TEXT NOT NULL,
+    adapter_instance_id        TEXT NOT NULL DEFAULT '',
+    platform_id                TEXT NOT NULL DEFAULT '',
+    channel_type               TEXT NOT NULL,
+    external_conversation_id   TEXT NOT NULL DEFAULT '',
+    external_actor_id          TEXT NOT NULL DEFAULT '',
+    display_name               TEXT NOT NULL DEFAULT '',
+    metadata_json              TEXT NOT NULL DEFAULT '{}',
+    created_at                 TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at                 TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_conversation_origins_source
+    ON conversation_origins(source_type, adapter_instance_id, channel_type, external_conversation_id);
+
+CREATE TABLE IF NOT EXISTS conversation_bindings (
+    id                         TEXT PRIMARY KEY,
+    origin_key                 TEXT NOT NULL,
+    persona_key                TEXT NOT NULL,
+    current_session_id         TEXT NOT NULL,
+    default_persona_key        TEXT NOT NULL DEFAULT '',
+    unique_scope               TEXT NOT NULL DEFAULT 'origin',
+    variables_json             TEXT NOT NULL DEFAULT '{}',
+    created_at                 TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at                 TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY(origin_key) REFERENCES conversation_origins(origin_key) ON DELETE CASCADE,
+    FOREIGN KEY(current_session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+    UNIQUE(origin_key, persona_key)
+);
+CREATE INDEX IF NOT EXISTS idx_conversation_bindings_current_session
+    ON conversation_bindings(current_session_id);
+
+CREATE TABLE IF NOT EXISTS session_clear_markers (
+    id                         TEXT PRIMARY KEY,
+    origin_key                 TEXT NOT NULL,
+    session_id                 TEXT NOT NULL,
+    persona_key                TEXT NOT NULL,
+    after_message_id           TEXT NOT NULL DEFAULT '',
+    cleared_at                 TEXT NOT NULL DEFAULT (datetime('now')),
+    reason                     TEXT NOT NULL DEFAULT 'command_clear',
+    metadata_json              TEXT NOT NULL DEFAULT '{}',
+    UNIQUE(origin_key, session_id),
+    FOREIGN KEY(origin_key) REFERENCES conversation_origins(origin_key) ON DELETE CASCADE,
+    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_session_clear_markers_session
+    ON session_clear_markers(session_id, origin_key);
+
+CREATE TABLE IF NOT EXISTS conversation_events (
+    id                         TEXT PRIMARY KEY,
+    origin_key                 TEXT NOT NULL,
+    session_id                 TEXT NOT NULL,
+    persona_key                TEXT NOT NULL,
+    event_type                 TEXT NOT NULL,
+    visible_content            TEXT NOT NULL DEFAULT '',
+    payload_json               TEXT NOT NULL DEFAULT '{}',
+    created_at                 TEXT NOT NULL DEFAULT (datetime('now')),
+    visibility_status          TEXT NOT NULL DEFAULT 'visible',
+    FOREIGN KEY(origin_key) REFERENCES conversation_origins(origin_key) ON DELETE CASCADE,
+    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_conversation_events_session_time
+    ON conversation_events(session_id, created_at);
+`,
+	},
+	{
+		Version: 38,
+		SQL: `
+CREATE TABLE IF NOT EXISTS command_configs (
+    command_id                 TEXT PRIMARY KEY,
+    provider_kind              TEXT NOT NULL,
+    plugin_id                  TEXT NOT NULL DEFAULT '',
+    original_name              TEXT NOT NULL,
+    effective_name             TEXT NOT NULL,
+    aliases_json               TEXT NOT NULL DEFAULT '[]',
+    enabled                    INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+    permission                 TEXT NOT NULL DEFAULT 'member',
+    output_mode                TEXT NOT NULL DEFAULT 'direct',
+    config_json                TEXT NOT NULL DEFAULT '{}',
+    updated_at                 TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_command_configs_effective
+    ON command_configs(effective_name, enabled);
+
+CREATE TABLE IF NOT EXISTS command_invocations (
+    id                         TEXT PRIMARY KEY,
+    command_id                 TEXT NOT NULL,
+    command_name               TEXT NOT NULL,
+    provider_kind              TEXT NOT NULL,
+    plugin_id                  TEXT NOT NULL DEFAULT '',
+    origin_key                 TEXT NOT NULL,
+    source_type                TEXT NOT NULL,
+    session_id                 TEXT NOT NULL,
+    persona_key                TEXT NOT NULL,
+    actor_id                   TEXT NOT NULL DEFAULT '',
+    actor_role                 TEXT NOT NULL DEFAULT 'member',
+    input_hash                 TEXT NOT NULL DEFAULT '',
+    argv_json                  TEXT NOT NULL DEFAULT '[]',
+    flags_json                 TEXT NOT NULL DEFAULT '{}',
+    output_mode                TEXT NOT NULL DEFAULT 'direct',
+    status                     TEXT NOT NULL,
+    result_text                TEXT NOT NULL DEFAULT '',
+    payload_json               TEXT NOT NULL DEFAULT '{}',
+    error_kind                 TEXT NOT NULL DEFAULT '',
+    duration_ms                INTEGER NOT NULL DEFAULT 0,
+    created_at                 TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_command_invocations_session_time
+    ON command_invocations(session_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_command_invocations_origin_time
+    ON command_invocations(origin_key, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_command_invocations_command_time
+    ON command_invocations(command_id, created_at DESC);
+`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.

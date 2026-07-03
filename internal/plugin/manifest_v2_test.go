@@ -150,6 +150,146 @@ hooks: []
 	}
 }
 
+func TestDecodeManifestV2YAMLValidCommandDeclaration(t *testing.T) {
+	data := []byte(`
+schema_version: emoagent.plugin.v0.2
+id: com.example.weather
+name: Weather Plugin
+version: 0.1.0
+emoagent_version: ">=0.2.0"
+runtime:
+  kind: managed_python_process
+  entry: main.py
+access:
+  tier: runtime_safe
+  capabilities:
+    - command.register
+commands:
+  - name: weather
+    root_name: weather
+    aliases:
+      - forecast
+    summary: Weather lookup
+    usage: /weather Shanghai
+    handler: weather.lookup
+    output_mode: direct
+    timeout_ms: 250
+hooks: []
+`)
+
+	manifest, err := DecodeManifestV2YAML(data, ManifestValidationOptions{MaxTimeoutMS: 1000})
+	if err != nil {
+		t.Fatalf("DecodeManifestV2YAML: %v", err)
+	}
+	if len(manifest.Commands) != 1 {
+		t.Fatalf("commands len = %d, want 1", len(manifest.Commands))
+	}
+	if manifest.Commands[0].OutputMode != "direct" || manifest.Commands[0].Handler != "weather.lookup" {
+		t.Fatalf("command = %#v", manifest.Commands[0])
+	}
+	if manifest.Commands[0].TimeoutMS != 250 {
+		t.Fatalf("timeout_ms = %d, want 250", manifest.Commands[0].TimeoutMS)
+	}
+}
+
+func TestDecodeManifestV2YAMLRejectsCommandWithoutCapabilityAndReservedRoot(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{
+			name: "missing command.register",
+			yaml: `
+access:
+  tier: runtime_safe
+  capabilities: []
+commands:
+  - name: weather
+    handler: weather.lookup
+`,
+			want: "command.register",
+		},
+		{
+			name: "reserved root",
+			yaml: `
+access:
+  tier: runtime_safe
+  capabilities:
+    - command.register
+commands:
+  - name: reset_helper
+    root_name: reset
+    handler: reset.lookup
+`,
+			want: "reserved",
+		},
+		{
+			name: "invalid output mode",
+			yaml: `
+access:
+  tier: runtime_safe
+  capabilities:
+    - command.register
+commands:
+  - name: weather
+    handler: weather.lookup
+    output_mode: assistant_message
+`,
+			want: "output_mode",
+		},
+		{
+			name: "llm synth missing provider generate",
+			yaml: `
+access:
+  tier: runtime_safe
+  capabilities:
+    - command.register
+commands:
+  - name: weather
+    handler: weather.lookup
+    output_mode: llm_synthesize
+`,
+			want: "provider.generate",
+		},
+		{
+			name: "timeout too large",
+			yaml: `
+access:
+  tier: runtime_safe
+  capabilities:
+    - command.register
+commands:
+  - name: weather
+    handler: weather.lookup
+    timeout_ms: 2000
+`,
+			want: "timeout_ms",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := []byte(`
+schema_version: emoagent.plugin.v0.2
+id: com.example.weather
+name: Weather Plugin
+version: 0.1.0
+emoagent_version: ">=0.2.0"
+runtime:
+  kind: managed_python_process
+  entry: main.py
+hooks: []
+` + tt.yaml)
+
+			_, err := DecodeManifestV2YAML(data, ManifestValidationOptions{MaxTimeoutMS: 1000})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("DecodeManifestV2YAML error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestDecodeManifestV2YAMLRejectsInvalidSettingsSchema(t *testing.T) {
 	tests := []struct {
 		name string

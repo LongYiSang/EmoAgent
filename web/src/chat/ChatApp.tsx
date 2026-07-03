@@ -30,6 +30,8 @@ export function ChatApp() {
   const [pipelineSnapshot, setPipelineSnapshot] = useState<unknown>(null);
   const contextRef = useRef({ personaKey: '', sessionID: '' });
   const closeSocketRef = useRef<() => Promise<void>>(async () => undefined);
+  const sendCommandRef = useRef<(command: string) => Promise<void>>(async () => undefined);
+  const initialConnectStartedRef = useRef(false);
   const previewURLsRef = useRef(new Set<string>());
 
   useEffect(() => {
@@ -37,7 +39,7 @@ export function ChatApp() {
     syncURL(state.currentPersonaKey, state.currentSessionId);
   }, [state.currentPersonaKey, state.currentSessionId]);
 
-  const session = useChatSession({ state, dispatch, contextRef, closeSocketRef, setSidebarOpen });
+  const session = useChatSession({ state, dispatch, contextRef, closeSocketRef, sendCommandRef, setSidebarOpen });
   const { ensureConnected, sendWS, closeSocket } = useChatWebSocket({
     dispatch,
     contextRef,
@@ -50,6 +52,31 @@ export function ChatApp() {
   useEffect(() => {
     closeSocketRef.current = closeSocket;
   }, [closeSocket]);
+
+  const sendCommandText = useCallback(async (command: string) => {
+    dispatch({ type: 'SET_SENDING', sending: true });
+    try {
+      await ensureConnected();
+      sendWS({ type: 'message', content: command } satisfies WSOutgoing);
+    } catch (error) {
+      dispatch({ type: 'SET_SENDING', sending: false });
+      dispatch({ type: 'ADD_MESSAGE', role: 'error', content: error instanceof Error ? error.message : '命令发送失败' });
+      dispatch({ type: 'SET_STATUS', status: error instanceof Error ? error.message : '命令发送失败' });
+      throw error;
+    }
+  }, [ensureConnected, sendWS]);
+
+  useEffect(() => {
+    sendCommandRef.current = sendCommandText;
+  }, [sendCommandText]);
+
+  useEffect(() => {
+    if (initialConnectStartedRef.current || !state.currentPersonaKey) return;
+    initialConnectStartedRef.current = true;
+    ensureConnected().catch(error => {
+      dispatch({ type: 'SET_STATUS', status: error instanceof Error ? error.message : '连接失败' });
+    });
+  }, [dispatch, ensureConnected, state.currentPersonaKey]);
 
   useEffect(() => {
     const hasAttachmentPreview = attachments.some(attachment => attachment.preview_url);
@@ -96,7 +123,14 @@ export function ChatApp() {
 
   const submitMessage = useCallback(async () => {
     const content = composer.trim();
-    if ((!content && attachments.length === 0) || state.sending || uploading) return;
+    const stopCommand = isStopCommandInput(content, attachments.length);
+    if ((!content && attachments.length === 0) || uploading || (state.sending && !stopCommand)) return;
+    if (isCommandInput(content, attachments.length)) {
+      setComposer('');
+      setAttachments([]);
+      await sendCommandText(content);
+      return;
+    }
     const id = crypto.randomUUID();
     let sessionID = contextRef.current.sessionID || state.currentSessionId;
     if (attachments.length > 0 && !sessionID) {
@@ -125,7 +159,7 @@ export function ChatApp() {
     setComposer('');
     setAttachments([]);
     await sendMessage(content || visibleContent, id, parts);
-  }, [attachments, composer, ensureConnected, sendMessage, state.currentSessionId, state.sending, uploading]);
+  }, [attachments, composer, ensureConnected, sendCommandText, sendMessage, state.currentSessionId, state.sending, uploading]);
 
   const handleFiles = useCallback(async (files: FileList | File[]) => {
     if (state.sending || uploading) return;
@@ -292,6 +326,14 @@ function outgoingDisplayParts(content: string, attachments: DraftAttachment[], s
 
 function sessionMediaDisplayURL(sessionID: string, mediaAssetID: string): string {
   return `/api/sessions/${encodeURIComponent(sessionID)}/media/${encodeURIComponent(mediaAssetID)}`;
+}
+
+function isCommandInput(content: string, attachmentCount: number): boolean {
+  return attachmentCount === 0 && content.trim().startsWith('/');
+}
+
+function isStopCommandInput(content: string, attachmentCount: number): boolean {
+  return attachmentCount === 0 && content.trim().toLowerCase() === '/stop';
 }
 
 function supportedImageFiles(files: File[]): File[] {

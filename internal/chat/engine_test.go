@@ -1631,6 +1631,91 @@ func TestEngineSendMessageUsesAssemblerInsteadOfRecentMessagesOnly(t *testing.T)
 	}
 }
 
+func TestEngineSendMessageFiltersHistoryAfterResetBarrier(t *testing.T) {
+	fakeLLM := &fakeLLMClient{
+		response: endTurnResponse("ok"),
+	}
+	engine, db, _ := newTestEngine(t, fakeLLM)
+	engine.contextCfg.KeepRecentUserTurns = 1
+	ctx := context.Background()
+
+	sessionID, err := engine.StartSession(ctx, "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	for _, msg := range []struct {
+		id      string
+		role    string
+		content string
+	}{
+		{id: "pre-user", role: "user", content: "pre reset user should be hidden"},
+		{id: "pre-assistant", role: "assistant", content: "pre reset assistant should be hidden"},
+	} {
+		if err := db.AddMessage(ctx, msg.id, sessionID, msg.role, msg.content); err != nil {
+			t.Fatalf("AddMessage(%s): %v", msg.id, err)
+		}
+	}
+	if err := contextutil.UpdateSessionContextState(ctx, db, sessionID, contextutil.ContextState{
+		ContextVersion:      contextutil.CurrentContextVersion,
+		Mode:                contextutil.ModeEmotion,
+		KeepRecentUserTurns: engine.contextCfg.KeepRecentUserTurns,
+		ResetBarrier: &contextutil.ContextResetBarrier{
+			Epoch:          1,
+			AfterMessageID: "pre-assistant",
+			ResetAt:        "2026-07-03T00:00:00Z",
+			Reason:         "command_reset",
+		},
+	}); err != nil {
+		t.Fatalf("UpdateSessionContextState: %v", err)
+	}
+	for _, msg := range []struct {
+		id      string
+		role    string
+		content string
+	}{
+		{id: "post-user", role: "user", content: "post reset user should stay"},
+		{id: "post-assistant", role: "assistant", content: "post reset assistant should stay"},
+	} {
+		if err := db.AddMessage(ctx, msg.id, sessionID, msg.role, msg.content); err != nil {
+			t.Fatalf("AddMessage(%s): %v", msg.id, err)
+		}
+	}
+
+	persona := &config.Persona{Name: "default", SystemPrompt: "You are warm."}
+	if _, err := engine.SendMessage(ctx, sessionID, persona, "current user after reset", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	if len(fakeLLM.chatRequests) == 0 {
+		t.Fatal("summary Chat was not called")
+	}
+	var summaryText strings.Builder
+	for _, msg := range fakeLLM.chatRequests[0].Messages {
+		summaryText.WriteString(msg.Content)
+		summaryText.WriteString("\n")
+	}
+	if strings.Contains(summaryText.String(), "pre reset") {
+		t.Fatalf("summary request contains reset-before history:\n%s", summaryText.String())
+	}
+	if !strings.Contains(summaryText.String(), "post reset user should stay") {
+		t.Fatalf("summary request missing post-reset history:\n%s", summaryText.String())
+	}
+
+	var llmText strings.Builder
+	llmText.WriteString(fakeLLM.lastRequest.System)
+	llmText.WriteString("\n")
+	for _, msg := range fakeLLM.lastRequest.Messages {
+		llmText.WriteString(msg.Content)
+		llmText.WriteString("\n")
+	}
+	if strings.Contains(llmText.String(), "pre reset") {
+		t.Fatalf("LLM request contains reset-before history:\n%s", llmText.String())
+	}
+	if !strings.Contains(llmText.String(), "current user after reset") {
+		t.Fatalf("LLM request missing current user:\n%s", llmText.String())
+	}
+}
+
 func TestEngineSendMessageEmitsAndPersistsContextStats(t *testing.T) {
 	fakeLLM := &fakeLLMClient{
 		response: &llm.ChatResponse{

@@ -16,6 +16,7 @@ import (
 	"github.com/coder/websocket/wsjson"
 	"github.com/longyisang/emoagent/internal/config"
 	contextutil "github.com/longyisang/emoagent/internal/context"
+	"github.com/longyisang/emoagent/internal/conversation"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/replydelivery"
@@ -48,6 +49,65 @@ type fakeConversationEngine struct {
 	approvalReply  string
 	approvalDeltas []string
 	sendDone       chan struct{}
+}
+
+type fakeCommandHandler struct {
+	requests []CommandRequest
+	response CommandResponse
+	handled  bool
+}
+
+func (f *fakeCommandHandler) TryHandle(_ context.Context, req CommandRequest) (CommandResponse, bool, error) {
+	f.requests = append(f.requests, req)
+	return f.response, f.handled, nil
+}
+
+type stopCommandHandler struct {
+	runs    *conversation.RunRegistry
+	stopped chan int
+}
+
+func (h *stopCommandHandler) TryHandle(_ context.Context, req CommandRequest) (CommandResponse, bool, error) {
+	if strings.TrimSpace(req.Content) != "/stop" {
+		return CommandResponse{}, false, nil
+	}
+	count := h.runs.Stop(conversation.StopSelector{OriginKey: req.Origin.OriginKey, SessionID: req.SessionID})
+	if h.stopped != nil {
+		h.stopped <- count
+	}
+	return CommandResponse{Messages: []WSMessage{{
+		Type:        "command_result",
+		Status:      "success",
+		Content:     "stopped",
+		CommandName: "stop",
+		CommandID:   "builtin.stop",
+	}}}, true, nil
+}
+
+type fakeBindingService struct {
+	ensureOrigin  conversation.Origin
+	ensurePersona string
+	bindOrigin    conversation.Origin
+	bindPersona   string
+	bindSession   string
+	binding       conversation.Binding
+}
+
+func (f *fakeBindingService) EnsureCurrent(_ context.Context, origin conversation.Origin, personaKey string) (conversation.Binding, error) {
+	f.ensureOrigin = origin
+	f.ensurePersona = personaKey
+	if f.binding.SessionID == "" {
+		f.binding = conversation.Binding{OriginKey: origin.OriginKey, PersonaKey: personaKey, SessionID: "bound-session"}
+	}
+	return f.binding, nil
+}
+
+func (f *fakeBindingService) BindSession(_ context.Context, origin conversation.Origin, personaKey string, sessionID string, isNew bool) (conversation.Binding, error) {
+	f.bindOrigin = origin
+	f.bindPersona = personaKey
+	f.bindSession = sessionID
+	f.binding = conversation.Binding{OriginKey: origin.OriginKey, PersonaKey: personaKey, SessionID: sessionID, IsNew: isNew}
+	return f.binding, nil
 }
 
 func (f *fakeConversationEngine) StartSession(_ context.Context, personaName string) (string, error) {
@@ -571,6 +631,142 @@ func TestHandlerRepliesToPing(t *testing.T) {
 	}
 	if msg.Type != "pong" {
 		t.Fatalf("Type = %q, want pong", msg.Type)
+	}
+}
+
+func TestHandlerRoutesCommandBeforeEngine(t *testing.T) {
+	commandHandler := &fakeCommandHandler{
+		handled: true,
+		response: CommandResponse{
+			Messages: []WSMessage{{
+				Type:        "command_result",
+				CommandID:   "builtin.sid",
+				CommandName: "sid",
+				Status:      "success",
+				Content:     "origin=webui:local:main session=session-test persona=default",
+			}},
+		},
+	}
+	handler, engine := newTestHandlerWithOptions(WithCommandHandler(commandHandler))
+	conn := dialTestWS(t, handler, "/ws?skip_greeting=1")
+	defer conn.Close(websocket.StatusNormalClosure, "bye")
+
+	var msg WSMessage
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(session_ready): %v", err)
+	}
+	if msg.OriginKey != conversation.DefaultOriginKey {
+		t.Fatalf("OriginKey = %q, want %q", msg.OriginKey, conversation.DefaultOriginKey)
+	}
+
+	if err := wsjson.Write(context.Background(), conn, WSMessage{Type: "message", Content: "/sid"}); err != nil {
+		t.Fatalf("Write(command): %v", err)
+	}
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(command_result): %v", err)
+	}
+	if msg.Type != "command_result" || msg.CommandID != "builtin.sid" || msg.CommandName != "sid" {
+		t.Fatalf("message = %#v, want sid command_result", msg)
+	}
+	if engine.sendCount != 0 {
+		t.Fatalf("sendCount = %d, want command to bypass engine", engine.sendCount)
+	}
+	if len(commandHandler.requests) != 1 || commandHandler.requests[0].SessionID != "session-test" || commandHandler.requests[0].Origin.OriginKey != conversation.DefaultOriginKey {
+		t.Fatalf("command requests = %#v, want current binding context", commandHandler.requests)
+	}
+}
+
+func TestHandlerProcessesStopWhileReplyIsRunning(t *testing.T) {
+	runs := conversation.NewRunRegistry()
+	stopped := make(chan int, 1)
+	handler, engine := newTestHandlerWithOptions(
+		WithRunRegistry(runs),
+		WithCommandHandler(&stopCommandHandler{runs: runs, stopped: stopped}),
+	)
+	started := make(chan struct{})
+	engine.sendHook = func(ctx context.Context) {
+		close(started)
+		<-ctx.Done()
+	}
+
+	conn := dialTestWS(t, handler, "/ws?origin_key=webui:local:main&skip_greeting=1")
+	defer conn.Close(websocket.StatusNormalClosure, "bye")
+
+	var msg WSMessage
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(session_ready): %v", err)
+	}
+	if err := wsjson.Write(context.Background(), conn, WSMessage{Type: "message", Content: "long reply"}); err != nil {
+		t.Fatalf("Write(message): %v", err)
+	}
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(stream_start): %v", err)
+	}
+	if msg.Type != "stream_start" {
+		t.Fatalf("message = %#v, want stream_start", msg)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("reply did not start")
+	}
+	if err := wsjson.Write(context.Background(), conn, WSMessage{Type: "message", Content: "/stop"}); err != nil {
+		t.Fatalf("Write(stop): %v", err)
+	}
+	select {
+	case count := <-stopped:
+		if count != 1 {
+			t.Fatalf("stopped count = %d, want 1", count)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("/stop was not processed while reply was running")
+	}
+	for i := 0; i < 3; i++ {
+		if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+			t.Fatalf("Read(after stop): %v", err)
+		}
+		if msg.Type == "command_result" && msg.CommandName == "stop" {
+			return
+		}
+	}
+	t.Fatalf("did not receive stop command_result, last=%#v", msg)
+}
+
+func TestHandlerUsesConversationBindingWhenConfigured(t *testing.T) {
+	bindings := &fakeBindingService{
+		binding: conversation.Binding{OriginKey: "webui:local:main", PersonaKey: "default", SessionID: "bound-session"},
+	}
+	handler, engine := newTestHandlerWithOptions(WithConversationBindings(bindings))
+	conn := dialTestWS(t, handler, "/ws?origin_key=webui:local:main&skip_greeting=1")
+	defer conn.Close(websocket.StatusNormalClosure, "bye")
+
+	var msg WSMessage
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(session_ready): %v", err)
+	}
+	if msg.SessionID != "bound-session" || msg.OriginKey != "webui:local:main" || msg.IsNew {
+		t.Fatalf("session_ready = %#v, want bound existing session", msg)
+	}
+	if bindings.ensurePersona != "default" || bindings.ensureOrigin.OriginKey != "webui:local:main" {
+		t.Fatalf("binding ensure = %#v persona=%q", bindings.ensureOrigin, bindings.ensurePersona)
+	}
+	if engine.startPersona != "" || engine.resumeID != "" {
+		t.Fatalf("engine bootstrap start/resume = %q/%q, want binding-only", engine.startPersona, engine.resumeID)
+	}
+
+	if err := wsjson.Write(context.Background(), conn, WSMessage{Type: "message", Content: "hello"}); err != nil {
+		t.Fatalf("Write(message): %v", err)
+	}
+	for {
+		if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+			t.Fatalf("Read(stream): %v", err)
+		}
+		if msg.Type == "stream_end" {
+			break
+		}
+	}
+	if engine.sendSession != "bound-session" {
+		t.Fatalf("sendSession = %q, want bound-session", engine.sendSession)
 	}
 }
 

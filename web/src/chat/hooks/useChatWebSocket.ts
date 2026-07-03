@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef } from 'react';
 import type { Dispatch, MutableRefObject } from 'react';
+import { stringField } from '../../shared/lib/data';
 import type { ChatAction } from '../state/chatTypes';
 import type { ReasoningActivity, WSIncoming, WSOutgoing } from '../protocol/wsTypes';
+
+const DEFAULT_ORIGIN_KEY = 'webui:local:main';
 
 export type ChatWebSocketControls = {
   ensureConnected: () => Promise<void>;
@@ -121,6 +124,8 @@ export function useChatWebSocket({ dispatch, contextRef, refreshSessions, refres
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = new URL(proto + '//' + location.host + '/ws');
     const { personaKey, sessionID } = contextRef.current;
+    url.searchParams.set('source', 'webui');
+    url.searchParams.set('origin_key', DEFAULT_ORIGIN_KEY);
     if (personaKey) url.searchParams.set('persona', personaKey);
     if (sessionID) url.searchParams.set('session_id', sessionID);
     if (skipGreetingRef.current) url.searchParams.set('skip_greeting', '1');
@@ -164,6 +169,52 @@ export function useChatWebSocket({ dispatch, contextRef, refreshSessions, refres
             connectAttemptRef.current = null;
           }
           await Promise.all([refreshSessions(personaKey), refreshApprovals(sessionID), refreshMemoryStatus(sessionID)]);
+          break;
+        }
+        case 'context_switched': {
+          const sessionID = payload.session_id || payload.SessionID || contextRef.current.sessionID;
+          const personaKey = payload.persona || payload.Persona || contextRef.current.personaKey;
+          const payloadData = payload.payload || payload.Payload || {};
+          const reloadHistory = Boolean(payload.reload_history ?? payload.reloadHistory);
+          const reloadMemory = Boolean(payload.reload_memory ?? payload.reloadMemory);
+          dispatch({ type: 'SET_CONTEXT', sessionID, personaKey });
+          contextRef.current = { sessionID, personaKey };
+          if (reloadHistory) {
+            dispatch({ type: 'CLEAR_TIMELINE' });
+          } else {
+            dispatch({ type: 'ADD_CONTEXT_SWITCHED', reason: stringField(payloadData, 'reason'), content: payload.content || '', payload: payloadData });
+          }
+          await Promise.all([
+            refreshSessions(personaKey),
+            refreshApprovals(sessionID),
+            reloadMemory ? refreshMemoryStatus(sessionID) : Promise.resolve(),
+          ]);
+          break;
+        }
+        case 'command_result': {
+          const sessionID = payload.session_id || payload.SessionID || contextRef.current.sessionID;
+          const personaKey = payload.persona || payload.Persona || contextRef.current.personaKey;
+          const payloadData = payload.payload || payload.Payload || {};
+          const reloadHistory = Boolean(payload.reload_history ?? payload.reloadHistory);
+          const reloadMemory = Boolean(payload.reload_memory ?? payload.reloadMemory);
+          dispatch({
+            type: 'ADD_COMMAND_RESULT',
+            commandID: payload.command_id || payload.commandID || stringField(payloadData, 'command_id'),
+            commandName: payload.command_name || payload.commandName || stringField(payloadData, 'command_name'),
+            status: payload.status || stringField(payloadData, 'status'),
+            content: payload.content || '',
+            payload: payloadData,
+          });
+          dispatch({ type: 'SET_CONTEXT', sessionID, personaKey });
+          contextRef.current = { sessionID, personaKey };
+          if (reloadHistory) {
+            await reloadSessionHistory(sessionID);
+          }
+          await Promise.all([
+            refreshSessions(personaKey),
+            refreshApprovals(sessionID),
+            reloadMemory ? refreshMemoryStatus(sessionID) : Promise.resolve(),
+          ]);
           break;
         }
         case 'greeting':
@@ -347,4 +398,8 @@ function mergeReasoningDelta(current: ReasoningActivity, incoming: ReasoningActi
     ...incoming,
     content: (current.content || '') + (incoming.content || ''),
   };
+}
+
+export function defaultOriginKey() {
+  return DEFAULT_ORIGIN_KEY;
 }

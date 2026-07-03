@@ -1822,9 +1822,11 @@ func TestPluginServiceHostRPCBindsPluginIdentity(t *testing.T) {
 func TestPluginServiceEnableDifferentVersionReplacesProcessRegistrations(t *testing.T) {
 	dir := t.TempDir()
 	service := newProcessPluginAdminService(t, dir)
+	service.commands = NewCommandService()
+	service.commands.configure(service.infra, nil, nil, nil)
 	ctx := context.Background()
-	v1Dir := writeAdminProcessPluginVersion(t, dir, "0.1.0", "echo_v1", "v1", "fail_closed")
-	v2Dir := writeAdminProcessPluginVersion(t, dir, "0.2.0", "echo_v2", "v2", "fail_closed")
+	v1Dir := writeAdminProcessPluginVersionWithCommand(t, dir, "0.1.0", "echo_v1", "v1", "fail_closed", "weather")
+	v2Dir := writeAdminProcessPluginVersionWithCommand(t, dir, "0.2.0", "echo_v2", "v2", "fail_closed", "forecast")
 
 	v1, err := service.InstallLocal(ctx, plugin.AdminPluginInstallRequest{Path: v1Dir})
 	if err != nil {
@@ -1836,9 +1838,12 @@ func TestPluginServiceEnableDifferentVersionReplacesProcessRegistrations(t *test
 	}
 	if _, err := service.EnablePlugin(ctx, v1.PluginID, plugin.AdminPluginEnableRequest{
 		Version:       v1.Version,
-		UserGrantJSON: `{"tier":"runtime_safe","capabilities":["turn.read","tool.register"]}`,
+		UserGrantJSON: `{"tier":"runtime_safe","capabilities":["turn.read","tool.register","command.register"]}`,
 	}); err != nil {
 		t.Fatalf("EnablePlugin v1: %v", err)
+	}
+	if _, ok := service.commands.Registry().Lookup("weather"); !ok {
+		t.Fatalf("v1 command not registered")
 	}
 	if !processWorkToolRegistered(service, "plugin_com_example_admin_echo_v1") {
 		t.Fatalf("v1 tool not registered")
@@ -1846,11 +1851,17 @@ func TestPluginServiceEnableDifferentVersionReplacesProcessRegistrations(t *test
 
 	if _, err := service.EnablePlugin(ctx, v2.PluginID, plugin.AdminPluginEnableRequest{
 		Version:       v2.Version,
-		UserGrantJSON: `{"tier":"runtime_safe","capabilities":["turn.read","tool.register"]}`,
+		UserGrantJSON: `{"tier":"runtime_safe","capabilities":["turn.read","tool.register","command.register"]}`,
 	}); err != nil {
 		t.Fatalf("EnablePlugin v2: %v", err)
 	}
 
+	if _, ok := service.commands.Registry().Lookup("weather"); ok {
+		t.Fatalf("v1 command still registered after v2 enable")
+	}
+	if _, ok := service.commands.Registry().Lookup("forecast"); !ok {
+		t.Fatalf("v2 command not registered after v2 enable")
+	}
 	if processWorkToolRegistered(service, "plugin_com_example_admin_echo_v1") {
 		t.Fatalf("v1 tool still registered after v2 enable")
 	}
@@ -1872,8 +1883,10 @@ func TestPluginServiceEnableDifferentVersionReplacesProcessRegistrations(t *test
 func TestPluginServiceDisableUnregistersProcessHooksAndTools(t *testing.T) {
 	dir := t.TempDir()
 	service := newProcessPluginAdminService(t, dir)
+	service.commands = NewCommandService()
+	service.commands.configure(service.infra, nil, nil, nil)
 	ctx := context.Background()
-	sourceDir := writeAdminProcessPluginVersion(t, dir, "0.1.0", "echo_v1", "v1", "fail_closed")
+	sourceDir := writeAdminProcessPluginVersionWithCommand(t, dir, "0.1.0", "echo_v1", "v1", "fail_closed", "weather")
 
 	installed, err := service.InstallLocal(ctx, plugin.AdminPluginInstallRequest{Path: sourceDir})
 	if err != nil {
@@ -1881,9 +1894,12 @@ func TestPluginServiceDisableUnregistersProcessHooksAndTools(t *testing.T) {
 	}
 	if _, err := service.EnablePlugin(ctx, installed.PluginID, plugin.AdminPluginEnableRequest{
 		Version:       installed.Version,
-		UserGrantJSON: `{"tier":"runtime_safe","capabilities":["turn.read","tool.register"]}`,
+		UserGrantJSON: `{"tier":"runtime_safe","capabilities":["turn.read","tool.register","command.register"]}`,
 	}); err != nil {
 		t.Fatalf("EnablePlugin: %v", err)
+	}
+	if _, ok := service.commands.Registry().Lookup("weather"); !ok {
+		t.Fatalf("process command not registered before disable")
 	}
 	if !processWorkToolRegistered(service, "plugin_com_example_admin_echo_v1") {
 		t.Fatalf("process tool not registered before disable")
@@ -1895,12 +1911,52 @@ func TestPluginServiceDisableUnregistersProcessHooksAndTools(t *testing.T) {
 	if processWorkToolRegistered(service, "plugin_com_example_admin_echo_v1") {
 		t.Fatalf("process tool still registered after disable")
 	}
+	if _, ok := service.commands.Registry().Lookup("weather"); ok {
+		t.Fatalf("process command still registered after disable")
+	}
+	config, err := service.infra.DB.GetCommandConfig(ctx, "plugin.com.example.admin.weather")
+	if err != nil {
+		t.Fatalf("GetCommandConfig: %v", err)
+	}
+	if config == nil || config.CommandID != "plugin.com.example.admin.weather" {
+		t.Fatalf("command config after disable = %#v, want retained", config)
+	}
 	result, err := service.host.HookBus().Dispatch(ctx, plugin.HookAfterTurnEnd, plugin.HookContext{})
 	if err != nil {
 		t.Fatalf("Dispatch after disable: %v", err)
 	}
 	if len(result.Annotations) != 0 {
 		t.Fatalf("hook annotations after disable = %#v, want none", result.Annotations)
+	}
+}
+
+func TestPluginServiceDeleteUnregistersProcessCommands(t *testing.T) {
+	dir := t.TempDir()
+	service := newProcessPluginAdminService(t, dir)
+	service.commands = NewCommandService()
+	service.commands.configure(service.infra, nil, nil, nil)
+	ctx := context.Background()
+	sourceDir := writeAdminProcessPluginVersionWithCommand(t, dir, "0.1.0", "echo_v1", "v1", "fail_closed", "weather")
+
+	installed, err := service.InstallLocal(ctx, plugin.AdminPluginInstallRequest{Path: sourceDir})
+	if err != nil {
+		t.Fatalf("InstallLocal: %v", err)
+	}
+	if _, err := service.EnablePlugin(ctx, installed.PluginID, plugin.AdminPluginEnableRequest{
+		Version:       installed.Version,
+		UserGrantJSON: `{"tier":"runtime_safe","capabilities":["turn.read","tool.register","command.register"]}`,
+	}); err != nil {
+		t.Fatalf("EnablePlugin: %v", err)
+	}
+	if _, ok := service.commands.Registry().Lookup("weather"); !ok {
+		t.Fatalf("process command not registered before delete")
+	}
+
+	if err := service.DeletePlugin(ctx, installed.PluginID); err != nil {
+		t.Fatalf("DeletePlugin: %v", err)
+	}
+	if _, ok := service.commands.Registry().Lookup("weather"); ok {
+		t.Fatalf("process command still registered after delete")
 	}
 }
 
@@ -2143,6 +2199,10 @@ func TestPluginServiceFacadeHostPolicyNarrowsProviderCapability(t *testing.T) {
 		t.Fatalf("SetPluginEnabled: %v", err)
 	}
 
+	authErr := service.AuthorizeProviderGenerate(ctx, manifest.ID)
+	if authErr == nil || !strings.Contains(authErr.Error(), "host policy lacks provider.generate") {
+		t.Fatalf("AuthorizeProviderGenerate error = %v, want host policy denial", authErr)
+	}
 	_, err = service.hostRPCHandler(ctx, manifest.ID, "facade.call", json.RawMessage(`{"method":"provider.generate","params":{"messages":[]}}`))
 	if err == nil || !strings.Contains(err.Error(), "host policy lacks provider.generate") {
 		t.Fatalf("hostRPCHandler error = %v, want host policy denial", err)
@@ -2764,6 +2824,10 @@ func findPythonForAppTest(t *testing.T) string {
 }
 
 func writeAdminProcessPluginVersion(t *testing.T, root, version, toolName, annotation, failurePolicy string) string {
+	return writeAdminProcessPluginVersionWithCommand(t, root, version, toolName, annotation, failurePolicy, "")
+}
+
+func writeAdminProcessPluginVersionWithCommand(t *testing.T, root, version, toolName, annotation, failurePolicy, commandName string) string {
 	t.Helper()
 	dir := filepath.Join(root, "process-plugin-"+strings.ReplaceAll(version, ".", "-"))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -2782,6 +2846,17 @@ access:
   capabilities:
     - turn.read
     - tool.register
+`
+	if strings.TrimSpace(commandName) != "" {
+		manifest += `    - command.register
+commands:
+  - name: ` + commandName + `
+    root_name: ` + commandName + `
+    handler: command.` + commandName + `
+    output_mode: direct
+`
+	}
+	manifest += `
 hooks:
   - name: after_turn_end
     mode: observe

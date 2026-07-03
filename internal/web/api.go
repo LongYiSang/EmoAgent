@@ -14,6 +14,7 @@ import (
 
 	"github.com/longyisang/emoagent/internal/agentaffect"
 	"github.com/longyisang/emoagent/internal/apperrors"
+	commandcore "github.com/longyisang/emoagent/internal/command"
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/configcenter"
 	contextutil "github.com/longyisang/emoagent/internal/context"
@@ -57,6 +58,7 @@ type AdminApp interface {
 	ListSessions(ctx context.Context, persona string, limit int) ([]storage.SessionSummary, error)
 	GetLatestSession(ctx context.Context, persona string) (*storage.SessionSummary, error)
 	GetSessionDetail(ctx context.Context, id string) (*storage.SessionRecord, []storage.MessageRecord, error)
+	GetSessionDetailForOrigin(ctx context.Context, id string, originKey string) (*storage.SessionRecord, []storage.MessageRecord, []storage.ConversationEventRecord, *storage.SessionClearMarkerRecord, error)
 	GetSessionMessageParts(ctx context.Context, sessionID string) (map[string][]storage.MessagePartRecord, error)
 	OpenSessionMedia(ctx context.Context, sessionID, mediaAssetID string) (io.ReadCloser, *media.MediaAsset, error)
 	DeleteSession(ctx context.Context, id string) error
@@ -66,6 +68,10 @@ type AdminApp interface {
 	RunNaturalMemory(ctx context.Context, req NaturalMemoryRunRequest) (memoryhost.NaturalMemoryRunResponse, error)
 	LatestNaturalMemoryRun(ctx context.Context) (*memoryhost.NaturalMemoryRunResponse, error)
 	ListMemorySegments(ctx context.Context, sessionID string) ([]storage.MemorySegment, error)
+	ListCommands(ctx context.Context) ([]commandcore.CommandDescriptor, []storage.CommandConfigRecord, error)
+	UpdateCommandConfig(ctx context.Context, config storage.CommandConfigRecord) error
+	ListCommandInvocations(ctx context.Context, filter storage.CommandInvocationFilter) ([]storage.CommandInvocationRecord, error)
+	ListCommandConflicts(ctx context.Context) ([]CommandConflictResponse, error)
 	GetChatSettings() config.ChatConfig
 	UpdateChatSettings(settings config.ChatConfig) error
 	GetEffectiveConfig(ctx context.Context) (configcenter.EffectiveConfig, error)
@@ -260,6 +266,56 @@ type MemoryExtractionQueueResponse struct {
 type sessionMessageResponse struct {
 	storage.MessageRecord
 	Parts []sessionMessagePartResponse `json:"parts,omitempty"`
+}
+
+type sessionEventResponse struct {
+	ID               string         `json:"id"`
+	OriginKey        string         `json:"origin_key"`
+	SessionID        string         `json:"session_id"`
+	PersonaKey       string         `json:"persona_key"`
+	EventType        string         `json:"event_type"`
+	VisibleContent   string         `json:"visible_content"`
+	Payload          map[string]any `json:"payload,omitempty"`
+	CreatedAt        string         `json:"created_at"`
+	VisibilityStatus string         `json:"visibility_status"`
+}
+
+type sessionClearMarkerResponse struct {
+	OriginKey      string `json:"origin_key"`
+	SessionID      string `json:"session_id"`
+	PersonaKey     string `json:"persona_key"`
+	AfterMessageID string `json:"after_message_id"`
+	ClearedAt      string `json:"cleared_at"`
+	Reason         string `json:"reason"`
+}
+
+type CommandResponse struct {
+	CommandID     string   `json:"command_id"`
+	Name          string   `json:"name"`
+	Aliases       []string `json:"aliases,omitempty"`
+	Summary       string   `json:"summary,omitempty"`
+	Usage         string   `json:"usage,omitempty"`
+	ProviderKind  string   `json:"provider_kind"`
+	PluginID      string   `json:"plugin_id,omitempty"`
+	Enabled       bool     `json:"enabled"`
+	Permission    string   `json:"permission"`
+	OutputMode    string   `json:"output_mode"`
+	EffectiveName string   `json:"effective_name"`
+}
+
+type CommandConfigUpdateRequest struct {
+	Enabled       *bool  `json:"enabled,omitempty"`
+	RootAlias     string `json:"root_alias,omitempty"`
+	EffectiveName string `json:"effective_name,omitempty"`
+	Permission    string `json:"permission,omitempty"`
+	OutputMode    string `json:"output_mode,omitempty"`
+}
+
+type CommandConflictResponse struct {
+	CommandID string `json:"command_id"`
+	PluginID  string `json:"plugin_id,omitempty"`
+	RootName  string `json:"root_name"`
+	Reason    string `json:"reason"`
 }
 
 type sessionMessagePartResponse struct {
@@ -898,7 +954,8 @@ func (h *APIHandler) HandleGetLatestSession(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *APIHandler) HandleGetSession(w http.ResponseWriter, r *http.Request) {
-	session, messages, err := h.app.GetSessionDetail(r.Context(), r.PathValue("id"))
+	originKey := strings.TrimSpace(r.URL.Query().Get("origin_key"))
+	session, messages, events, marker, err := h.app.GetSessionDetailForOrigin(r.Context(), r.PathValue("id"), originKey)
 	if err != nil {
 		h.writeSessionError(w, err)
 		return
@@ -916,6 +973,17 @@ func (h *APIHandler) HandleGetSession(w http.ResponseWriter, r *http.Request) {
 		"created_at": session.CreatedAt,
 		"updated_at": session.UpdatedAt,
 		"messages":   renderedMessages,
+		"events":     sessionEventResponses(events),
+	}
+	if marker != nil {
+		response["clear_marker"] = sessionClearMarkerResponse{
+			OriginKey:      marker.OriginKey,
+			SessionID:      marker.SessionID,
+			PersonaKey:     marker.PersonaKey,
+			AfterMessageID: marker.AfterMessageID,
+			ClearedAt:      marker.ClearedAt,
+			Reason:         marker.Reason,
+		}
 	}
 	if stats := contextStatsFromSessionMetadata(session.Metadata); stats != nil {
 		response["context_stats"] = stats
@@ -1057,6 +1125,105 @@ func (h *APIHandler) HandleListMemorySegments(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, map[string]any{"segments": segments})
 }
 
+func (h *APIHandler) HandleListCommands(w http.ResponseWriter, r *http.Request) {
+	descriptors, configs, err := h.app.ListCommands(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list commands")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"commands": commandResponses(descriptors, configs)})
+}
+
+func (h *APIHandler) HandleUpdateCommandConfig(w http.ResponseWriter, r *http.Request) {
+	var req CommandConfigUpdateRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	commandID := strings.TrimSpace(r.PathValue("id"))
+	if commandID == "" {
+		writeError(w, http.StatusBadRequest, "command id is required")
+		return
+	}
+	config := storage.CommandConfigRecord{CommandID: commandID}
+	if req.Enabled != nil {
+		config.Enabled = *req.Enabled
+	} else {
+		config.Enabled = true
+	}
+	config.EffectiveName = strings.TrimSpace(firstNonEmpty(req.RootAlias, req.EffectiveName))
+	config.Permission = strings.TrimSpace(req.Permission)
+	config.OutputMode = strings.TrimSpace(req.OutputMode)
+	if err := h.app.UpdateCommandConfig(r.Context(), config); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update command config")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (h *APIHandler) HandleListCommandInvocations(w http.ResponseWriter, r *http.Request) {
+	limit, ok := parsePositiveLimit(r, 50)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid limit")
+		return
+	}
+	invocations, err := h.app.ListCommandInvocations(r.Context(), storage.CommandInvocationFilter{
+		SessionID: strings.TrimSpace(r.URL.Query().Get("session_id")),
+		OriginKey: strings.TrimSpace(r.URL.Query().Get("origin_key")),
+		CommandID: strings.TrimSpace(r.URL.Query().Get("command_id")),
+		Limit:     limit,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list command invocations")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"invocations": invocations})
+}
+
+func (h *APIHandler) HandleListCommandConflicts(w http.ResponseWriter, r *http.Request) {
+	conflicts, err := h.app.ListCommandConflicts(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list command conflicts")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"conflicts": conflicts})
+}
+
+func commandResponses(descriptors []commandcore.CommandDescriptor, configs []storage.CommandConfigRecord) []CommandResponse {
+	configByID := map[string]storage.CommandConfigRecord{}
+	for _, config := range configs {
+		configByID[config.CommandID] = config
+	}
+	out := make([]CommandResponse, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		config, ok := configByID[descriptor.ID]
+		enabled := true
+		effectiveName := descriptor.Name
+		permission := string(descriptor.Permission)
+		outputMode := string(descriptor.OutputMode)
+		if ok {
+			enabled = config.Enabled
+			effectiveName = firstNonEmpty(config.EffectiveName, descriptor.Name)
+			permission = firstNonEmpty(config.Permission, permission)
+			outputMode = firstNonEmpty(config.OutputMode, outputMode)
+		}
+		out = append(out, CommandResponse{
+			CommandID:     descriptor.ID,
+			Name:          descriptor.Name,
+			Aliases:       append([]string(nil), descriptor.Aliases...),
+			Summary:       descriptor.Summary,
+			Usage:         descriptor.Usage,
+			ProviderKind:  string(descriptor.ProviderKind),
+			PluginID:      descriptor.PluginID,
+			Enabled:       enabled,
+			Permission:    permission,
+			OutputMode:    outputMode,
+			EffectiveName: effectiveName,
+		})
+	}
+	return out
+}
+
 func (h *APIHandler) sessionMessageResponses(ctx context.Context, sessionID string, messages []storage.MessageRecord) ([]sessionMessageResponse, error) {
 	partsByMessage, err := h.app.GetSessionMessageParts(ctx, sessionID)
 	if err != nil {
@@ -1078,6 +1245,35 @@ func (h *APIHandler) sessionMessageResponses(ctx context.Context, sessionID stri
 		responses = append(responses, response)
 	}
 	return responses, nil
+}
+
+func sessionEventResponses(events []storage.ConversationEventRecord) []sessionEventResponse {
+	responses := make([]sessionEventResponse, 0, len(events))
+	for _, event := range events {
+		responses = append(responses, sessionEventResponse{
+			ID:               event.ID,
+			OriginKey:        event.OriginKey,
+			SessionID:        event.SessionID,
+			PersonaKey:       event.PersonaKey,
+			EventType:        event.EventType,
+			VisibleContent:   event.VisibleContent,
+			Payload:          decodeEventPayload(event.PayloadJSON),
+			CreatedAt:        event.CreatedAt,
+			VisibilityStatus: event.VisibilityStatus,
+		})
+	}
+	return responses
+}
+
+func decodeEventPayload(raw string) map[string]any {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil || len(payload) == 0 {
+		return nil
+	}
+	return payload
 }
 
 func (h *APIHandler) sessionMessagePartResponses(ctx context.Context, sessionID string, parts []storage.MessagePartRecord, mediaCache map[string]*media.MediaAsset) ([]sessionMessagePartResponse, bool, error) {

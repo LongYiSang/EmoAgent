@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/longyisang/emoagent/internal/apperrors"
+	commandcore "github.com/longyisang/emoagent/internal/command"
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/configcenter"
 	"github.com/longyisang/emoagent/internal/llm"
@@ -546,6 +547,14 @@ func (a *App) GetSessionDetail(ctx context.Context, id string) (*storage.Session
 	return services.Sessions.Detail(ctx, id)
 }
 
+func (a *App) GetSessionDetailForOrigin(ctx context.Context, id string, originKey string) (*storage.SessionRecord, []storage.MessageRecord, []storage.ConversationEventRecord, *storage.SessionClearMarkerRecord, error) {
+	services, err := a.services()
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	return services.Sessions.DetailForOrigin(ctx, id, originKey)
+}
+
 func (a *App) GetSessionMessageParts(ctx context.Context, sessionID string) (map[string][]storage.MessagePartRecord, error) {
 	kernel, err := a.kernelSnapshot()
 	if err != nil {
@@ -672,6 +681,53 @@ func (a *App) ListMemorySegments(ctx context.Context, sessionID string) ([]stora
 		return nil, err
 	}
 	return services.Memory.ListSegments(ctx, sessionID)
+}
+
+func (a *App) ListCommands(ctx context.Context) ([]commandcore.CommandDescriptor, []storage.CommandConfigRecord, error) {
+	services, err := a.services()
+	if err != nil {
+		return nil, nil, err
+	}
+	configs, err := services.Commands.ListCommandConfigs(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	return services.Commands.ListCommandDescriptors(), configs, nil
+}
+
+func (a *App) UpdateCommandConfig(ctx context.Context, config storage.CommandConfigRecord) error {
+	services, err := a.services()
+	if err != nil {
+		return err
+	}
+	return services.Commands.UpdateCommandConfig(ctx, config)
+}
+
+func (a *App) ListCommandInvocations(ctx context.Context, filter storage.CommandInvocationFilter) ([]storage.CommandInvocationRecord, error) {
+	services, err := a.services()
+	if err != nil {
+		return nil, err
+	}
+	return services.Commands.ListCommandInvocations(ctx, filter)
+}
+
+func (a *App) ListCommandConflicts(ctx context.Context) ([]web.CommandConflictResponse, error) {
+	services, err := a.services()
+	if err != nil {
+		return nil, err
+	}
+	conflicts := services.Commands.CommandConflicts()
+	out := make([]web.CommandConflictResponse, 0, len(conflicts))
+	for _, conflict := range conflicts {
+		out = append(out, web.CommandConflictResponse{
+			CommandID: conflict.CommandID,
+			PluginID:  conflict.PluginID,
+			RootName:  conflict.RootName,
+			Reason:    conflict.Reason,
+		})
+	}
+	_ = ctx
+	return out, nil
 }
 
 func (a *App) GetEffectiveConfig(ctx context.Context) (configcenter.EffectiveConfig, error) {

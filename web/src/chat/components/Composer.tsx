@@ -21,13 +21,16 @@ export function Composer({
 }) {
   const dragDepth = useRef(0);
   const [dragActive, setDragActive] = useState(false);
-  const disabled = sending || uploading;
+  const fileDisabled = sending || uploading;
+  const inputDisabled = Boolean(uploading);
   const hasInput = Boolean(value.trim()) || Boolean(attachments?.length);
+  const canSubmitWhileSending = sending && isStopCommandInput(value, attachments?.length || 0);
+  const submitDisabled = Boolean(uploading) || !hasInput || (sending && !canSubmitWhileSending);
 
   const handleDragEnter = (event: DragEvent<HTMLFormElement>) => {
     if (!hasDraggedFiles(event.dataTransfer)) return;
     event.preventDefault();
-    if (disabled) return;
+    if (fileDisabled) return;
     dragDepth.current += 1;
     setDragActive(true);
   };
@@ -35,15 +38,15 @@ export function Composer({
   const handleDragOver = (event: DragEvent<HTMLFormElement>) => {
     if (!hasDraggedFiles(event.dataTransfer)) return;
     event.preventDefault();
-    event.dataTransfer.dropEffect = disabled ? 'none' : 'copy';
-    if (disabled) return;
+    event.dataTransfer.dropEffect = fileDisabled ? 'none' : 'copy';
+    if (fileDisabled) return;
     setDragActive(true);
   };
 
   const handleDragLeave = (event: DragEvent<HTMLFormElement>) => {
     if (!hasDraggedFiles(event.dataTransfer)) return;
     event.preventDefault();
-    if (disabled) return;
+    if (fileDisabled) return;
     dragDepth.current = Math.max(0, dragDepth.current - 1);
     if (dragDepth.current === 0) setDragActive(false);
   };
@@ -53,12 +56,12 @@ export function Composer({
     event.preventDefault();
     dragDepth.current = 0;
     setDragActive(false);
-    if (disabled) return;
+    if (fileDisabled) return;
     if (event.dataTransfer.files.length) onFiles?.(event.dataTransfer.files);
   };
 
   const handlePaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
-    if (disabled) return;
+    if (fileDisabled) return;
     const files = imageFilesFromClipboard(event.clipboardData);
     if (!files.length) return;
     event.preventDefault();
@@ -93,7 +96,7 @@ export function Composer({
         id="input"
         value={value}
         rows={1}
-        disabled={disabled}
+        disabled={inputDisabled}
         placeholder="和 Emotion 说点什么..."
         onChange={event => onChange(event.target.value)}
         onPaste={handlePaste}
@@ -110,7 +113,7 @@ export function Composer({
           type="file"
           accept="image/png,image/jpeg"
           multiple
-          disabled={disabled}
+          disabled={fileDisabled}
           onChange={event => {
             if (event.currentTarget.files?.length) onFiles?.(event.currentTarget.files);
             event.currentTarget.value = '';
@@ -126,7 +129,7 @@ export function Composer({
         className="btn primary icon"
         id="send"
         type="submit"
-        disabled={disabled || !hasInput}
+        disabled={submitDisabled}
         aria-label="发送"
       >
         <svg
@@ -146,6 +149,10 @@ export function Composer({
       </button>
     </form>
   );
+}
+
+function isStopCommandInput(value: string, attachmentCount: number): boolean {
+  return attachmentCount === 0 && value.trim().toLowerCase() === '/stop';
 }
 
 function hasDraggedFiles(dataTransfer: DataTransfer): boolean {

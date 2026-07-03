@@ -202,6 +202,10 @@ func (f *fakeProcessSupervisor) InvokeTool(_ context.Context, _ string, _ string
 	return json.RawMessage(`{"ok":true,"input":` + string(input) + `}`), nil
 }
 
+func (f *fakeProcessSupervisor) InvokeCommand(context.Context, string, CommandInvokeRequest) (CommandInvokeResult, error) {
+	return CommandInvokeResult{Content: "ok"}, nil
+}
+
 func (f *fakeProcessSupervisor) Tools(string) []ProcessToolSpec {
 	return append([]ProcessToolSpec(nil), f.tools...)
 }

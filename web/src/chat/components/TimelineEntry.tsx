@@ -6,6 +6,7 @@ import { ToolCard } from './ToolCard';
 import { ReasoningCard } from './ReasoningCard';
 import { WorkProgress } from './WorkProgress';
 import { MemoryPipelineEntry } from './MemoryPipelineEntry';
+import { CommandResultEntry } from './CommandResultEntry';
 
 export const TimelineEntry = memo(function TimelineEntry(props: {
   item: TimelineItem;
@@ -26,5 +27,6 @@ export const TimelineEntry = memo(function TimelineEntry(props: {
   if (item.kind === 'tool') return <ToolCard tool={item.tool} collapsed={item.collapsed} open={props.activityOpen} onOpenChange={props.onActivityOpenChange} />;
   if (item.kind === 'reasoning') return <ReasoningCard reasoning={item.reasoning} collapsed={item.collapsed} open={props.activityOpen} onOpenChange={props.onActivityOpenChange} onOpenPipeline={props.onOpenPipeline} />;
   if (item.kind === 'work') return <WorkProgress content={item.content} />;
+  if (item.kind === 'command_result' || item.kind === 'context_switched') return <CommandResultEntry item={item} />;
   return <MemoryPipelineEntry snapshot={item.snapshot} onOpen={props.onOpenPipeline} />;
 });
