@@ -23,6 +23,8 @@ type InboundMessage struct {
 	Timestamp              time.Time
 	RawEventHash           string
 	Raw                    map[string]any
+	OriginScope            OriginScope
+	AcceptedReason         string
 }
 
 type OutboundEvent struct {
@@ -40,5 +42,6 @@ type OutboundEvent struct {
 type HandleResult struct {
 	Handled   bool
 	Duplicate bool
+	Ignored   bool
 	SessionID string
 }

@@ -2,8 +2,10 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/longyisang/emoagent/internal/chat"
@@ -16,6 +18,9 @@ const httpServerShutdownTimeout = 5 * time.Second
 
 type Server struct {
 	httpServer *http.Server
+	platforms  *PlatformService
+	shutdownMu sync.Mutex
+	shutdown   bool
 	logger     interface {
 		Info(string, ...any)
 	}
@@ -46,7 +51,19 @@ func BuildServer(ctx context.Context, kernel *Kernel, facade *App) (*Server, err
 	api := web.NewAPIHandler(facade, kernel.Infra.Logger)
 
 	mux := http.NewServeMux()
+	if kernel.Services.Platforms != nil {
+		if err := kernel.Services.Platforms.Configure(ctx, cfg.Platforms); err != nil {
+			return nil, err
+		}
+		kernel.Services.Platforms.InstallHTTPRoutes(mux)
+	}
 	registerRoutes(mux, api, chatHandler, web.NewStaticHandler(web.StaticFS))
+	if kernel.Services.Platforms != nil {
+		if err := kernel.Services.Platforms.Start(ctx); err != nil {
+			_ = kernel.Services.Platforms.Stop(context.Background())
+			return nil, err
+		}
+	}
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	return &Server{
@@ -54,7 +71,8 @@ func BuildServer(ctx context.Context, kernel *Kernel, facade *App) (*Server, err
 			Addr:    addr,
 			Handler: mux,
 		},
-		logger: kernel.Infra.Logger,
+		platforms: kernel.Services.Platforms,
+		logger:    kernel.Infra.Logger,
 	}, nil
 }
 
@@ -72,20 +90,36 @@ func (s *Server) Run(ctx context.Context) error {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), httpServerShutdownTimeout)
 		defer cancel()
-		return s.httpServer.Shutdown(shutdownCtx)
+		return s.Shutdown(shutdownCtx)
 	case err := <-errCh:
 		if err == nil {
 			return nil
 		}
-		return err
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), httpServerShutdownTimeout)
+		defer cancel()
+		return errors.Join(err, s.Shutdown(shutdownCtx))
 	}
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
-	if s == nil || s.httpServer == nil {
+	if s == nil {
 		return nil
 	}
-	return s.httpServer.Shutdown(ctx)
+	s.shutdownMu.Lock()
+	if s.shutdown {
+		s.shutdownMu.Unlock()
+		return nil
+	}
+	s.shutdown = true
+	s.shutdownMu.Unlock()
+	var shutdownErr error
+	if s.platforms != nil {
+		shutdownErr = errors.Join(shutdownErr, s.platforms.Stop(ctx))
+	}
+	if s.httpServer != nil {
+		shutdownErr = errors.Join(shutdownErr, s.httpServer.Shutdown(ctx))
+	}
+	return shutdownErr
 }
 
 func registerRoutes(mux *http.ServeMux, api *web.APIHandler, chatHandler http.Handler, staticHandler http.Handler) {

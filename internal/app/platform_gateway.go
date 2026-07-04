@@ -42,7 +42,7 @@ func (g *PlatformGateway) HandleInbound(ctx context.Context, in platform.Inbound
 	if strings.TrimSpace(in.Text) == "" {
 		return platform.HandleResult{}, fmt.Errorf("inbound message text is required")
 	}
-	origin, err := platform.OriginFromInbound(in, "")
+	origin, err := platform.OriginFromInbound(in, in.OriginScope)
 	if err != nil {
 		return platform.HandleResult{}, err
 	}

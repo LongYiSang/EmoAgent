@@ -1184,6 +1184,67 @@ platforms:
 	}
 }
 
+func TestLoadOneBotV11PlatformsConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+platforms:
+  enabled: true
+  common:
+    default_persona: default
+    command_prefixes: ["/"]
+  adapters:
+    qq-main:
+      enabled: true
+      kind: onebot_v11
+      instance_id: qq-main
+      platform_id: qq
+      config:
+        implementation: napcat
+        source_type: onebot
+        transport:
+          mode: ws_reverse
+          reverse_path: /api/platforms/onebot/v11/qq-main/ws
+          request_timeout_ms: 15000
+          connect_timeout_ms: 5000
+          reconnect_interval_ms: 3000
+        routing:
+          private_enabled: true
+          group_enabled: false
+          ignore_self_messages: true
+        message:
+          input_format: array
+          output_format: array
+          unsupported_segment_policy: placeholder
+          max_text_chars: 8000
+        outbound:
+          coalesce_command_events: true
+          split_long_messages: true
+          max_message_chars: 1800
+`), 0o644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	adapter := cfg.Platforms.Adapters["qq-main"]
+	if adapter.Kind != "onebot_v11" || adapter.InstanceID != "qq-main" || adapter.PlatformID != "qq" {
+		t.Fatalf("adapter envelope = %#v", adapter)
+	}
+	transport := adapter.ConfigJSON["transport"].(map[string]any)
+	if transport["mode"] != "ws_reverse" || transport["reverse_path"] != "/api/platforms/onebot/v11/qq-main/ws" {
+		t.Fatalf("transport config = %#v", transport)
+	}
+	routing := adapter.ConfigJSON["routing"].(map[string]any)
+	if routing["group_enabled"] != false || routing["private_enabled"] != true {
+		t.Fatalf("routing config = %#v", routing)
+	}
+	outbound := adapter.ConfigJSON["outbound"].(map[string]any)
+	if outbound["max_message_chars"] != 1800 {
+		t.Fatalf("outbound config = %#v", outbound)
+	}
+}
+
 func TestLoadPluginRuntimeV02Config(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
