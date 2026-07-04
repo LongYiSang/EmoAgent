@@ -4,7 +4,7 @@ import (
 	"strings"
 )
 
-var reservedRootCommands = []string{
+var implementedBuiltinRootCommands = []string{
 	"help",
 	"sid",
 	"new",
@@ -14,6 +14,9 @@ var reservedRootCommands = []string{
 	"compact",
 	"forget",
 	"stop",
+}
+
+var reservedRootCommands = append(append([]string(nil), implementedBuiltinRootCommands...),
 	"set",
 	"unset",
 	"plugin",
@@ -23,7 +26,7 @@ var reservedRootCommands = []string{
 	"memory",
 	"config",
 	"admin",
-}
+)
 
 var reservedRootSet = func() map[string]struct{} {
 	out := make(map[string]struct{}, len(reservedRootCommands))

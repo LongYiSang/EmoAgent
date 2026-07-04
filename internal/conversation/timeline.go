@@ -32,13 +32,19 @@ func (s *TimelineEventStore) Append(ctx context.Context, event TimelineEvent) er
 		return errors.New("timeline event store is not configured")
 	}
 	if event.OriginKey != "" {
-		if err := s.db.UpsertConversationOrigin(ctx, storage.ConversationOriginRecord{
-			OriginKey:    event.OriginKey,
-			SourceType:   DefaultSourceType,
-			ChannelType:  DefaultChannel,
-			MetadataJSON: "{}",
-		}); err != nil {
+		origin, err := s.db.GetConversationOrigin(ctx, event.OriginKey)
+		if err != nil {
 			return err
+		}
+		if origin == nil {
+			if err := s.db.UpsertConversationOrigin(ctx, storage.ConversationOriginRecord{
+				OriginKey:    event.OriginKey,
+				SourceType:   DefaultSourceType,
+				ChannelType:  DefaultChannel,
+				MetadataJSON: "{}",
+			}); err != nil {
+				return err
+			}
 		}
 	}
 	return s.db.AddConversationEvent(ctx, storage.ConversationEventRecord{

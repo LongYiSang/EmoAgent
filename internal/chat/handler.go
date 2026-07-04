@@ -58,6 +58,8 @@ type CommandRequest struct {
 	Origin     conversation.Origin
 	SessionID  string
 	PersonaKey string
+	ActorID    string
+	ActorName  string
 	ActorRole  string
 }
 
@@ -875,8 +877,14 @@ func (h *Handler) resolvePersonaName(r *http.Request) string {
 func resolveWSOrigin(r *http.Request) (conversation.Origin, error) {
 	query := r.URL.Query()
 	return conversation.ResolveOrigin(conversation.OriginRequest{
-		OriginKey:  strings.TrimSpace(query.Get("origin_key")),
-		SourceType: strings.TrimSpace(query.Get("source")),
+		OriginKey:              strings.TrimSpace(query.Get("origin_key")),
+		SourceType:             strings.TrimSpace(query.Get("source")),
+		AdapterInstanceID:      strings.TrimSpace(query.Get("adapter_instance_id")),
+		PlatformID:             strings.TrimSpace(query.Get("platform_id")),
+		ChannelType:            strings.TrimSpace(query.Get("channel_type")),
+		ExternalConversationID: strings.TrimSpace(query.Get("external_conversation_id")),
+		ExternalActorID:        strings.TrimSpace(query.Get("external_actor_id")),
+		DisplayName:            strings.TrimSpace(query.Get("display_name")),
 	})
 }
 
@@ -936,6 +944,8 @@ func (h *Handler) tryHandleCommand(ctx context.Context, conn *websocket.Conn, mu
 		Origin:     origin,
 		SessionID:  sessionID,
 		PersonaKey: personaName,
+		ActorID:    origin.ExternalActorID,
+		ActorName:  origin.DisplayName,
 		ActorRole:  "member",
 	})
 	if !handled {

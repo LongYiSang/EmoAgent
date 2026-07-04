@@ -78,6 +78,15 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Chat.TurnPipeline.Journal.FailClosed {
 		t.Error("default chat.turn_pipeline.journal.fail_closed = true, want false")
 	}
+	if cfg.Platforms.Enabled {
+		t.Error("default platforms.enabled = true, want false")
+	}
+	if got := cfg.Platforms.Common.CommandPrefixes; !reflect.DeepEqual(got, []string{"/"}) {
+		t.Fatalf("default platforms.common.command_prefixes = %#v, want [/]", got)
+	}
+	if cfg.Platforms.Adapters == nil || len(cfg.Platforms.Adapters) != 0 {
+		t.Fatalf("default platforms.adapters = %#v, want empty map", cfg.Platforms.Adapters)
+	}
 	if cfg.Chat.TurnPipeline.Idempotency.Mode != "sqlite" {
 		t.Errorf("default chat.turn_pipeline.idempotency.mode = %q, want sqlite", cfg.Chat.TurnPipeline.Idempotency.Mode)
 	}
@@ -1137,6 +1146,41 @@ capability_runtim:
 	_, err := Load(path)
 	if err == nil || !strings.Contains(err.Error(), `capability_runtim is not supported`) {
 		t.Fatalf("Load error = %v, want unsupported top-level key", err)
+	}
+}
+
+func TestLoadPlatformsConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+platforms:
+  enabled: true
+  common:
+    default_persona: default
+    command_prefixes: ["/", "！"]
+  adapters:
+    napcat-main:
+      enabled: false
+      kind: napcat
+      instance_id: main
+      platform_id: qq
+      config:
+        note: placeholder
+`), 0o644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Platforms.Enabled || cfg.Platforms.Common.DefaultPersona != "default" {
+		t.Fatalf("platforms config = %#v", cfg.Platforms)
+	}
+	if got := cfg.Platforms.Common.CommandPrefixes; !reflect.DeepEqual(got, []string{"/", "！"}) {
+		t.Fatalf("platforms.common.command_prefixes = %#v", got)
+	}
+	adapter := cfg.Platforms.Adapters["napcat-main"]
+	if adapter.Kind != "napcat" || adapter.InstanceID != "main" || adapter.PlatformID != "qq" || adapter.ConfigJSON["note"] != "placeholder" {
+		t.Fatalf("platform adapter config = %#v", adapter)
 	}
 }
 

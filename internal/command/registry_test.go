@@ -132,7 +132,36 @@ func TestReservedRootCommandNames(t *testing.T) {
 	if !IsReservedRoot("reset") {
 		t.Fatal("reset should be reserved")
 	}
+	if !IsReservedRoot("set") {
+		t.Fatal("set should remain reserved even though it is not implemented")
+	}
 	if IsReservedRoot("weather") {
 		t.Fatal("weather should not be reserved")
+	}
+}
+
+func TestBuiltinProviderRegistersOnlyImplementedRoots(t *testing.T) {
+	descriptors := NewBuiltinProvider().Descriptors()
+	names := map[string]CommandDescriptor{}
+	for _, descriptor := range descriptors {
+		names[descriptor.Name] = descriptor
+	}
+
+	for _, name := range []string{"help", "sid", "new", "switch", "reset", "clear", "compact", "forget", "stop"} {
+		descriptor, ok := names[name]
+		if !ok {
+			t.Fatalf("builtin descriptor %q missing from %#v", name, names)
+		}
+		if descriptor.Summary == "" || descriptor.Usage == "" {
+			t.Fatalf("builtin descriptor %q missing summary/usage: %#v", name, descriptor)
+		}
+		if !descriptor.Reserved || descriptor.ProviderKind != CommandProviderBuiltin || descriptor.OutputMode != CommandOutputDirect {
+			t.Fatalf("builtin descriptor %q metadata = %#v", name, descriptor)
+		}
+	}
+	for _, name := range []string{"set", "unset", "plugin", "plugins", "provider", "model", "memory", "config", "admin"} {
+		if _, ok := names[name]; ok {
+			t.Fatalf("reserved unimplemented root %q should not be registered as builtin", name)
+		}
 	}
 }

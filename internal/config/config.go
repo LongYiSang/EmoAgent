@@ -36,6 +36,7 @@ type Config struct {
 	WebFetch        WebFetchConfig        `yaml:"webfetch"`
 	Bash            BashConfig            `yaml:"bash"`
 	Plugins         PluginsConfig         `yaml:"plugins"`
+	Platforms       PlatformsConfig       `yaml:"platforms" json:"platforms"`
 	PythonToolchain PythonToolchainConfig `yaml:"python_toolchain" json:"python_toolchain"`
 }
 
@@ -70,6 +71,7 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		"webfetch":           {},
 		"bash":               {},
 		"plugins":            {},
+		"platforms":          {},
 		"python_toolchain":   {},
 	}
 	for i := 0; i < len(value.Content); i += 2 {
@@ -736,6 +738,43 @@ type PluginPolicyConfig struct {
 type PluginAdminConfig struct {
 	Enabled    bool `yaml:"enabled" json:"enabled"`
 	enabledSet bool
+}
+
+type PlatformsConfig struct {
+	Enabled  bool                             `yaml:"enabled" json:"enabled"`
+	Common   PlatformCommonConfig             `yaml:"common" json:"common"`
+	Adapters map[string]PlatformAdapterConfig `yaml:"adapters" json:"adapters"`
+}
+
+type PlatformCommonConfig struct {
+	DefaultPersona  string   `yaml:"default_persona" json:"default_persona"`
+	CommandPrefixes []string `yaml:"command_prefixes" json:"command_prefixes"`
+}
+
+type PlatformAdapterConfig struct {
+	Enabled    bool           `yaml:"enabled" json:"enabled"`
+	Kind       string         `yaml:"kind" json:"kind"`
+	InstanceID string         `yaml:"instance_id" json:"instance_id"`
+	PlatformID string         `yaml:"platform_id" json:"platform_id"`
+	ConfigJSON map[string]any `yaml:"config" json:"config"`
+}
+
+func (c *PlatformsConfig) applyDefaults() {
+	if c == nil {
+		return
+	}
+	if len(c.Common.CommandPrefixes) == 0 {
+		c.Common.CommandPrefixes = []string{"/"}
+	}
+	if c.Adapters == nil {
+		c.Adapters = map[string]PlatformAdapterConfig{}
+	}
+	for key, adapter := range c.Adapters {
+		if adapter.ConfigJSON == nil {
+			adapter.ConfigJSON = map[string]any{}
+			c.Adapters[key] = adapter
+		}
+	}
 }
 
 func (c *PluginsConfig) UnmarshalYAML(value *yaml.Node) error {
@@ -2003,6 +2042,13 @@ func DefaultConfig() *Config {
 				IncludePayload: false,
 			},
 		},
+		Platforms: PlatformsConfig{
+			Enabled: false,
+			Common: PlatformCommonConfig{
+				CommandPrefixes: []string{"/"},
+			},
+			Adapters: map[string]PlatformAdapterConfig{},
+		},
 		PythonToolchain: PythonToolchainConfig{
 			RequiredPython:        "3.12",
 			MinimumUVVersion:      "0.11.0",
@@ -2017,6 +2063,7 @@ func DefaultConfig() *Config {
 	cfg.HostResources.applyDefaults()
 	cfg.Bash.applyDefaults()
 	cfg.Plugins.applyDefaults()
+	cfg.Platforms.applyDefaults()
 	cfg.PythonToolchain.applyDefaults()
 	return cfg
 }
@@ -2061,6 +2108,7 @@ func Load(path string) (*Config, error) {
 	cfg.Memory.NaturalMemory.applyDefaults()
 	cfg.applyTimezoneDefaults(explicitMemoryExtractionTimezone, memoryExtractionTimezone)
 	cfg.Plugins.applyDefaults()
+	cfg.Platforms.applyDefaults()
 	cfg.PythonToolchain.applyDefaults()
 	cfg.applyPythonToolchainLegacyMigration()
 	for i := range cfg.LLMProviders {

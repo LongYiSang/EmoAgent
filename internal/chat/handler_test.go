@@ -676,6 +676,43 @@ func TestHandlerRoutesCommandBeforeEngine(t *testing.T) {
 	}
 }
 
+func TestHandlerRoutesCommandWithPlatformActor(t *testing.T) {
+	commandHandler := &fakeCommandHandler{
+		handled: true,
+		response: CommandResponse{
+			Messages: []WSMessage{{
+				Type:        "command_result",
+				CommandID:   "builtin.sid",
+				CommandName: "sid",
+				Status:      "success",
+				Content:     "ok",
+			}},
+		},
+	}
+	handler, _ := newTestHandlerWithOptions(WithCommandHandler(commandHandler))
+	conn := dialTestWS(t, handler, "/ws?skip_greeting=1&origin_key=napcat:main:group:20002&source=napcat&adapter_instance_id=main&platform_id=qq&channel_type=group&external_conversation_id=20002&external_actor_id=10001&display_name=Alice")
+	defer conn.Close(websocket.StatusNormalClosure, "bye")
+
+	var msg WSMessage
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(session_ready): %v", err)
+	}
+	if err := wsjson.Write(context.Background(), conn, WSMessage{Type: "message", Content: "/sid"}); err != nil {
+		t.Fatalf("Write(command): %v", err)
+	}
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(command_result): %v", err)
+	}
+	if len(commandHandler.requests) != 1 {
+		t.Fatalf("command requests = %#v, want one request", commandHandler.requests)
+	}
+	req := commandHandler.requests[0]
+	if req.ActorID != "10001" || req.ActorName != "Alice" || req.ActorRole != "member" ||
+		req.Origin.SourceType != "napcat" || req.Origin.ExternalConversationID != "20002" {
+		t.Fatalf("command request = %#v, want platform actor and origin", req)
+	}
+}
+
 func TestHandlerProcessesStopWhileReplyIsRunning(t *testing.T) {
 	runs := conversation.NewRunRegistry()
 	stopped := make(chan int, 1)

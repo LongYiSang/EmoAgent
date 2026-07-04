@@ -17,4 +17,13 @@ func TestKernelInitializesConversationAndCommandServices(t *testing.T) {
 	if _, ok := a.kernel.Services.Commands.Registry().Lookup("reset"); !ok {
 		t.Fatal("builtin reset command was not registered")
 	}
+	if a.kernel.Services.Platforms == nil {
+		t.Fatal("Platform service = nil")
+	}
+	if a.kernel.Services.Platforms.Gateway() == nil {
+		t.Fatal("Platform gateway = nil")
+	}
+	if a.kernel.Services.Platforms.Manager() == nil {
+		t.Fatal("Platform manager = nil")
+	}
 }

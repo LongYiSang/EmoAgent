@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -92,7 +93,11 @@ func (s *CommandService) TryHandle(ctx context.Context, req chat.CommandRequest)
 		req.ActorRole = string(commandcore.CommandPermissionMember)
 	}
 	if descriptor.ID == "" {
-		descriptor = unknownDescriptor(parsed.Name)
+		if commandcore.IsReservedRoot(parsed.Name) {
+			descriptor = reservedDescriptor(parsed.Name)
+		} else {
+			descriptor = unknownDescriptor(parsed.Name)
+		}
 	} else if config, err := s.commandConfig(ctx, descriptor.ID); err != nil {
 		exec := commandExecution{service: s, request: req, parsed: parsed, descriptor: descriptor, started: time.Now()}
 		return exec.finish(ctx, commandResult{Status: "failed", Content: "读取命令配置失败：" + err.Error(), ErrorKind: "internal_error"}), true, nil
@@ -125,7 +130,7 @@ func (s *CommandService) TryHandle(ctx context.Context, req chat.CommandRequest)
 
 	switch canonicalCommandName(descriptor) {
 	case "help":
-		return exec.finish(ctx, s.handleHelp()), true, nil
+		return exec.finish(ctx, s.handleHelp(parsed)), true, nil
 	case "sid":
 		return exec.finish(ctx, s.handleSID(req)), true, nil
 	case "new":
@@ -145,6 +150,14 @@ func (s *CommandService) TryHandle(ctx context.Context, req chat.CommandRequest)
 	default:
 		if descriptor.ProviderKind == commandcore.CommandProviderPlugin {
 			return exec.finish(ctx, s.handlePluginCommand(ctx, req, parsed, descriptor)), true, nil
+		}
+		if strings.HasPrefix(descriptor.ID, "reserved.") {
+			return exec.finish(ctx, commandResult{
+				Status:    "not_implemented",
+				Content:   fmt.Sprintf("/%s 是 EmoAgent 保留命令，但当前版本尚未实现。", parsed.Name),
+				ErrorKind: "reserved_not_implemented",
+				Payload:   map[string]any{"reserved": true},
+			}), true, nil
 		}
 		return exec.finish(ctx, commandResult{
 			Status:    "failed",
@@ -305,31 +318,96 @@ func (s *CommandService) ListCommandInvocations(ctx context.Context, filter stor
 	return s.infra.DB.ListCommandInvocations(ctx, filter)
 }
 
-func (s *CommandService) handleHelp() commandResult {
+func (s *CommandService) handleHelp(parsed commandcore.ParsedCommand) commandResult {
 	descriptors := s.Registry().Descriptors()
-	names := make([]string, 0, len(descriptors))
+	if len(parsed.Args) > 0 {
+		name := strings.TrimSpace(parsed.Args[0])
+		if descriptor, ok := s.Registry().Lookup(name); ok && !descriptor.Hidden {
+			return commandResult{
+				Status:  "success",
+				Content: commandHelpDetail(descriptor),
+			}
+		}
+		if commandcore.IsReservedRoot(name) {
+			return commandResult{
+				Status:    "not_implemented",
+				Content:   fmt.Sprintf("/%s 是 EmoAgent 保留命令，但当前版本尚未实现。", strings.TrimPrefix(name, "/")),
+				ErrorKind: "reserved_not_implemented",
+				Payload:   map[string]any{"reserved": true},
+			}
+		}
+		return commandResult{
+			Status:    "failed",
+			Content:   fmt.Sprintf("未知命令：/%s", strings.TrimPrefix(name, "/")),
+			ErrorKind: "validation_error",
+		}
+	}
+	builtin := make(map[string]commandcore.CommandDescriptor)
+	plugins := make([]commandcore.CommandDescriptor, 0)
 	for _, descriptor := range descriptors {
 		if descriptor.Hidden {
 			continue
 		}
-		names = append(names, "/"+descriptor.Name)
+		if descriptor.ProviderKind == commandcore.CommandProviderBuiltin {
+			builtin[canonicalCommandName(descriptor)] = descriptor
+			continue
+		}
+		plugins = append(plugins, descriptor)
+	}
+	lines := []string{"可用命令："}
+	for _, name := range []string{"help", "sid", "new", "switch", "reset", "clear", "compact", "forget", "stop"} {
+		descriptor, ok := builtin[name]
+		if !ok {
+			continue
+		}
+		lines = append(lines, commandHelpLine(descriptor))
+	}
+	sort.Slice(plugins, func(i, j int) bool {
+		return plugins[i].Name < plugins[j].Name
+	})
+	for _, descriptor := range plugins {
+		lines = append(lines, commandHelpLine(descriptor))
 	}
 	return commandResult{
 		Status:  "success",
-		Content: "可用命令：" + strings.Join(names, "、"),
+		Content: strings.Join(lines, "\n"),
 	}
 }
 
 func (s *CommandService) handleSID(req chat.CommandRequest) commandResult {
+	fields := commandOriginActorPayload(req, req.SessionID)
+	lines := []string{
+		"origin_key=" + req.Origin.OriginKey,
+		"source_type=" + firstNonEmptyCommandValue(req.Origin.SourceType, conversation.DefaultSourceType),
+	}
+	if req.Origin.AdapterInstanceID != "" {
+		lines = append(lines, "adapter_instance_id="+req.Origin.AdapterInstanceID)
+	}
+	if req.Origin.PlatformID != "" {
+		lines = append(lines, "platform_id="+req.Origin.PlatformID)
+	}
+	lines = append(lines, "channel_type="+firstNonEmptyCommandValue(req.Origin.ChannelType, conversation.DefaultChannel))
+	if req.Origin.ExternalConversationID != "" {
+		lines = append(lines, "external_conversation_id="+req.Origin.ExternalConversationID)
+	}
+	if req.Origin.ExternalActorID != "" {
+		lines = append(lines, "external_actor_id="+req.Origin.ExternalActorID)
+	}
+	if req.ActorID != "" {
+		lines = append(lines, "actor_id="+req.ActorID)
+	}
+	if req.ActorName != "" {
+		lines = append(lines, "actor_name="+req.ActorName)
+	}
+	lines = append(lines,
+		"actor_role="+firstNonEmptyCommandValue(req.ActorRole, string(commandcore.CommandPermissionMember)),
+		"session_id="+req.SessionID,
+		"persona="+req.PersonaKey,
+	)
 	return commandResult{
-		Status: "success",
-		Content: fmt.Sprintf("origin_key=%s\nsession_id=%s\npersona=%s",
-			req.Origin.OriginKey, req.SessionID, req.PersonaKey),
-		Payload: map[string]any{
-			"origin_key": req.Origin.OriginKey,
-			"session_id": req.SessionID,
-			"persona":    req.PersonaKey,
-		},
+		Status:  "success",
+		Content: strings.Join(lines, "\n"),
+		Payload: fields,
 	}
 }
 
@@ -463,7 +541,13 @@ func (s *CommandService) handleCompact(ctx context.Context, req chat.CommandRequ
 		active = s.agentRuntime.Active()
 	}
 	if active == nil || active.EmotionSummary.Client == nil {
-		return commandResult{Status: "success", Content: "当前没有可用的总结模型，未压缩上下文。"}
+		return commandResult{
+			Status:  "noop",
+			Content: "当前没有可用的总结模型，未压缩上下文。",
+			Payload: map[string]any{
+				"noop_reason": "summary_model_unavailable",
+			},
+		}
 	}
 	if s == nil || s.infra == nil || s.infra.DB == nil {
 		return commandResult{Status: "failed", Content: "数据库未配置。", ErrorKind: "internal_error"}
@@ -502,11 +586,11 @@ func (s *CommandService) handleCompact(ctx context.Context, req chat.CommandRequ
 	if report.Attempted {
 		content = "已压缩当前会话上下文。"
 	}
-	return commandResult{
-		Status:  "success",
-		Content: content,
-		Payload: summaryReportPayload(report),
+	status := "noop"
+	if report.Attempted {
+		status = "success"
 	}
+	return commandResult{Status: status, Content: content, Payload: summaryReportPayload(report)}
 }
 
 func (s *CommandService) handleForget(ctx context.Context, req chat.CommandRequest, parsed commandcore.ParsedCommand) commandResult {
@@ -515,7 +599,14 @@ func (s *CommandService) handleForget(ctx context.Context, req chat.CommandReque
 		return commandResult{Status: "failed", Content: "用法：/forget <target>", ErrorKind: "validation_error"}
 	}
 	if s == nil || s.memory == nil || s.memory.Host() == nil || s.memory.Host().Core == nil {
-		return commandResult{Status: "success", Content: "已识别遗忘请求，但当前实现需要后续 Forget Manager 接入。", Payload: map[string]any{"target": target}}
+		return commandResult{
+			Status:  "preview_unavailable",
+			Content: "已识别遗忘请求，但当前 Forget Manager 未可用；没有执行删除。",
+			Payload: map[string]any{
+				"target":      target,
+				"destructive": false,
+			},
+		}
 	}
 	personaID := strings.TrimSpace(req.PersonaKey)
 	if personaID == "" {
@@ -545,16 +636,16 @@ func (s *CommandService) handleForget(ctx context.Context, req chat.CommandReque
 	}
 	preview, err := s.memory.Host().Core.PreviewForget(ctx, previewReq)
 	if err != nil {
-		return commandResult{Status: "success", Content: "我暂时无法生成可删除候选，未执行删除。", Payload: map[string]any{"target": target}}
+		return commandResult{Status: "preview_unavailable", Content: "我暂时无法生成可删除候选，未执行删除。", Payload: map[string]any{"target": target, "destructive": false}}
 	}
 	if preview == nil || len(preview.Targets) == 0 {
-		return commandResult{Status: "success", Content: "我没有找到可安全删除的候选，未执行删除。", Payload: map[string]any{"target": target}}
+		return commandResult{Status: "preview_unavailable", Content: "我没有找到可安全删除的候选，未执行删除。", Payload: map[string]any{"target": target, "destructive": false}}
 	}
 	if strings.TrimSpace(preview.PreviewHash) == "" {
-		return commandResult{Status: "success", Content: "删除预览缺少校验信息，未执行删除。", Payload: map[string]any{"target": target}}
+		return commandResult{Status: "preview_unavailable", Content: "删除预览缺少校验信息，未执行删除。", Payload: map[string]any{"target": target, "destructive": false}}
 	}
 	if strings.TrimSpace(preview.OperationID) == "" {
-		return commandResult{Status: "success", Content: "删除预览缺少确认操作信息，未执行删除。", Payload: map[string]any{"target": target}}
+		return commandResult{Status: "preview_unavailable", Content: "删除预览缺少确认操作信息，未执行删除。", Payload: map[string]any{"target": target, "destructive": false}}
 	}
 	if strings.TrimSpace(preview.RequestID) == "" {
 		preview.RequestID = previewReq.RequestID
@@ -566,12 +657,13 @@ func (s *CommandService) handleForget(ctx context.Context, req chat.CommandReque
 		preview.ScopeMode = memorycore.ForgetScopeSemanticQuery
 	}
 	return commandResult{
-		Status:  "success",
+		Status:  "preview",
 		Content: memoryhost.BuildManualForgetPreviewNotice(*preview),
 		Payload: map[string]any{
 			"target":       target,
 			"operation_id": preview.OperationID,
 			"preview_hash": preview.PreviewHash,
+			"destructive":  false,
 		},
 	}
 }
@@ -882,10 +974,15 @@ func (s *CommandService) ensureOrigin(ctx context.Context, origin conversation.O
 		return fmt.Errorf("database is not configured")
 	}
 	return s.infra.DB.UpsertConversationOrigin(ctx, storage.ConversationOriginRecord{
-		OriginKey:    origin.OriginKey,
-		SourceType:   firstNonEmptyCommandValue(origin.SourceType, conversation.DefaultSourceType),
-		ChannelType:  firstNonEmptyCommandValue(origin.ChannelType, conversation.DefaultChannel),
-		MetadataJSON: "{}",
+		OriginKey:              origin.OriginKey,
+		SourceType:             firstNonEmptyCommandValue(origin.SourceType, conversation.DefaultSourceType),
+		AdapterInstanceID:      origin.AdapterInstanceID,
+		PlatformID:             origin.PlatformID,
+		ChannelType:            firstNonEmptyCommandValue(origin.ChannelType, conversation.DefaultChannel),
+		ExternalConversationID: origin.ExternalConversationID,
+		ExternalActorID:        origin.ExternalActorID,
+		DisplayName:            origin.DisplayName,
+		MetadataJSON:           "{}",
 	})
 }
 
@@ -917,9 +1014,12 @@ func (e commandExecution) finish(ctx context.Context, result commandResult) chat
 	payload["command_id"] = e.descriptor.ID
 	payload["command_name"] = e.parsed.Name
 	payload["status"] = result.Status
-	if result.ErrorKind != "" {
-		payload["error_kind"] = result.ErrorKind
+	payload["error_kind"] = result.ErrorKind
+	for key, value := range commandOriginActorPayload(e.request, sessionID) {
+		payload[key] = value
 	}
+	payload["reload_history"] = result.ReloadHistory
+	payload["reload_memory"] = result.ReloadMemory
 	if result.ContextSwitch != "" {
 		payload["reason"] = result.ContextSwitch
 	}
@@ -975,6 +1075,7 @@ func (e commandExecution) persist(ctx context.Context, result commandResult, ses
 		SourceType:   e.request.Origin.SourceType,
 		SessionID:    sessionID,
 		PersonaKey:   e.request.PersonaKey,
+		ActorID:      e.request.ActorID,
 		ActorRole:    e.request.ActorRole,
 		InputHash:    commandInputHash(e.request.Content),
 		ArgvJSON:     argvJSON,
@@ -1017,6 +1118,67 @@ func unknownDescriptor(name string) commandcore.CommandDescriptor {
 		Permission:   commandcore.CommandPermissionMember,
 		Scope:        commandcore.CommandScopeOrigin,
 		OutputMode:   commandcore.CommandOutputDirect,
+	}
+}
+
+func reservedDescriptor(name string) commandcore.CommandDescriptor {
+	name = strings.TrimSpace(strings.TrimPrefix(name, "/"))
+	return commandcore.CommandDescriptor{
+		ID:           "reserved." + name,
+		Name:         name,
+		Reserved:     true,
+		ProviderKind: commandcore.CommandProviderBuiltin,
+		Permission:   commandcore.CommandPermissionMember,
+		Scope:        commandcore.CommandScopeOrigin,
+		OutputMode:   commandcore.CommandOutputDirect,
+	}
+}
+
+func commandHelpLine(descriptor commandcore.CommandDescriptor) string {
+	usage := strings.TrimSpace(descriptor.Usage)
+	if usage == "" {
+		usage = "/" + strings.TrimSpace(descriptor.Name)
+	}
+	summary := strings.TrimSpace(descriptor.Summary)
+	if summary == "" {
+		return usage
+	}
+	return usage + " - " + summary
+}
+
+func commandHelpDetail(descriptor commandcore.CommandDescriptor) string {
+	lines := []string{strings.TrimSpace(descriptor.Usage)}
+	if lines[0] == "" {
+		lines[0] = "/" + strings.TrimSpace(descriptor.Name)
+	}
+	lines = append(lines, "状态："+commandHelpStatus(descriptor))
+	if summary := strings.TrimSpace(descriptor.Summary); summary != "" {
+		lines = append(lines, "说明："+summary+"。")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func commandHelpStatus(descriptor commandcore.CommandDescriptor) string {
+	if canonicalCommandName(descriptor) == "forget" {
+		return "preview-only"
+	}
+	return "implemented"
+}
+
+func commandOriginActorPayload(req chat.CommandRequest, sessionID string) map[string]any {
+	return map[string]any{
+		"origin_key":               req.Origin.OriginKey,
+		"source_type":              firstNonEmptyCommandValue(req.Origin.SourceType, conversation.DefaultSourceType),
+		"adapter_instance_id":      req.Origin.AdapterInstanceID,
+		"platform_id":              req.Origin.PlatformID,
+		"channel_type":             firstNonEmptyCommandValue(req.Origin.ChannelType, conversation.DefaultChannel),
+		"external_conversation_id": req.Origin.ExternalConversationID,
+		"external_actor_id":        req.Origin.ExternalActorID,
+		"session_id":               sessionID,
+		"persona":                  req.PersonaKey,
+		"actor_id":                 req.ActorID,
+		"actor_name":               req.ActorName,
+		"actor_role":               firstNonEmptyCommandValue(req.ActorRole, string(commandcore.CommandPermissionMember)),
 	}
 }
 

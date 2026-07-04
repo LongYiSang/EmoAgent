@@ -1509,6 +1509,35 @@ CREATE INDEX IF NOT EXISTS idx_command_invocations_command_time
     ON command_invocations(command_id, created_at DESC);
 `,
 	},
+	{
+		Version: 39,
+		SQL: `
+CREATE TABLE IF NOT EXISTS platform_message_receipts (
+    id                         TEXT PRIMARY KEY,
+    source_type                TEXT NOT NULL,
+    adapter_instance_id        TEXT NOT NULL DEFAULT '',
+    platform_id                TEXT NOT NULL DEFAULT '',
+    external_message_id        TEXT NOT NULL,
+    origin_key                 TEXT NOT NULL,
+    session_id                 TEXT NOT NULL DEFAULT '',
+    persona_key                TEXT NOT NULL DEFAULT '',
+    message_hash               TEXT NOT NULL DEFAULT '',
+    status                     TEXT NOT NULL DEFAULT 'processing'
+        CHECK(status IN ('processing','handled','duplicate','failed','ignored')),
+    result_type                TEXT NOT NULL DEFAULT '',
+    error_message              TEXT NOT NULL DEFAULT '',
+    received_at                TEXT NOT NULL DEFAULT (datetime('now')),
+    handled_at                 TEXT,
+    UNIQUE(source_type, adapter_instance_id, external_message_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_platform_message_receipts_origin_time
+    ON platform_message_receipts(origin_key, received_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_platform_message_receipts_status
+    ON platform_message_receipts(status, received_at DESC);
+`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.

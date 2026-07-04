@@ -46,6 +46,162 @@ func TestCommandServiceSidRecordsResultWithoutMessage(t *testing.T) {
 	assertConversationEvent(t, db, sessionID, "command_result")
 }
 
+func TestCommandServiceHelpExcludesReservedUnimplementedRoots(t *testing.T) {
+	ctx := context.Background()
+	_, db, commands := newTestCommandService(t)
+	sessionID := createTestSession(t, db, "session-help", "default")
+
+	resp, handled, err := commands.TryHandle(ctx, chat.CommandRequest{
+		Content:    "/help",
+		Origin:     conversation.Origin{OriginKey: "webui:local:main", SourceType: "webui", ChannelType: "web"},
+		SessionID:  sessionID,
+		PersonaKey: "default",
+		ActorRole:  "member",
+	})
+	if err != nil {
+		t.Fatalf("TryHandle: %v", err)
+	}
+	if !handled {
+		t.Fatal("/help was not handled")
+	}
+	requireCommandMessage(t, resp, "help", "success")
+	content := resp.Messages[len(resp.Messages)-1].Content
+	for _, want := range []string{"/help [command] -", "/sid -", "/new -", "/reset -", "/clear -", "/compact -", "/forget <target> -", "/stop -"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("/help content missing %q:\n%s", want, content)
+		}
+	}
+	for _, forbidden := range []string{"/set", "/provider", "/model", "/admin"} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("/help content includes reserved unimplemented root %q:\n%s", forbidden, content)
+		}
+	}
+}
+
+func TestCommandServiceHelpShowsSingleCommandDetails(t *testing.T) {
+	ctx := context.Background()
+	_, db, commands := newTestCommandService(t)
+	sessionID := createTestSession(t, db, "session-help-detail", "default")
+
+	resp, handled, err := commands.TryHandle(ctx, chat.CommandRequest{
+		Content:    "/help forget",
+		Origin:     conversation.Origin{OriginKey: "webui:local:main", SourceType: "webui", ChannelType: "web"},
+		SessionID:  sessionID,
+		PersonaKey: "default",
+		ActorRole:  "member",
+	})
+	if err != nil {
+		t.Fatalf("TryHandle: %v", err)
+	}
+	if !handled {
+		t.Fatal("/help forget was not handled")
+	}
+	requireCommandMessage(t, resp, "help", "success")
+	content := resp.Messages[len(resp.Messages)-1].Content
+	if !strings.Contains(content, "/forget <target>") || !strings.Contains(content, "状态：preview-only") {
+		t.Fatalf("/help forget content = %q, want usage and preview-only status", content)
+	}
+}
+
+func TestCommandServiceReservedUnimplementedCommand(t *testing.T) {
+	ctx := context.Background()
+	_, db, commands := newTestCommandService(t)
+	sessionID := createTestSession(t, db, "session-reserved", "default")
+
+	resp, handled, err := commands.TryHandle(ctx, chat.CommandRequest{
+		Content:    "/set provider openai",
+		Origin:     conversation.Origin{OriginKey: "webui:local:main", SourceType: "webui", ChannelType: "web"},
+		SessionID:  sessionID,
+		PersonaKey: "default",
+		ActorRole:  "member",
+	})
+	if err != nil {
+		t.Fatalf("TryHandle: %v", err)
+	}
+	if !handled {
+		t.Fatal("/set was not handled")
+	}
+	msg := requireCommandMessage(t, resp, "set", "not_implemented")
+	if msg.ErrorKind != "reserved_not_implemented" {
+		t.Fatalf("ErrorKind = %q, want reserved_not_implemented", msg.ErrorKind)
+	}
+	if reserved, _ := msg.Payload["reserved"].(bool); !reserved {
+		t.Fatalf("payload reserved = %#v, want true", msg.Payload["reserved"])
+	}
+	assertInvocation(t, db, "reserved.set", "not_implemented")
+}
+
+func TestCommandServiceSidIncludesPlatformOriginAndActor(t *testing.T) {
+	ctx := context.Background()
+	_, db, commands := newTestCommandService(t)
+	origin := conversation.Origin{
+		OriginKey:              "napcat:main:group:123456",
+		SourceType:             "napcat",
+		AdapterInstanceID:      "main",
+		PlatformID:             "qq",
+		ChannelType:            "group",
+		ExternalConversationID: "123456",
+		ExternalActorID:        "789000",
+		DisplayName:            "测试群",
+	}
+	sessionID := createTestSession(t, db, "session-sid-platform", "default")
+
+	resp, handled, err := commands.TryHandle(ctx, chat.CommandRequest{
+		Content:    "/sid",
+		Origin:     origin,
+		SessionID:  sessionID,
+		PersonaKey: "default",
+		ActorID:    "789000",
+		ActorName:  "Alice",
+		ActorRole:  "admin",
+	})
+	if err != nil {
+		t.Fatalf("TryHandle: %v", err)
+	}
+	if !handled {
+		t.Fatal("/sid was not handled")
+	}
+	msg := requireCommandMessage(t, resp, "sid", "success")
+	for _, want := range []string{
+		"origin_key=napcat:main:group:123456",
+		"source_type=napcat",
+		"adapter_instance_id=main",
+		"platform_id=qq",
+		"channel_type=group",
+		"external_conversation_id=123456",
+		"external_actor_id=789000",
+		"actor_id=789000",
+		"actor_role=admin",
+		"session_id=" + sessionID,
+		"persona=default",
+	} {
+		if !strings.Contains(msg.Content, want) {
+			t.Fatalf("/sid content missing %q:\n%s", want, msg.Content)
+		}
+	}
+	for key, want := range map[string]string{
+		"origin_key":               "napcat:main:group:123456",
+		"source_type":              "napcat",
+		"adapter_instance_id":      "main",
+		"platform_id":              "qq",
+		"channel_type":             "group",
+		"external_conversation_id": "123456",
+		"external_actor_id":        "789000",
+		"session_id":               sessionID,
+		"persona":                  "default",
+		"actor_id":                 "789000",
+		"actor_role":               "admin",
+	} {
+		if got, _ := msg.Payload[key].(string); got != want {
+			t.Fatalf("payload[%s] = %q, want %q; payload=%#v", key, got, want, msg.Payload)
+		}
+	}
+	invocation := assertInvocation(t, db, "builtin.sid", "success")
+	if invocation.ActorID != "789000" || invocation.ActorRole != "admin" || invocation.SourceType != "napcat" {
+		t.Fatalf("invocation actor/source = %#v", invocation)
+	}
+}
+
 func TestCommandServiceBuiltinConfigDisableAndAlias(t *testing.T) {
 	ctx := context.Background()
 	_, db, commands := newTestCommandService(t)
@@ -240,6 +396,51 @@ func TestCommandServiceClearWritesMarkerOnly(t *testing.T) {
 	assertInvocation(t, db, "builtin.clear", "success")
 }
 
+func TestCommandServiceClearStoresFullPlatformOrigin(t *testing.T) {
+	ctx := context.Background()
+	_, db, commands := newTestCommandService(t)
+	origin := conversation.Origin{
+		OriginKey:              "napcat:main:private:10001",
+		SourceType:             "napcat",
+		AdapterInstanceID:      "main",
+		PlatformID:             "qq",
+		ChannelType:            "private",
+		ExternalConversationID: "10001",
+		ExternalActorID:        "10001",
+		DisplayName:            "Alice",
+	}
+	sessionID := createTestSession(t, db, "session-clear-platform", "default")
+
+	resp, handled, err := commands.TryHandle(ctx, chat.CommandRequest{
+		Content:    "/clear",
+		Origin:     origin,
+		SessionID:  sessionID,
+		PersonaKey: "default",
+		ActorRole:  "member",
+	})
+	if err != nil {
+		t.Fatalf("TryHandle: %v", err)
+	}
+	if !handled {
+		t.Fatal("/clear was not handled")
+	}
+	requireCommandMessage(t, resp, "clear", "success")
+	stored, err := db.GetConversationOrigin(ctx, origin.OriginKey)
+	if err != nil {
+		t.Fatalf("GetConversationOrigin: %v", err)
+	}
+	if stored == nil ||
+		stored.SourceType != "napcat" ||
+		stored.AdapterInstanceID != "main" ||
+		stored.PlatformID != "qq" ||
+		stored.ChannelType != "private" ||
+		stored.ExternalConversationID != "10001" ||
+		stored.ExternalActorID != "10001" ||
+		stored.DisplayName != "Alice" {
+		t.Fatalf("stored origin = %#v, want full platform fields", stored)
+	}
+}
+
 func TestCommandServiceStopCancelsActiveRuns(t *testing.T) {
 	ctx := context.Background()
 	_, db, commands := newTestCommandService(t)
@@ -382,6 +583,32 @@ func TestCommandServiceCompactUpdatesRunningSummaryWithoutMessage(t *testing.T) 
 	assertInvocation(t, db, "builtin.compact", "success")
 }
 
+func TestCommandServiceCompactWithoutSummaryModelReturnsNoop(t *testing.T) {
+	ctx := context.Background()
+	app, db, commands := newTestCommandService(t)
+	sessionID := createTestSession(t, db, "session-compact-noop", "default")
+	setTestActiveRuntime(app, &ActiveAgentRuntime{PersonaKey: "default", Context: config.DefaultConfig().Context})
+
+	resp, handled, err := commands.TryHandle(ctx, chat.CommandRequest{
+		Content:    "/compact",
+		Origin:     conversation.Origin{OriginKey: "webui:local:main", SourceType: "webui", ChannelType: "web"},
+		SessionID:  sessionID,
+		PersonaKey: "default",
+		ActorRole:  "member",
+	})
+	if err != nil {
+		t.Fatalf("TryHandle: %v", err)
+	}
+	if !handled {
+		t.Fatal("/compact was not handled")
+	}
+	msg := requireCommandMessage(t, resp, "compact", "noop")
+	if got, _ := msg.Payload["noop_reason"].(string); got != "summary_model_unavailable" {
+		t.Fatalf("noop_reason = %q, want summary_model_unavailable; payload=%#v", got, msg.Payload)
+	}
+	assertInvocation(t, db, "builtin.compact", "noop")
+}
+
 func TestCommandServiceForgetPreviewsMemoryCoreWithoutMessage(t *testing.T) {
 	ctx := context.Background()
 	_, db, commands := newTestCommandService(t)
@@ -425,7 +652,7 @@ func TestCommandServiceForgetPreviewsMemoryCoreWithoutMessage(t *testing.T) {
 	if !handled {
 		t.Fatal("/forget was not handled")
 	}
-	requireCommandMessage(t, resp, "forget", "success")
+	msg := requireCommandMessage(t, resp, "forget", "preview")
 	if len(core.previewCalls) != 1 {
 		t.Fatalf("PreviewForget calls = %d, want 1", len(core.previewCalls))
 	}
@@ -443,8 +670,14 @@ func TestCommandServiceForgetPreviewsMemoryCoreWithoutMessage(t *testing.T) {
 	if !strings.Contains(resp.Messages[len(resp.Messages)-1].Content, "确认删除") {
 		t.Fatalf("forget content = %q, want confirmation prompt", resp.Messages[len(resp.Messages)-1].Content)
 	}
+	if destructive, _ := msg.Payload["destructive"].(bool); destructive {
+		t.Fatalf("forget preview payload destructive = true, want false")
+	}
+	if got, _ := msg.Payload["operation_id"].(string); got != "operation-1" {
+		t.Fatalf("operation_id = %q, want operation-1", got)
+	}
 	assertNoMessages(t, db, sessionID)
-	assertInvocation(t, db, "builtin.forget", "success")
+	assertInvocation(t, db, "builtin.forget", "preview")
 }
 
 func TestCommandServiceForgetFallsBackWhenMemoryHostUnavailable(t *testing.T) {
@@ -465,12 +698,15 @@ func TestCommandServiceForgetFallsBackWhenMemoryHostUnavailable(t *testing.T) {
 	if !handled {
 		t.Fatal("/forget was not handled")
 	}
-	requireCommandMessage(t, resp, "forget", "success")
+	msg := requireCommandMessage(t, resp, "forget", "preview_unavailable")
 	if !strings.Contains(resp.Messages[len(resp.Messages)-1].Content, "Forget Manager") {
 		t.Fatalf("forget fallback content = %q", resp.Messages[len(resp.Messages)-1].Content)
 	}
+	if destructive, _ := msg.Payload["destructive"].(bool); destructive {
+		t.Fatalf("forget unavailable payload destructive = true, want false")
+	}
 	assertNoMessages(t, db, sessionID)
-	assertInvocation(t, db, "builtin.forget", "success")
+	assertInvocation(t, db, "builtin.forget", "preview_unavailable")
 }
 
 type commandCompactFakeLLM struct {
@@ -523,14 +759,15 @@ func createTestSession(t *testing.T, db *storage.DB, sessionID, persona string) 
 	return sessionID
 }
 
-func requireCommandMessage(t *testing.T, resp chat.CommandResponse, name string, status string) {
+func requireCommandMessage(t *testing.T, resp chat.CommandResponse, name string, status string) chat.WSMessage {
 	t.Helper()
 	for _, msg := range resp.Messages {
 		if msg.Type == "command_result" && msg.CommandName == name && msg.Status == status {
-			return
+			return msg
 		}
 	}
 	t.Fatalf("missing command_result %s/%s in %#v", name, status, resp.Messages)
+	return chat.WSMessage{}
 }
 
 func requireWSMessage(t *testing.T, messages []chat.WSMessage, typ string) {
@@ -554,7 +791,7 @@ func assertNoMessages(t *testing.T, db *storage.DB, sessionID string) {
 	}
 }
 
-func assertInvocation(t *testing.T, db *storage.DB, commandID string, status string) {
+func assertInvocation(t *testing.T, db *storage.DB, commandID string, status string) storage.CommandInvocationRecord {
 	t.Helper()
 	invocations, err := db.ListCommandInvocations(context.Background(), storage.CommandInvocationFilter{CommandID: commandID, Limit: 1})
 	if err != nil {
@@ -566,6 +803,7 @@ func assertInvocation(t *testing.T, db *storage.DB, commandID string, status str
 	if invocations[0].Status != status {
 		t.Fatalf("invocation status = %q, want %q", invocations[0].Status, status)
 	}
+	return invocations[0]
 }
 
 func assertConversationEvent(t *testing.T, db *storage.DB, sessionID string, eventType string) {
