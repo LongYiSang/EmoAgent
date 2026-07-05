@@ -4,7 +4,7 @@ import type { AgentConfig, Persona, Provider, ProviderPreset } from '../protocol
 
 export { matchesQuery } from '../../shared/lib/search';
 
-export type TabID = 'providers' | 'agents' | 'personas' | 'chat-settings' | 'usage' | 'memory-core' | 'agent-affect' | 'prompt-center' | 'websearch-pipeline' | 'pipelines' | 'retrieval-mirror' | 'python-toolchain' | 'sidecar' | 'privacy-forget' | 'retention' | 'diagnostics';
+export type TabID = 'providers' | 'agents' | 'personas' | 'chat-settings' | 'usage' | 'memory-core' | 'agent-affect' | 'prompt-center' | 'websearch-pipeline' | 'platforms' | 'pipelines' | 'retrieval-mirror' | 'python-toolchain' | 'sidecar' | 'privacy-forget' | 'retention' | 'diagnostics';
 
 export const tabs: Array<{ id: TabID; label: string }> = [
   { id: 'providers', label: '模型服务' },
@@ -16,6 +16,7 @@ export const tabs: Array<{ id: TabID; label: string }> = [
   { id: 'agent-affect', label: 'Agent Affect' },
   { id: 'prompt-center', label: '提示词中心' },
   { id: 'websearch-pipeline', label: '搜索流水线' },
+  { id: 'platforms', label: '消息平台' },
   { id: 'pipelines', label: 'Pipeline' },
   { id: 'retrieval-mirror', label: '检索' },
   { id: 'python-toolchain', label: 'Python' },

@@ -30,6 +30,7 @@ type EffectiveConfig struct {
 	Memory                 config.MemoryConfig          `json:"memory"`
 	WebSearch              config.WebSearchConfig       `json:"websearch"`
 	PythonToolchain        config.PythonToolchainConfig `json:"python_toolchain"`
+	Platforms              config.PlatformsConfig       `json:"platforms"`
 	WebSearchRuntime       WebSearchRuntimeStatus       `json:"websearch_runtime"`
 	Providers              []ProviderEffective          `json:"providers"`
 	RuntimeSettings        []storage.RuntimeSetting     `json:"runtime_settings"`
@@ -180,8 +181,9 @@ func (s *Service) BuildEffective(ctx context.Context) (EffectiveConfig, error) {
 		Memory:          runtimeCfg.Memory,
 		WebSearch:       runtimeCfg.WebSearch,
 		PythonToolchain: runtimeCfg.PythonToolchain,
+		Platforms:       sanitizedPlatformsConfig(runtimeCfg.Platforms),
 		Providers:       s.providerEffective(providers),
-		RuntimeSettings: runtimeSettings,
+		RuntimeSettings: sanitizeRuntimeSettings(runtimeSettings),
 	}
 	issues := append([]ConfigIssue{}, runtimeIssues...)
 	issues = append(issues, BuildIssues(&runtimeCfg, effective.Providers, nil)...)
@@ -353,6 +355,53 @@ func (s *Service) UpdatePythonToolchainConfig(ctx context.Context, cfg config.Py
 	return s.BuildEffective(ctx)
 }
 
+func (s *Service) UpdatePlatformsConfig(ctx context.Context, cfg config.PlatformsConfig) (EffectiveConfig, error) {
+	if s.DB == nil {
+		return EffectiveConfig{}, fmt.Errorf("runtime settings database is not configured")
+	}
+	payload, err := json.Marshal(cfg)
+	if err != nil {
+		return EffectiveConfig{}, err
+	}
+	if err := s.validatePlatformsConfigUpdate(ctx, storage.RuntimeSetting{
+		Namespace: "platforms",
+		Key:       "config",
+		ValueJSON: string(payload),
+		Source:    "ui",
+	}); err != nil {
+		return EffectiveConfig{}, err
+	}
+	if err := s.DB.UpsertRuntimeSetting("platforms", "config", string(payload), "ui"); err != nil {
+		return EffectiveConfig{}, err
+	}
+	return s.BuildEffective(ctx)
+}
+
+func (s *Service) validatePlatformsConfigUpdate(ctx context.Context, next storage.RuntimeSetting) error {
+	seed := s.Seed
+	if seed == nil {
+		seed = config.DefaultConfig()
+	}
+	current, err := s.runtimeSettings()
+	if err != nil {
+		return err
+	}
+	settings := replaceRuntimeSetting(current, next)
+	runtimeCfg, runtimeIssues := ApplyRuntimeSettings(seed, settings)
+	providers, err := s.providers(ctx, &runtimeCfg)
+	if err != nil {
+		return err
+	}
+	allIssues := append([]ConfigIssue{}, runtimeIssues...)
+	allIssues = append(allIssues, BuildIssues(&runtimeCfg, s.providerEffective(providers), nil)...)
+	issues := filterIssuesByPathPrefix(allIssues, "platforms")
+	issues = dedupeIssues(issues)
+	if hasBlockingIssues(issues) {
+		return &ValidationError{Issues: issues}
+	}
+	return nil
+}
+
 func (s *Service) validatePythonToolchainConfigUpdate(ctx context.Context, next storage.RuntimeSetting) error {
 	seed := s.Seed
 	if seed == nil {
@@ -376,6 +425,72 @@ func (s *Service) validatePythonToolchainConfigUpdate(ctx context.Context, next 
 		return &ValidationError{Issues: issues}
 	}
 	return nil
+}
+
+func sanitizeRuntimeSettings(settings []storage.RuntimeSetting) []storage.RuntimeSetting {
+	if len(settings) == 0 {
+		return nil
+	}
+	out := append([]storage.RuntimeSetting(nil), settings...)
+	for i := range out {
+		if strings.TrimSpace(out[i].Namespace) != "platforms" || !wholeObjectRuntimeKey(out[i].Key) {
+			continue
+		}
+		var cfg config.PlatformsConfig
+		if err := json.Unmarshal([]byte(out[i].ValueJSON), &cfg); err != nil {
+			out[i].ValueJSON = ""
+			continue
+		}
+		body, err := json.Marshal(sanitizedPlatformsConfig(cfg))
+		if err != nil {
+			out[i].ValueJSON = ""
+			continue
+		}
+		out[i].ValueJSON = string(body)
+	}
+	return out
+}
+
+func sanitizedPlatformsConfig(cfg config.PlatformsConfig) config.PlatformsConfig {
+	out := cfg
+	if len(cfg.Common.CommandPrefixes) > 0 {
+		out.Common.CommandPrefixes = append([]string(nil), cfg.Common.CommandPrefixes...)
+	}
+	if cfg.Adapters == nil {
+		out.Adapters = nil
+		return out
+	}
+	out.Adapters = make(map[string]config.PlatformAdapterConfig, len(cfg.Adapters))
+	for id, adapter := range cfg.Adapters {
+		next := adapter
+		next.ConfigJSON = sanitizedAdapterConfig(adapter.ConfigJSON)
+		out.Adapters[id] = next
+	}
+	return out
+}
+
+func sanitizedAdapterConfig(raw map[string]any) map[string]any {
+	if raw == nil {
+		return nil
+	}
+	out := make(map[string]any, len(raw))
+	for key, value := range raw {
+		if key == "transport" {
+			if transport, ok := value.(map[string]any); ok {
+				next := make(map[string]any, len(transport))
+				for transportKey, transportValue := range transport {
+					if transportKey == "access_token" {
+						continue
+					}
+					next[transportKey] = transportValue
+				}
+				out[key] = next
+				continue
+			}
+		}
+		out[key] = value
+	}
+	return out
 }
 
 func (s *Service) Validate(ctx context.Context, _ ValidateRequest) (ValidateResponse, error) {

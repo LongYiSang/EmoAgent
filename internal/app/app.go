@@ -15,6 +15,7 @@ import (
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/media"
 	"github.com/longyisang/emoagent/internal/memoryhost"
+	"github.com/longyisang/emoagent/internal/platform"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/pytoolchain"
 	sidecarruntime "github.com/longyisang/emoagent/internal/sidecar"
@@ -752,6 +753,35 @@ func (a *App) ListConfigIssues(ctx context.Context) ([]configcenter.ConfigIssue,
 		return nil, err
 	}
 	return services.Config.ListIssues(ctx)
+}
+
+func (a *App) GetPlatformStatus(ctx context.Context) (platform.PlatformStatus, error) {
+	services, err := a.services()
+	if err != nil {
+		return platform.PlatformStatus{}, err
+	}
+	_ = ctx
+	return services.Platforms.Status(), nil
+}
+
+func (a *App) UpdatePlatformsConfig(ctx context.Context, cfg config.PlatformsConfig) (configcenter.EffectiveConfig, error) {
+	services, err := a.services()
+	if err != nil {
+		return configcenter.EffectiveConfig{}, err
+	}
+	effective, err := services.Config.UpdatePlatformsConfig(ctx, cfg)
+	if err != nil {
+		return configcenter.EffectiveConfig{}, err
+	}
+	if services.Platforms != nil {
+		if err := services.Platforms.Configure(ctx, effective.Platforms); err != nil {
+			return configcenter.EffectiveConfig{}, err
+		}
+		if err := services.Platforms.Start(ctx); err != nil {
+			return configcenter.EffectiveConfig{}, err
+		}
+	}
+	return effective, nil
 }
 
 func (a *App) GetMemoryConfig(ctx context.Context) (configcenter.MemoryConfigResponse, error) {

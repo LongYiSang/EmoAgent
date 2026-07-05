@@ -11,6 +11,7 @@ import { useSidecarAdmin } from './hooks/useSidecarAdmin';
 import { useAgentAffectAdmin } from './hooks/useAgentAffectAdmin';
 import { usePromptCenterAdmin } from './hooks/usePromptCenterAdmin';
 import { useWebSearchAdmin } from './hooks/useWebSearchAdmin';
+import { usePlatformAdmin } from './hooks/usePlatformAdmin';
 import { usePythonToolchainAdmin } from './hooks/usePythonToolchainAdmin';
 import { useUsageAdmin } from './hooks/useUsageAdmin';
 import { useAdminBootstrap } from './hooks/useAdminBootstrap';
@@ -26,6 +27,7 @@ const MemoryCoreTab = lazy(() => import('./tabs/MemoryCoreTab'));
 const AgentAffectTab = lazy(() => import('./tabs/AgentAffectTab'));
 const PromptCenterTab = lazy(() => import('./tabs/PromptCenterTab'));
 const WebSearchPipelineTab = lazy(() => import('./tabs/WebSearchPipelineTab'));
+const PlatformsTab = lazy(() => import('./tabs/PlatformsTab'));
 const PythonToolchainTab = lazy(() => import('./tabs/PythonToolchainTab'));
 const PipelinesTab = lazy(() => import('./tabs/PipelinesTab'));
 const RetrievalTab = lazy(() => import('./tabs/RetrievalTab'));
@@ -46,10 +48,11 @@ export function AdminApp() {
   const agentAffect = useAgentAffectAdmin({ setStatus: status.setStatus, showError: status.showError, defaultPersonaID: agents.activePersona });
   const promptCenter = usePromptCenterAdmin(status);
   const webSearch = useWebSearchAdmin(status);
+  const platforms = usePlatformAdmin(status);
   const pythonToolchain = usePythonToolchainAdmin(status);
   const usage = useUsageAdmin(status);
 
-  useAdminBootstrap(tab, { providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, webSearch, pythonToolchain, usage, sidecar, status });
+  useAdminBootstrap(tab, { providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, webSearch, platforms, pythonToolchain, usage, sidecar, status });
 
   function renderActiveTab() {
     switch (tab) {
@@ -147,6 +150,8 @@ export function AdminApp() {
         return <PromptCenterTab {...promptCenter} agents={agents.agents} activeAgentID={agents.activeAgentID} />;
       case 'websearch-pipeline':
         return <WebSearchPipelineTab {...webSearch} />;
+      case 'platforms':
+        return <PlatformsTab {...platforms} />;
       case 'python-toolchain':
         return <PythonToolchainTab {...pythonToolchain} />;
       case 'pipelines':

@@ -67,6 +67,8 @@ func applyRuntimeSetting(cfg *config.Config, setting storage.RuntimeSetting) err
 		return overlayJSONSetting(&cfg.PythonToolchain, setting)
 	case "websearch":
 		return overlayJSONSetting(&cfg.WebSearch, setting)
+	case "platforms":
+		return overlayJSONSetting(&cfg.Platforms, setting)
 	default:
 		return nil
 	}

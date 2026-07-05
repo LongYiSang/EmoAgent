@@ -21,6 +21,7 @@ import (
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/media"
 	"github.com/longyisang/emoagent/internal/memoryhost"
+	"github.com/longyisang/emoagent/internal/platform"
 	"github.com/longyisang/emoagent/internal/progress"
 	"github.com/longyisang/emoagent/internal/protocol"
 	sidecarruntime "github.com/longyisang/emoagent/internal/sidecar"
@@ -77,6 +78,8 @@ type AdminApp interface {
 	GetEffectiveConfig(ctx context.Context) (configcenter.EffectiveConfig, error)
 	ValidateConfig(ctx context.Context, req configcenter.ValidateRequest) (configcenter.ValidateResponse, error)
 	ListConfigIssues(ctx context.Context) ([]configcenter.ConfigIssue, error)
+	GetPlatformStatus(ctx context.Context) (platform.PlatformStatus, error)
+	UpdatePlatformsConfig(ctx context.Context, cfg config.PlatformsConfig) (configcenter.EffectiveConfig, error)
 	GetMemoryConfig(ctx context.Context) (configcenter.MemoryConfigResponse, error)
 	UpdateMemoryConfig(ctx context.Context, memory config.MemoryConfig) (configcenter.EffectiveConfig, error)
 	GetAgentAffectConfig(ctx context.Context) (configcenter.AgentAffectConfigResponse, error)
@@ -346,6 +349,10 @@ type memoryConfigRequest struct {
 	Memory config.MemoryConfig `json:"memory"`
 }
 
+type platformsConfigRequest struct {
+	Platforms config.PlatformsConfig `json:"platforms"`
+}
+
 type sidecarGeneratedConfigResponse struct {
 	Config string `json:"config"`
 }
@@ -520,6 +527,29 @@ func (h *APIHandler) HandleListConfigIssues(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string][]configcenter.ConfigIssue{"issues": issues})
+}
+
+func (h *APIHandler) HandleGetPlatformStatus(w http.ResponseWriter, r *http.Request) {
+	status, err := h.app.GetPlatformStatus(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get platform status")
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (h *APIHandler) HandleUpdatePlatformsConfig(w http.ResponseWriter, r *http.Request) {
+	var req platformsConfigRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	effective, err := h.app.UpdatePlatformsConfig(r.Context(), req.Platforms)
+	if err != nil {
+		h.writeConfigMutationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, effective)
 }
 
 func (h *APIHandler) HandleGetMemoryConfig(w http.ResponseWriter, r *http.Request) {

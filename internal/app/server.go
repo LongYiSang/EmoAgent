@@ -138,6 +138,8 @@ func registerRoutes(mux *http.ServeMux, api *web.APIHandler, chatHandler http.Ha
 	mux.HandleFunc("GET /api/config/effective", api.HandleGetConfigEffective)
 	mux.HandleFunc("POST /api/config/validate", api.HandleValidateConfig)
 	mux.HandleFunc("GET /api/config/issues", api.HandleListConfigIssues)
+	mux.HandleFunc("GET /api/platforms/status", api.HandleGetPlatformStatus)
+	mux.HandleFunc("PUT /api/platforms/config", api.HandleUpdatePlatformsConfig)
 	mux.HandleFunc("GET /api/python-toolchain", api.HandleGetPythonToolchain)
 	mux.HandleFunc("PUT /api/python-toolchain", api.HandleUpdatePythonToolchain)
 	mux.HandleFunc("POST /api/python-toolchain/probe", api.HandleProbePythonToolchain)

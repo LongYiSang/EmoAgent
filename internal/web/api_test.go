@@ -22,6 +22,7 @@ import (
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/media"
 	"github.com/longyisang/emoagent/internal/memoryhost"
+	"github.com/longyisang/emoagent/internal/platform"
 	"github.com/longyisang/emoagent/internal/protocol"
 	sidecarruntime "github.com/longyisang/emoagent/internal/sidecar"
 	"github.com/longyisang/emoagent/internal/storage"
@@ -78,12 +79,15 @@ type fakeAdminApp struct {
 	openMediaErr            error
 	effectiveConfig         configcenter.EffectiveConfig
 	configIssues            []configcenter.ConfigIssue
+	platformStatus          platform.PlatformStatus
 	providerEnvStatus       configcenter.ProviderEnvStatus
 	memoryConfig            configcenter.MemoryConfigResponse
 	lastMemoryConfig        config.MemoryConfig
 	webSearchConfig         configcenter.WebSearchConfigResponse
 	lastWebSearchConfig     config.WebSearchConfig
 	updateWebSearchErr      error
+	lastPlatformsConfig     config.PlatformsConfig
+	updatePlatformsErr      error
 	sidecarStatus           sidecarruntime.Status
 	sidecarConfig           string
 	sidecarLogs             string
@@ -756,6 +760,9 @@ func (f *fakeAdminApp) ValidateConfig(ctx context.Context, req configcenter.Vali
 func (f *fakeAdminApp) ListConfigIssues(ctx context.Context) ([]configcenter.ConfigIssue, error) {
 	return append([]configcenter.ConfigIssue(nil), f.configIssues...), nil
 }
+func (f *fakeAdminApp) GetPlatformStatus(ctx context.Context) (platform.PlatformStatus, error) {
+	return f.platformStatus, nil
+}
 func (f *fakeAdminApp) GetMemoryConfig(ctx context.Context) (configcenter.MemoryConfigResponse, error) {
 	return f.memoryConfig, nil
 }
@@ -769,6 +776,10 @@ func (f *fakeAdminApp) GetMemoryFeatures(ctx context.Context) (configcenter.Memo
 func (f *fakeAdminApp) UpdateMemoryFeatures(ctx context.Context, memory config.MemoryConfig) (configcenter.EffectiveConfig, error) {
 	f.lastMemoryConfig = memory
 	return f.effectiveConfig, nil
+}
+func (f *fakeAdminApp) UpdatePlatformsConfig(ctx context.Context, platforms config.PlatformsConfig) (configcenter.EffectiveConfig, error) {
+	f.lastPlatformsConfig = platforms
+	return f.effectiveConfig, f.updatePlatformsErr
 }
 func (f *fakeAdminApp) ListLLMUsageEvents(ctx context.Context, filter storage.LLMUsageEventFilter) ([]storage.LLMUsageEvent, error) {
 	f.lastUsageFilter = filter
@@ -1495,6 +1506,22 @@ func TestHandleConfigEffective(t *testing.T) {
 				Enabled: true,
 				Env:     configcenter.ProviderEnvStatus{APIKeyEnv: "MOONSHOT_API_KEY", Present: true},
 			}},
+			Platforms: config.PlatformsConfig{
+				Enabled: true,
+				Adapters: map[string]config.PlatformAdapterConfig{
+					"qq-main": {
+						Enabled:    true,
+						Kind:       "onebot_v11",
+						InstanceID: "qq-main",
+						PlatformID: "qq",
+						ConfigJSON: map[string]any{
+							"transport": map[string]any{
+								"access_token_env": "SNOWLUMA_ONEBOT_TOKEN",
+							},
+						},
+					},
+				},
+			},
 			Issues: []configcenter.ConfigIssue{{
 				Path:     "memory.retrieval.enabled",
 				Severity: "warning",
@@ -1523,6 +1550,117 @@ func TestHandleConfigEffective(t *testing.T) {
 	}
 	if len(resp.Issues) != 1 || resp.Issues[0].Path != "memory.retrieval.enabled" {
 		t.Fatalf("issues = %#v", resp.Issues)
+	}
+	if !resp.Platforms.Enabled || resp.Platforms.Adapters["qq-main"].PlatformID != "qq" {
+		t.Fatalf("platforms = %#v", resp.Platforms)
+	}
+}
+
+func TestHandleGetPlatformStatus(t *testing.T) {
+	app := &fakeAdminApp{
+		platformStatus: platform.PlatformStatus{
+			Enabled: true,
+			Adapters: []platform.AdapterStatus{{
+				ID:             "qq-main",
+				Kind:           "onebot_v11",
+				Enabled:        true,
+				Implementation: "snowluma",
+				SourceType:     "onebot",
+				PlatformID:     "qq",
+				InstanceID:     "qq-main",
+				Transport: platform.TransportStatus{
+					Mode:      "ws_reverse",
+					State:     "connected",
+					SelfID:    "123456",
+					Connected: true,
+				},
+				Routing: platform.RoutingStatus{
+					PrivateEnabled:     true,
+					GroupEnabled:       false,
+					IgnoreSelfMessages: true,
+				},
+				Auth: platform.AuthStatus{AccessTokenConfigured: true},
+			}},
+		},
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/platforms/status", nil)
+	rec := httptest.NewRecorder()
+	handler.HandleGetPlatformStatus(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`"enabled":true`,
+		`"id":"qq-main"`,
+		`"implementation":"snowluma"`,
+		`"source_type":"onebot"`,
+		`"self_id":"123456"`,
+		`"access_token_configured":true`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body = %s, want %s", body, want)
+		}
+	}
+	if strings.Contains(body, "dev-token") || strings.Contains(body, "access_token\"") {
+		t.Fatalf("platform status leaked token field/value: %s", body)
+	}
+}
+
+func TestHandleUpdatePlatformsConfig(t *testing.T) {
+	app := &fakeAdminApp{
+		effectiveConfig: configcenter.EffectiveConfig{
+			Platforms: config.PlatformsConfig{Enabled: true},
+		},
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodPut, "/api/platforms/config", bytes.NewBufferString(`{"platforms":{"enabled":true,"adapters":{"qq-main":{"enabled":true,"kind":"onebot_v11","instance_id":"qq-main","platform_id":"qq","config":{"implementation":"snowluma","transport":{"mode":"ws_reverse","reverse_path":"/api/platforms/onebot/v11/qq-main/ws","access_token_env":"SNOWLUMA_ONEBOT_TOKEN"}}}}}}`))
+	rec := httptest.NewRecorder()
+	handler.HandleUpdatePlatformsConfig(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200", rec.Code, rec.Body.String())
+	}
+	if !app.lastPlatformsConfig.Enabled || app.lastPlatformsConfig.Adapters["qq-main"].Kind != "onebot_v11" {
+		t.Fatalf("last platforms config = %#v", app.lastPlatformsConfig)
+	}
+}
+
+func TestHandleUpdatePlatformsConfigRejectsInvalidJSON(t *testing.T) {
+	handler := NewAPIHandler(&fakeAdminApp{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	req := httptest.NewRequest(http.MethodPut, "/api/platforms/config", bytes.NewBufferString(`{"platforms":`))
+	rec := httptest.NewRecorder()
+
+	handler.HandleUpdatePlatformsConfig(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s, want 400", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleUpdatePlatformsConfigValidationError(t *testing.T) {
+	app := &fakeAdminApp{
+		updatePlatformsErr: &configcenter.ValidationError{Issues: []configcenter.ConfigIssue{{
+			Path:     "platforms.adapters.qq-main",
+			Severity: "error",
+			Message:  "invalid onebot config",
+		}}},
+	}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	req := httptest.NewRequest(http.MethodPut, "/api/platforms/config", bytes.NewBufferString(`{"platforms":{"enabled":true}}`))
+	rec := httptest.NewRecorder()
+
+	handler.HandleUpdatePlatformsConfig(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s, want 400", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"platforms.adapters.qq-main"`) {
+		t.Fatalf("body = %s, want validation issue", rec.Body.String())
 	}
 }
 

@@ -91,3 +91,83 @@ func TestBuildIssuesWarnsDeprecatedAgentAffectPreviousEvaluations(t *testing.T) 
 
 	requireConfigIssue(t, issues, "agent_affect.context.include_previous_evaluations")
 }
+
+func TestBuildIssuesWarnsPlatformsEnabledWithoutAdapters(t *testing.T) {
+	seed := config.DefaultConfig()
+	seed.Platforms.Enabled = true
+	seed.Platforms.Adapters = map[string]config.PlatformAdapterConfig{}
+
+	issues := BuildIssues(seed, nil, nil)
+
+	requireConfigIssueSeverity(t, issues, "platforms.adapters", "warning")
+}
+
+func TestBuildIssuesReportsInvalidOneBotAdapterConfig(t *testing.T) {
+	seed := config.DefaultConfig()
+	seed.Platforms.Enabled = true
+	seed.Platforms.Adapters = map[string]config.PlatformAdapterConfig{
+		"qq-main": {
+			Enabled: true,
+			Kind:    "onebot_v11",
+			ConfigJSON: map[string]any{
+				"implementation": "unknown",
+				"transport": map[string]any{
+					"mode": "ws_reverse",
+				},
+			},
+		},
+	}
+
+	issues := BuildIssues(seed, nil, nil)
+
+	requireConfigIssueSeverity(t, issues, "platforms.adapters.qq-main.config", "error")
+}
+
+func TestBuildIssuesWarnsIgnoredOneBotTransportFields(t *testing.T) {
+	seed := config.DefaultConfig()
+	seed.Platforms.Enabled = true
+	seed.Platforms.Adapters = map[string]config.PlatformAdapterConfig{
+		"reverse-url": {
+			Enabled: true,
+			Kind:    "onebot_v11",
+			ConfigJSON: map[string]any{
+				"transport": map[string]any{
+					"mode": "ws_reverse",
+					"url":  "ws://127.0.0.1:3001",
+				},
+			},
+		},
+		"client-reverse-path": {
+			Enabled: true,
+			Kind:    "onebot_v11",
+			ConfigJSON: map[string]any{
+				"transport": map[string]any{
+					"mode":         "ws_client",
+					"url":          "ws://127.0.0.1:3001",
+					"reverse_path": "/api/platforms/onebot/v11/qq-main/ws",
+				},
+			},
+		},
+	}
+
+	issues := BuildIssues(seed, nil, nil)
+
+	requireConfigIssueSeverity(t, issues, "platforms.adapters.reverse-url.config.transport.url", "warning")
+	requireConfigIssueSeverity(t, issues, "platforms.adapters.client-reverse-path.config.transport.reverse_path", "warning")
+}
+
+func requireConfigIssueSeverity(t *testing.T, issues []ConfigIssue, path string, severity string) {
+	t.Helper()
+	for _, issue := range issues {
+		if issue.Path == path {
+			if issue.Severity != severity {
+				t.Fatalf("issue %s severity = %q, want %q", path, issue.Severity, severity)
+			}
+			if issue.Message == "" {
+				t.Fatalf("issue %s message is empty", path)
+			}
+			return
+		}
+	}
+	t.Fatalf("issue %s not found in %#v", path, issues)
+}

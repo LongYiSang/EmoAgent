@@ -86,6 +86,28 @@ func TestApplyRuntimeSettingsSupportsPythonToolchain(t *testing.T) {
 	}
 }
 
+func TestApplyRuntimeSettingsSupportsPlatforms(t *testing.T) {
+	seed := config.DefaultConfig()
+
+	effective, issues := ApplyRuntimeSettings(seed, []storage.RuntimeSetting{
+		{Namespace: "platforms", Key: "config", ValueJSON: `{"enabled":true,"adapters":{"qq-main":{"enabled":true,"kind":"onebot_v11","instance_id":"qq-main","platform_id":"qq","config":{"implementation":"snowluma","transport":{"mode":"ws_reverse","reverse_path":"/api/platforms/onebot/v11/qq-main/ws","access_token_env":"SNOWLUMA_ONEBOT_TOKEN"},"message":{"max_text_chars":6000},"outbound":{"max_message_chars":1600}}}}}`},
+	})
+	if len(issues) != 0 {
+		t.Fatalf("issues = %#v, want none", issues)
+	}
+	if !effective.Platforms.Enabled {
+		t.Fatalf("platforms.enabled = false, want true")
+	}
+	adapter := effective.Platforms.Adapters["qq-main"]
+	if !adapter.Enabled || adapter.Kind != "onebot_v11" || adapter.InstanceID != "qq-main" || adapter.PlatformID != "qq" {
+		t.Fatalf("adapter = %#v", adapter)
+	}
+	transport, ok := adapter.ConfigJSON["transport"].(map[string]any)
+	if !ok || transport["access_token_env"] != "SNOWLUMA_ONEBOT_TOKEN" {
+		t.Fatalf("transport = %#v", adapter.ConfigJSON["transport"])
+	}
+}
+
 func TestApplyRuntimeSettingsSupportsChatPromptRouter(t *testing.T) {
 	seed := config.DefaultConfig()
 

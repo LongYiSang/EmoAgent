@@ -26,6 +26,7 @@ import (
 	"github.com/longyisang/emoagent/internal/media"
 	"github.com/longyisang/emoagent/internal/memoryhost"
 	"github.com/longyisang/emoagent/internal/memoryruntime"
+	"github.com/longyisang/emoagent/internal/platform"
 	"github.com/longyisang/emoagent/internal/plugin"
 	"github.com/longyisang/emoagent/internal/protocol"
 	sidecarruntime "github.com/longyisang/emoagent/internal/sidecar"
@@ -36,11 +37,12 @@ import (
 )
 
 type routeTestAdminApp struct {
-	providers    []config.LLMProvider
-	agentConfigs []config.AgentConfig
-	activeAgent  *config.AgentConfig
-	lastActive   string
-	lastCommand  storage.CommandConfigRecord
+	providers     []config.LLMProvider
+	agentConfigs  []config.AgentConfig
+	activeAgent   *config.AgentConfig
+	lastActive    string
+	lastCommand   storage.CommandConfigRecord
+	lastPlatforms config.PlatformsConfig
 }
 
 func (a *routeTestAdminApp) ListLLMProviders() ([]config.LLMProvider, error) {
@@ -190,6 +192,13 @@ func (a *routeTestAdminApp) ValidateConfig(ctx context.Context, req configcenter
 }
 func (a *routeTestAdminApp) ListConfigIssues(ctx context.Context) ([]configcenter.ConfigIssue, error) {
 	return nil, nil
+}
+func (a *routeTestAdminApp) GetPlatformStatus(ctx context.Context) (platform.PlatformStatus, error) {
+	return platform.PlatformStatus{}, nil
+}
+func (a *routeTestAdminApp) UpdatePlatformsConfig(ctx context.Context, cfg config.PlatformsConfig) (configcenter.EffectiveConfig, error) {
+	a.lastPlatforms = cfg
+	return configcenter.EffectiveConfig{Platforms: cfg}, nil
 }
 func (a *routeTestAdminApp) GetMemoryConfig(ctx context.Context) (configcenter.MemoryConfigResponse, error) {
 	return configcenter.MemoryConfigResponse{}, nil
@@ -865,6 +874,20 @@ func TestRegisterRoutesAgentConfigDispatch(t *testing.T) {
 		}
 	})
 
+	t.Run("platforms config route dispatches", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPut, "/api/platforms/config", strings.NewReader(`{"platforms":{"enabled":true,"adapters":{"qq-main":{"enabled":true,"kind":"onebot_v11","instance_id":"qq-main","platform_id":"qq","config":{"implementation":"snowluma","transport":{"mode":"ws_reverse","reverse_path":"/api/platforms/onebot/v11/qq-main/ws","access_token_env":"SNOWLUMA_ONEBOT_TOKEN"}}}}}}`))
+		rec := httptest.NewRecorder()
+
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d body=%s, want 200", rec.Code, rec.Body.String())
+		}
+		if !adminApp.lastPlatforms.Enabled || adminApp.lastPlatforms.Adapters["qq-main"].Kind != "onebot_v11" {
+			t.Fatalf("last platforms = %#v, want qq-main onebot", adminApp.lastPlatforms)
+		}
+	})
+
 	t.Run("natural memory route dispatches", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/api/memory/natural-runs", strings.NewReader(`{"mode":"manual","dry_run":true}`))
 		rec := httptest.NewRecorder()
@@ -1174,6 +1197,94 @@ func TestUpdateWebSearchConfigPersistsRuntimeSettingAndHotUpdatesRegistry(t *tes
 	}
 	if _, ok := a.kernel.Services.Tools.Registry().GetSpec("web_search"); !ok {
 		t.Fatal("web_search was not registered after hot update")
+	}
+}
+
+func TestUpdatePlatformsConfigPersistsRuntimeSettingAndHotReloadsPlatformService(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	cfg := config.DefaultConfig()
+	cfg.Platforms.Enabled = false
+	a := newTestApp(cfg, db, logger)
+	mux := http.NewServeMux()
+	a.kernel.Services.Platforms.InstallHTTPRoutes(mux)
+
+	next := config.PlatformsConfig{
+		Enabled: true,
+		Adapters: map[string]config.PlatformAdapterConfig{
+			"qq-main": {
+				Enabled:    true,
+				Kind:       "onebot_v11",
+				InstanceID: "qq-main",
+				PlatformID: "qq",
+				ConfigJSON: map[string]any{
+					"implementation": "snowluma",
+					"transport": map[string]any{
+						"mode":             "ws_reverse",
+						"reverse_path":     "/api/platforms/onebot/v11/qq-main/ws",
+						"access_token_env": "SNOWLUMA_ONEBOT_TOKEN",
+					},
+				},
+			},
+		},
+	}
+	effective, err := a.UpdatePlatformsConfig(context.Background(), next)
+	if err != nil {
+		t.Fatalf("UpdatePlatformsConfig: %v", err)
+	}
+
+	if !effective.Platforms.Enabled || !testConfig(a).Platforms.Enabled {
+		t.Fatalf("platforms not enabled effective=%#v app=%#v", effective.Platforms, testConfig(a).Platforms)
+	}
+	if status := a.kernel.Services.Platforms.Status(); !status.Enabled || len(status.Adapters) != 1 || status.Adapters[0].ID != "qq-main" {
+		t.Fatalf("platform status = %#v", status)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/platforms/onebot/v11/qq-main/ws", nil)
+	req.Header.Set("X-Client-Role", "Event")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("route status = %d body=%s, want reverse handler after hot reload", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdatePlatformsConfigRejectsInvalidConfigWithoutHotReload(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	cfg := config.DefaultConfig()
+	a := newTestApp(cfg, db, logger)
+	invalid := config.PlatformsConfig{
+		Enabled: true,
+		Adapters: map[string]config.PlatformAdapterConfig{
+			"qq-main": {
+				Enabled: true,
+				Kind:    "onebot_v11",
+				ConfigJSON: map[string]any{
+					"implementation": "unknown",
+					"transport": map[string]any{
+						"mode": "ws_reverse",
+					},
+				},
+			},
+		},
+	}
+
+	_, err = a.UpdatePlatformsConfig(context.Background(), invalid)
+	if err == nil {
+		t.Fatal("UpdatePlatformsConfig succeeded, want validation error")
+	}
+	if testConfig(a).Platforms.Enabled {
+		t.Fatalf("app config platforms changed after invalid update: %#v", testConfig(a).Platforms)
 	}
 }
 

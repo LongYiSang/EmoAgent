@@ -105,6 +105,15 @@ func (s *ReverseServer) RegisterAdapter(id string, adapter *Adapter) {
 	s.adapters[id] = adapter
 }
 
+func (s *ReverseServer) ClearAdapters() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.adapters = map[string]*Adapter{}
+}
+
 func (s *ReverseServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	adapterID := r.PathValue("adapter_id")
 	if adapterID == "" {
@@ -135,7 +144,14 @@ func (s *ReverseServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "bye")
-	_ = transport.Attach(r.Context(), conn, strings.TrimSpace(r.Header.Get("X-Self-ID")))
+	selfID := strings.TrimSpace(r.Header.Get("X-Self-ID"))
+	if adapter.logger != nil {
+		adapter.logger.Info("onebot reverse ws connected", "id", adapterID, "self_id", selfID)
+	}
+	_ = transport.Attach(r.Context(), conn, selfID)
+	if adapter.logger != nil {
+		adapter.logger.Info("onebot reverse ws disconnected", "id", adapterID, "self_id", selfID)
+	}
 }
 
 func (s *ReverseServer) adapter(id string) *Adapter {

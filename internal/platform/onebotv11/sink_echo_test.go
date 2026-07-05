@@ -34,7 +34,7 @@ func TestSinkSendsPrivateMessageAction(t *testing.T) {
 	if req.Action != "send_private_msg" {
 		t.Fatalf("action = %q", req.Action)
 	}
-	if req.Params["user_id"] != "10001" {
+	if req.Params["user_id"] != int64(10001) {
 		t.Fatalf("user_id param = %#v", req.Params["user_id"])
 	}
 	segments, ok := req.Params["message"].([]Segment)
@@ -127,6 +127,13 @@ func TestSinkRejectsGroupOutboundWhenDisabled(t *testing.T) {
 	}
 	if len(client.requests) != 0 {
 		t.Fatalf("requests = %#v, want no group action", client.requests)
+	}
+}
+
+func TestOneBotIDParamPreservesNonNumericID(t *testing.T) {
+	req := sendPrivateMsgRequest("user-10001", "hello", false)
+	if req.Params["user_id"] != "user-10001" {
+		t.Fatalf("user_id param = %#v, want original string", req.Params["user_id"])
 	}
 }
 

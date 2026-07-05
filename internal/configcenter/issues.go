@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/platform/onebotv11"
 )
 
 type ConfigIssue struct {
@@ -24,6 +25,7 @@ func BuildIssues(seed *config.Config, providers []ProviderEffective, memoryCore 
 		seed = config.DefaultConfig()
 	}
 	issues := make([]ConfigIssue, 0)
+	issues = append(issues, buildPlatformIssues(seed.Platforms)...)
 	for _, provider := range providers {
 		if provider.Enabled && provider.Env.APIKeyEnv != "" && !provider.Env.Present {
 			issues = append(issues, ConfigIssue{
@@ -249,6 +251,69 @@ func BuildIssues(seed *config.Config, providers []ProviderEffective, memoryCore 
 		}
 	}
 	return issues
+}
+
+func buildPlatformIssues(cfg config.PlatformsConfig) []ConfigIssue {
+	if !cfg.Enabled {
+		return nil
+	}
+	issues := make([]ConfigIssue, 0)
+	if len(cfg.Adapters) == 0 {
+		issues = append(issues, ConfigIssue{
+			Path:     "platforms.adapters",
+			Severity: "warning",
+			Message:  "platforms.enabled=true but no platform adapters are configured",
+		})
+		return issues
+	}
+	for id, adapter := range cfg.Adapters {
+		if !adapter.Enabled {
+			continue
+		}
+		if strings.TrimSpace(adapter.Kind) != onebotv11.KindOneBotV11 {
+			continue
+		}
+		onebotCfg, err := onebotv11.ParseConfig(id, adapter)
+		if err != nil {
+			issues = append(issues, ConfigIssue{
+				Path:     fmt.Sprintf("platforms.adapters.%s.config", id),
+				Severity: "error",
+				Message:  err.Error(),
+			})
+			continue
+		}
+		if onebotCfg.Transport.Mode == onebotv11.TransportModeWSReverse && nestedString(adapter.ConfigJSON, "transport", "url") != "" {
+			issues = append(issues, ConfigIssue{
+				Path:     fmt.Sprintf("platforms.adapters.%s.config.transport.url", id),
+				Severity: "warning",
+				Message:  "transport.url is ignored for ws_reverse",
+			})
+		}
+		if onebotCfg.Transport.Mode == onebotv11.TransportModeWSClient && nestedString(adapter.ConfigJSON, "transport", "reverse_path") != "" {
+			issues = append(issues, ConfigIssue{
+				Path:     fmt.Sprintf("platforms.adapters.%s.config.transport.reverse_path", id),
+				Severity: "warning",
+				Message:  "transport.reverse_path is ignored for ws_client",
+			})
+		}
+	}
+	return issues
+}
+
+func nestedString(raw map[string]any, section string, key string) string {
+	value, ok := raw[section]
+	if !ok {
+		return ""
+	}
+	sectionMap, ok := value.(map[string]any)
+	if !ok {
+		return ""
+	}
+	rawValue, ok := sectionMap[key].(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(rawValue)
 }
 
 func buildAgentAffectIssues(cfg config.AgentAffectConfig) []ConfigIssue {

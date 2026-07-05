@@ -3,6 +3,8 @@ package onebotv11
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"strings"
 
 	appconfig "github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/platform"
@@ -15,6 +17,7 @@ type Adapter struct {
 	transport Transport
 	handler   platform.InboundHandler
 	sink      *Sink
+	logger    *slog.Logger
 }
 
 func NewAdapter(adapterID string, adapterConfig appconfig.PlatformAdapterConfig) (*Adapter, error) {
@@ -60,6 +63,7 @@ func (a *Adapter) Start(ctx context.Context, handler platform.InboundHandler) er
 	}
 	a.handler = handler
 	a.sink = NewSink(a.transport, a.profile, a.cfg.Outbound)
+	a.sink.SetLogger(a.logger)
 	return a.transport.Start(ctx, a)
 }
 
@@ -84,7 +88,13 @@ func (a *Adapter) HandleEvent(ctx context.Context, event Event) (platform.Handle
 		return platform.HandleResult{}, err
 	}
 	if !accepted {
+		if a.logger != nil {
+			a.logger.Info("onebot inbound ignored", "id", a.id, "reason", ignoredReason(event, a.cfg))
+		}
 		return platform.HandleResult{Ignored: true}, nil
+	}
+	if a.logger != nil {
+		a.logger.Info("onebot inbound accepted", "id", a.id, "message_type", event.MessageType, "external_message_id", inbound.ExternalMessageID)
 	}
 	return a.handler.HandleInbound(ctx, inbound, a.sink)
 }
@@ -102,4 +112,74 @@ func (a *Adapter) Config() Config {
 		return Config{}
 	}
 	return a.cfg
+}
+
+func (a *Adapter) SetLogger(logger *slog.Logger) {
+	if a == nil {
+		return
+	}
+	a.logger = logger
+	if a.sink != nil {
+		a.sink.SetLogger(logger)
+	}
+}
+
+func (a *Adapter) Status() platform.AdapterStatus {
+	if a == nil {
+		return platform.AdapterStatus{}
+	}
+	transport := platform.TransportStatus{
+		Mode: a.cfg.Transport.Mode,
+		URL:  a.cfg.Transport.URL,
+	}
+	if a.transport != nil {
+		status := a.transport.Status()
+		transport = platform.TransportStatus{
+			Mode:      firstNonEmpty(status.Mode, a.cfg.Transport.Mode),
+			State:     status.State,
+			URL:       firstNonEmpty(status.URL, a.cfg.Transport.URL),
+			SelfID:    status.SelfID,
+			Connected: status.Connected,
+		}
+	}
+	return platform.AdapterStatus{
+		ID:             a.cfg.AdapterID,
+		Kind:           KindOneBotV11,
+		Enabled:        true,
+		Implementation: a.cfg.Implementation,
+		SourceType:     a.cfg.SourceType,
+		PlatformID:     a.cfg.PlatformID,
+		InstanceID:     a.cfg.InstanceID,
+		Transport:      transport,
+		Routing: platform.RoutingStatus{
+			PrivateEnabled:     a.cfg.Routing.PrivateEnabled,
+			GroupEnabled:       a.cfg.Routing.GroupEnabled,
+			IgnoreSelfMessages: a.cfg.Routing.IgnoreSelfMessages,
+		},
+		Auth: platform.AuthStatus{
+			AccessTokenConfigured: strings.TrimSpace(a.cfg.Transport.AccessToken) != "" || strings.TrimSpace(a.cfg.Transport.AccessTokenEnv) != "",
+		},
+	}
+}
+
+func ignoredReason(event Event, cfg Config) string {
+	if event.PostType != "message" {
+		return "post_type_" + event.PostType
+	}
+	if cfg.Routing.IgnoreSelfMessages && event.SelfID != 0 && event.UserID == event.SelfID {
+		return "self_message"
+	}
+	switch event.MessageType {
+	case "private":
+		if !cfg.Routing.PrivateEnabled {
+			return "private_disabled"
+		}
+	case "group":
+		return "group_disabled"
+	case "":
+		return "missing_message_type"
+	default:
+		return "unsupported_message_type"
+	}
+	return "empty_message"
 }

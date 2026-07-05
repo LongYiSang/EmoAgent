@@ -77,7 +77,7 @@ func TestWSClientUniversalFlow(t *testing.T) {
 
 	select {
 	case req := <-actionSeen:
-		if req.Action != "send_private_msg" || req.Params["user_id"] != "10001" {
+		if req.Action != "send_private_msg" || req.Params["user_id"] != float64(10001) {
 			t.Fatalf("action = %#v", req)
 		}
 	case <-ctx.Done():

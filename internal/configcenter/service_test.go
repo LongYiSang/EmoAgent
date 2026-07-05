@@ -122,6 +122,84 @@ func TestBuildEffectiveIncludesRootWebSearch(t *testing.T) {
 	}
 }
 
+func TestBuildEffectiveIncludesPlatformsWithoutAccessToken(t *testing.T) {
+	db := openConfigCenterDB(t)
+	if err := db.UpsertRuntimeSetting("platforms", "config", `{"enabled":true,"adapters":{"qq-main":{"enabled":true,"kind":"onebot_v11","instance_id":"qq-main","platform_id":"qq","config":{"implementation":"snowluma","transport":{"mode":"ws_reverse","access_token":"dev-token","access_token_env":"SNOWLUMA_ONEBOT_TOKEN"}}}}}`, "ui"); err != nil {
+		t.Fatalf("UpsertRuntimeSetting: %v", err)
+	}
+
+	svc := NewService(config.DefaultConfig(), db)
+	effective, err := svc.BuildEffective(context.Background())
+	if err != nil {
+		t.Fatalf("BuildEffective: %v", err)
+	}
+
+	if !effective.Platforms.Enabled {
+		t.Fatalf("effective platforms disabled: %#v", effective.Platforms)
+	}
+	adapter := effective.Platforms.Adapters["qq-main"]
+	if !adapter.Enabled || adapter.Kind != "onebot_v11" {
+		t.Fatalf("effective adapter = %#v", adapter)
+	}
+	transport, ok := adapter.ConfigJSON["transport"].(map[string]any)
+	if !ok {
+		t.Fatalf("transport = %#v", adapter.ConfigJSON["transport"])
+	}
+	if transport["access_token"] != nil {
+		t.Fatalf("effective platforms leaked access_token: %#v", transport)
+	}
+	if transport["access_token_env"] != "SNOWLUMA_ONEBOT_TOKEN" {
+		t.Fatalf("transport access_token_env = %#v", transport["access_token_env"])
+	}
+	payload, err := json.Marshal(effective)
+	if err != nil {
+		t.Fatalf("Marshal effective: %v", err)
+	}
+	if strings.Contains(string(payload), "dev-token") {
+		t.Fatalf("effective config leaked token value: %s", payload)
+	}
+}
+
+func TestUpdatePlatformsConfigPersistsRuntimeSetting(t *testing.T) {
+	db := openConfigCenterDB(t)
+	svc := NewService(config.DefaultConfig(), db)
+	next := snowlumaTestPlatformsConfig()
+
+	effective, err := svc.UpdatePlatformsConfig(context.Background(), next)
+	if err != nil {
+		t.Fatalf("UpdatePlatformsConfig: %v", err)
+	}
+	if !effective.Platforms.Enabled || !effective.Platforms.Adapters["qq-main"].Enabled {
+		t.Fatalf("effective platforms = %#v", effective.Platforms)
+	}
+	setting, ok, err := db.GetRuntimeSetting("platforms", "config")
+	if err != nil {
+		t.Fatalf("GetRuntimeSetting: %v", err)
+	}
+	if !ok || !strings.Contains(setting.ValueJSON, `"qq-main"`) {
+		t.Fatalf("runtime setting = %#v ok=%v", setting, ok)
+	}
+}
+
+func TestUpdatePlatformsConfigRejectsInvalidOneBotConfig(t *testing.T) {
+	db := openConfigCenterDB(t)
+	svc := NewService(config.DefaultConfig(), db)
+	next := snowlumaTestPlatformsConfig()
+	adapter := next.Adapters["qq-main"]
+	adapter.ConfigJSON["implementation"] = "unknown"
+	next.Adapters["qq-main"] = adapter
+
+	_, err := svc.UpdatePlatformsConfig(context.Background(), next)
+	if err == nil {
+		t.Fatal("UpdatePlatformsConfig succeeded, want validation error")
+	}
+	var validation *ValidationError
+	if !errors.As(err, &validation) {
+		t.Fatalf("error = %T %v, want ValidationError", err, err)
+	}
+	requireConfigIssue(t, validation.Issues, "platforms.adapters.qq-main.config")
+}
+
 func TestUpdatePythonToolchainConfigStoresRuntimeSetting(t *testing.T) {
 	db := openConfigCenterDB(t)
 	svc := NewService(config.DefaultConfig(), db)
@@ -700,4 +778,36 @@ retrieval:
 		t.Fatalf("WriteFile memorycore config: %v", err)
 	}
 	return path
+}
+
+func snowlumaTestPlatformsConfig() config.PlatformsConfig {
+	return config.PlatformsConfig{
+		Enabled: true,
+		Adapters: map[string]config.PlatformAdapterConfig{
+			"qq-main": {
+				Enabled:    true,
+				Kind:       "onebot_v11",
+				InstanceID: "qq-main",
+				PlatformID: "qq",
+				ConfigJSON: map[string]any{
+					"implementation": "snowluma",
+					"transport": map[string]any{
+						"mode":             "ws_reverse",
+						"reverse_path":     "/api/platforms/onebot/v11/qq-main/ws",
+						"access_token_env": "SNOWLUMA_ONEBOT_TOKEN",
+					},
+					"routing": map[string]any{
+						"private_enabled": true,
+						"group_enabled":   false,
+					},
+					"message": map[string]any{
+						"max_text_chars": float64(8000),
+					},
+					"outbound": map[string]any{
+						"max_message_chars": float64(1800),
+					},
+				},
+			},
+		},
+	}
 }

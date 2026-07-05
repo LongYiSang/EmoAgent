@@ -148,6 +148,14 @@ export async function loadConfigIssues(): Promise<AnyRecord[]> {
   return data.issues || [];
 }
 
+export async function loadPlatformStatus(): Promise<AnyRecord> {
+  return requestJSON<AnyRecord>('/api/platforms/status');
+}
+
+export async function savePlatformsConfig(platforms: AnyRecord): Promise<AnyRecord> {
+  return requestJSON<AnyRecord>('/api/platforms/config', { method: 'PUT', body: { platforms } });
+}
+
 export async function loadPythonToolchain(): Promise<AnyRecord> {
   return requestJSON<AnyRecord>('/api/python-toolchain');
 }

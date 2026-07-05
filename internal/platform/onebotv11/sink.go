@@ -2,7 +2,9 @@ package onebotv11
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +20,7 @@ type Sink struct {
 	client  ActionClient
 	profile Profile
 	cfg     OutboundConfig
+	logger  *slog.Logger
 
 	mu          sync.Mutex
 	lastCommand commandEventFingerprint
@@ -45,6 +48,13 @@ func NewSink(client ActionClient, profile Profile, cfg OutboundConfig) *Sink {
 	return &Sink{client: client, profile: profile, cfg: cfg}
 }
 
+func (s *Sink) SetLogger(logger *slog.Logger) {
+	if s == nil {
+		return
+	}
+	s.logger = logger
+}
+
 func (s *Sink) Emit(ctx context.Context, event platform.OutboundEvent) error {
 	if s == nil || s.client == nil {
 		return nil
@@ -64,11 +74,24 @@ func (s *Sink) Emit(ctx context.Context, event platform.OutboundEvent) error {
 		if req.Action == "" {
 			continue
 		}
+		if req.Echo == "" {
+			req.Echo = nextEcho()
+		}
 		resp, err := s.client.Call(ctx, req)
 		if err != nil {
+			if s.logger != nil {
+				if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+					s.logger.Warn("onebot action timeout", "action", req.Action, "echo", req.Echo)
+				} else {
+					s.logger.Warn("onebot action failed", "action", req.Action, "echo", req.Echo, "error", err)
+				}
+			}
 			return err
 		}
 		if !s.profile.RetcodeSuccess(resp) {
+			if s.logger != nil {
+				s.logger.Warn("onebot action failed", "action", req.Action, "retcode", resp.Retcode, "wording", resp.Wording)
+			}
 			return ActionRetcodeError{Action: req.Action, Status: resp.Status, Retcode: resp.Retcode, Wording: resp.Wording, Response: resp}
 		}
 	}

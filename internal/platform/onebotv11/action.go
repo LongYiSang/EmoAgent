@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 )
 
 type ActionClient interface {
@@ -43,7 +45,7 @@ func sendPrivateMsgRequest(userID string, message any, autoEscape bool) ActionRe
 	return ActionRequest{
 		Action: "send_private_msg",
 		Params: map[string]any{
-			"user_id":     userID,
+			"user_id":     onebotIDParam(userID),
 			"message":     message,
 			"auto_escape": autoEscape,
 		},
@@ -54,9 +56,17 @@ func sendGroupMsgRequest(groupID string, message any, autoEscape bool) ActionReq
 	return ActionRequest{
 		Action: "send_group_msg",
 		Params: map[string]any{
-			"group_id":    groupID,
+			"group_id":    onebotIDParam(groupID),
 			"message":     message,
 			"auto_escape": autoEscape,
 		},
 	}
+}
+
+func onebotIDParam(id string) any {
+	trimmed := strings.TrimSpace(id)
+	if n, err := strconv.ParseInt(trimmed, 10, 64); err == nil && n > 0 {
+		return n
+	}
+	return id
 }

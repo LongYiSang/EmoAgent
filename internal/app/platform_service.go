@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -18,6 +19,8 @@ type PlatformService struct {
 	adapters      []platform.Adapter
 	started       []platform.Adapter
 	onebotReverse *onebotv11.ReverseServer
+	enabled       bool
+	logger        *slog.Logger
 }
 
 func NewPlatformService(infra *Infra, conversation *ConversationService, commands *CommandService, chat *ChatService, personas *PersonaService) *PlatformService {
@@ -25,10 +28,15 @@ func NewPlatformService(infra *Infra, conversation *ConversationService, command
 	if infra != nil && infra.DB != nil {
 		receipts = NewStorageReceiptStore(infra.DB)
 	}
-	return &PlatformService{
-		gateway: NewPlatformGateway(infra, conversation, commands, chat, personas, receipts),
-		manager: platform.NewManager(),
+	service := &PlatformService{
+		gateway:       NewPlatformGateway(infra, conversation, commands, chat, personas, receipts),
+		manager:       platform.NewManager(),
+		onebotReverse: onebotv11.NewReverseServer(),
 	}
+	if infra != nil {
+		service.logger = infra.Logger
+	}
+	return service
 }
 
 func (s *PlatformService) Gateway() *PlatformGateway {
@@ -54,10 +62,16 @@ func (s *PlatformService) Configure(ctx context.Context, cfg config.PlatformsCon
 	}
 	s.manager = platform.NewManager()
 	s.adapters = nil
-	s.onebotReverse = nil
+	if s.onebotReverse == nil {
+		s.onebotReverse = onebotv11.NewReverseServer()
+	} else {
+		s.onebotReverse.ClearAdapters()
+	}
+	s.enabled = false
 	if !cfg.Enabled {
 		return nil
 	}
+	s.enabled = true
 	for id, adapterCfg := range cfg.Adapters {
 		if !adapterCfg.Enabled {
 			continue
@@ -68,12 +82,14 @@ func (s *PlatformService) Configure(ctx context.Context, cfg config.PlatformsCon
 			if err != nil {
 				return fmt.Errorf("configure platform adapter %s: %w", id, err)
 			}
+			adapter.SetLogger(s.logger)
 			s.manager.Register(id, adapter)
 			s.adapters = append(s.adapters, adapter)
+			if s.logger != nil {
+				adapterStatus := adapter.Status()
+				s.logger.Info("onebot adapter configured", "id", id, "implementation", adapterStatus.Implementation, "mode", adapterStatus.Transport.Mode)
+			}
 			if adapter.Config().Transport.Mode == onebotv11.TransportModeWSReverse {
-				if s.onebotReverse == nil {
-					s.onebotReverse = onebotv11.NewReverseServer()
-				}
 				s.onebotReverse.RegisterAdapter(id, adapter)
 			}
 		default:
@@ -83,11 +99,48 @@ func (s *PlatformService) Configure(ctx context.Context, cfg config.PlatformsCon
 	return nil
 }
 
+func (s *PlatformService) Status() platform.PlatformStatus {
+	if s == nil {
+		return platform.PlatformStatus{}
+	}
+	status := platform.PlatformStatus{Enabled: s.enabled}
+	if !s.enabled || s.manager == nil {
+		return status
+	}
+	for _, registered := range s.manager.List() {
+		reporter, ok := registered.Adapter.(interface {
+			Status() platform.AdapterStatus
+		})
+		if !ok {
+			status.Adapters = append(status.Adapters, platform.AdapterStatus{ID: registered.ID, Enabled: true})
+			continue
+		}
+		adapterStatus := reporter.Status()
+		if adapterStatus.ID == "" {
+			adapterStatus.ID = registered.ID
+		}
+		status.Adapters = append(status.Adapters, adapterStatus)
+	}
+	return status
+}
+
 func (s *PlatformService) InstallHTTPRoutes(mux *http.ServeMux) {
-	if s == nil || mux == nil || s.onebotReverse == nil {
+	if s == nil || mux == nil {
 		return
 	}
+	if s.onebotReverse == nil {
+		s.onebotReverse = onebotv11.NewReverseServer()
+	}
 	mux.HandleFunc("GET /api/platforms/onebot/v11/{adapter_id}/ws", s.onebotReverse.ServeHTTP)
+	if s.logger != nil {
+		for _, registered := range s.manager.List() {
+			adapter, ok := registered.Adapter.(*onebotv11.Adapter)
+			if !ok || adapter.Config().Transport.Mode != onebotv11.TransportModeWSReverse {
+				continue
+			}
+			s.logger.Info("onebot reverse route installed", "id", registered.ID, "path", adapter.Config().Transport.ReversePath)
+		}
+	}
 }
 
 func (s *PlatformService) Start(ctx context.Context) error {

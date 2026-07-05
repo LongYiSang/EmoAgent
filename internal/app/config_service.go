@@ -269,6 +269,14 @@ func (s *ConfigService) UpdateWebSearchConfig(ctx context.Context, cfg config.We
 	return effective, err
 }
 
+func (s *ConfigService) UpdatePlatformsConfig(ctx context.Context, cfg config.PlatformsConfig) (configcenter.EffectiveConfig, error) {
+	effective, err := s.service().UpdatePlatformsConfig(ctx, cfg)
+	if err == nil && s.infra.Config != nil {
+		s.infra.Config.Platforms = effective.Platforms
+	}
+	return effective, err
+}
+
 func (s *ConfigService) attachWebSearchRuntime(effective *configcenter.EffectiveConfig) {
 	if effective == nil {
 		return
