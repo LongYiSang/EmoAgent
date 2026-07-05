@@ -52,7 +52,10 @@ func (s *WorkService) Configure(ctx context.Context, dispatcher *tool.Dispatcher
 	}
 	go s.runCleanupLoop(ctx, cleanupInterval)
 
-	runtimeFactory := func() (*work.Runtime, error) {
+	runtimeFactory := func(ctx context.Context) (*work.Runtime, error) {
+		if agentID := work.AgentIDFromContext(ctx); agentID != "" {
+			return s.agentRuntime.NewWorkRuntimeForAgent(agentID, dispatcher, registry)
+		}
 		return s.agentRuntime.NewWorkRuntime(dispatcher, registry)
 	}
 	if _, ok := registry.GetSpec("finish_task"); !ok {
@@ -62,14 +65,14 @@ func (s *WorkService) Configure(ctx context.Context, dispatcher *tool.Dispatcher
 		registry.Register(work.NewRequestDecisionTool(), work.RequestDecisionPlaceholderHandler)
 	}
 	if _, ok := registry.GetSpec(work.ToolNameResumeWork); !ok {
-		resumeSpec, resumeHandler := work.NewResumeToolWithFactory(runtimeFactory, s.pending, cfg.Work.JournalDir, s.infra.Logger)
+		resumeSpec, resumeHandler := work.NewResumeToolWithContextFactory(runtimeFactory, s.pending, cfg.Work.JournalDir, s.infra.Logger)
 		registry.Register(resumeSpec, resumeHandler)
 	}
 	if _, ok := registry.GetSpec(work.ToolNameListPendingDecisions); !ok {
 		spec, handler := work.NewListDecisionsTool(s.pending)
 		registry.Register(spec, handler)
 	}
-	delegateSpec, delegateHandler := work.NewDelegateToolWithFactoryAndAnnotator(runtimeFactory, s.pending, cfg.Work.JournalDir, s.infra.Logger, plugin.NewWorkAnnotator(s.plugins.Host()))
+	delegateSpec, delegateHandler := work.NewDelegateToolWithContextFactoryAndAnnotator(runtimeFactory, s.pending, cfg.Work.JournalDir, s.infra.Logger, plugin.NewWorkAnnotator(s.plugins.Host()))
 	registry.Register(delegateSpec, delegateHandler)
 	return nil
 }

@@ -249,6 +249,21 @@ func (s *AgentRuntimeService) Build(id string, requireClient bool) (*ActiveAgent
 
 func (s *AgentRuntimeService) NewWorkRuntime(dispatcher *tool.Dispatcher, registry *tool.Registry) (*work.Runtime, error) {
 	active := s.Active()
+	return s.newWorkRuntimeFromAgentRuntime(active, dispatcher, registry)
+}
+
+func (s *AgentRuntimeService) NewWorkRuntimeForAgent(agentID string, dispatcher *tool.Dispatcher, registry *tool.Registry) (*work.Runtime, error) {
+	if strings.TrimSpace(agentID) == "" {
+		return s.NewWorkRuntime(dispatcher, registry)
+	}
+	active, err := s.Build(agentID, true)
+	if err != nil {
+		return nil, err
+	}
+	return s.newWorkRuntimeFromAgentRuntime(active, dispatcher, registry)
+}
+
+func (s *AgentRuntimeService) newWorkRuntimeFromAgentRuntime(active *ActiveAgentRuntime, dispatcher *tool.Dispatcher, registry *tool.Registry) (*work.Runtime, error) {
 	if active == nil || active.WorkMain.Client == nil {
 		return nil, fmt.Errorf("active agent config is not configured")
 	}

@@ -747,6 +747,7 @@ type PlatformsConfig struct {
 }
 
 type PlatformCommonConfig struct {
+	DefaultAgentID  string   `yaml:"default_agent_id" json:"default_agent_id"`
 	DefaultPersona  string   `yaml:"default_persona" json:"default_persona"`
 	CommandPrefixes []string `yaml:"command_prefixes" json:"command_prefixes"`
 }

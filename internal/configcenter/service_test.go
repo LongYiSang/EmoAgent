@@ -124,9 +124,10 @@ func TestBuildEffectiveIncludesRootWebSearch(t *testing.T) {
 
 func TestBuildEffectiveIncludesPlatformsWithoutAccessToken(t *testing.T) {
 	db := openConfigCenterDB(t)
-	if err := db.UpsertRuntimeSetting("platforms", "config", `{"enabled":true,"adapters":{"qq-main":{"enabled":true,"kind":"onebot_v11","instance_id":"qq-main","platform_id":"qq","config":{"implementation":"snowluma","transport":{"mode":"ws_reverse","access_token":"dev-token","access_token_env":"SNOWLUMA_ONEBOT_TOKEN"}}}}}`, "ui"); err != nil {
+	if err := db.UpsertRuntimeSetting("platforms", "config", `{"enabled":true,"common":{"default_agent_id":"Chat"},"adapters":{"qq-main":{"enabled":true,"kind":"onebot_v11","instance_id":"qq-main","platform_id":"qq","config":{"implementation":"snowluma","transport":{"mode":"ws_reverse","access_token":"dev-token","access_token_env":"SNOWLUMA_ONEBOT_TOKEN"}}}}}`, "ui"); err != nil {
 		t.Fatalf("UpsertRuntimeSetting: %v", err)
 	}
+	upsertConfigCenterAgentBinding(t, db, "Chat", "Xia")
 
 	svc := NewService(config.DefaultConfig(), db)
 	effective, err := svc.BuildEffective(context.Background())
@@ -136,6 +137,9 @@ func TestBuildEffectiveIncludesPlatformsWithoutAccessToken(t *testing.T) {
 
 	if !effective.Platforms.Enabled {
 		t.Fatalf("effective platforms disabled: %#v", effective.Platforms)
+	}
+	if effective.Platforms.Common.DefaultAgentID != "Chat" {
+		t.Fatalf("effective platforms default_agent_id = %q, want Chat", effective.Platforms.Common.DefaultAgentID)
 	}
 	adapter := effective.Platforms.Adapters["qq-main"]
 	if !adapter.Enabled || adapter.Kind != "onebot_v11" {
@@ -162,8 +166,10 @@ func TestBuildEffectiveIncludesPlatformsWithoutAccessToken(t *testing.T) {
 
 func TestUpdatePlatformsConfigPersistsRuntimeSetting(t *testing.T) {
 	db := openConfigCenterDB(t)
+	upsertConfigCenterAgentBinding(t, db, "Chat", "Xia")
 	svc := NewService(config.DefaultConfig(), db)
 	next := snowlumaTestPlatformsConfig()
+	next.Common.DefaultAgentID = "Chat"
 
 	effective, err := svc.UpdatePlatformsConfig(context.Background(), next)
 	if err != nil {
@@ -176,9 +182,44 @@ func TestUpdatePlatformsConfigPersistsRuntimeSetting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRuntimeSetting: %v", err)
 	}
-	if !ok || !strings.Contains(setting.ValueJSON, `"qq-main"`) {
+	if !ok || !strings.Contains(setting.ValueJSON, `"qq-main"`) || !strings.Contains(setting.ValueJSON, `"default_agent_id":"Chat"`) {
 		t.Fatalf("runtime setting = %#v ok=%v", setting, ok)
 	}
+}
+
+func TestUpdatePlatformsConfigRejectsMissingDefaultAgent(t *testing.T) {
+	db := openConfigCenterDB(t)
+	svc := NewService(config.DefaultConfig(), db)
+	next := snowlumaTestPlatformsConfig()
+	next.Common.DefaultAgentID = "missing"
+
+	_, err := svc.UpdatePlatformsConfig(context.Background(), next)
+	if err == nil {
+		t.Fatal("UpdatePlatformsConfig succeeded, want validation error")
+	}
+	var validation *ValidationError
+	if !errors.As(err, &validation) {
+		t.Fatalf("error = %T %v, want ValidationError", err, err)
+	}
+	requireConfigIssue(t, validation.Issues, "platforms.common.default_agent_id")
+}
+
+func TestUpdatePlatformsConfigRejectsDefaultAgentMissingPersona(t *testing.T) {
+	db := openConfigCenterDB(t)
+	upsertConfigCenterAgentBinding(t, db, "Chat", "MissingPersona")
+	svc := NewService(config.DefaultConfig(), db)
+	next := snowlumaTestPlatformsConfig()
+	next.Common.DefaultAgentID = "Chat"
+
+	_, err := svc.UpdatePlatformsConfig(context.Background(), next)
+	if err == nil {
+		t.Fatal("UpdatePlatformsConfig succeeded, want validation error")
+	}
+	var validation *ValidationError
+	if !errors.As(err, &validation) {
+		t.Fatalf("error = %T %v, want ValidationError", err, err)
+	}
+	requireConfigIssue(t, validation.Issues, "platforms.common.default_agent_id")
 }
 
 func TestUpdatePlatformsConfigRejectsInvalidOneBotConfig(t *testing.T) {
@@ -809,5 +850,34 @@ func snowlumaTestPlatformsConfig() config.PlatformsConfig {
 				},
 			},
 		},
+	}
+}
+
+func upsertConfigCenterAgentBinding(t *testing.T, db *storage.DB, agentID string, personaKey string) {
+	t.Helper()
+	if personaKey == "Xia" {
+		if err := db.UpsertPersona(personaKey, personaKey, "", "system", "warm", nil, "", nil); err != nil {
+			t.Fatalf("UpsertPersona: %v", err)
+		}
+	}
+	if err := db.UpsertLLMProvider(config.LLMProvider{ID: "test-provider", Name: "Test Provider", Protocol: "openai_compatible", BaseURL: "http://127.0.0.1:1/v1", APIKeyEnv: "TEST_PROVIDER_KEY", Enabled: true}); err != nil {
+		t.Fatalf("UpsertLLMProvider: %v", err)
+	}
+	binding := config.ModelBinding{ProviderID: "test-provider", Model: "test-model"}
+	if err := db.UpsertAgentConfig(config.AgentConfig{
+		ID:               agentID,
+		Name:             agentID,
+		PersonaKey:       personaKey,
+		ContextOverrides: map[string]any{},
+		Emotion: config.AgentModelGroup{
+			Main:    binding,
+			Summary: binding,
+		},
+		Work: config.AgentModelGroup{
+			Main:    binding,
+			Summary: binding,
+		},
+	}); err != nil {
+		t.Fatalf("UpsertAgentConfig: %v", err)
 	}
 }

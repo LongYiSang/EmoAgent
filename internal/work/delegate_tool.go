@@ -68,6 +68,12 @@ type TaskBriefAnnotator interface {
 }
 
 func NewDelegateToolWithFactoryAndAnnotator(runtimeFactory func() (*Runtime, error), pending *PendingRegistry, journalDir string, logger *slog.Logger, annotator TaskBriefAnnotator) (tool.Spec, tool.Handler) {
+	return NewDelegateToolWithContextFactoryAndAnnotator(func(context.Context) (*Runtime, error) {
+		return runtimeFactory()
+	}, pending, journalDir, logger, annotator)
+}
+
+func NewDelegateToolWithContextFactoryAndAnnotator(runtimeFactory func(context.Context) (*Runtime, error), pending *PendingRegistry, journalDir string, logger *slog.Logger, annotator TaskBriefAnnotator) (tool.Spec, tool.Handler) {
 	spec := tool.Spec{
 		Name:        ToolNameDelegateToWork,
 		Description: delegateToolDescription,
@@ -93,7 +99,7 @@ func NewDelegateToolWithFactoryAndAnnotator(runtimeFactory func() (*Runtime, err
 		if err := ValidateAndComplete(&brief); err != nil {
 			return nil, fmt.Errorf("delegate_to_work: %w", err)
 		}
-		runtime, err := runtimeFactory()
+		runtime, err := runtimeFactory(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("delegate_to_work: %w", err)
 		}

@@ -106,6 +106,7 @@ export function usePlatformAdmin({ setStatus, showError }: PlatformAdminOptions)
 function defaultPlatformsDraft(): AnyRecord {
   return {
     enabled: false,
+    common: {},
     adapters: {
       [adapterID]: defaultAdapter(),
     },
@@ -142,6 +143,7 @@ function defaultAdapter(): AnyRecord {
 
 function withQQMainDefaults(platforms: AnyRecord): AnyRecord {
   const next = cloneRecord(platforms || {});
+  if (!next.common || typeof next.common !== 'object' || Array.isArray(next.common)) next.common = {};
   if (!next.adapters || typeof next.adapters !== 'object' || Array.isArray(next.adapters)) next.adapters = {};
   const adapters = next.adapters as AnyRecord;
   adapters[adapterID] = mergeDefaults(field<AnyRecord>(adapters, adapterID, {}), defaultAdapter());
@@ -195,13 +197,23 @@ function buildSnowLumaConnectionText(platforms: AnyRecord): string {
 
 function buildEmoAgentYAML(platforms: AnyRecord): string {
   const adapter = currentAdapter(platforms);
+  const common = field<AnyRecord>(platforms, 'common', {});
+  const defaultAgentID = stringField(common, 'default_agent_id');
   const transport = currentTransport(platforms);
   const routing = field<AnyRecord>(field<AnyRecord>(adapter, 'config', {}), 'routing', {});
   const message = field<AnyRecord>(field<AnyRecord>(adapter, 'config', {}), 'message', {});
   const outbound = field<AnyRecord>(field<AnyRecord>(adapter, 'config', {}), 'outbound', {});
-  return [
+  const lines = [
     'platforms:',
     `  enabled: ${Boolean(field(platforms, 'enabled', false))}`,
+  ];
+  if (defaultAgentID) {
+    lines.push(
+      '  common:',
+      `    default_agent_id: ${yamlScalar(defaultAgentID)}`,
+    );
+  }
+  lines.push(
     '  adapters:',
     `    ${adapterID}:`,
     `      enabled: ${Boolean(field(adapter, 'enabled', true))}`,
@@ -222,7 +234,8 @@ function buildEmoAgentYAML(platforms: AnyRecord): string {
     `          max_text_chars: ${Number(field(message, 'max_text_chars', 8000)) || 8000}`,
     '        outbound:',
     `          max_message_chars: ${Number(field(outbound, 'max_message_chars', 1800)) || 1800}`,
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
 function currentAdapter(platforms: AnyRecord): AnyRecord {

@@ -282,7 +282,7 @@ func newBarePlatformService() *PlatformService {
 	return NewPlatformService(&Infra{
 		Config: cfg,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}, nil, nil, nil, nil)
+	}, nil, nil, nil, nil, nil)
 }
 
 func TestServerShutdownStopsPlatforms(t *testing.T) {

@@ -23,13 +23,13 @@ type PlatformService struct {
 	logger        *slog.Logger
 }
 
-func NewPlatformService(infra *Infra, conversation *ConversationService, commands *CommandService, chat *ChatService, personas *PersonaService) *PlatformService {
+func NewPlatformService(infra *Infra, conversation *ConversationService, commands *CommandService, chat *ChatService, agentRuntime *AgentRuntimeService, personas *PersonaService) *PlatformService {
 	var receipts platform.ReceiptStore
 	if infra != nil && infra.DB != nil {
 		receipts = NewStorageReceiptStore(infra.DB)
 	}
 	service := &PlatformService{
-		gateway:       NewPlatformGateway(infra, conversation, commands, chat, personas, receipts),
+		gateway:       NewPlatformGateway(infra, conversation, commands, chat, agentRuntime, personas, receipts),
 		manager:       platform.NewManager(),
 		onebotReverse: onebotv11.NewReverseServer(),
 	}

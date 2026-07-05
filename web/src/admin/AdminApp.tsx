@@ -151,7 +151,7 @@ export function AdminApp() {
       case 'websearch-pipeline':
         return <WebSearchPipelineTab {...webSearch} />;
       case 'platforms':
-        return <PlatformsTab {...platforms} />;
+        return <PlatformsTab {...platforms} agents={agents.agents} />;
       case 'python-toolchain':
         return <PythonToolchainTab {...pythonToolchain} />;
       case 'pipelines':

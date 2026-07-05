@@ -1508,6 +1508,7 @@ func TestHandleConfigEffective(t *testing.T) {
 			}},
 			Platforms: config.PlatformsConfig{
 				Enabled: true,
+				Common:  config.PlatformCommonConfig{DefaultAgentID: "Chat"},
 				Adapters: map[string]config.PlatformAdapterConfig{
 					"qq-main": {
 						Enabled:    true,
@@ -1551,7 +1552,7 @@ func TestHandleConfigEffective(t *testing.T) {
 	if len(resp.Issues) != 1 || resp.Issues[0].Path != "memory.retrieval.enabled" {
 		t.Fatalf("issues = %#v", resp.Issues)
 	}
-	if !resp.Platforms.Enabled || resp.Platforms.Adapters["qq-main"].PlatformID != "qq" {
+	if !resp.Platforms.Enabled || resp.Platforms.Common.DefaultAgentID != "Chat" || resp.Platforms.Adapters["qq-main"].PlatformID != "qq" {
 		t.Fatalf("platforms = %#v", resp.Platforms)
 	}
 }
@@ -1618,14 +1619,14 @@ func TestHandleUpdatePlatformsConfig(t *testing.T) {
 	}
 	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
-	req := httptest.NewRequest(http.MethodPut, "/api/platforms/config", bytes.NewBufferString(`{"platforms":{"enabled":true,"adapters":{"qq-main":{"enabled":true,"kind":"onebot_v11","instance_id":"qq-main","platform_id":"qq","config":{"implementation":"snowluma","transport":{"mode":"ws_reverse","reverse_path":"/api/platforms/onebot/v11/qq-main/ws","access_token_env":"SNOWLUMA_ONEBOT_TOKEN"}}}}}}`))
+	req := httptest.NewRequest(http.MethodPut, "/api/platforms/config", bytes.NewBufferString(`{"platforms":{"enabled":true,"common":{"default_agent_id":"Chat"},"adapters":{"qq-main":{"enabled":true,"kind":"onebot_v11","instance_id":"qq-main","platform_id":"qq","config":{"implementation":"snowluma","transport":{"mode":"ws_reverse","reverse_path":"/api/platforms/onebot/v11/qq-main/ws","access_token_env":"SNOWLUMA_ONEBOT_TOKEN"}}}}}}`))
 	rec := httptest.NewRecorder()
 	handler.HandleUpdatePlatformsConfig(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s, want 200", rec.Code, rec.Body.String())
 	}
-	if !app.lastPlatformsConfig.Enabled || app.lastPlatformsConfig.Adapters["qq-main"].Kind != "onebot_v11" {
+	if !app.lastPlatformsConfig.Enabled || app.lastPlatformsConfig.Common.DefaultAgentID != "Chat" || app.lastPlatformsConfig.Adapters["qq-main"].Kind != "onebot_v11" {
 		t.Fatalf("last platforms config = %#v", app.lastPlatformsConfig)
 	}
 }

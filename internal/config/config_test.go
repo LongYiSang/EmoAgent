@@ -1156,6 +1156,7 @@ func TestLoadPlatformsConfig(t *testing.T) {
 platforms:
   enabled: true
   common:
+    default_agent_id: Chat
     default_persona: default
     command_prefixes: ["/", "！"]
   adapters:
@@ -1172,7 +1173,7 @@ platforms:
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if !cfg.Platforms.Enabled || cfg.Platforms.Common.DefaultPersona != "default" {
+	if !cfg.Platforms.Enabled || cfg.Platforms.Common.DefaultAgentID != "Chat" || cfg.Platforms.Common.DefaultPersona != "default" {
 		t.Fatalf("platforms config = %#v", cfg.Platforms)
 	}
 	if got := cfg.Platforms.Common.CommandPrefixes; !reflect.DeepEqual(got, []string{"/", "！"}) {

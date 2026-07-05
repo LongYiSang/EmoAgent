@@ -113,7 +113,10 @@ export function useAdminBootstrap(activeTab: TabID, { providers, agents, persona
             await loadOnce('websearch-config', loaders.webSearch.reloadWebSearchConfig);
             break;
           case 'platforms':
-            await loadOnce('platforms-admin', loaders.platforms.reloadPlatformAdmin);
+            await Promise.all([
+              loadAgentBasics(),
+              loadOnce('platforms-admin', loaders.platforms.reloadPlatformAdmin),
+            ]);
             break;
           case 'python-toolchain':
             await loadOnce('python-toolchain', loaders.pythonToolchain.reloadPythonToolchainSurfaces);

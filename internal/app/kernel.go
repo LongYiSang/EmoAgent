@@ -107,7 +107,7 @@ func newServices(infra *Infra) *Services {
 		commands:     services.Commands,
 	}
 	services.Commands.chat = services.Chat
-	services.Platforms = NewPlatformService(infra, services.Conversation, services.Commands, services.Chat, services.Personas)
+	services.Platforms = NewPlatformService(infra, services.Conversation, services.Commands, services.Chat, services.AgentRuntime, services.Personas)
 	services.Sessions = &SessionService{infra: infra, work: services.Work}
 	services.PromptCenter = &PromptCenterService{infra: infra, agentRuntime: services.AgentRuntime, personas: services.Personas, memory: services.Memory, agentAffect: services.AgentAffect}
 	services.AgentRuntime.chat = services.Chat

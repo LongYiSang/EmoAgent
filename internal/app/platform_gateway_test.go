@@ -2,9 +2,13 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	chatcore "github.com/longyisang/emoagent/internal/chat"
@@ -58,6 +62,98 @@ func TestPlatformGatewayHandlesCommandWithFullOriginAndActor(t *testing.T) {
 	}
 	if len(invocations) != 1 || invocations[0].ActorID != "10001" || invocations[0].ActorRole != "admin" {
 		t.Fatalf("invocations = %#v, want actor audit", invocations)
+	}
+}
+
+func TestPlatformGatewayUsesBoundAgentForSID(t *testing.T) {
+	ctx := context.Background()
+	app, _, gateway, fakeLLM := newTestPlatformGateway(t)
+	testConfig(app).Platforms.Common.DefaultAgentID = "Chat"
+	upsertPlatformGatewayAgent(t, app, "Chat", "Xia", "http://127.0.0.1:1/v1")
+	setTestPersonas(app, map[string]*config.Persona{
+		"default": {Name: "default", SystemPrompt: "Default persona."},
+		"Xia":     {Name: "Xia", SystemPrompt: "Xia persona."},
+	})
+	sink := &platform.BufferedPlatformSink{}
+
+	result, err := gateway.HandleInbound(ctx, platform.InboundMessage{
+		ExternalMessageID:      "msg-sid-bound-agent",
+		SourceType:             "onebot",
+		AdapterInstanceID:      "qq-main",
+		PlatformID:             "qq",
+		ChannelType:            "private",
+		ExternalConversationID: "10001",
+		ExternalActorID:        "10001",
+		Text:                   "/sid",
+		Actor:                  platform.Actor{ID: "10001", Role: platform.ActorRoleMember},
+	}, sink)
+	if err != nil {
+		t.Fatalf("HandleInbound: %v", err)
+	}
+	if !result.Handled || result.SessionID == "" {
+		t.Fatalf("result = %#v, want handled", result)
+	}
+	event := requirePlatformCommandEvent(t, sink.Events, "sid")
+	for _, want := range []string{"agent_id=Chat", "persona=Xia"} {
+		if !strings.Contains(event.Content, want) {
+			t.Fatalf("/sid content missing %q:\n%s", want, event.Content)
+		}
+	}
+	if fakeLLM.calls != 0 {
+		t.Fatalf("LLM calls = %d, want /sid to bypass LLM", fakeLLM.calls)
+	}
+}
+
+func TestPlatformGatewayUsesBoundAgentForText(t *testing.T) {
+	ctx := context.Background()
+	app, _, gateway, activeLLM := newTestPlatformGateway(t)
+	var requestedModel string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("Decode request: %v", err)
+		}
+		requestedModel = req.Model
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl-bound","model":"bound-model","choices":[{"delta":{"content":"bound reply"}}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl-bound","model":"bound-model","choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\n"))
+	}))
+	t.Cleanup(server.Close)
+	testConfig(app).Platforms.Common.DefaultAgentID = "Chat"
+	upsertPlatformGatewayAgent(t, app, "Chat", "Xia", server.URL)
+	setTestPersonas(app, map[string]*config.Persona{
+		"default": {Name: "default", SystemPrompt: "Default persona."},
+		"Xia":     {Name: "Xia", SystemPrompt: "Xia persona."},
+	})
+	sink := &platform.BufferedPlatformSink{}
+
+	result, err := gateway.HandleInbound(ctx, platform.InboundMessage{
+		ExternalMessageID:      "msg-text-bound-agent",
+		SourceType:             "onebot",
+		AdapterInstanceID:      "qq-main",
+		PlatformID:             "qq",
+		ChannelType:            "private",
+		ExternalConversationID: "10001",
+		ExternalActorID:        "10001",
+		Text:                   "hello",
+		Actor:                  platform.Actor{ID: "10001", Role: platform.ActorRoleMember},
+	}, sink)
+	if err != nil {
+		t.Fatalf("HandleInbound: %v", err)
+	}
+	if !result.Handled || result.SessionID == "" {
+		t.Fatalf("result = %#v, want handled", result)
+	}
+	if activeLLM.calls != 0 {
+		t.Fatalf("active LLM calls = %d, want bound agent runtime only", activeLLM.calls)
+	}
+	if requestedModel != "bound-model" {
+		t.Fatalf("requested model = %q, want bound-model", requestedModel)
+	}
+	if len(sink.Events) != 1 || sink.Events[0].Type != "message" || sink.Events[0].PersonaKey != "Xia" || sink.Events[0].Content != "bound reply" {
+		t.Fatalf("sink events = %#v, want bound reply for Xia", sink.Events)
 	}
 }
 
@@ -246,7 +342,7 @@ func newTestPlatformGateway(t *testing.T) (*App, *storage.DB, *PlatformGateway, 
 	})
 	app.kernel.Services.Chat.engine = engine
 	app.kernel.Services.Conversation.Bindings().SetSessionStarter(engine)
-	gateway := NewPlatformGateway(app.kernel.Infra, app.kernel.Services.Conversation, app.kernel.Services.Commands, app.kernel.Services.Chat, app.kernel.Services.Personas, NewStorageReceiptStore(db))
+	gateway := NewPlatformGateway(app.kernel.Infra, app.kernel.Services.Conversation, app.kernel.Services.Commands, app.kernel.Services.Chat, app.kernel.Services.AgentRuntime, app.kernel.Services.Personas, NewStorageReceiptStore(db))
 	return app, db, gateway, fakeLLM
 }
 
@@ -274,6 +370,35 @@ func requirePlatformCommandEvent(t *testing.T, events []platform.OutboundEvent, 
 	}
 	t.Fatalf("events = %#v, want command_result for %s", events, commandName)
 	return platform.OutboundEvent{}
+}
+
+func upsertPlatformGatewayAgent(t *testing.T, app *App, agentID string, personaKey string, baseURL string) {
+	t.Helper()
+	db := app.kernel.Infra.DB
+	if err := db.UpsertPersona(personaKey, personaKey, "", "system", "warm", nil, "", nil); err != nil {
+		t.Fatalf("UpsertPersona: %v", err)
+	}
+	t.Setenv("TEST_PLATFORM_GATEWAY_KEY", "test-key")
+	if err := db.UpsertLLMProvider(config.LLMProvider{ID: "test-provider", Name: "Test Provider", Protocol: "openai_compatible", BaseURL: baseURL, APIKeyEnv: "TEST_PLATFORM_GATEWAY_KEY", Enabled: true}); err != nil {
+		t.Fatalf("UpsertLLMProvider: %v", err)
+	}
+	binding := config.ModelBinding{ProviderID: "test-provider", Model: "bound-model"}
+	if err := db.UpsertAgentConfig(config.AgentConfig{
+		ID:               agentID,
+		Name:             agentID,
+		PersonaKey:       personaKey,
+		ContextOverrides: map[string]any{},
+		Emotion: config.AgentModelGroup{
+			Main:    binding,
+			Summary: binding,
+		},
+		Work: config.AgentModelGroup{
+			Main:    binding,
+			Summary: binding,
+		},
+	}); err != nil {
+		t.Fatalf("UpsertAgentConfig: %v", err)
+	}
 }
 
 type platformGatewayFakeLLM struct {

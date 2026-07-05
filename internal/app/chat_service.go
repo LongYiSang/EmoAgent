@@ -2,12 +2,14 @@ package app
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/longyisang/emoagent/internal/chat"
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/media"
 	"github.com/longyisang/emoagent/internal/tool"
+	workctx "github.com/longyisang/emoagent/internal/work"
 )
 
 type ChatService struct {
@@ -22,6 +24,7 @@ type ChatService struct {
 	agentAffect  *AgentAffectService
 	conversation *ConversationService
 	commands     *CommandService
+	dispatcher   *tool.Dispatcher
 	engine       *chat.Engine
 }
 
@@ -30,12 +33,35 @@ func (s *ChatService) Engine() *chat.Engine {
 }
 
 func (s *ChatService) BuildEngine(dispatcher *tool.Dispatcher) *chat.Engine {
+	s.dispatcher = dispatcher
+	s.engine = s.newEngine(s.agentRuntime.Active(), dispatcher)
+	if s.conversation != nil && s.conversation.Bindings() != nil {
+		s.conversation.Bindings().SetSessionStarter(s.engine)
+	}
+	return s.engine
+}
+
+func (s *ChatService) SendPlatformMessage(ctx context.Context, runtime *ActiveAgentRuntime, sessionID string, persona *config.Persona, text string, cb func(string)) (string, error) {
+	if s == nil {
+		return "", fmt.Errorf("chat service is not configured")
+	}
+	if runtime == nil {
+		return "", fmt.Errorf("platform agent runtime is not configured")
+	}
+	engine := s.newEngine(runtime, s.dispatcher)
+	if engine == nil {
+		return "", fmt.Errorf("chat engine is not configured")
+	}
+	runCtx := workctx.WithAgentID(ctx, runtime.ID)
+	return engine.SendMessage(runCtx, sessionID, persona, text, cb)
+}
+
+func (s *ChatService) newEngine(activeRuntime *ActiveAgentRuntime, dispatcher *tool.Dispatcher) *chat.Engine {
 	cfg := config.DefaultConfig()
 	if s.infra.Config != nil {
 		cfg = s.infra.Config
 	}
 
-	activeRuntime := s.agentRuntime.Active()
 	model := ""
 	params := llm.RequestParams{}
 	summaryModel := ""
@@ -81,7 +107,7 @@ func (s *ChatService) BuildEngine(dispatcher *tool.Dispatcher) *chat.Engine {
 	if s.llmProviders != nil {
 		mediaResolver = s.llmProviders
 	}
-	s.engine = chat.NewEngine(chat.EngineConfig{
+	return chat.NewEngine(chat.EngineConfig{
 		LLM:                currentClient,
 		SummaryLLM:         summaryClient,
 		DB:                 s.infra.DB,
@@ -116,10 +142,6 @@ func (s *ChatService) BuildEngine(dispatcher *tool.Dispatcher) *chat.Engine {
 		PersonaKey:         personaKey,
 		PromptSnapshots:    cfg.PromptCenter.Snapshots,
 	})
-	if s.conversation != nil && s.conversation.Bindings() != nil {
-		s.conversation.Bindings().SetSessionStarter(s.engine)
-	}
-	return s.engine
 }
 
 func (s *ChatService) HandlerOptions() []chat.HandlerOption {

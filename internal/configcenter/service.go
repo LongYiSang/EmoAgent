@@ -187,6 +187,7 @@ func (s *Service) BuildEffective(ctx context.Context) (EffectiveConfig, error) {
 	}
 	issues := append([]ConfigIssue{}, runtimeIssues...)
 	issues = append(issues, BuildIssues(&runtimeCfg, effective.Providers, nil)...)
+	issues = append(issues, s.platformAgentBindingIssues(ctx, runtimeCfg.Platforms)...)
 
 	memoryCore, memoryCoreIssues := s.memoryCoreEffective(&runtimeCfg, providers, nil)
 	effective.MemoryCore = memoryCore
@@ -394,10 +395,68 @@ func (s *Service) validatePlatformsConfigUpdate(ctx context.Context, next storag
 	}
 	allIssues := append([]ConfigIssue{}, runtimeIssues...)
 	allIssues = append(allIssues, BuildIssues(&runtimeCfg, s.providerEffective(providers), nil)...)
+	allIssues = append(allIssues, s.platformAgentBindingIssues(ctx, runtimeCfg.Platforms)...)
 	issues := filterIssuesByPathPrefix(allIssues, "platforms")
 	issues = dedupeIssues(issues)
 	if hasBlockingIssues(issues) {
 		return &ValidationError{Issues: issues}
+	}
+	return nil
+}
+
+func (s *Service) platformAgentBindingIssues(ctx context.Context, cfg config.PlatformsConfig) []ConfigIssue {
+	if !cfg.Enabled {
+		return nil
+	}
+	agentID := strings.TrimSpace(cfg.Common.DefaultAgentID)
+	if agentID == "" {
+		return nil
+	}
+	const path = "platforms.common.default_agent_id"
+	if s == nil || s.DB == nil {
+		return []ConfigIssue{{
+			Path:     path,
+			Severity: "error",
+			Message:  "platform default_agent_id requires runtime database",
+		}}
+	}
+	agent, err := s.DB.GetAgentConfig(ctx, agentID)
+	if err != nil {
+		return []ConfigIssue{{
+			Path:     path,
+			Severity: "error",
+			Message:  fmt.Sprintf("read platform default_agent_id %q: %v", agentID, err),
+		}}
+	}
+	if agent == nil {
+		return []ConfigIssue{{
+			Path:     path,
+			Severity: "error",
+			Message:  fmt.Sprintf("platform default_agent_id %q was not found", agentID),
+		}}
+	}
+	personaKey := strings.TrimSpace(agent.PersonaKey)
+	if personaKey == "" {
+		return []ConfigIssue{{
+			Path:     path,
+			Severity: "error",
+			Message:  fmt.Sprintf("platform default_agent_id %q has empty persona_key", agentID),
+		}}
+	}
+	persona, err := s.DB.GetPersona(ctx, personaKey)
+	if err != nil {
+		return []ConfigIssue{{
+			Path:     path,
+			Severity: "error",
+			Message:  fmt.Sprintf("read persona %q for platform default_agent_id %q: %v", personaKey, agentID, err),
+		}}
+	}
+	if persona == nil {
+		return []ConfigIssue{{
+			Path:     path,
+			Severity: "error",
+			Message:  fmt.Sprintf("platform default_agent_id %q references missing persona %q", agentID, personaKey),
+		}}
 	}
 	return nil
 }

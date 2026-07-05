@@ -40,6 +40,12 @@ func NewResumeTool(runtime *Runtime, pending *PendingRegistry, journalDir string
 }
 
 func NewResumeToolWithFactory(runtimeFactory func() (*Runtime, error), pending *PendingRegistry, journalDir string, logger *slog.Logger) (tool.Spec, tool.Handler) {
+	return NewResumeToolWithContextFactory(func(context.Context) (*Runtime, error) {
+		return runtimeFactory()
+	}, pending, journalDir, logger)
+}
+
+func NewResumeToolWithContextFactory(runtimeFactory func(context.Context) (*Runtime, error), pending *PendingRegistry, journalDir string, logger *slog.Logger) (tool.Spec, tool.Handler) {
 	spec := tool.Spec{
 		Name:        ToolNameResumeWork,
 		Description: resumeToolDescription,
@@ -79,7 +85,7 @@ func NewResumeToolWithFactory(runtimeFactory func() (*Runtime, error), pending *
 			})
 			return output, nil
 		}
-		runtime, err := runtimeFactory()
+		runtime, err := runtimeFactory(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("resume_work: %w", err)
 		}

@@ -57,6 +57,7 @@ type CommandRequest struct {
 	Content    string
 	Origin     conversation.Origin
 	SessionID  string
+	AgentID    string
 	PersonaKey string
 	ActorID    string
 	ActorName  string

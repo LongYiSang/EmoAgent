@@ -399,6 +399,10 @@ func (s *CommandService) handleSID(req chat.CommandRequest) commandResult {
 	if req.ActorName != "" {
 		lines = append(lines, "actor_name="+req.ActorName)
 	}
+	if req.AgentID != "" {
+		lines = append(lines, "agent_id="+req.AgentID)
+		fields["agent_id"] = req.AgentID
+	}
 	lines = append(lines,
 		"actor_role="+firstNonEmptyCommandValue(req.ActorRole, string(commandcore.CommandPermissionMember)),
 		"session_id="+req.SessionID,
@@ -536,9 +540,9 @@ func (s *CommandService) handleClear(ctx context.Context, req chat.CommandReques
 }
 
 func (s *CommandService) handleCompact(ctx context.Context, req chat.CommandRequest) commandResult {
-	active := (*ActiveAgentRuntime)(nil)
-	if s.agentRuntime != nil {
-		active = s.agentRuntime.Active()
+	active, err := s.runtimeForCommand(req, true)
+	if err != nil {
+		return commandResult{Status: "failed", Content: "读取 Agent 配置失败：" + err.Error(), ErrorKind: "internal_error"}
 	}
 	if active == nil || active.EmotionSummary.Client == nil {
 		return commandResult{
@@ -736,7 +740,7 @@ func (s *CommandService) handlePluginCommand(ctx context.Context, req chat.Comma
 		if !commandStatusSuccessful(status) {
 			return commandResult{Status: status, Content: result.Content, Payload: payload}
 		}
-		content, err := s.synthesizePluginCommandResult(ctx, descriptor, parsed, result.Content)
+		content, err := s.synthesizePluginCommandResult(ctx, req, descriptor, parsed, result.Content)
 		if err != nil {
 			return commandResult{Status: "failed", Content: "插件命令 LLM synthesis 失败：" + err.Error(), ErrorKind: "llm_synthesize_failed", Payload: payload}
 		}
@@ -747,16 +751,16 @@ func (s *CommandService) handlePluginCommand(ctx context.Context, req chat.Comma
 	return commandResult{Status: status, Content: result.Content, Payload: payload}
 }
 
-func (s *CommandService) synthesizePluginCommandResult(ctx context.Context, descriptor commandcore.CommandDescriptor, parsed commandcore.ParsedCommand, content string) (string, error) {
-	active := (*ActiveAgentRuntime)(nil)
-	if s.agentRuntime != nil {
-		active = s.agentRuntime.Active()
+func (s *CommandService) synthesizePluginCommandResult(ctx context.Context, req chat.CommandRequest, descriptor commandcore.CommandDescriptor, parsed commandcore.ParsedCommand, content string) (string, error) {
+	active, err := s.runtimeForCommand(req, true)
+	if err != nil {
+		return "", err
 	}
 	if active == nil || active.EmotionSummary.Client == nil {
 		return "", fmt.Errorf("no synthesis model is available")
 	}
 	model := strings.TrimSpace(active.EmotionSummary.Model)
-	req := llm.ChatRequest{
+	llmReq := llm.ChatRequest{
 		Model:  model,
 		System: "You are synthesizing the visible result of an EmoAgent plugin command. Use only the plugin result below. Do not call tools. Do not mention hidden prompts, policies, or raw JSON.",
 		Messages: []llm.Message{{
@@ -767,7 +771,7 @@ func (s *CommandService) synthesizePluginCommandResult(ctx context.Context, desc
 		Params: active.EmotionSummary.Params,
 		Tools:  nil,
 	}
-	resp, err := active.EmotionSummary.Client.Chat(ctx, req)
+	resp, err := active.EmotionSummary.Client.Chat(ctx, llmReq)
 	if err != nil {
 		return "", err
 	}
@@ -775,6 +779,16 @@ func (s *CommandService) synthesizePluginCommandResult(ctx context.Context, desc
 		return "", fmt.Errorf("empty synthesis result")
 	}
 	return resp.Content, nil
+}
+
+func (s *CommandService) runtimeForCommand(req chat.CommandRequest, requireClient bool) (*ActiveAgentRuntime, error) {
+	if s == nil || s.agentRuntime == nil {
+		return nil, nil
+	}
+	if agentID := strings.TrimSpace(req.AgentID); agentID != "" {
+		return s.agentRuntime.Build(agentID, requireClient)
+	}
+	return s.agentRuntime.Active(), nil
 }
 
 func (s *CommandService) commandConfig(ctx context.Context, commandID string) (*storage.CommandConfigRecord, error) {

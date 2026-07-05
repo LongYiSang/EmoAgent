@@ -3,9 +3,10 @@ import type { AnyRecord } from '../../shared/lib/api';
 import { arrayField, boolField, field, stringField, toInt } from '../../shared/lib/data';
 import { classNames } from '../../shared/lib/classNames';
 import type { PlatformAdmin } from '../hooks/usePlatformAdmin';
+import type { AgentConfig } from '../protocol/adminApi';
 import { Field } from '../components/Field';
 
-export type PlatformsTabProps = PlatformAdmin;
+export type PlatformsTabProps = PlatformAdmin & { agents: AgentConfig[] };
 
 export default memo(function PlatformsTab({
   platformDraft,
@@ -19,7 +20,9 @@ export default memo(function PlatformsTab({
   testPlatformConnection,
   copySnowLumaConfig,
   copyEmoAgentYAML,
+  agents,
 }: PlatformsTabProps) {
+  const common = field<AnyRecord>(platformDraft, 'common', {});
   const adapter = field<AnyRecord>(field<AnyRecord>(platformDraft, 'adapters', {}), adapterID, {});
   const config = field<AnyRecord>(adapter, 'config', {});
   const transport = field<AnyRecord>(config, 'transport', {});
@@ -31,6 +34,8 @@ export default memo(function PlatformsTab({
   const auth = field<AnyRecord>(statusAdapter, 'auth', {});
   const connected = boolField(statusTransport, 'connected');
   const enabled = boolField(platformDraft, 'enabled') && boolField(adapter, 'enabled');
+  const defaultAgentID = stringField(common, 'default_agent_id');
+  const boundAgent = agents.find(agent => stringField(agent, 'id') === defaultAgentID);
 
   return (
     <div className="section">
@@ -63,6 +68,10 @@ export default memo(function PlatformsTab({
           <label>Token</label>
           <span className={classNames('badge', boolField(auth, 'access_token_configured') ? 'ok' : 'warn')}>{boolField(auth, 'access_token_configured') ? 'env configured' : 'missing env'}</span>
         </div>
+        <div className="field">
+          <label>绑定 Agent</label>
+          <span className="mono">{boundAgentLabel(boundAgent, defaultAgentID)}</span>
+        </div>
       </div>
 
       <div className="slot" style={{ marginTop: 16 }}>
@@ -70,6 +79,17 @@ export default memo(function PlatformsTab({
         <div className="grid compact">
           <label className="check"><input type="checkbox" checked={boolField(platformDraft, 'enabled')} onChange={event => updatePlatformPath(['enabled'], event.target.checked)} /> 启用 platforms</label>
           <label className="check"><input type="checkbox" checked={boolField(adapter, 'enabled')} onChange={event => updatePlatformPath(['adapters', adapterID, 'enabled'], event.target.checked)} /> 启用 qq-main</label>
+          <div className="field">
+            <label htmlFor="platform-agent-id">Agent 配置</label>
+            <select id="platform-agent-id" value={defaultAgentID} onChange={event => updatePlatformPath(['common', 'default_agent_id'], event.target.value)}>
+              <option value="">未绑定，使用兼容逻辑</option>
+              {agents.map(agent => (
+                <option key={stringField(agent, 'id')} value={stringField(agent, 'id')}>
+                  {agentOptionLabel(agent)}
+                </option>
+              ))}
+            </select>
+          </div>
           <Field id="platform-id" label="platform_id" value={stringField(adapter, 'platform_id') || 'qq'} onChange={value => updatePlatformPath(['adapters', adapterID, 'platform_id'], value)} />
           <Field id="platform-reverse-path" label="reverse_path" value={stringField(transport, 'reverse_path')} onChange={value => updatePlatformPath(['adapters', adapterID, 'config', 'transport', 'reverse_path'], value)} mono />
           <Field id="platform-token-env" label="access_token_env" value={stringField(transport, 'access_token_env')} onChange={value => updatePlatformPath(['adapters', adapterID, 'config', 'transport', 'access_token_env'], value)} mono />
@@ -125,4 +145,17 @@ function NumberField({ id, label, value, min, onChange }: { id: string; label: s
       <input id={id} type="number" min={min} value={String(value ?? '')} onChange={event => onChange(toInt(event.target.value))} />
     </div>
   );
+}
+
+function agentOptionLabel(agent: AgentConfig) {
+  const id = stringField(agent, 'id');
+  const name = stringField(agent, 'name');
+  const persona = stringField(agent, 'persona_key') || 'default';
+  return [id, name, `Persona ${persona}`].filter(Boolean).join(' · ');
+}
+
+function boundAgentLabel(agent: AgentConfig | undefined, defaultAgentID: string) {
+  if (!defaultAgentID) return '未绑定';
+  if (!agent) return `${defaultAgentID} · 未找到`;
+  return agentOptionLabel(agent);
 }
