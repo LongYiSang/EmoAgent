@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -95,7 +96,7 @@ func OpenWithOptions(path string, logger *slog.Logger, opts StorageOptions) (*DB
 		return nil, err
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", sqliteDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
@@ -120,6 +121,18 @@ func OpenWithOptions(path string, logger *slog.Logger, opts StorageOptions) (*DB
 
 	logger.Info("database opened", "path", path)
 	return &DB{db: db, logger: logger, loc: loc}, nil
+}
+
+func sqliteDSN(path string) string {
+	values := url.Values{}
+	values.Add("_pragma", "journal_mode(WAL)")
+	values.Add("_pragma", "foreign_keys(1)")
+	values.Add("_pragma", "busy_timeout(5000)")
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	return path + sep + values.Encode()
 }
 
 func loadLocation(name string) (*time.Location, error) {
@@ -187,6 +200,10 @@ func (d *DB) GetAllRuntimeConfig() (map[string]string, error) {
 }
 
 func (d *DB) UpsertRuntimeSetting(namespace, key, valueJSON, source string) error {
+	return d.UpsertRuntimeSettingContext(context.Background(), namespace, key, valueJSON, source)
+}
+
+func (d *DB) UpsertRuntimeSettingContext(ctx context.Context, namespace, key, valueJSON, source string) error {
 	if !json.Valid([]byte(valueJSON)) {
 		return fmt.Errorf("value_json must be valid JSON")
 	}
@@ -194,7 +211,7 @@ func (d *DB) UpsertRuntimeSetting(namespace, key, valueJSON, source string) erro
 		source = "ui"
 	}
 	now := d.nowText()
-	_, err := d.db.Exec(`
+	_, err := d.db.ExecContext(ctx, `
 		INSERT INTO runtime_settings (namespace, key, value_json, source, updated_at)
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(namespace, key) DO UPDATE SET
@@ -206,7 +223,11 @@ func (d *DB) UpsertRuntimeSetting(namespace, key, valueJSON, source string) erro
 }
 
 func (d *DB) GetRuntimeSetting(namespace, key string) (RuntimeSetting, bool, error) {
-	row := d.db.QueryRow(`
+	return d.GetRuntimeSettingContext(context.Background(), namespace, key)
+}
+
+func (d *DB) GetRuntimeSettingContext(ctx context.Context, namespace, key string) (RuntimeSetting, bool, error) {
+	row := d.db.QueryRowContext(ctx, `
 		SELECT namespace, key, value_json, source, updated_by, updated_at
 		FROM runtime_settings
 		WHERE namespace = ? AND key = ?
@@ -222,7 +243,11 @@ func (d *DB) GetRuntimeSetting(namespace, key string) (RuntimeSetting, bool, err
 }
 
 func (d *DB) ListRuntimeSettings() ([]RuntimeSetting, error) {
-	rows, err := d.db.Query(`
+	return d.ListRuntimeSettingsContext(context.Background())
+}
+
+func (d *DB) ListRuntimeSettingsContext(ctx context.Context) ([]RuntimeSetting, error) {
+	rows, err := d.db.QueryContext(ctx, `
 		SELECT namespace, key, value_json, source, updated_by, updated_at
 		FROM runtime_settings
 		ORDER BY namespace, key

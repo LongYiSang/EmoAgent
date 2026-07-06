@@ -401,6 +401,22 @@ func TestPluginAdminAPIInstallRestartDeleteAndLogs(t *testing.T) {
 	}
 }
 
+func TestPluginAdminAPIInstallRejectsOversizedJSON(t *testing.T) {
+	app := &pluginAPIApp{summary: plugin.AdminPluginSummary{PluginID: "com.example.echo", Version: "0.1.0", Name: "Echo"}}
+	handler := NewAPIHandler(app, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	body := `{"owner":"` + strings.Repeat("a", int(maxJSONBodyBytes)+1) + `","repo":"echo","tag":"v0.1.0","asset":"echo.zip"}`
+
+	rec := httptest.NewRecorder()
+	handler.HandleInstallGitHubPlugin(rec, httptest.NewRequest(http.MethodPost, "/api/plugins/install/github-release", strings.NewReader(body)))
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d body=%s, want 413", rec.Code, rec.Body.String())
+	}
+	if app.installGitHubReq.Owner != "" {
+		t.Fatalf("install request reached app: %#v", app.installGitHubReq)
+	}
+}
+
 func TestPluginAdminAPIAccessEventsAndProviderUsage(t *testing.T) {
 	app := &pluginAPIApp{
 		summary: plugin.AdminPluginSummary{PluginID: "com.example.echo", Version: "0.1.0", Name: "Echo"},

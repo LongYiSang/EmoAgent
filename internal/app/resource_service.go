@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -81,7 +82,7 @@ func (s *ResourceService) GetChangeSet(ctx context.Context, id string) (resource
 	}
 	cs, err := manager.PreviewChange(ctx, id)
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, resource.ErrChangeSetNotFound) {
 			return resource.ChangeSet{}, fmt.Errorf("%w: %s", resource.ErrChangeSetNotFound, id)
 		}
 		return resource.ChangeSet{}, err
@@ -96,7 +97,7 @@ func (s *ResourceService) CancelChangeSet(ctx context.Context, id string) (resou
 	}
 	cs, err := manager.CancelChange(ctx, id)
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, resource.ErrChangeSetNotFound) {
 			return resource.ChangeSet{}, fmt.Errorf("%w: %s", resource.ErrChangeSetNotFound, id)
 		}
 		return resource.ChangeSet{}, err

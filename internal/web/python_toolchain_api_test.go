@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -28,6 +29,7 @@ type pythonToolchainAPIFakeApp struct {
 	repairKind    string
 	repairID      string
 	repairVersion string
+	listErr       error
 }
 
 func (a *pythonToolchainAPIFakeApp) GetPythonToolchainConfig(context.Context) (config.PythonToolchainConfig, error) {
@@ -46,6 +48,9 @@ func (a *pythonToolchainAPIFakeApp) UpdatePythonToolchainConfig(_ context.Contex
 }
 
 func (a *pythonToolchainAPIFakeApp) ListPythonEnvironments(context.Context) ([]pytoolchain.EnvironmentSummary, error) {
+	if a.listErr != nil {
+		return nil, a.listErr
+	}
 	return append([]pytoolchain.EnvironmentSummary(nil), a.environments...), nil
 }
 
@@ -180,5 +185,20 @@ func TestPythonToolchainAPIUpdateAndEnvironmentActions(t *testing.T) {
 	}
 	if app.repairKind != "plugin" || app.repairID != "com.example.managed" || app.repairVersion != "0.1.0" {
 		t.Fatalf("repair args = %q %q %q", app.repairKind, app.repairID, app.repairVersion)
+	}
+}
+
+func TestPythonToolchainAPIListEnvironmentsDoesNotLeakInternalError(t *testing.T) {
+	app := &pythonToolchainAPIFakeApp{listErr: errors.New("secret path C:/Users/me/.cache/token")}
+	handler := NewAPIHandler(any(app).(AdminApp), slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	rec := httptest.NewRecorder()
+	handler.HandleListPythonEnvironments(rec, httptest.NewRequest(http.MethodGet, "/api/python-toolchain/environments", nil))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d body=%s, want 500", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("internal server error")) || bytes.Contains(rec.Body.Bytes(), []byte("secret path")) {
+		t.Fatalf("body = %s, want generic internal error", rec.Body.String())
 	}
 }

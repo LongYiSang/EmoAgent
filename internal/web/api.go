@@ -389,8 +389,8 @@ func (h *APIHandler) HandleGetLLMProvider(w http.ResponseWriter, r *http.Request
 
 func (h *APIHandler) HandleCreateLLMProvider(w http.ResponseWriter, r *http.Request) {
 	var provider config.LLMProvider
-	if err := readJSON(r, &provider); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
+	if err := readJSON(w, r, &provider); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 	normalizeProvider(&provider)
@@ -403,8 +403,8 @@ func (h *APIHandler) HandleCreateLLMProvider(w http.ResponseWriter, r *http.Requ
 
 func (h *APIHandler) HandleUpdateLLMProvider(w http.ResponseWriter, r *http.Request) {
 	var provider config.LLMProvider
-	if err := readJSON(r, &provider); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
+	if err := readJSON(w, r, &provider); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 	normalizeProvider(&provider)
@@ -451,7 +451,13 @@ func (h *APIHandler) HandleGetLLMProviderEnvStatus(w http.ResponseWriter, r *htt
 }
 
 func (h *APIHandler) HandleUploadMedia(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, media.DefaultMaxBytes+(1<<20))
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid multipart form")
 		return
 	}
@@ -507,8 +513,8 @@ func (h *APIHandler) HandleGetConfigEffective(w http.ResponseWriter, r *http.Req
 func (h *APIHandler) HandleValidateConfig(w http.ResponseWriter, r *http.Request) {
 	var req configcenter.ValidateRequest
 	if r.Body != nil && r.ContentLength != 0 {
-		if err := readJSON(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON")
+		if err := readJSON(w, r, &req); err != nil {
+			writeJSONReadError(w, err)
 			return
 		}
 	}
@@ -540,8 +546,8 @@ func (h *APIHandler) HandleGetPlatformStatus(w http.ResponseWriter, r *http.Requ
 
 func (h *APIHandler) HandleUpdatePlatformsConfig(w http.ResponseWriter, r *http.Request) {
 	var req platformsConfigRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 	effective, err := h.app.UpdatePlatformsConfig(r.Context(), req.Platforms)
@@ -658,8 +664,8 @@ func (h *APIHandler) HandleGetSidecarLogs(w http.ResponseWriter, r *http.Request
 
 func (h *APIHandler) readMemoryConfigRequest(w http.ResponseWriter, r *http.Request) (config.MemoryConfig, bool) {
 	var req memoryConfigRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSONReadError(w, err)
 		return config.MemoryConfig{}, false
 	}
 	return req.Memory, true
@@ -714,8 +720,8 @@ func (h *APIHandler) HandleGetAgentConfig(w http.ResponseWriter, r *http.Request
 
 func (h *APIHandler) HandleCreateAgentConfig(w http.ResponseWriter, r *http.Request) {
 	var agent config.AgentConfig
-	if err := readJSON(r, &agent); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
+	if err := readJSON(w, r, &agent); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 	if err := h.app.CreateAgentConfig(agent); err != nil {
@@ -727,8 +733,8 @@ func (h *APIHandler) HandleCreateAgentConfig(w http.ResponseWriter, r *http.Requ
 
 func (h *APIHandler) HandleUpdateAgentConfig(w http.ResponseWriter, r *http.Request) {
 	var agent config.AgentConfig
-	if err := readJSON(r, &agent); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
+	if err := readJSON(w, r, &agent); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 	if err := h.app.UpdateAgentConfig(r.PathValue("id"), agent); err != nil {
@@ -765,8 +771,8 @@ func (h *APIHandler) HandlePreviewUserAddressMigration(w http.ResponseWriter, r 
 
 func (h *APIHandler) HandleExecuteUserAddressMigration(w http.ResponseWriter, r *http.Request) {
 	var req UserAddressMigrationExecuteRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 	resp, err := h.app.ExecuteUserAddressMigration(r.Context(), r.PathValue("id"), req)
@@ -784,8 +790,8 @@ func (h *APIHandler) HandleGetChatSettings(w http.ResponseWriter, r *http.Reques
 
 func (h *APIHandler) HandleUpdateChatSettings(w http.ResponseWriter, r *http.Request) {
 	var req chatSettingsRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 	current := h.app.GetChatSettings()
@@ -866,8 +872,8 @@ func (h *APIHandler) HandleGetPersona(w http.ResponseWriter, r *http.Request) {
 
 func (h *APIHandler) HandleCreatePersona(w http.ResponseWriter, r *http.Request) {
 	var req personaRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 
@@ -895,8 +901,8 @@ func (h *APIHandler) HandleCreatePersona(w http.ResponseWriter, r *http.Request)
 
 func (h *APIHandler) HandleUpdatePersona(w http.ResponseWriter, r *http.Request) {
 	var req personaRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 
@@ -938,8 +944,8 @@ func (h *APIHandler) HandleGetProgressPhrases(w http.ResponseWriter, r *http.Req
 func (h *APIHandler) HandleUpdateProgressPhrases(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("name")
 	var req progressPhrasesRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 	if err := h.app.UpdateProgressPhrases(key, normalizeProgressPhrases(req.Phrases)); err != nil {
@@ -1083,8 +1089,8 @@ func (h *APIHandler) HandleListSessionApprovals(w http.ResponseWriter, r *http.R
 
 func (h *APIHandler) HandleQueueMemoryExtraction(w http.ResponseWriter, r *http.Request) {
 	var req MemoryExtractionRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 	normalizeMemoryExtractionRequest(&req)
@@ -1120,8 +1126,8 @@ func (h *APIHandler) HandleListMemoryExtractions(w http.ResponseWriter, r *http.
 
 func (h *APIHandler) HandleRunNaturalMemory(w http.ResponseWriter, r *http.Request) {
 	var req NaturalMemoryRunRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 	normalizeNaturalMemoryRunRequest(&req)
@@ -1166,8 +1172,8 @@ func (h *APIHandler) HandleListCommands(w http.ResponseWriter, r *http.Request) 
 
 func (h *APIHandler) HandleUpdateCommandConfig(w http.ResponseWriter, r *http.Request) {
 	var req CommandConfigUpdateRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 	commandID := strings.TrimSpace(r.PathValue("id"))
@@ -1673,11 +1679,33 @@ func parsePositiveLimit(r *http.Request, defaultLimit int) (int, bool) {
 	return parsed, true
 }
 
-func readJSON(r *http.Request, target interface{}) error {
+const maxJSONBodyBytes int64 = 1 << 20
+
+var errJSONBodyTooLarge = errors.New("request body too large")
+
+func readJSON(w http.ResponseWriter, r *http.Request, target interface{}) error {
+	if r.Body == nil {
+		return io.EOF
+	}
 	defer r.Body.Close()
-	decoder := json.NewDecoder(r.Body)
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxJSONBodyBytes))
 	decoder.DisallowUnknownFields()
-	return decoder.Decode(target)
+	if err := decoder.Decode(target); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			return errJSONBodyTooLarge
+		}
+		return err
+	}
+	return nil
+}
+
+func writeJSONReadError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errJSONBodyTooLarge) {
+		writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		return
+	}
+	writeError(w, http.StatusBadRequest, "invalid JSON")
 }
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {

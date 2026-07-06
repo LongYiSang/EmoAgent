@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/longyisang/emoagent/internal/config"
 	sidecarruntime "github.com/longyisang/emoagent/internal/sidecar"
 )
 
 type SidecarService struct {
+	mu         sync.Mutex
 	infra      *Infra
 	config     *ConfigService
 	supervisor *sidecarruntime.Supervisor
@@ -19,15 +21,25 @@ type SidecarService struct {
 }
 
 func (s *SidecarService) Supervisor() *sidecarruntime.Supervisor {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.supervisor
 }
 
 func (s *SidecarService) SetSupervisor(supervisor *sidecarruntime.Supervisor) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.supervisor = supervisor
 	s.status = nil
 }
 
 func (s *SidecarService) Status(ctx context.Context) (sidecarruntime.Status, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.statusLocked(ctx)
+}
+
+func (s *SidecarService) statusLocked(ctx context.Context) (sidecarruntime.Status, error) {
 	if s.supervisor != nil {
 		return s.supervisor.Status(), nil
 	}
@@ -51,6 +63,12 @@ func (s *SidecarService) Status(ctx context.Context) (sidecarruntime.Status, err
 }
 
 func (s *SidecarService) Start(ctx context.Context) (sidecarruntime.Status, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.startLocked(ctx)
+}
+
+func (s *SidecarService) startLocked(ctx context.Context) (sidecarruntime.Status, error) {
 	if s.supervisor != nil {
 		status := s.supervisor.Status()
 		if status.State == sidecarruntime.StateHealthy || status.State == sidecarruntime.StateStarting {
@@ -94,14 +112,20 @@ func (s *SidecarService) Start(ctx context.Context) (sidecarruntime.Status, erro
 }
 
 func (s *SidecarService) Stop(ctx context.Context) (sidecarruntime.Status, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stopLocked(ctx)
+}
+
+func (s *SidecarService) stopLocked(ctx context.Context) (sidecarruntime.Status, error) {
 	if s.supervisor == nil {
 		s.status = nil
-		return s.Status(ctx)
+		return s.statusLocked(ctx)
 	}
 	err := s.supervisor.Stop(ctx)
 	s.supervisor = nil
 	s.status = nil
-	status, statusErr := s.Status(ctx)
+	status, statusErr := s.statusLocked(ctx)
 	if err != nil {
 		return status, err
 	}
@@ -109,12 +133,14 @@ func (s *SidecarService) Stop(ctx context.Context) (sidecarruntime.Status, error
 }
 
 func (s *SidecarService) Restart(ctx context.Context) (sidecarruntime.Status, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.supervisor != nil {
 		_ = s.supervisor.Stop(ctx)
 		s.supervisor = nil
 	}
 	s.status = nil
-	return s.Start(ctx)
+	return s.startLocked(ctx)
 }
 
 func (s *SidecarService) GeneratedConfig(ctx context.Context) (string, error) {
@@ -153,6 +179,8 @@ func (s *SidecarService) Logs(ctx context.Context, maxBytes int) (string, error)
 }
 
 func (s *SidecarService) Close(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.supervisor == nil {
 		s.status = nil
 		return nil

@@ -78,7 +78,7 @@ type anthropicStreamEvent struct {
 	Delta        json.RawMessage        `json:"delta,omitempty"`
 	ContentBlock *anthropicContentBlock `json:"content_block,omitempty"`
 	Usage        *anthropicUsage        `json:"usage,omitempty"`
-	Message *anthropicResponse `json:"message,omitempty"`
+	Message      *anthropicResponse     `json:"message,omitempty"`
 }
 
 type anthropicUsage struct {
@@ -178,13 +178,13 @@ func (c *anthropicClient) parseContentBlocks(content []anthropicContentBlock) (s
 func normalizeAnthropicUsage(raw anthropicUsage) Usage {
 	rawJSON, _ := json.Marshal(raw)
 	return Usage{
-		InputTokens:        raw.InputTokens,
-		OutputTokens:       raw.OutputTokens,
-		CacheWriteTokens:   raw.CacheCreationInputTokens,
-		CacheReadTokens:    raw.CacheReadInputTokens,
-		CachedInputTokens:  raw.CacheReadInputTokens,
-		Source:             UsageSourceProvider,
-		RawUsage:           rawJSON,
+		InputTokens:       raw.InputTokens,
+		OutputTokens:      raw.OutputTokens,
+		CacheWriteTokens:  raw.CacheCreationInputTokens,
+		CacheReadTokens:   raw.CacheReadInputTokens,
+		CachedInputTokens: raw.CacheReadInputTokens,
+		Source:            UsageSourceProvider,
+		RawUsage:          rawJSON,
 	}.NormalizeTotals()
 }
 
@@ -221,7 +221,6 @@ func (c *anthropicClient) doRequest(ctx context.Context, body []byte, stream boo
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		c.logger.Error("llm http error", "status", resp.StatusCode, "body", SanitizeImageDataForDiagnostics(string(respBody)))
 		return nil, wrapStatusError("anthropic", "messages", resp.StatusCode, string(respBody))
 	}
 

@@ -68,8 +68,11 @@ func BuildServer(ctx context.Context, kernel *Kernel, facade *App) (*Server, err
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	return &Server{
 		httpServer: &http.Server{
-			Addr:    addr,
-			Handler: mux,
+			Addr:              addr,
+			Handler:           mux,
+			ReadHeaderTimeout: 5 * time.Second,
+			IdleTimeout:       120 * time.Second,
+			MaxHeaderBytes:    1 << 20,
 		},
 		platforms: kernel.Services.Platforms,
 		logger:    kernel.Infra.Logger,

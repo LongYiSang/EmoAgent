@@ -297,6 +297,47 @@ func TestHandlerStreamsAssistantResponse(t *testing.T) {
 	}
 }
 
+func TestHandlerMapsLLMErrorWithoutLeakingProviderBody(t *testing.T) {
+	handler, engine := newTestHandler()
+	engine.sendErr = &llm.Error{
+		Kind:       llm.ErrorKindProviderResponse,
+		Provider:   "openai",
+		Operation:  "chat_stream",
+		StatusCode: http.StatusBadRequest,
+		Message:    `{"error":"provider secret body","request_id":"req-secret"}`,
+	}
+
+	conn := dialTestWS(t, handler)
+	defer conn.Close(websocket.StatusNormalClosure, "bye")
+
+	var msg WSMessage
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(session_ready): %v", err)
+	}
+	if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+		t.Fatalf("Read(greeting): %v", err)
+	}
+	if err := wsjson.Write(context.Background(), conn, WSMessage{Type: "message", Content: "hello"}); err != nil {
+		t.Fatalf("Write(message): %v", err)
+	}
+
+	for {
+		if err := wsjson.Read(context.Background(), conn, &msg); err != nil {
+			t.Fatalf("Read(error): %v", err)
+		}
+		if msg.Type != "error" {
+			continue
+		}
+		if strings.Contains(msg.Content, "provider secret body") || strings.Contains(msg.Content, "req-secret") {
+			t.Fatalf("error content leaked provider body: %q", msg.Content)
+		}
+		if msg.Content == "" {
+			t.Fatalf("error content is empty")
+		}
+		return
+	}
+}
+
 func TestHandlerEmitsAssistantSegmentsForCasualReply(t *testing.T) {
 	replyCfg := config.DefaultReplyDeliveryConfig()
 	replyCfg.Enabled = true

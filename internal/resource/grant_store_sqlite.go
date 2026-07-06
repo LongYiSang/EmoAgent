@@ -50,7 +50,12 @@ func (s *SQLiteGrantStore) Create(ctx context.Context, grant GrantEnvelope) (Gra
 	if err != nil {
 		return GrantEnvelope{}, err
 	}
-	_, err = s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return GrantEnvelope{}, err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `
 INSERT INTO resource_grants (
 	id, principal_kind, principal_id, capability, resource_json, operations_json,
 	constraints_json, lifetime, status, approval_request_id, binding_hash,
@@ -63,7 +68,10 @@ INSERT INTO resource_grants (
 	if err != nil {
 		return GrantEnvelope{}, err
 	}
-	if err := s.writeEvent(ctx, grant, "created"); err != nil {
+	if err := writeGrantEvent(ctx, tx, grant, "created"); err != nil {
+		return GrantEnvelope{}, err
+	}
+	if err := tx.Commit(); err != nil {
 		return GrantEnvelope{}, err
 	}
 	return grant, nil
@@ -73,7 +81,11 @@ func (s *SQLiteGrantStore) Get(ctx context.Context, id string) (GrantEnvelope, b
 	if s == nil || s.db == nil {
 		return GrantEnvelope{}, false, fmt.Errorf("resource grant store is unavailable")
 	}
-	row := s.db.QueryRowContext(ctx, `
+	return getGrant(ctx, s.db, id)
+}
+
+func getGrant(ctx context.Context, q grantQuerier, id string) (GrantEnvelope, bool, error) {
+	row := q.QueryRowContext(ctx, `
 SELECT id, principal_kind, principal_id, capability, resource_json, operations_json,
        constraints_json, lifetime, status, approval_request_id, binding_hash,
        issued_by, created_at, expires_at
@@ -128,25 +140,57 @@ FROM resource_grants WHERE 1=1`
 }
 
 func (s *SQLiteGrantStore) Consume(ctx context.Context, id string, principal PrincipalRef) (GrantEnvelope, error) {
-	grant, err := s.requireActiveForPrincipal(ctx, id, principal)
+	if s == nil || s.db == nil {
+		return GrantEnvelope{}, fmt.Errorf("resource grant store is unavailable")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return GrantEnvelope{}, err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC()
+	grant, err := requireActiveGrantForPrincipal(ctx, tx, id, principal, now)
 	if err != nil {
 		return GrantEnvelope{}, err
 	}
 	if grant.Lifetime == GrantLifetimeOnce {
 		grant.Status = GrantStatusConsumed
-		if _, err := s.db.ExecContext(ctx, `UPDATE resource_grants SET status = ?, consumed_at = ?, updated_at = ? WHERE id = ?`,
-			grant.Status, formatTime(time.Now().UTC()), formatTime(time.Now().UTC()), id); err != nil {
+		res, err := tx.ExecContext(ctx, `
+UPDATE resource_grants
+SET status = ?, consumed_at = ?, updated_at = ?
+WHERE id = ? AND principal_kind = ? AND principal_id = ? AND status = ? AND lifetime = ?
+  AND (expires_at IS NULL OR expires_at > ?)`,
+			grant.Status, formatTime(now), formatTime(now), id, principal.Kind, principal.ID,
+			GrantStatusActive, GrantLifetimeOnce, formatTime(now),
+		)
+		if err != nil {
 			return GrantEnvelope{}, err
 		}
+		if n, err := res.RowsAffected(); err != nil {
+			return GrantEnvelope{}, err
+		} else if n != 1 {
+			return GrantEnvelope{}, fmt.Errorf("grant is not active")
+		}
 	}
-	if err := s.writeEvent(ctx, grant, "consumed"); err != nil {
+	if err := writeGrantEvent(ctx, tx, grant, "consumed"); err != nil {
+		return GrantEnvelope{}, err
+	}
+	if err := tx.Commit(); err != nil {
 		return GrantEnvelope{}, err
 	}
 	return grant, nil
 }
 
 func (s *SQLiteGrantStore) Revoke(ctx context.Context, id string, principal PrincipalRef) (GrantEnvelope, error) {
-	grant, ok, err := s.Get(ctx, id)
+	if s == nil || s.db == nil {
+		return GrantEnvelope{}, fmt.Errorf("resource grant store is unavailable")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return GrantEnvelope{}, err
+	}
+	defer tx.Rollback()
+	grant, ok, err := getGrant(ctx, tx, id)
 	if err != nil {
 		return GrantEnvelope{}, err
 	}
@@ -161,18 +205,40 @@ func (s *SQLiteGrantStore) Revoke(ctx context.Context, id string, principal Prin
 	}
 	grant.Status = GrantStatusRevoked
 	now := time.Now().UTC()
-	if _, err := s.db.ExecContext(ctx, `UPDATE resource_grants SET status = ?, revoked_at = ?, updated_at = ? WHERE id = ?`,
-		grant.Status, formatTime(now), formatTime(now), id); err != nil {
+	res, err := tx.ExecContext(ctx, `
+UPDATE resource_grants
+SET status = ?, revoked_at = ?, updated_at = ?
+WHERE id = ? AND principal_kind = ? AND principal_id = ? AND status IN ('active','pending')`,
+		grant.Status, formatTime(now), formatTime(now), id, principal.Kind, principal.ID,
+	)
+	if err != nil {
 		return GrantEnvelope{}, err
 	}
-	if err := s.writeEvent(ctx, grant, "revoked"); err != nil {
+	if n, err := res.RowsAffected(); err != nil {
+		return GrantEnvelope{}, err
+	} else if n != 1 {
+		return GrantEnvelope{}, fmt.Errorf("grant is not revocable")
+	}
+	if err := writeGrantEvent(ctx, tx, grant, "revoked"); err != nil {
+		return GrantEnvelope{}, err
+	}
+	if err := tx.Commit(); err != nil {
 		return GrantEnvelope{}, err
 	}
 	return grant, nil
 }
 
 func (s *SQLiteGrantStore) Expire(ctx context.Context, now time.Time) (int, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	if s == nil || s.db == nil {
+		return 0, fmt.Errorf("resource grant store is unavailable")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	now = now.UTC()
+	rows, err := tx.QueryContext(ctx, `
 SELECT id, principal_kind, principal_id, capability, resource_json, operations_json,
        constraints_json, lifetime, status, approval_request_id, binding_hash,
        issued_by, created_at, expires_at
@@ -190,24 +256,52 @@ WHERE status IN ('pending','active') AND expires_at IS NOT NULL AND expires_at <
 		}
 		grants = append(grants, grant)
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
 	if err := rows.Close(); err != nil {
 		return 0, err
 	}
+	expired := 0
 	for _, grant := range grants {
 		grant.Status = GrantStatusExpired
-		if _, err := s.db.ExecContext(ctx, `UPDATE resource_grants SET status = ?, updated_at = ? WHERE id = ?`,
-			grant.Status, formatTime(now), grant.ID); err != nil {
+		res, err := tx.ExecContext(ctx, `
+UPDATE resource_grants
+SET status = ?, updated_at = ?
+WHERE id = ? AND status IN ('pending','active')`,
+			grant.Status, formatTime(now), grant.ID,
+		)
+		if err != nil {
 			return 0, err
 		}
-		if err := s.writeEvent(ctx, grant, "expired"); err != nil {
+		n, err := res.RowsAffected()
+		if err != nil {
 			return 0, err
 		}
+		if n != 1 {
+			continue
+		}
+		if err := writeGrantEvent(ctx, tx, grant, "expired"); err != nil {
+			return 0, err
+		}
+		expired++
 	}
-	return len(grants), nil
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return expired, nil
 }
 
 func (s *SQLiteGrantStore) requireActiveForPrincipal(ctx context.Context, id string, principal PrincipalRef) (GrantEnvelope, error) {
-	grant, ok, err := s.Get(ctx, id)
+	if s == nil || s.db == nil {
+		return GrantEnvelope{}, fmt.Errorf("resource grant store is unavailable")
+	}
+	return requireActiveGrantForPrincipal(ctx, s.db, id, principal, time.Now().UTC())
+}
+
+func requireActiveGrantForPrincipal(ctx context.Context, q grantQuerier, id string, principal PrincipalRef, now time.Time) (GrantEnvelope, error) {
+	grant, ok, err := getGrant(ctx, q, id)
 	if err != nil {
 		return GrantEnvelope{}, err
 	}
@@ -220,10 +314,18 @@ func (s *SQLiteGrantStore) requireActiveForPrincipal(ctx context.Context, id str
 	if grant.Status != GrantStatusActive {
 		return GrantEnvelope{}, fmt.Errorf("grant is not active")
 	}
-	if grant.ExpiresAt != nil && !grant.ExpiresAt.After(time.Now().UTC()) {
+	if grant.ExpiresAt != nil && !grant.ExpiresAt.After(now) {
 		return GrantEnvelope{}, fmt.Errorf("grant is expired")
 	}
 	return grant, nil
+}
+
+type grantQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+type grantExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
 type grantScanner interface {
@@ -271,8 +373,12 @@ func scanGrant(scanner grantScanner) (GrantEnvelope, error) {
 }
 
 func (s *SQLiteGrantStore) writeEvent(ctx context.Context, grant GrantEnvelope, eventType string) error {
+	return writeGrantEvent(ctx, s.db, grant, eventType)
+}
+
+func writeGrantEvent(ctx context.Context, exec grantExecer, grant GrantEnvelope, eventType string) error {
 	id := fmt.Sprintf("event-%s-%s-%d", grant.ID, eventType, time.Now().UnixNano())
-	_, err := s.db.ExecContext(ctx, `
+	_, err := exec.ExecContext(ctx, `
 INSERT INTO resource_grant_events (
 	id, grant_id, event_type, principal_kind, principal_id, summary_hash, provenance_json, created_at
 ) VALUES (?, ?, ?, ?, ?, ?, '{}', ?)`,

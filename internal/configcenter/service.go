@@ -245,7 +245,7 @@ func (s *Service) UpdateAgentAffectConfig(ctx context.Context, cfg config.AgentA
 	}); err != nil {
 		return EffectiveConfig{}, err
 	}
-	if err := s.DB.UpsertRuntimeSetting("agent_affect", "config", string(payload), "ui"); err != nil {
+	if err := s.DB.UpsertRuntimeSettingContext(ctx, "agent_affect", "config", string(payload), "ui"); err != nil {
 		return EffectiveConfig{}, err
 	}
 	return s.BuildEffective(ctx)
@@ -256,7 +256,7 @@ func (s *Service) validateAgentAffectConfigUpdate(ctx context.Context, next stor
 	if seed == nil {
 		seed = config.DefaultConfig()
 	}
-	current, err := s.runtimeSettings()
+	current, err := s.runtimeSettings(ctx)
 	if err != nil {
 		return err
 	}
@@ -303,7 +303,7 @@ func (s *Service) UpdateWebSearchConfig(ctx context.Context, cfg config.WebSearc
 	}); err != nil {
 		return EffectiveConfig{}, err
 	}
-	if err := s.DB.UpsertRuntimeSetting("websearch", "config", string(payload), "ui"); err != nil {
+	if err := s.DB.UpsertRuntimeSettingContext(ctx, "websearch", "config", string(payload), "ui"); err != nil {
 		return EffectiveConfig{}, err
 	}
 	return s.BuildEffective(ctx)
@@ -314,7 +314,7 @@ func (s *Service) validateWebSearchConfigUpdate(ctx context.Context, next storag
 	if seed == nil {
 		seed = config.DefaultConfig()
 	}
-	current, err := s.runtimeSettings()
+	current, err := s.runtimeSettings(ctx)
 	if err != nil {
 		return err
 	}
@@ -350,7 +350,7 @@ func (s *Service) UpdatePythonToolchainConfig(ctx context.Context, cfg config.Py
 	}); err != nil {
 		return EffectiveConfig{}, err
 	}
-	if err := s.DB.UpsertRuntimeSetting("python_toolchain", "config", string(payload), "ui"); err != nil {
+	if err := s.DB.UpsertRuntimeSettingContext(ctx, "python_toolchain", "config", string(payload), "ui"); err != nil {
 		return EffectiveConfig{}, err
 	}
 	return s.BuildEffective(ctx)
@@ -372,7 +372,7 @@ func (s *Service) UpdatePlatformsConfig(ctx context.Context, cfg config.Platform
 	}); err != nil {
 		return EffectiveConfig{}, err
 	}
-	if err := s.DB.UpsertRuntimeSetting("platforms", "config", string(payload), "ui"); err != nil {
+	if err := s.DB.UpsertRuntimeSettingContext(ctx, "platforms", "config", string(payload), "ui"); err != nil {
 		return EffectiveConfig{}, err
 	}
 	return s.BuildEffective(ctx)
@@ -383,7 +383,7 @@ func (s *Service) validatePlatformsConfigUpdate(ctx context.Context, next storag
 	if seed == nil {
 		seed = config.DefaultConfig()
 	}
-	current, err := s.runtimeSettings()
+	current, err := s.runtimeSettings(ctx)
 	if err != nil {
 		return err
 	}
@@ -466,7 +466,7 @@ func (s *Service) validatePythonToolchainConfigUpdate(ctx context.Context, next 
 	if seed == nil {
 		seed = config.DefaultConfig()
 	}
-	current, err := s.runtimeSettings()
+	current, err := s.runtimeSettings(ctx)
 	if err != nil {
 		return err
 	}
@@ -596,7 +596,7 @@ func (s *Service) UpdateMemoryConfig(ctx context.Context, memory config.MemoryCo
 	}); err != nil {
 		return EffectiveConfig{}, err
 	}
-	if err := s.DB.UpsertRuntimeSetting("memory", "config", string(payload), "ui"); err != nil {
+	if err := s.DB.UpsertRuntimeSettingContext(ctx, "memory", "config", string(payload), "ui"); err != nil {
 		return EffectiveConfig{}, err
 	}
 	return s.BuildEffective(ctx)
@@ -649,7 +649,7 @@ func (s *Service) runtimeConfig(ctx context.Context) (config.Config, []config.LL
 	if seed == nil {
 		seed = config.DefaultConfig()
 	}
-	runtimeSettings, err := s.runtimeSettings()
+	runtimeSettings, err := s.runtimeSettings(ctx)
 	if err != nil {
 		return config.Config{}, nil, nil, nil, err
 	}
@@ -666,7 +666,7 @@ func (s *Service) validateRuntimeSettingUpdate(ctx context.Context, next storage
 	if seed == nil {
 		seed = config.DefaultConfig()
 	}
-	current, err := s.runtimeSettings()
+	current, err := s.runtimeSettings(ctx)
 	if err != nil {
 		return err
 	}
@@ -739,11 +739,11 @@ func (s *Service) providers(_ context.Context, seed *config.Config) ([]config.LL
 	return providers, nil
 }
 
-func (s *Service) runtimeSettings() ([]storage.RuntimeSetting, error) {
+func (s *Service) runtimeSettings(ctx context.Context) ([]storage.RuntimeSetting, error) {
 	if s.DB == nil {
 		return nil, nil
 	}
-	settings, err := s.DB.ListRuntimeSettings()
+	settings, err := s.DB.ListRuntimeSettingsContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list runtime settings: %w", err)
 	}

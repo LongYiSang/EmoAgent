@@ -194,3 +194,43 @@ func TestExternalSupervisorRejectsNonLoopbackURL(t *testing.T) {
 		t.Fatalf("error = %q, want loopback", err.Error())
 	}
 }
+
+func TestSupervisorConcurrentStatusAndStop(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	spec := DefaultSpec()
+	spec.Enabled = true
+	spec.Managed = false
+	spec.URL = server.URL
+	supervisor := NewSupervisor(spec, slog.Default())
+	if _, err := supervisor.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	errs := make(chan error, 64)
+	for i := 0; i < 32; i++ {
+		go func() {
+			for j := 0; j < 50; j++ {
+				_ = supervisor.Status()
+			}
+			errs <- nil
+		}()
+		go func() {
+			for j := 0; j < 50; j++ {
+				if err := supervisor.Stop(context.Background()); err != nil {
+					errs <- err
+					return
+				}
+			}
+			errs <- nil
+		}()
+	}
+	for i := 0; i < 64; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent Stop: %v", err)
+		}
+	}
+}

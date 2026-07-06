@@ -19,6 +19,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const DefaultMaxBytes int64 = 10 * 1024 * 1024
+
 type UploadMeta struct {
 	OriginalFilename string
 	CreatedByRole    string
@@ -53,7 +55,7 @@ type LocalStore struct {
 
 func NewLocalStore(db *sql.DB, rootDir string, opts StoreOptions) *LocalStore {
 	if opts.MaxBytes <= 0 {
-		opts.MaxBytes = 10 * 1024 * 1024
+		opts.MaxBytes = DefaultMaxBytes
 	}
 	if opts.MaxPixels <= 0 {
 		opts.MaxPixels = 20_000_000

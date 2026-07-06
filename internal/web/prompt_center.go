@@ -59,8 +59,8 @@ func (h *APIHandler) HandleUpsertPromptOverride(w http.ResponseWriter, r *http.R
 		return
 	}
 	var req promptcenter.UpsertOverrideRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 	resp, err := app.UpsertPromptOverride(r.Context(), req)
@@ -97,8 +97,8 @@ func (h *APIHandler) HandlePreviewPrompt(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var req promptcenter.PromptPreviewRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 	resp, err := app.PreviewPrompt(r.Context(), req)

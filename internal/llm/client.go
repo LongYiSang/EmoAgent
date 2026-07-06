@@ -234,14 +234,14 @@ type openaiUsage struct {
 
 func normalizeOpenAIUsage(raw openaiUsage, rawJSON json.RawMessage) Usage {
 	usage := Usage{
-		InputTokens:           raw.PromptTokens,
-		OutputTokens:          raw.CompletionTokens,
-		TotalTokens:           raw.TotalTokens,
-		CacheHitInputTokens:   raw.PromptCacheHitTokens,
-		CacheMissInputTokens:  raw.PromptCacheMissTokens,
-		ReasoningTokens:       raw.CompletionTokensDetails.ReasoningTokens,
-		Source:                UsageSourceProvider,
-		RawUsage:              rawJSON,
+		InputTokens:          raw.PromptTokens,
+		OutputTokens:         raw.CompletionTokens,
+		TotalTokens:          raw.TotalTokens,
+		CacheHitInputTokens:  raw.PromptCacheHitTokens,
+		CacheMissInputTokens: raw.PromptCacheMissTokens,
+		ReasoningTokens:      raw.CompletionTokensDetails.ReasoningTokens,
+		Source:               UsageSourceProvider,
+		RawUsage:             rawJSON,
 	}
 	cached := raw.CachedTokens
 	if raw.PromptTokensDetails.CachedTokens > cached {
@@ -501,7 +501,6 @@ func (c *openaiClient) ChatStream(ctx context.Context, req ChatRequest, cb Strea
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		c.logger.Error("llm http error", "status", resp.StatusCode, "body", SanitizeImageDataForDiagnostics(string(respBody)))
 		return nil, wrapStatusError("openai", "chat_stream", resp.StatusCode, string(respBody))
 	}
 

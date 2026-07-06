@@ -40,7 +40,12 @@ func (s *SQLiteChangeSetStore) Save(ctx context.Context, cs ChangeSet) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `
 INSERT INTO host_resource_changesets (
 	id, principal_kind, principal_id, status, operation, source_ref_json, target_ref_json,
 	target_display_path, baseline_hash, baseline_file_id, content_hash, plan_hash,
@@ -55,7 +60,10 @@ INSERT INTO host_resource_changesets (
 	if err != nil {
 		return err
 	}
-	return s.replaceOps(ctx, cs)
+	if err := replaceChangeSetOps(ctx, tx, cs); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *SQLiteChangeSetStore) Get(ctx context.Context, id string) (ChangeSet, bool, error) {
@@ -94,7 +102,12 @@ func (s *SQLiteChangeSetStore) Update(ctx context.Context, cs ChangeSet) error {
 	if err != nil {
 		return err
 	}
-	res, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `
 UPDATE host_resource_changesets
 SET principal_kind = ?, principal_id = ?, status = ?, operation = ?, source_ref_json = ?,
     target_ref_json = ?, target_display_path = ?, baseline_hash = ?, baseline_file_id = ?,
@@ -110,10 +123,17 @@ WHERE id = ?`,
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n != 1 {
-		return fmt.Errorf("changeset %q not found", cs.ID)
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
 	}
-	return s.replaceOps(ctx, cs)
+	if n != 1 {
+		return fmt.Errorf("%w: %s", ErrChangeSetNotFound, cs.ID)
+	}
+	if err := replaceChangeSetOps(ctx, tx, cs); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *SQLiteChangeSetStore) List(ctx context.Context, statuses []ChangeSetStatus) ([]ChangeSet, error) {
@@ -153,7 +173,15 @@ FROM host_resource_changesets`
 }
 
 func (s *SQLiteChangeSetStore) replaceOps(ctx context.Context, cs ChangeSet) error {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM host_resource_change_ops WHERE changeset_id = ?`, cs.ID); err != nil {
+	return replaceChangeSetOps(ctx, s.db, cs)
+}
+
+type changeSetExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func replaceChangeSetOps(ctx context.Context, exec changeSetExecer, cs ChangeSet) error {
+	if _, err := exec.ExecContext(ctx, `DELETE FROM host_resource_change_ops WHERE changeset_id = ?`, cs.ID); err != nil {
 		return err
 	}
 	for i, op := range cs.Preview.Ops {
@@ -162,7 +190,7 @@ func (s *SQLiteChangeSetStore) replaceOps(ctx context.Context, cs ChangeSet) err
 			return err
 		}
 		id := fmt.Sprintf("%s-op-%d", cs.ID, i)
-		if _, err := s.db.ExecContext(ctx, `
+		if _, err := exec.ExecContext(ctx, `
 INSERT INTO host_resource_change_ops (
 	id, changeset_id, op_index, operation, source_display_path, target_display_path,
 	source_hash, target_hash, bytes, metadata_json, created_at

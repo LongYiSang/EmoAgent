@@ -22,8 +22,8 @@ func (h *APIHandler) HandleGetAgentAffectConfig(w http.ResponseWriter, r *http.R
 
 func (h *APIHandler) HandleUpdateAgentAffectConfig(w http.ResponseWriter, r *http.Request) {
 	var req agentAffectConfigRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 	resp, err := h.app.UpdateAgentAffectConfig(r.Context(), req.AgentAffect)
@@ -49,8 +49,8 @@ func (h *APIHandler) HandleGetAgentAffectProfile(w http.ResponseWriter, r *http.
 
 func (h *APIHandler) HandleUpdateAgentAffectProfile(w http.ResponseWriter, r *http.Request) {
 	var req AgentAffectProfileResponse
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 	if req.PersonaID == "" {
@@ -116,8 +116,8 @@ func (h *APIHandler) HandleGetAgentAffectCurrent(w http.ResponseWriter, r *http.
 
 func (h *APIHandler) HandleEvaluateAgentAffect(w http.ResponseWriter, r *http.Request) {
 	var req AgentAffectEvaluateRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 	if req.PersonaID == "" {
@@ -133,8 +133,8 @@ func (h *APIHandler) HandleEvaluateAgentAffect(w http.ResponseWriter, r *http.Re
 
 func (h *APIHandler) HandlePreviewAgentAffectPrompt(w http.ResponseWriter, r *http.Request) {
 	var req AgentAffectPromptPreviewRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 	if req.PersonaID == "" {
@@ -169,8 +169,8 @@ func (h *APIHandler) HandleProcessAgentAffectBatchOnce(w http.ResponseWriter, r 
 
 func (h *APIHandler) HandleClearAgentAffectFailedJobs(w http.ResponseWriter, r *http.Request) {
 	var req AgentAffectQueueRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 	if req.PersonaID == "" {
@@ -186,8 +186,8 @@ func (h *APIHandler) HandleClearAgentAffectFailedJobs(w http.ResponseWriter, r *
 
 func (h *APIHandler) HandleSupersedeAgentAffectPendingJobs(w http.ResponseWriter, r *http.Request) {
 	var req AgentAffectQueueRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 	if req.PersonaID == "" {
@@ -203,8 +203,8 @@ func (h *APIHandler) HandleSupersedeAgentAffectPendingJobs(w http.ResponseWriter
 
 func (h *APIHandler) HandleResetAgentAffect(w http.ResponseWriter, r *http.Request) {
 	var req AgentAffectResetRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 	if req.PersonaID == "" {
@@ -235,8 +235,8 @@ func agentAffectQueueRequestFromQuery(r *http.Request) AgentAffectQueueRequest {
 
 func (h *APIHandler) HandleSubmitAgentAffect(w http.ResponseWriter, r *http.Request) {
 	var req AgentAffectSubmitRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 	if req.PersonaID == "" {
@@ -264,8 +264,8 @@ func queryInt(r *http.Request, key string, fallback int) int {
 
 func (h *APIHandler) HandleApplyAgentAffectDelta(w http.ResponseWriter, r *http.Request) {
 	var req AgentAffectDeltaRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 	if req.PersonaID == "" {

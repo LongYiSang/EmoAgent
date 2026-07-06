@@ -1080,7 +1080,7 @@ func (e commandExecution) persist(ctx context.Context, result commandResult, ses
 	payloadJSON := mustCommandJSONObject(payload)
 	argvJSON := mustCommandJSONArray(e.parsed.Args)
 	flagsJSON := mustCommandJSONObject(e.parsed.Flags)
-	_ = e.service.infra.DB.AddCommandInvocation(ctx, storage.CommandInvocationRecord{
+	if err := e.service.infra.DB.AddCommandInvocation(ctx, storage.CommandInvocationRecord{
 		CommandID:    e.descriptor.ID,
 		CommandName:  e.parsed.Name,
 		ProviderKind: string(e.descriptor.ProviderKind),
@@ -1100,28 +1100,52 @@ func (e commandExecution) persist(ctx context.Context, result commandResult, ses
 		PayloadJSON:  payloadJSON,
 		ErrorKind:    result.ErrorKind,
 		DurationMS:   int(time.Since(e.started).Milliseconds()),
-	})
+	}); err != nil {
+		e.service.infra.Logger.Warn("persist command invocation failed",
+			"command_id", e.descriptor.ID,
+			"session_id", sessionID,
+			"origin_key", e.request.Origin.OriginKey,
+			"event_type", "command_invocation",
+			"error", err,
+		)
+	}
 	if e.service.conversation == nil || e.service.conversation.Timeline() == nil {
 		return
 	}
 	if result.ContextSwitch != "" {
-		_ = e.service.conversation.Timeline().Append(ctx, conversation.TimelineEvent{
+		if err := e.service.conversation.Timeline().Append(ctx, conversation.TimelineEvent{
 			OriginKey:      e.request.Origin.OriginKey,
 			SessionID:      sessionID,
 			PersonaKey:     e.request.PersonaKey,
 			Type:           "context_switched",
 			VisibleContent: result.Content,
 			PayloadJSON:    payloadJSON,
-		})
+		}); err != nil {
+			e.service.infra.Logger.Warn("append command timeline event failed",
+				"command_id", e.descriptor.ID,
+				"session_id", sessionID,
+				"origin_key", e.request.Origin.OriginKey,
+				"event_type", "context_switched",
+				"error", err,
+			)
+		}
 	}
-	_ = e.service.conversation.Timeline().Append(ctx, conversation.TimelineEvent{
+	if err := e.service.conversation.Timeline().Append(ctx, conversation.TimelineEvent{
 		OriginKey:      e.request.Origin.OriginKey,
 		SessionID:      sessionID,
 		PersonaKey:     e.request.PersonaKey,
 		Type:           "command_result",
 		VisibleContent: result.Content,
 		PayloadJSON:    payloadJSON,
-	})
+	}); err != nil {
+		e.service.infra.Logger.Warn("append command timeline event failed",
+			"command_id", e.descriptor.ID,
+			"session_id", sessionID,
+			"origin_key", e.request.Origin.OriginKey,
+			"event_type", "command_result",
+			"error", err,
+		)
+	}
 }
 
 func unknownDescriptor(name string) commandcore.CommandDescriptor {

@@ -19,9 +19,6 @@ type sqlExecer interface {
 }
 
 func NewSQLiteStore(db *sql.DB) *SQLiteStore {
-	if db != nil {
-		db.SetMaxOpenConns(1)
-	}
 	return &SQLiteStore{db: db}
 }
 

@@ -205,6 +205,44 @@ func TestHandleUploadMedia(t *testing.T) {
 	}
 }
 
+func TestHandleUploadMediaRejectsOversizedMultipartBody(t *testing.T) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "too-large.png")
+	if err != nil {
+		t.Fatalf("CreateFormFile: %v", err)
+	}
+	if _, err := part.Write(bytes.Repeat([]byte("x"), int(media.DefaultMaxBytes+(2<<20)))); err != nil {
+		t.Fatalf("write multipart: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close multipart: %v", err)
+	}
+
+	handler := NewAPIHandler(&fakeAdminApp{}, slog.Default())
+	req := httptest.NewRequest(http.MethodPost, "/api/media", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rr := httptest.NewRecorder()
+
+	handler.HandleUploadMedia(rr, req)
+
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d body=%s, want 413", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleCreateLLMProviderRejectsOversizedJSON(t *testing.T) {
+	body := `{"id":"` + strings.Repeat("a", int(maxJSONBodyBytes)+1) + `"}`
+	handler := NewAPIHandler(&fakeAdminApp{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	rr := httptest.NewRecorder()
+
+	handler.HandleCreateLLMProvider(rr, httptest.NewRequest(http.MethodPost, "/api/llm-providers", strings.NewReader(body)))
+
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d body=%s, want 413", rr.Code, rr.Body.String())
+	}
+}
+
 func TestHandleGetSessionReturnsSafeDisplayParts(t *testing.T) {
 	app := &fakeAdminApp{
 		sessionDetail: &storage.SessionRecord{ID: "session-1", Persona: "default", Title: "chat"},

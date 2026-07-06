@@ -124,7 +124,7 @@ func (m *ChangeSetManager) PreviewChange(ctx context.Context, id string) (Change
 		return ChangeSet{}, err
 	}
 	if !ok {
-		return ChangeSet{}, fmt.Errorf("changeset %q not found", id)
+		return ChangeSet{}, fmt.Errorf("%w: %s", ErrChangeSetNotFound, id)
 	}
 	if cs.Preview.Diff == "" && cs.StagingPath != "" && (cs.Operation == ChangeOpOverwriteFile || cs.Operation == ChangeOpCreateFile) {
 		if diff, binary := m.diffForChangeSet(cs); diff != "" || binary {
@@ -145,7 +145,7 @@ func (m *ChangeSetManager) ApplyChangeWithOptions(ctx context.Context, id, planH
 		return ChangeSet{}, err
 	}
 	if !ok {
-		return ChangeSet{}, fmt.Errorf("changeset %q not found", id)
+		return ChangeSet{}, fmt.Errorf("%w: %s", ErrChangeSetNotFound, id)
 	}
 	if cs.Status != ChangeSetStatusApprovalPending {
 		return ChangeSet{}, fmt.Errorf("changeset %q is not approval_pending", id)
@@ -203,7 +203,7 @@ func (m *ChangeSetManager) CancelChange(ctx context.Context, id string) (ChangeS
 		return ChangeSet{}, err
 	}
 	if !ok {
-		return ChangeSet{}, fmt.Errorf("changeset %q not found", id)
+		return ChangeSet{}, fmt.Errorf("%w: %s", ErrChangeSetNotFound, id)
 	}
 	if cs.Status == ChangeSetStatusApplied || cs.Status == ChangeSetStatusRestored {
 		return ChangeSet{}, fmt.Errorf("changeset %q is already finalized", id)
@@ -222,7 +222,7 @@ func (m *ChangeSetManager) RestoreQuarantine(ctx context.Context, id, planHash s
 		return ChangeSet{}, err
 	}
 	if !ok {
-		return ChangeSet{}, fmt.Errorf("changeset %q not found", id)
+		return ChangeSet{}, fmt.Errorf("%w: %s", ErrChangeSetNotFound, id)
 	}
 	if cs.Status != ChangeSetStatusApplied || cs.QuarantinePath == "" {
 		return ChangeSet{}, fmt.Errorf("changeset %q has no restorable quarantine", id)

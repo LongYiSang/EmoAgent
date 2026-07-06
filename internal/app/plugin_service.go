@@ -601,10 +601,13 @@ func (s *PluginService) requireAdminLocked() error {
 
 func (s *PluginService) InstallLocal(ctx context.Context, req plugin.AdminPluginInstallRequest) (plugin.AdminPluginSummary, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if err := s.requireAdminLocked(); err != nil {
+		s.mu.Unlock()
 		return plugin.AdminPluginSummary{}, err
 	}
+	installer := s.installer
+	s.mu.Unlock()
+
 	path := strings.TrimSpace(req.Path)
 	if path == "" {
 		return plugin.AdminPluginSummary{}, fmt.Errorf("path is required")
@@ -615,57 +618,10 @@ func (s *PluginService) InstallLocal(ctx context.Context, req plugin.AdminPlugin
 	}
 	var result plugin.InstallResult
 	if info.IsDir() {
-		result, err = s.installer.InstallFromDirectory(ctx, path)
+		result, err = installer.InstallFromDirectory(ctx, path)
 	} else {
-		result, err = s.installer.InstallFromZip(ctx, path)
+		result, err = installer.InstallFromZip(ctx, path)
 	}
-	if err != nil {
-		return plugin.AdminPluginSummary{}, err
-	}
-	installedBy := strings.TrimSpace(req.InstalledBy)
-	if installedBy == "" {
-		installedBy = "admin"
-	}
-	if err := s.infra.DB.UpsertPluginInstallation(ctx, storage.PluginInstallation{
-		ID:              result.PluginID + "@" + result.Version,
-		PluginID:        result.PluginID,
-		Version:         result.Version,
-		Name:            result.Name,
-		ManifestJSON:    result.ManifestJSON,
-		SourceType:      result.SourceType,
-		SourceRef:       result.SourceRef,
-		PackageDigest:   result.PackageDigest,
-		ManifestDigest:  result.ManifestDigest,
-		SignatureStatus: result.SignatureStatus,
-		PublisherID:     result.PublisherID,
-		InstalledBy:     installedBy,
-		StorePath:       result.StorePath,
-	}); err != nil {
-		return plugin.AdminPluginSummary{}, err
-	}
-	return s.summaryForInstallation(ctx, storage.PluginInstallation{
-		PluginID:        result.PluginID,
-		Version:         result.Version,
-		Name:            result.Name,
-		ManifestJSON:    result.ManifestJSON,
-		SourceType:      result.SourceType,
-		SourceRef:       result.SourceRef,
-		PackageDigest:   result.PackageDigest,
-		ManifestDigest:  result.ManifestDigest,
-		SignatureStatus: result.SignatureStatus,
-		PublisherID:     result.PublisherID,
-		InstalledBy:     installedBy,
-		StorePath:       result.StorePath,
-	}), nil
-}
-
-func (s *PluginService) InstallGitHubRelease(ctx context.Context, req plugin.AdminGitHubInstallRequest) (plugin.AdminPluginSummary, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.requireAdminLocked(); err != nil {
-		return plugin.AdminPluginSummary{}, err
-	}
-	result, err := s.installer.InstallFromGitHubRelease(ctx, req.Owner, req.Repo, req.Tag, req.Asset)
 	if err != nil {
 		return plugin.AdminPluginSummary{}, err
 	}
@@ -687,6 +643,56 @@ func (s *PluginService) InstallGitHubRelease(ctx context.Context, req plugin.Adm
 		PublisherID:     result.PublisherID,
 		InstalledBy:     installedBy,
 		StorePath:       result.StorePath,
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.requireAdminLocked(); err != nil {
+		return plugin.AdminPluginSummary{}, err
+	}
+	if err := s.infra.DB.UpsertPluginInstallation(ctx, record); err != nil {
+		return plugin.AdminPluginSummary{}, err
+	}
+	return s.summaryForInstallation(ctx, record), nil
+}
+
+func (s *PluginService) InstallGitHubRelease(ctx context.Context, req plugin.AdminGitHubInstallRequest) (plugin.AdminPluginSummary, error) {
+	s.mu.Lock()
+	if err := s.requireAdminLocked(); err != nil {
+		s.mu.Unlock()
+		return plugin.AdminPluginSummary{}, err
+	}
+	installer := s.installer
+	s.mu.Unlock()
+
+	result, err := installer.InstallFromGitHubRelease(ctx, req.Owner, req.Repo, req.Tag, req.Asset)
+	if err != nil {
+		return plugin.AdminPluginSummary{}, err
+	}
+	installedBy := strings.TrimSpace(req.InstalledBy)
+	if installedBy == "" {
+		installedBy = "admin"
+	}
+	record := storage.PluginInstallation{
+		ID:              result.PluginID + "@" + result.Version,
+		PluginID:        result.PluginID,
+		Version:         result.Version,
+		Name:            result.Name,
+		ManifestJSON:    result.ManifestJSON,
+		SourceType:      result.SourceType,
+		SourceRef:       result.SourceRef,
+		PackageDigest:   result.PackageDigest,
+		ManifestDigest:  result.ManifestDigest,
+		SignatureStatus: result.SignatureStatus,
+		PublisherID:     result.PublisherID,
+		InstalledBy:     installedBy,
+		StorePath:       result.StorePath,
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.requireAdminLocked(); err != nil {
+		return plugin.AdminPluginSummary{}, err
 	}
 	if err := s.infra.DB.UpsertPluginInstallation(ctx, record); err != nil {
 		return plugin.AdminPluginSummary{}, err

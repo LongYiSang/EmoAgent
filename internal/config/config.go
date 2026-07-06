@@ -715,6 +715,11 @@ type PluginInstallerConfig struct {
 	RequireSignature       bool     `yaml:"require_signature" json:"require_signature"`
 	TrustedPublishersPath  string   `yaml:"trusted_publishers_path" json:"trusted_publishers_path"`
 	AllowUnsignedDev       bool     `yaml:"allow_unsigned_dev" json:"allow_unsigned_dev"`
+	DownloadTimeoutSeconds int      `yaml:"download_timeout_seconds" json:"download_timeout_seconds"`
+	MaxPackageBytes        int64    `yaml:"max_package_bytes" json:"max_package_bytes"`
+	MaxExtractedBytes      int64    `yaml:"max_extracted_bytes" json:"max_extracted_bytes"`
+	MaxExtractedFileBytes  int64    `yaml:"max_extracted_file_bytes" json:"max_extracted_file_bytes"`
+	MaxExtractedFiles      int      `yaml:"max_extracted_files" json:"max_extracted_files"`
 	BlockedPackageDigests  []string `yaml:"blocked_package_digests" json:"blocked_package_digests"`
 	BlockedManifestDigests []string `yaml:"blocked_manifest_digests" json:"blocked_manifest_digests"`
 	BlockedPublishers      []string `yaml:"blocked_publishers" json:"blocked_publishers"`
@@ -864,6 +869,11 @@ func (c *PluginInstallerConfig) UnmarshalYAML(value *yaml.Node) error {
 		"require_signature":        {},
 		"trusted_publishers_path":  {},
 		"allow_unsigned_dev":       {},
+		"download_timeout_seconds": {},
+		"max_package_bytes":        {},
+		"max_extracted_bytes":      {},
+		"max_extracted_file_bytes": {},
+		"max_extracted_files":      {},
 		"blocked_package_digests":  {},
 		"blocked_manifest_digests": {},
 		"blocked_publishers":       {},
@@ -1163,6 +1173,21 @@ func (c *PluginInstallerConfig) applyDefaults(store PluginStoreConfig) {
 	if !c.allowUnsignedDevSet && store.AllowDevDirs {
 		c.AllowUnsignedDev = true
 	}
+	if c.DownloadTimeoutSeconds == 0 {
+		c.DownloadTimeoutSeconds = 120
+	}
+	if c.MaxPackageBytes == 0 {
+		c.MaxPackageBytes = 64 << 20
+	}
+	if c.MaxExtractedBytes == 0 {
+		c.MaxExtractedBytes = 256 << 20
+	}
+	if c.MaxExtractedFileBytes == 0 {
+		c.MaxExtractedFileBytes = 64 << 20
+	}
+	if c.MaxExtractedFiles == 0 {
+		c.MaxExtractedFiles = 4096
+	}
 }
 
 func (c *PluginProviderGatewayConfig) applyDefaults() {
@@ -1246,6 +1271,21 @@ func (c PluginsConfig) Validate(turnPipeline TurnPipelineConfig) error {
 	}
 	if c.Runtime.CPUs > 100 {
 		return fmt.Errorf("runtime.cpus must be <= 100")
+	}
+	if c.Installer.DownloadTimeoutSeconds <= 0 {
+		return fmt.Errorf("installer.download_timeout_seconds must be > 0")
+	}
+	if c.Installer.MaxPackageBytes <= 0 {
+		return fmt.Errorf("installer.max_package_bytes must be > 0")
+	}
+	if c.Installer.MaxExtractedBytes <= 0 {
+		return fmt.Errorf("installer.max_extracted_bytes must be > 0")
+	}
+	if c.Installer.MaxExtractedFileBytes <= 0 {
+		return fmt.Errorf("installer.max_extracted_file_bytes must be > 0")
+	}
+	if c.Installer.MaxExtractedFiles <= 0 {
+		return fmt.Errorf("installer.max_extracted_files must be > 0")
 	}
 	artifactPath := strings.TrimSpace(c.Runtime.PrivatePythonArtifactPath)
 	artifactSHA256 := strings.TrimSpace(c.Runtime.PrivatePythonArtifactSHA256)

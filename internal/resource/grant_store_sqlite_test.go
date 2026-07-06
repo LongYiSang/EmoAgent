@@ -4,6 +4,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -131,11 +132,94 @@ func TestSQLiteGrantStoreConsumeRevokeExpire(t *testing.T) {
 	}
 }
 
+func TestSQLiteGrantStoreConsumeRollsBackWhenAuditEventFails(t *testing.T) {
+	store := newTestGrantStore(t)
+	now := time.Unix(300, 0).UTC()
+	grant := testGrant(now)
+	if _, err := store.Create(t.Context(), grant); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := store.db.Exec(`
+CREATE TRIGGER fail_consumed_event
+BEFORE INSERT ON resource_grant_events
+WHEN NEW.event_type = 'consumed'
+BEGIN
+	SELECT RAISE(ABORT, 'audit event failed');
+END;`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+
+	if _, err := store.Consume(t.Context(), grant.ID, grant.Principal); err == nil {
+		t.Fatal("Consume succeeded, want audit event failure")
+	}
+	got, ok, err := store.Get(t.Context(), grant.ID)
+	if err != nil || !ok {
+		t.Fatalf("Get after failed consume = %#v %v %v", got, ok, err)
+	}
+	if got.Status != GrantStatusActive {
+		t.Fatalf("status after failed audit = %q, want active", got.Status)
+	}
+}
+
+func TestSQLiteGrantStoreOnceGrantConsumesOnlyOnceConcurrently(t *testing.T) {
+	store := newTestGrantStore(t)
+	now := time.Unix(400, 0).UTC()
+	grant := testGrant(now)
+	if _, err := store.Create(t.Context(), grant); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := store.db.Exec(`
+CREATE TRIGGER slow_once_consume
+BEFORE UPDATE OF status ON resource_grants
+WHEN NEW.status = 'consumed'
+BEGIN
+	SELECT randomblob(1000000);
+END;`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+
+	const workers = 32
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	successes := 0
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if _, err := store.Consume(t.Context(), grant.ID, grant.Principal); err == nil {
+				mu.Lock()
+				successes++
+				mu.Unlock()
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if successes != 1 {
+		t.Fatalf("successful consumes = %d, want 1", successes)
+	}
+	if got := eventCountByType(t, store, "consumed"); got != 1 {
+		t.Fatalf("consumed event count = %d, want 1", got)
+	}
+}
+
 func eventCount(t *testing.T, store *SQLiteGrantStore) int {
 	t.Helper()
 	var count int
 	if err := store.db.QueryRow("SELECT COUNT(*) FROM resource_grant_events").Scan(&count); err != nil {
 		t.Fatalf("count events: %v", err)
+	}
+	return count
+}
+
+func eventCountByType(t *testing.T, store *SQLiteGrantStore, eventType string) int {
+	t.Helper()
+	var count int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM resource_grant_events WHERE event_type = ?", eventType).Scan(&count); err != nil {
+		t.Fatalf("count %s events: %v", eventType, err)
 	}
 	return count
 }

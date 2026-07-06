@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/longyisang/emoagent/internal/config"
 )
@@ -46,9 +47,20 @@ func (i *PluginInstaller) InstallFromZip(ctx context.Context, path string) (Inst
 	if err := ctx.Err(); err != nil {
 		return InstallResult{}, err
 	}
+	limits := pluginInstallerLimitsFromConfig(i.Config)
+	info, err := os.Stat(path)
+	if err != nil {
+		return InstallResult{}, err
+	}
+	if info.Size() > limits.maxPackageBytes {
+		return InstallResult{}, fmt.Errorf("plugin package exceeds max_package_bytes (%d > %d)", info.Size(), limits.maxPackageBytes)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return InstallResult{}, err
+	}
+	if int64(len(data)) > limits.maxPackageBytes {
+		return InstallResult{}, fmt.Errorf("plugin package exceeds max_package_bytes (%d > %d)", len(data), limits.maxPackageBytes)
 	}
 	packageDigest := sha256Digest(data)
 	tempDir, err := os.MkdirTemp("", "emoagent-plugin-zip-*")
@@ -57,7 +69,7 @@ func (i *PluginInstaller) InstallFromZip(ctx context.Context, path string) (Inst
 	}
 	defer os.RemoveAll(tempDir)
 
-	if err := extractZip(data, tempDir); err != nil {
+	if err := extractZipWithLimits(data, tempDir, limits); err != nil {
 		return InstallResult{}, err
 	}
 	descriptor, descriptorFound, err := readReleaseDescriptor(path+".sig.yaml", filepath.Join(tempDir, "emo_plugin.signature.yaml"))
@@ -85,8 +97,11 @@ func (i *PluginInstaller) InstallFromGitHubRelease(ctx context.Context, owner, r
 	if strings.TrimSpace(owner) == "" || strings.TrimSpace(repo) == "" || strings.TrimSpace(tag) == "" || strings.TrimSpace(asset) == "" {
 		return InstallResult{}, fmt.Errorf("owner, repo, tag, and asset are required")
 	}
+	limits := pluginInstallerLimitsFromConfig(i.Config)
+	downloadCtx, cancel := context.WithTimeout(ctx, limits.downloadTimeout)
+	defer cancel()
 	url := fmt.Sprintf("https://github.com/%s/%s/releases/download/%s/%s", owner, repo, tag, asset)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(downloadCtx, http.MethodGet, url, nil)
 	if err != nil {
 		return InstallResult{}, err
 	}
@@ -102,20 +117,10 @@ func (i *PluginInstaller) InstallFromGitHubRelease(ctx context.Context, owner, r
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return InstallResult{}, fmt.Errorf("download github release asset: status %d", resp.StatusCode)
 	}
-	temp, err := os.CreateTemp("", "emoagent-plugin-release-*.zip")
-	if err != nil {
-		return InstallResult{}, err
+	if resp.ContentLength > limits.maxPackageBytes {
+		return InstallResult{}, fmt.Errorf("plugin package exceeds max_package_bytes (%d > %d)", resp.ContentLength, limits.maxPackageBytes)
 	}
-	tempPath := temp.Name()
-	defer os.Remove(tempPath)
-	defer temp.Close()
-	if _, err := io.Copy(temp, resp.Body); err != nil {
-		return InstallResult{}, err
-	}
-	if err := temp.Close(); err != nil {
-		return InstallResult{}, err
-	}
-	data, err := os.ReadFile(tempPath)
+	data, err := readLimitedPackage(resp.Body, limits.maxPackageBytes)
 	if err != nil {
 		return InstallResult{}, err
 	}
@@ -125,10 +130,10 @@ func (i *PluginInstaller) InstallFromGitHubRelease(ctx context.Context, owner, r
 		return InstallResult{}, err
 	}
 	defer os.RemoveAll(tempDir)
-	if err := extractZip(data, tempDir); err != nil {
+	if err := extractZipWithLimits(data, tempDir, limits); err != nil {
 		return InstallResult{}, err
 	}
-	descriptor, descriptorFound, err := readReleaseDescriptor(tempPath+".sig.yaml", filepath.Join(tempDir, "emo_plugin.signature.yaml"))
+	descriptor, descriptorFound, err := readReleaseDescriptor(filepath.Join(tempDir, "emo_plugin.signature.yaml"))
 	if err != nil {
 		return InstallResult{}, err
 	}
@@ -137,6 +142,56 @@ func (i *PluginInstaller) InstallFromGitHubRelease(ctx context.Context, owner, r
 		return InstallResult{}, err
 	}
 	return result, nil
+}
+
+type pluginInstallerLimits struct {
+	downloadTimeout       time.Duration
+	maxPackageBytes       int64
+	maxExtractedBytes     int64
+	maxExtractedFileBytes int64
+	maxExtractedFiles     int
+}
+
+func pluginInstallerLimitsFromConfig(cfg config.PluginInstallerConfig) pluginInstallerLimits {
+	timeoutSeconds := cfg.DownloadTimeoutSeconds
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = 120
+	}
+	maxPackageBytes := cfg.MaxPackageBytes
+	if maxPackageBytes <= 0 {
+		maxPackageBytes = 64 << 20
+	}
+	maxExtractedBytes := cfg.MaxExtractedBytes
+	if maxExtractedBytes <= 0 {
+		maxExtractedBytes = 256 << 20
+	}
+	maxExtractedFileBytes := cfg.MaxExtractedFileBytes
+	if maxExtractedFileBytes <= 0 {
+		maxExtractedFileBytes = 64 << 20
+	}
+	maxExtractedFiles := cfg.MaxExtractedFiles
+	if maxExtractedFiles <= 0 {
+		maxExtractedFiles = 4096
+	}
+	return pluginInstallerLimits{
+		downloadTimeout:       time.Duration(timeoutSeconds) * time.Second,
+		maxPackageBytes:       maxPackageBytes,
+		maxExtractedBytes:     maxExtractedBytes,
+		maxExtractedFileBytes: maxExtractedFileBytes,
+		maxExtractedFiles:     maxExtractedFiles,
+	}
+}
+
+func readLimitedPackage(r io.Reader, maxBytes int64) ([]byte, error) {
+	limited := &io.LimitedReader{R: r, N: maxBytes + 1}
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("plugin package exceeds max_package_bytes (%d > %d)", len(data), maxBytes)
+	}
+	return data, nil
 }
 
 func (i *PluginInstaller) installFromPreparedDir(ctx context.Context, sourceDir, sourceType, sourceRef, packageDigest string, descriptor PluginReleaseDescriptor, descriptorFound bool) (InstallResult, error) {
@@ -325,10 +380,20 @@ func readReleaseDescriptor(paths ...string) (PluginReleaseDescriptor, bool, erro
 }
 
 func extractZip(data []byte, target string) error {
+	return extractZipWithLimits(data, target, pluginInstallerLimitsFromConfig(config.PluginInstallerConfig{}))
+}
+
+func extractZipWithLimits(data []byte, target string, limits pluginInstallerLimits) error {
 	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return err
 	}
+	return extractZipReader(reader, target, limits)
+}
+
+func extractZipReader(reader *zip.Reader, target string, limits pluginInstallerLimits) error {
+	var extractedFiles int
+	var extractedBytes int64
 	for _, file := range reader.File {
 		name, err := validatePackagePath(file.Name)
 		if err != nil {
@@ -345,6 +410,16 @@ func extractZip(data []byte, target string) error {
 			}
 			continue
 		}
+		extractedFiles++
+		if extractedFiles > limits.maxExtractedFiles {
+			return fmt.Errorf("zip contains too many files: max_extracted_files=%d", limits.maxExtractedFiles)
+		}
+		if int64(file.UncompressedSize64) > limits.maxExtractedFileBytes {
+			return fmt.Errorf("extracted file exceeds max_extracted_file_bytes: %s", file.Name)
+		}
+		if extractedBytes+int64(file.UncompressedSize64) > limits.maxExtractedBytes {
+			return fmt.Errorf("extracted package exceeds max_extracted_bytes")
+		}
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return err
 		}
@@ -357,11 +432,19 @@ func extractZip(data []byte, target string) error {
 			src.Close()
 			return err
 		}
-		_, copyErr := io.Copy(out, src)
+		limited := &io.LimitedReader{R: src, N: limits.maxExtractedFileBytes + 1}
+		n, copyErr := io.Copy(out, limited)
 		closeErr := out.Close()
 		src.Close()
 		if copyErr != nil {
 			return copyErr
+		}
+		if n > limits.maxExtractedFileBytes {
+			return fmt.Errorf("extracted file exceeds max_extracted_file_bytes: %s", file.Name)
+		}
+		extractedBytes += n
+		if extractedBytes > limits.maxExtractedBytes {
+			return fmt.Errorf("extracted package exceeds max_extracted_bytes")
 		}
 		if closeErr != nil {
 			return closeErr

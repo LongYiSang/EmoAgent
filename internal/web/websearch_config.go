@@ -21,8 +21,8 @@ func (h *APIHandler) HandleGetWebSearchConfig(w http.ResponseWriter, r *http.Req
 
 func (h *APIHandler) HandleUpdateWebSearchConfig(w http.ResponseWriter, r *http.Request) {
 	var req webSearchConfigRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 	resp, err := h.app.UpdateWebSearchConfig(r.Context(), req.WebSearch)

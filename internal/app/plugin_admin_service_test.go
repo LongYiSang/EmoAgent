@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
@@ -84,6 +86,87 @@ func TestPluginServiceInstallEnableDisableList(t *testing.T) {
 	if disabled.Enabled {
 		t.Fatalf("disabled summary = %#v, want disabled", disabled)
 	}
+}
+
+func TestPluginServiceInstallGitHubReleaseDoesNotHoldAdminLockDuringDownload(t *testing.T) {
+	dir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := storage.Open(filepath.Join(dir, "app.db"), logger)
+	if err != nil {
+		t.Fatalf("Open DB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	cfg := config.DefaultConfig()
+	cfg.Plugins.Enabled = false
+	cfg.Plugins.Store.RootDir = filepath.Join(dir, "store")
+	cfg.Plugins.Installer.GithubEnabled = true
+	cfg.Plugins.Installer.AllowUnsignedDev = true
+	cfg.Plugins.Installer.RequireSignature = false
+
+	service := &PluginService{infra: &Infra{Config: cfg, DB: db, Logger: logger, ProjectRoot: dir}}
+	if err := service.requireAdminForTest(); err != nil {
+		t.Fatalf("require admin: %v", err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	service.installer.Client = &http.Client{Transport: pluginServiceRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		close(started)
+		<-release
+		return &http.Response{
+			StatusCode: http.StatusInternalServerError,
+			Body:       io.NopCloser(strings.NewReader("blocked")),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})}
+
+	installDone := make(chan error, 1)
+	go func() {
+		_, err := service.InstallGitHubRelease(context.Background(), plugin.AdminGitHubInstallRequest{
+			Owner: "acme",
+			Repo:  "echo",
+			Tag:   "v0.1.0",
+			Asset: "echo.zip",
+		})
+		installDone <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("download did not start")
+	}
+
+	listDone := make(chan error, 1)
+	go func() {
+		_, err := service.ListPlugins(context.Background())
+		listDone <- err
+	}()
+	select {
+	case err := <-listDone:
+		if err != nil {
+			t.Fatalf("ListPlugins while download blocked: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("ListPlugins blocked behind InstallGitHubRelease download")
+	}
+
+	close(release)
+	if err := <-installDone; err == nil || !strings.Contains(err.Error(), "status 500") {
+		t.Fatalf("InstallGitHubRelease error = %v, want status 500", err)
+	}
+}
+
+func (s *PluginService) requireAdminForTest() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.requireAdminLocked()
+}
+
+type pluginServiceRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f pluginServiceRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func TestPluginServiceDeleteRemovesInstalledPackageDirs(t *testing.T) {

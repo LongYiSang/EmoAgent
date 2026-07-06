@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 	"github.com/longyisang/emoagent/internal/chat"
+	commandcore "github.com/longyisang/emoagent/internal/command"
 	"github.com/longyisang/emoagent/internal/config"
 	contextutil "github.com/longyisang/emoagent/internal/context"
 	"github.com/longyisang/emoagent/internal/conversation"
@@ -44,6 +46,60 @@ func TestCommandServiceSidRecordsResultWithoutMessage(t *testing.T) {
 	assertNoMessages(t, db, sessionID)
 	assertInvocation(t, db, "builtin.sid", "success")
 	assertConversationEvent(t, db, sessionID, "command_result")
+}
+
+func TestCommandExecutionPersistLogsAuditFailures(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	db, err := storage.Open(filepath.Join(t.TempDir(), "emo.db"), logger)
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	timeline := conversation.NewTimelineEventStore(db)
+	commands := &CommandService{
+		infra: &Infra{DB: db, Logger: logger},
+		conversation: &ConversationService{
+			timeline: timeline,
+		},
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close DB: %v", err)
+	}
+
+	exec := commandExecution{
+		service: commands,
+		request: chat.CommandRequest{
+			Content:    "/demo",
+			Origin:     conversation.Origin{OriginKey: "webui:local:main"},
+			SessionID:  "session-1",
+			PersonaKey: "default",
+		},
+		parsed: commandcore.ParsedCommand{Name: "demo"},
+		descriptor: commandcore.CommandDescriptor{
+			ID:           "builtin.demo",
+			Name:         "demo",
+			ProviderKind: commandcore.CommandProviderBuiltin,
+			OutputMode:   commandcore.CommandOutputDirect,
+		},
+	}
+
+	exec.persist(context.Background(), commandResult{Status: "success", Content: "ok", ContextSwitch: "switched"}, "session-1", map[string]any{"ok": true})
+
+	logs := logBuf.String()
+	for _, want := range []string{
+		"persist command invocation failed",
+		"append command timeline event failed",
+		"command_id=builtin.demo",
+		"session_id=session-1",
+		"origin_key=webui:local:main",
+		"event_type=command_invocation",
+		"event_type=context_switched",
+		"event_type=command_result",
+	} {
+		if !strings.Contains(logs, want) {
+			t.Fatalf("logs missing %q:\n%s", want, logs)
+		}
+	}
 }
 
 func TestCommandServiceHelpExcludesReservedUnimplementedRoots(t *testing.T) {

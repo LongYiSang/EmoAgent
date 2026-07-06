@@ -430,7 +430,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					cancel()
 				}
 			}); err != nil && !errors.Is(err, errApprovalPending) {
-				if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: err.Error()}, &writeMu); writeErr != nil {
+				if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: clientFacingError(err)}, &writeMu); writeErr != nil {
 					return
 				}
 				continue
@@ -515,7 +515,7 @@ func (h *Handler) runWSMessage(ctx context.Context, cancel context.CancelFunc, c
 			return
 		}
 		if _, err := h.turnRuntime.Execute(turnCtx, env, persona, sink); err != nil {
-			if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: err.Error()}, writeMu); writeErr != nil {
+			if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: clientFacingError(err)}, writeMu); writeErr != nil {
 				cancel()
 			}
 		}
@@ -570,7 +570,7 @@ func (h *Handler) runWSMessage(ctx context.Context, cancel context.CancelFunc, c
 	reply, err := send(msgCtx, sessionID, persona, msg.Content, deltaCB)
 	done()
 	if err != nil && !errors.Is(err, errApprovalPending) {
-		if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: err.Error()}, writeMu); writeErr != nil {
+		if writeErr := writeWSMessage(context.Background(), conn, WSMessage{Type: "error", Content: clientFacingError(err)}, writeMu); writeErr != nil {
 			cancel()
 		}
 		return
@@ -611,6 +611,21 @@ func (h *Handler) runWSMessage(ctx context.Context, cancel context.CancelFunc, c
 	}
 	if err := h.emitApprovalEvents(ctx, conn, writeMu, sessionID); err != nil {
 		cancel()
+	}
+}
+
+func clientFacingError(err error) string {
+	var llmErr *llm.Error
+	if !errors.As(err, &llmErr) {
+		return err.Error()
+	}
+	switch llmErr.Kind {
+	case llm.ErrorKindContextOverflow:
+		return "请求内容超出模型上下文窗口，请缩短输入或稍后重试。"
+	case llm.ErrorKindTransport:
+		return "模型服务暂时不可用，请稍后重试。"
+	default:
+		return "模型服务返回错误，请稍后重试或检查服务配置。"
 	}
 }
 

@@ -664,6 +664,47 @@ func TestRuntimeSettingsCRUD(t *testing.T) {
 	}
 }
 
+func TestOpenWithOptionsAppliesConnectionPragmasToNewConnections(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	held, err := db.SqlDB().Conn(ctx)
+	if err != nil {
+		t.Fatalf("Conn: %v", err)
+	}
+	defer held.Close()
+
+	var foreignKeys int
+	if err := db.SqlDB().QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
+		t.Fatalf("PRAGMA foreign_keys: %v", err)
+	}
+	if foreignKeys != 1 {
+		t.Fatalf("foreign_keys on new connection = %d, want 1", foreignKeys)
+	}
+	var busyTimeout int
+	if err := db.SqlDB().QueryRowContext(ctx, `PRAGMA busy_timeout`).Scan(&busyTimeout); err != nil {
+		t.Fatalf("PRAGMA busy_timeout: %v", err)
+	}
+	if busyTimeout != 5000 {
+		t.Fatalf("busy_timeout on new connection = %d, want 5000", busyTimeout)
+	}
+}
+
+func TestRuntimeSettingsContextMethodsHonorCanceledContext(t *testing.T) {
+	db := testDB(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := db.UpsertRuntimeSettingContext(ctx, "memory", "config", `{}`, "ui"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("UpsertRuntimeSettingContext error = %v, want context.Canceled", err)
+	}
+	if _, _, err := db.GetRuntimeSettingContext(ctx, "memory", "config"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("GetRuntimeSettingContext error = %v, want context.Canceled", err)
+	}
+	if _, err := db.ListRuntimeSettingsContext(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ListRuntimeSettingsContext error = %v, want context.Canceled", err)
+	}
+}
+
 func TestOpenAndMigrate_CreatesTurnRuntimeSchema(t *testing.T) {
 	db := testDB(t)
 

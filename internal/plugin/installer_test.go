@@ -334,6 +334,132 @@ func TestPluginInstallerGitHubReleaseRequiresSignatureEvenWhenUnsignedDevAllowed
 	}
 }
 
+func TestPluginInstallerRejectsGitHubReleaseByContentLength(t *testing.T) {
+	store, _ := NewPluginStore(filepath.Join(t.TempDir(), "store"))
+	installer := NewPluginInstaller(store, config.PluginInstallerConfig{
+		GithubEnabled:    true,
+		AllowUnsignedDev: true,
+		MaxPackageBytes:  8,
+	})
+	installer.Client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			ContentLength: 9,
+			Body:          io.NopCloser(strings.NewReader("")),
+			Header:        make(http.Header),
+			Request:       req,
+		}, nil
+	})}
+
+	_, err := installer.InstallFromGitHubRelease(t.Context(), "example", "repo", "v0.1.0", "echo.zip")
+	if err == nil || !strings.Contains(err.Error(), "package exceeds max_package_bytes") {
+		t.Fatalf("InstallFromGitHubRelease error = %v, want max_package_bytes", err)
+	}
+}
+
+func TestPluginInstallerRejectsGitHubReleaseBodyOverLimitWithoutContentLength(t *testing.T) {
+	dir := t.TempDir()
+	zipPath := filepath.Join(dir, "echo.zip")
+	writeZip(t, zipPath, map[string]string{
+		manifestFileName: "schema_version: emoagent.plugin.v0.2\nid: com.example.echo\nname: Echo\nversion: 0.1.0\nruntime:\n  kind: python_process\n  entry: main.py\naccess:\n  tier: runtime_safe\n",
+		"main.py":        strings.Repeat("x", 64),
+	})
+	zipRaw, err := os.ReadFile(zipPath)
+	if err != nil {
+		t.Fatalf("read zip: %v", err)
+	}
+	store, _ := NewPluginStore(filepath.Join(dir, "store"))
+	installer := NewPluginInstaller(store, config.PluginInstallerConfig{
+		GithubEnabled:    true,
+		AllowUnsignedDev: true,
+		MaxPackageBytes:  int64(len(zipRaw) - 1),
+	})
+	installer.Client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			ContentLength: -1,
+			Body:          io.NopCloser(bytes.NewReader(zipRaw)),
+			Header:        make(http.Header),
+			Request:       req,
+		}, nil
+	})}
+
+	_, err = installer.InstallFromGitHubRelease(t.Context(), "example", "repo", "v0.1.0", "echo.zip")
+	if err == nil || !strings.Contains(err.Error(), "package exceeds max_package_bytes") {
+		t.Fatalf("InstallFromGitHubRelease error = %v, want max_package_bytes", err)
+	}
+}
+
+func TestPluginInstallerRejectsZipExtractionLimits(t *testing.T) {
+	tests := []struct {
+		name  string
+		cfg   config.PluginInstallerConfig
+		files map[string]string
+		want  string
+	}{
+		{
+			name: "file count",
+			cfg: config.PluginInstallerConfig{
+				AllowUnsignedDev:      true,
+				MaxPackageBytes:       1 << 20,
+				MaxExtractedFiles:     2,
+				MaxExtractedBytes:     1 << 20,
+				MaxExtractedFileBytes: 1 << 20,
+			},
+			files: map[string]string{
+				manifestFileName: "schema_version: emoagent.plugin.v0.2\nid: com.example.echo\nname: Echo\nversion: 0.1.0\nruntime:\n  kind: python_process\n  entry: main.py\naccess:\n  tier: runtime_safe\n",
+				"main.py":        "print('ok')\n",
+				"extra.txt":      "extra\n",
+			},
+			want: "too many files",
+		},
+		{
+			name: "single file bytes",
+			cfg: config.PluginInstallerConfig{
+				AllowUnsignedDev:      true,
+				MaxPackageBytes:       1 << 20,
+				MaxExtractedFiles:     8,
+				MaxExtractedBytes:     1 << 20,
+				MaxExtractedFileBytes: 8,
+			},
+			files: map[string]string{
+				manifestFileName: "schema_version: emoagent.plugin.v0.2\nid: com.example.echo\nname: Echo\nversion: 0.1.0\nruntime:\n  kind: python_process\n  entry: main.py\naccess:\n  tier: runtime_safe\n",
+				"main.py":        strings.Repeat("x", 32),
+			},
+			want: "extracted file exceeds",
+		},
+		{
+			name: "total bytes",
+			cfg: config.PluginInstallerConfig{
+				AllowUnsignedDev:      true,
+				MaxPackageBytes:       1 << 20,
+				MaxExtractedFiles:     8,
+				MaxExtractedBytes:     32,
+				MaxExtractedFileBytes: 1 << 20,
+			},
+			files: map[string]string{
+				manifestFileName: "schema_version: emoagent.plugin.v0.2\nid: com.example.echo\nname: Echo\nversion: 0.1.0\nruntime:\n  kind: python_process\n  entry: main.py\naccess:\n  tier: runtime_safe\n",
+				"main.py":        strings.Repeat("x", 64),
+			},
+			want: "extracted package exceeds",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			zipPath := filepath.Join(dir, "echo.zip")
+			writeZip(t, zipPath, tt.files)
+			store, _ := NewPluginStore(filepath.Join(dir, "store"))
+			installer := NewPluginInstaller(store, tt.cfg)
+
+			_, err := installer.InstallFromZip(t.Context(), zipPath)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("InstallFromZip error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestPluginInstallerRejectsZipSlip(t *testing.T) {
 	dir := t.TempDir()
 	zipPath := filepath.Join(dir, "bad.zip")

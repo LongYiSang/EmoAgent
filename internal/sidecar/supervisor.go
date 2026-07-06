@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -33,6 +34,7 @@ type Status struct {
 }
 
 type Supervisor struct {
+	mu     sync.Mutex
 	spec   Spec
 	logger *slog.Logger
 	client *http.Client
@@ -54,6 +56,12 @@ func NewSupervisor(spec Spec, logger *slog.Logger) *Supervisor {
 }
 
 func (s *Supervisor) Start(ctx context.Context) (Status, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.startLocked(ctx)
+}
+
+func (s *Supervisor) startLocked(ctx context.Context) (Status, error) {
 	if !s.spec.Enabled {
 		s.status = Status{State: StateDisabled, Managed: s.spec.Managed, URL: s.spec.EffectiveURL(), Adapter: s.spec.Adapter}
 		return s.status, nil
@@ -103,7 +111,7 @@ func (s *Supervisor) Start(ctx context.Context) (Status, error) {
 	s.log = logFile
 	s.status = Status{State: StateStarting, Managed: true, URL: s.spec.EffectiveURL(), Adapter: s.spec.Adapter, PID: cmd.Process.Pid}
 	if err := s.waitHealthy(ctx); err != nil {
-		_ = s.Stop(context.Background())
+		_ = s.stopLocked(context.Background())
 		return s.degradeOrError(err)
 	}
 	s.status.State = StateHealthy
@@ -138,6 +146,12 @@ func absolutePath(path string) (string, error) {
 }
 
 func (s *Supervisor) Stop(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stopLocked(ctx)
+}
+
+func (s *Supervisor) stopLocked(ctx context.Context) error {
 	var stopErr error
 	if s.cmd != nil && s.cmd.Process != nil {
 		done := make(chan error, 1)
@@ -175,6 +189,8 @@ func (s *Supervisor) Stop(ctx context.Context) error {
 }
 
 func (s *Supervisor) Status() Status {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.status
 }
 

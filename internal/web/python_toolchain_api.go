@@ -65,8 +65,8 @@ func (h *APIHandler) HandleProbePythonToolchain(w http.ResponseWriter, r *http.R
 	}
 	var req pythonToolchainProbeRequest
 	if r.Body != nil && r.ContentLength != 0 {
-		if err := readJSON(r, &req); err != nil && !errors.Is(err, http.ErrBodyReadAfterClose) {
-			writeError(w, http.StatusBadRequest, "invalid JSON")
+		if err := readJSON(w, r, &req); err != nil && !errors.Is(err, http.ErrBodyReadAfterClose) {
+			writeJSONReadError(w, err)
 			return
 		}
 	}
@@ -93,8 +93,8 @@ func (h *APIHandler) HandleUpdatePythonToolchain(w http.ResponseWriter, r *http.
 		return
 	}
 	var req pythonToolchainProbeRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 	effective, err := app.UpdatePythonToolchainConfig(r.Context(), req.PythonToolchain)
@@ -116,7 +116,8 @@ func (h *APIHandler) HandleListPythonEnvironments(w http.ResponseWriter, r *http
 	}
 	environments, err := app.ListPythonEnvironments(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		h.logger.Error("python environments internal error", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	writeJSON(w, http.StatusOK, pythonEnvironmentListResponse{Environments: environments})

@@ -2,7 +2,6 @@ package web
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -134,8 +133,8 @@ func (h *APIHandler) HandleUpdatePluginSettings(w http.ResponseWriter, r *http.R
 		return
 	}
 	var req plugin.AdminPluginSettingsUpdateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 	settings, err := app.UpdatePluginSettings(r.Context(), r.PathValue("id"), req)
@@ -152,8 +151,8 @@ func (h *APIHandler) HandleInstallLocalPlugin(w http.ResponseWriter, r *http.Req
 		return
 	}
 	var req plugin.AdminPluginInstallRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 	summary, err := app.InstallLocalPlugin(r.Context(), req)
@@ -170,8 +169,8 @@ func (h *APIHandler) HandleInstallGitHubPlugin(w http.ResponseWriter, r *http.Re
 		return
 	}
 	var req plugin.AdminGitHubInstallRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSONReadError(w, err)
 		return
 	}
 	summary, err := app.InstallGitHubPluginRelease(r.Context(), req)
@@ -189,8 +188,8 @@ func (h *APIHandler) HandleEnablePlugin(w http.ResponseWriter, r *http.Request) 
 	}
 	var req plugin.AdminPluginEnableRequest
 	if r.Body != nil {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-			writeError(w, http.StatusBadRequest, "invalid JSON")
+		if err := readJSON(w, r, &req); err != nil && !errors.Is(err, io.EOF) {
+			writeJSONReadError(w, err)
 			return
 		}
 	}

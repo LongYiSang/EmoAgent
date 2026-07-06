@@ -3,10 +3,12 @@ package resource
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/longyisang/emoagent/internal/config"
 	_ "modernc.org/sqlite"
@@ -461,6 +463,100 @@ func TestSQLiteChangeSetStoreDoesNotPersistDiffBody(t *testing.T) {
 	}
 }
 
+func TestSQLiteChangeSetStoreSaveRollsBackWhenOpsFail(t *testing.T) {
+	sqlDB, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqlDB.Close()
+	createTestChangeSetTables(t, sqlDB)
+	if _, err := sqlDB.Exec(`
+CREATE TRIGGER fail_changeset_ops_insert
+BEFORE INSERT ON host_resource_change_ops
+BEGIN
+	SELECT RAISE(ABORT, 'ops insert failed');
+END;`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+
+	store := NewSQLiteChangeSetStore(sqlDB)
+	cs := testPersistentChangeSet("cs-save")
+	if err := store.Save(context.Background(), cs); err == nil {
+		t.Fatal("Save succeeded, want ops insert failure")
+	}
+	var count int
+	if err := sqlDB.QueryRow(`SELECT COUNT(*) FROM host_resource_changesets WHERE id = ?`, cs.ID).Scan(&count); err != nil {
+		t.Fatalf("count changesets: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("changeset rows after failed Save = %d, want 0", count)
+	}
+}
+
+func TestSQLiteChangeSetStoreUpdateRollsBackWhenOpsFail(t *testing.T) {
+	sqlDB, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqlDB.Close()
+	createTestChangeSetTables(t, sqlDB)
+	store := NewSQLiteChangeSetStore(sqlDB)
+	cs := testPersistentChangeSet("cs-update")
+	if err := store.Save(context.Background(), cs); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := sqlDB.Exec(`
+CREATE TRIGGER fail_changeset_ops_update_insert
+BEFORE INSERT ON host_resource_change_ops
+BEGIN
+	SELECT RAISE(ABORT, 'ops update insert failed');
+END;`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+
+	next := cs
+	next.Status = ChangeSetStatusApplied
+	next.ErrorMessage = "should roll back"
+	next.Preview.Ops = append(next.Preview.Ops, ChangeOp{
+		Index:      1,
+		Operation:  ChangeOpOverwriteFile,
+		SourcePath: "@documents/other.txt",
+		TargetPath: "@documents/other.txt",
+		Bytes:      5,
+	})
+	if err := store.Update(context.Background(), next); err == nil {
+		t.Fatal("Update succeeded, want ops insert failure")
+	}
+	got, ok, err := store.Get(context.Background(), cs.ID)
+	if err != nil || !ok {
+		t.Fatalf("Get after failed Update = %#v %v %v", got, ok, err)
+	}
+	if got.Status != ChangeSetStatusApprovalPending || got.ErrorMessage != "" {
+		t.Fatalf("changeset after failed Update = %#v, want original status and error", got)
+	}
+	var opCount int
+	if err := sqlDB.QueryRow(`SELECT COUNT(*) FROM host_resource_change_ops WHERE changeset_id = ?`, cs.ID).Scan(&opCount); err != nil {
+		t.Fatalf("count ops: %v", err)
+	}
+	if opCount != 1 {
+		t.Fatalf("op count after failed Update = %d, want original 1", opCount)
+	}
+}
+
+func TestSQLiteChangeSetStoreUpdateMissingWrapsSentinel(t *testing.T) {
+	sqlDB, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqlDB.Close()
+	createTestChangeSetTables(t, sqlDB)
+
+	err = NewSQLiteChangeSetStore(sqlDB).Update(context.Background(), testPersistentChangeSet("missing"))
+	if !errors.Is(err, ErrChangeSetNotFound) {
+		t.Fatalf("Update missing error = %v, want ErrChangeSetNotFound", err)
+	}
+}
+
 func createTestChangeSetTables(t *testing.T, sqlDB *sql.DB) {
 	t.Helper()
 	if _, err := sqlDB.Exec(`
@@ -501,6 +597,45 @@ CREATE TABLE host_resource_change_ops (
     created_at TEXT NOT NULL
 );`); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func testPersistentChangeSet(id string) ChangeSet {
+	now := time.Unix(500, 0).UTC()
+	return ChangeSet{
+		ID:        id,
+		Principal: PrincipalRef{Kind: PrincipalWorkTask, ID: "task-1"},
+		Status:    ChangeSetStatusApprovalPending,
+		Operation: ChangeOpOverwriteFile,
+		Source: ResourceRef{
+			ID:          "local:source",
+			Provider:    "host",
+			DisplayPath: "@documents/note.txt",
+		},
+		Target: ResourceRef{
+			ID:          "local:target",
+			Provider:    "host",
+			DisplayPath: "@documents/note.txt",
+		},
+		TargetDisplayPath: "@documents/note.txt",
+		BaselineHash:      "sha256:old",
+		BaselineFileID:    "file-old",
+		ContentHash:       "sha256:new",
+		PlanHash:          "sha256:plan",
+		Preview: ChangePreview{
+			Summary: "overwrite @documents/note.txt",
+			Ops: []ChangeOp{{
+				Index:      0,
+				Operation:  ChangeOpOverwriteFile,
+				SourcePath: "@documents/note.txt",
+				TargetPath: "@documents/note.txt",
+				SourceHash: "sha256:old",
+				TargetHash: "sha256:new",
+				Bytes:      3,
+			}},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 }
 
