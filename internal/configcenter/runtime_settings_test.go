@@ -84,6 +84,26 @@ func TestApplyRuntimeSettingsSupportsPythonToolchain(t *testing.T) {
 	if effective.PythonToolchain.RequiredPython != "3.12" {
 		t.Fatalf("required_python = %q, want default 3.12", effective.PythonToolchain.RequiredPython)
 	}
+	if !effective.PythonToolchain.UseSystemCertificates {
+		t.Fatalf("use_system_certificates = false, want default true")
+	}
+}
+
+func TestApplyRuntimeSettingsSupportsPythonToolchainFalseCertificateDefault(t *testing.T) {
+	seed := config.DefaultConfig()
+
+	effective, issues := ApplyRuntimeSettings(seed, []storage.RuntimeSetting{
+		{Namespace: "python_toolchain", Key: "config", ValueJSON: `{"use_system_certificates":false}`},
+	})
+	if len(issues) != 0 {
+		t.Fatalf("issues = %#v, want none", issues)
+	}
+	if effective.PythonToolchain.UseSystemCertificates {
+		t.Fatalf("use_system_certificates = true, want explicit false")
+	}
+	if effective.PythonToolchain.RequiredPython != "3.12" {
+		t.Fatalf("required_python = %q, want default 3.12", effective.PythonToolchain.RequiredPython)
+	}
 }
 
 func TestApplyRuntimeSettingsSupportsPlatforms(t *testing.T) {
@@ -105,6 +125,25 @@ func TestApplyRuntimeSettingsSupportsPlatforms(t *testing.T) {
 	transport, ok := adapter.ConfigJSON["transport"].(map[string]any)
 	if !ok || transport["access_token_env"] != "SNOWLUMA_ONEBOT_TOKEN" {
 		t.Fatalf("transport = %#v", adapter.ConfigJSON["transport"])
+	}
+}
+
+func TestApplyRuntimeSettingsDoesNotMutateSeedPlatformsMap(t *testing.T) {
+	seed := config.DefaultConfig()
+
+	effective, issues := ApplyRuntimeSettings(seed, []storage.RuntimeSetting{
+		{Namespace: "platforms", Key: "config", ValueJSON: `{"enabled":true,"adapters":{"qq-main":{"enabled":true,"kind":"onebot_v11","instance_id":"qq-main","platform_id":"qq","config":{"transport":{"mode":"ws_reverse"}}}}}`},
+	})
+	if len(issues) != 0 {
+		t.Fatalf("issues = %#v, want none", issues)
+	}
+	if len(seed.Platforms.Adapters) != 0 {
+		t.Fatalf("seed platforms.adapters = %#v, want unchanged empty map", seed.Platforms.Adapters)
+	}
+
+	effective.Platforms.Adapters["another"] = config.PlatformAdapterConfig{Kind: "onebot_v11"}
+	if len(seed.Platforms.Adapters) != 0 {
+		t.Fatalf("effective platforms.adapters shares seed map: %#v", seed.Platforms.Adapters)
 	}
 }
 
