@@ -149,6 +149,34 @@ go build -o ./bin/emoagent ./cmd/emoagent
 
 当 `memory.enabled=true` 时，EmoAgent 会通过 `memoryhost.OpenFromConfigWithOptions` 打开 MemoryCore，并把 Provider Center 中的 provider 转成 MemoryCore `ProviderRegistry`。MemoryCore pipeline 的运行时选择应写入 `memory.provider_bindings.*` 或 DB `runtime_settings`，保存 `provider_id`、`model` 以及可选的 `max_tokens` / `thinking`；旧的 `memory.extraction.provider` 仅作为过渡兼容字段，不再作为主配置入口。`memory.sidecar.enabled=true` 时会先按 `managed/external` 模式检查 sidecar；健康时注入 `sidecar.url`，失败且 `fail_open=true` 时降级关闭 mirror/sidecar，保留 SQLite/FTS 路径。
 
+### OneBot 私聊图片接入
+
+SnowLuma 侧连接 EmoAgent 的 OneBot 网络适配器需要使用段数组事件，确认 `config/onebot_<uin>.json` 中对应 `wsClients` 项包含：
+
+```json
+{
+  "messageFormat": "array"
+}
+```
+
+EmoAgent 侧默认不接收入站图片，需要在 `platforms.adapters.<instance_id>.config.message` 下启用 `inbound_media`，例如：
+
+```json
+{
+  "max_text_chars": 8000,
+  "inbound_media": {
+    "enabled": true,
+    "max_images": 4,
+    "download_timeout_ms": 10000,
+    "allow_private_hosts": false,
+    "allowed_hosts": [],
+    "on_failure": "notify"
+  }
+}
+```
+
+首版只支持 OneBot 私聊 `image.data.url` 入站图片；不处理群图片、出站图片、内置表情或收藏表情。改完运行时配置后需要重启 EmoAgent。若 SnowLuma 返回的是本机图片 URL，再把对应 host 加入 `allowed_hosts`。
+
 ### Sidecar 简易安装
 
 MemoryCore Go module 通过 `go.mod` 引入，但 Python sidecar 不会随 Go 依赖自动安装。启用 `memory.sidecar.enabled=true` 前，需要先在 sidecar 目录安装 Python 依赖；默认配置假设 `EmoAgent` 与 `EmoAgent-MemoryCore` 是相邻目录：

@@ -21,6 +21,8 @@ const (
 	MessageFormatAuto   = "auto"
 
 	UnsupportedSegmentPlaceholder = "placeholder"
+
+	InboundMediaFailureNotify = "notify"
 )
 
 type Config struct {
@@ -56,10 +58,20 @@ type RoutingConfig struct {
 }
 
 type MessageConfig struct {
-	InputFormat              string `json:"input_format"`
-	OutputFormat             string `json:"output_format"`
-	UnsupportedSegmentPolicy string `json:"unsupported_segment_policy"`
-	MaxTextChars             int    `json:"max_text_chars"`
+	InputFormat              string             `json:"input_format"`
+	OutputFormat             string             `json:"output_format"`
+	UnsupportedSegmentPolicy string             `json:"unsupported_segment_policy"`
+	MaxTextChars             int                `json:"max_text_chars"`
+	InboundMedia             InboundMediaConfig `json:"inbound_media"`
+}
+
+type InboundMediaConfig struct {
+	Enabled           bool     `json:"enabled"`
+	MaxImages         int      `json:"max_images"`
+	DownloadTimeoutMS int      `json:"download_timeout_ms"`
+	AllowPrivateHosts bool     `json:"allow_private_hosts"`
+	AllowedHosts      []string `json:"allowed_hosts"`
+	OnFailure         string   `json:"on_failure"`
 }
 
 type OutboundConfig struct {
@@ -157,6 +169,15 @@ func (c *Config) applyDefaults() {
 	if c.Message.MaxTextChars == 0 {
 		c.Message.MaxTextChars = 8000
 	}
+	if c.Message.InboundMedia.MaxImages == 0 {
+		c.Message.InboundMedia.MaxImages = 4
+	}
+	if c.Message.InboundMedia.DownloadTimeoutMS == 0 {
+		c.Message.InboundMedia.DownloadTimeoutMS = 10000
+	}
+	if c.Message.InboundMedia.OnFailure == "" {
+		c.Message.InboundMedia.OnFailure = InboundMediaFailureNotify
+	}
 	c.Outbound.CoalesceCommandEvents = true
 	c.Outbound.SplitLongMessages = true
 	if c.Outbound.MaxMessageChars == 0 {
@@ -214,6 +235,17 @@ func (c Config) Validate() error {
 	if c.Message.MaxTextChars <= 0 {
 		return fmt.Errorf("message.max_text_chars must be > 0")
 	}
+	if c.Message.InboundMedia.MaxImages <= 0 {
+		return fmt.Errorf("message.inbound_media.max_images must be > 0")
+	}
+	if c.Message.InboundMedia.DownloadTimeoutMS <= 0 {
+		return fmt.Errorf("message.inbound_media.download_timeout_ms must be > 0")
+	}
+	switch strings.TrimSpace(c.Message.InboundMedia.OnFailure) {
+	case "", InboundMediaFailureNotify:
+	default:
+		return fmt.Errorf("message.inbound_media.on_failure must be notify")
+	}
 	if c.Outbound.MaxMessageChars <= 0 {
 		return fmt.Errorf("outbound.max_message_chars must be > 0")
 	}
@@ -242,6 +274,12 @@ func (c *Config) restoreExplicitZeroValues(decoded Config, raw map[string]any) {
 	if hasNestedKey(raw, "outbound", "split_long_messages") {
 		c.Outbound.SplitLongMessages = decoded.Outbound.SplitLongMessages
 	}
+	if hasNestedKey3(raw, "message", "inbound_media", "max_images") {
+		c.Message.InboundMedia.MaxImages = decoded.Message.InboundMedia.MaxImages
+	}
+	if hasNestedKey3(raw, "message", "inbound_media", "download_timeout_ms") {
+		c.Message.InboundMedia.DownloadTimeoutMS = decoded.Message.InboundMedia.DownloadTimeoutMS
+	}
 }
 
 func hasNestedKey(raw map[string]any, section string, key string) bool {
@@ -259,4 +297,28 @@ func hasNestedKey(raw map[string]any, section string, key string) bool {
 	default:
 		return false
 	}
+}
+
+func hasNestedKey3(raw map[string]any, section string, subsection string, key string) bool {
+	if raw == nil {
+		return false
+	}
+	value, ok := raw[section]
+	if !ok {
+		return false
+	}
+	sectionValue, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	nested, ok := sectionValue[subsection]
+	if !ok {
+		return false
+	}
+	nestedValue, ok := nested.(map[string]any)
+	if !ok {
+		return false
+	}
+	_, ok = nestedValue[key]
+	return ok
 }

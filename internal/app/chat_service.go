@@ -304,6 +304,7 @@ func platformTurnEnvelope(in platform.InboundMessage, sessionID string, personaK
 		Content:       content,
 		UserMessage: &turn.UserMessageInput{
 			Content: content,
+			Parts:   clonePlatformTurnParts(in.Parts),
 		},
 		RawMeta: map[string]any{
 			"source_type":         strings.TrimSpace(in.SourceType),
@@ -317,6 +318,21 @@ func platformTurnEnvelope(in platform.InboundMessage, sessionID string, personaK
 	}
 	env.IdempotencyKey = turn.BuildIdempotencyKey(env)
 	return env
+}
+
+func clonePlatformTurnParts(parts []llm.ContentBlock) []llm.ContentBlock {
+	if len(parts) == 0 {
+		return nil
+	}
+	cloned := make([]llm.ContentBlock, len(parts))
+	for i, part := range parts {
+		cloned[i] = part
+		if part.Media != nil {
+			mediaPart := *part.Media
+			cloned[i].Media = &mediaPart
+		}
+	}
+	return cloned
 }
 
 func (s *ChatService) UpdateRealtimeStreaming(enabled bool) {

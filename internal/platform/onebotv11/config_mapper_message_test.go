@@ -47,8 +47,91 @@ func TestParseConfigAppliesOneBotDefaults(t *testing.T) {
 	if cfg.Message.InputFormat != MessageFormatArray || cfg.Message.OutputFormat != MessageFormatArray {
 		t.Fatalf("message defaults = %#v", cfg.Message)
 	}
+	if cfg.Message.InboundMedia.Enabled || cfg.Message.InboundMedia.MaxImages != 4 || cfg.Message.InboundMedia.DownloadTimeoutMS != 10000 || cfg.Message.InboundMedia.OnFailure != "notify" {
+		t.Fatalf("inbound media defaults = %#v", cfg.Message.InboundMedia)
+	}
 	if !cfg.Outbound.CoalesceCommandEvents || !cfg.Outbound.SplitLongMessages {
 		t.Fatalf("outbound defaults = %#v", cfg.Outbound)
+	}
+}
+
+func TestParseConfigAppliesInboundMediaConfig(t *testing.T) {
+	cfg, err := ParseConfig("qq-main", appconfig.PlatformAdapterConfig{
+		Enabled: true,
+		Kind:    "onebot_v11",
+		ConfigJSON: map[string]any{
+			"transport": map[string]any{
+				"mode": "ws_reverse",
+			},
+			"message": map[string]any{
+				"inbound_media": map[string]any{
+					"enabled":             true,
+					"max_images":          2,
+					"download_timeout_ms": 3000,
+					"allow_private_hosts": true,
+					"allowed_hosts":       []any{"127.0.0.1", "localhost"},
+					"on_failure":          "notify",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	if !cfg.Message.InboundMedia.Enabled || cfg.Message.InboundMedia.MaxImages != 2 || cfg.Message.InboundMedia.DownloadTimeoutMS != 3000 || !cfg.Message.InboundMedia.AllowPrivateHosts {
+		t.Fatalf("inbound media config = %#v", cfg.Message.InboundMedia)
+	}
+	if got := strings.Join(cfg.Message.InboundMedia.AllowedHosts, ","); got != "127.0.0.1,localhost" {
+		t.Fatalf("allowed hosts = %q", got)
+	}
+}
+
+func TestParseConfigRejectsInvalidInboundMediaConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  map[string]any
+		want string
+	}{
+		{
+			name: "zero max images",
+			raw: map[string]any{
+				"max_images": 0,
+			},
+			want: "message.inbound_media.max_images",
+		},
+		{
+			name: "zero download timeout",
+			raw: map[string]any{
+				"download_timeout_ms": 0,
+			},
+			want: "message.inbound_media.download_timeout_ms",
+		},
+		{
+			name: "unknown failure policy",
+			raw: map[string]any{
+				"on_failure": "drop",
+			},
+			want: "message.inbound_media.on_failure",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseConfig("qq-main", appconfig.PlatformAdapterConfig{
+				Enabled: true,
+				Kind:    "onebot_v11",
+				ConfigJSON: map[string]any{
+					"transport": map[string]any{
+						"mode": "ws_reverse",
+					},
+					"message": map[string]any{
+						"inbound_media": tt.raw,
+					},
+				},
+			})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("ParseConfig error = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 

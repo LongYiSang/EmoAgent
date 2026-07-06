@@ -21,9 +21,10 @@ type PlatformService struct {
 	onebotReverse *onebotv11.ReverseServer
 	enabled       bool
 	logger        *slog.Logger
+	media         *MediaService
 }
 
-func NewPlatformService(infra *Infra, conversation *ConversationService, commands *CommandService, chat *ChatService, agentRuntime *AgentRuntimeService, personas *PersonaService) *PlatformService {
+func NewPlatformService(infra *Infra, conversation *ConversationService, commands *CommandService, chat *ChatService, agentRuntime *AgentRuntimeService, personas *PersonaService, media *MediaService) *PlatformService {
 	var receipts platform.ReceiptStore
 	if infra != nil && infra.DB != nil {
 		receipts = NewStorageReceiptStore(infra.DB)
@@ -32,6 +33,7 @@ func NewPlatformService(infra *Infra, conversation *ConversationService, command
 		gateway:       NewPlatformGateway(infra, conversation, commands, chat, agentRuntime, personas, receipts),
 		manager:       platform.NewManager(),
 		onebotReverse: onebotv11.NewReverseServer(),
+		media:         media,
 	}
 	if infra != nil {
 		service.logger = infra.Logger
@@ -83,6 +85,7 @@ func (s *PlatformService) Configure(ctx context.Context, cfg config.PlatformsCon
 				return fmt.Errorf("configure platform adapter %s: %w", id, err)
 			}
 			adapter.SetLogger(s.logger)
+			adapter.SetInboundMediaStore(s.media)
 			s.manager.Register(id, adapter)
 			s.adapters = append(s.adapters, adapter)
 			if s.logger != nil {

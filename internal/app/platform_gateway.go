@@ -38,10 +38,8 @@ func (g *PlatformGateway) HandleInbound(ctx context.Context, in platform.Inbound
 	if g == nil {
 		return platform.HandleResult{}, fmt.Errorf("platform gateway is not configured")
 	}
-	if len(in.Parts) > 0 {
-		return platform.HandleResult{}, fmt.Errorf("inbound message parts are not supported")
-	}
-	if strings.TrimSpace(in.Text) == "" {
+	hasParts := len(in.Parts) > 0
+	if strings.TrimSpace(in.Text) == "" && !hasParts {
 		return platform.HandleResult{}, fmt.Errorf("inbound message text is required")
 	}
 	origin, err := platform.OriginFromInbound(in, in.OriginScope)
@@ -78,6 +76,12 @@ func (g *PlatformGateway) HandleInbound(ctx context.Context, in platform.Inbound
 	actorRole := string(in.Actor.Role)
 	if actorRole == "" {
 		actorRole = string(platform.ActorRoleMember)
+	}
+	if hasParts && g.isPlatformCommandText(in.Text) {
+		err := fmt.Errorf("带图片的消息不支持平台命令，请单独发送命令文本")
+		g.failReceipt(ctx, receipt.ID, binding.SessionID, err)
+		_ = emitPlatformError(ctx, sink, origin, binding.SessionID, personaKey, in.ExternalMessageID, err)
+		return platform.HandleResult{}, err
 	}
 	if g.commands != nil {
 		response, handled, err := g.commands.TryHandle(ctx, chat.CommandRequest{
@@ -153,6 +157,24 @@ func (g *PlatformGateway) HandleInbound(ctx context.Context, in platform.Inbound
 	}
 	g.completeReceipt(ctx, receipt.ID, binding.SessionID, turnResult.ResultType)
 	return platform.HandleResult{Handled: true, SessionID: binding.SessionID}, nil
+}
+
+func (g *PlatformGateway) isPlatformCommandText(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	prefixes := []string{"/"}
+	if g != nil && g.infra != nil && g.infra.Config != nil && len(g.infra.Config.Platforms.Common.CommandPrefixes) > 0 {
+		prefixes = g.infra.Config.Platforms.Common.CommandPrefixes
+	}
+	for _, prefix := range prefixes {
+		prefix = strings.TrimSpace(prefix)
+		if prefix != "" && strings.HasPrefix(text, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *PlatformGateway) ensureCurrent(ctx context.Context, origin conversation.Origin, personaKey string) (conversation.Binding, error) {

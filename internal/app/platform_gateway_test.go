@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/conversation"
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/media"
 	"github.com/longyisang/emoagent/internal/platform"
 	"github.com/longyisang/emoagent/internal/storage"
 )
@@ -463,12 +465,52 @@ func TestPlatformGatewayTextRequiresTurnPipeline(t *testing.T) {
 	requirePlatformReceiptResult(t, db, "onebot", "qq-main", "msg-no-output", "failed", "")
 }
 
-func TestPlatformGatewayRejectsPartsInput(t *testing.T) {
+func TestPlatformGatewayAllowsImagePartsInput(t *testing.T) {
 	ctx := context.Background()
-	_, _, gateway, fakeLLM := newTestPlatformGateway(t)
+	app, db, gateway, activeLLM := newTestPlatformGateway(t)
+	var requestBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("ReadAll request: %v", err)
+		}
+		requestBody = string(body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl-image","model":"bound-model","choices":[{"delta":{"content":"image reply"}}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl-image","model":"bound-model","choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\n"))
+	}))
+	t.Cleanup(server.Close)
+	cfg := testConfig(app)
+	cfg.Media.StorageDir = filepath.Join(t.TempDir(), "media")
+	cfg.Chat.TurnPipeline.Enabled = true
+	cfg.Chat.TurnPipeline.MemoryStages = true
+	cfg.Chat.PromptRouter.Mode = config.PromptRouterModeAlwaysCasual
+	cfg.AgentConfigs = []config.AgentConfig{{ID: "default-agent", PersonaKey: "default"}}
+	upsertPlatformGatewayAgent(t, app, "default-agent", "default", server.URL)
+	if err := db.UpsertModelCapability(ctx, storage.ModelCapabilityRecord{
+		ProviderID:          "test-provider",
+		ModelID:             "bound-model",
+		InputModalities:     []string{"text", "image"},
+		OutputModalities:    []string{"text"},
+		ImageTransports:     []string{media.TransportDataURL},
+		ImageFormats:        []string{"image/png"},
+		CapabilitySource:    string(llm.CapabilitySourceManualOverride),
+		Confidence:          1,
+		LastRefreshedAt:     "2026-07-07T00:00:00+08:00",
+		LastVerifiedAt:      "2026-07-07T00:00:00+08:00",
+		RawProviderJSON:     "{}",
+		MaxImageBytes:       int64(len(appTinyPNG())),
+		MaxImagesPerRequest: 4,
+	}); err != nil {
+		t.Fatalf("UpsertModelCapability: %v", err)
+	}
+	asset, err := app.kernel.Services.Media.Upload(ctx, bytes.NewReader(appTinyPNG()), media.UploadMeta{OriginalFilename: "tiny.png", CreatedByRole: "user"})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
 	sink := &platform.BufferedPlatformSink{}
 
-	_, err := gateway.HandleInbound(ctx, platform.InboundMessage{
+	result, err := gateway.HandleInbound(ctx, platform.InboundMessage{
 		ExternalMessageID:      "msg-parts",
 		SourceType:             "napcat",
 		AdapterInstanceID:      "main",
@@ -477,15 +519,91 @@ func TestPlatformGatewayRejectsPartsInput(t *testing.T) {
 		ExternalConversationID: "10001",
 		ExternalActorID:        "10001",
 		PersonaKey:             "default",
-		Text:                   "hello",
-		Parts:                  []llm.ContentBlock{{Type: "text", Text: "hello"}},
-		Actor:                  platform.Actor{ID: "10001", Role: platform.ActorRoleMember},
+		Text:                   "look\n[used image]",
+		Parts: []llm.ContentBlock{
+			{Type: string(llm.PartText), Text: "look"},
+			{Type: string(llm.PartImage), Media: &llm.MediaPart{MediaAssetID: asset.ID, Kind: "image", MimeType: "image/png"}},
+		},
+		Actor: platform.Actor{ID: "10001", Role: platform.ActorRoleMember},
 	}, sink)
-	if err == nil {
-		t.Fatal("HandleInbound err = nil, want parts rejection")
+	if err != nil {
+		t.Fatalf("HandleInbound: %v", err)
 	}
-	if fakeLLM.calls != 0 || len(sink.Events) != 0 {
-		t.Fatalf("LLM calls=%d events=%#v, want no side effects", fakeLLM.calls, sink.Events)
+	if !result.Handled || result.SessionID == "" {
+		t.Fatalf("result = %#v, want handled image input", result)
+	}
+	if activeLLM.calls != 0 {
+		t.Fatalf("active LLM calls = %d, want bound agent runtime only", activeLLM.calls)
+	}
+	if !strings.Contains(requestBody, `"type":"image_url"`) || !strings.Contains(requestBody, "data:image/png;base64,") {
+		t.Fatalf("request body missing image data URL: %s", requestBody)
+	}
+	if strings.Contains(requestBody, asset.ID) {
+		t.Fatalf("request body leaked media asset id: %s", requestBody)
+	}
+	if len(sink.Events) != 1 || sink.Events[0].Type != "message" || sink.Events[0].Content != "image reply" {
+		t.Fatalf("sink events = %#v, want image reply", sink.Events)
+	}
+	messages, err := db.GetAllMessages(ctx, result.SessionID)
+	if err != nil {
+		t.Fatalf("GetAllMessages: %v", err)
+	}
+	var userMessageID string
+	for _, msg := range messages {
+		if msg.Role == "user" && msg.Content == "look\n[used image]" {
+			userMessageID = msg.ID
+			break
+		}
+	}
+	if userMessageID == "" {
+		t.Fatalf("messages = %#v, want user image placeholder", messages)
+	}
+	storedParts, err := db.GetMessageParts(ctx, result.SessionID, userMessageID)
+	if err != nil {
+		t.Fatalf("GetMessageParts: %v", err)
+	}
+	if len(storedParts) != 2 || storedParts[1].MediaAssetID != asset.ID {
+		t.Fatalf("stored parts = %#v, want text+image", storedParts)
+	}
+}
+
+func TestPlatformGatewayRejectsCommandWithParts(t *testing.T) {
+	ctx := context.Background()
+	_, db, gateway, fakeLLM := newTestPlatformGateway(t)
+	sink := &platform.BufferedPlatformSink{}
+
+	_, err := gateway.HandleInbound(ctx, platform.InboundMessage{
+		ExternalMessageID:      "msg-command-parts",
+		SourceType:             "napcat",
+		AdapterInstanceID:      "main",
+		PlatformID:             "qq",
+		ChannelType:            "private",
+		ExternalConversationID: "10001",
+		ExternalActorID:        "10001",
+		PersonaKey:             "default",
+		Text:                   "/sid",
+		Parts: []llm.ContentBlock{{
+			Type:  string(llm.PartImage),
+			Media: &llm.MediaPart{MediaAssetID: "med_1", Kind: "image", MimeType: "image/png"},
+		}},
+		Actor: platform.Actor{ID: "10001", Role: platform.ActorRoleMember},
+	}, sink)
+	if err == nil || !strings.Contains(err.Error(), "带图片的消息不支持平台命令") {
+		t.Fatalf("HandleInbound error = %v, want command-with-image rejection", err)
+	}
+	if fakeLLM.calls != 0 {
+		t.Fatalf("LLM calls = %d, want no model call", fakeLLM.calls)
+	}
+	if len(sink.Events) != 1 || sink.Events[0].Type != "error" || strings.Contains(sink.Events[0].Type, "command") {
+		t.Fatalf("sink events = %#v, want one error event", sink.Events)
+	}
+	requirePlatformReceiptResult(t, db, "napcat", "main", "msg-command-parts", "failed", "")
+	invocations, err := db.ListCommandInvocations(ctx, storage.CommandInvocationFilter{CommandID: "builtin.sid", Limit: 10})
+	if err != nil {
+		t.Fatalf("ListCommandInvocations: %v", err)
+	}
+	if len(invocations) != 0 {
+		t.Fatalf("command invocations = %#v, want no command execution", invocations)
 	}
 }
 

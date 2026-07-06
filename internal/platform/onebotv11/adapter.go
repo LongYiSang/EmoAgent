@@ -18,6 +18,7 @@ type Adapter struct {
 	handler   platform.InboundHandler
 	sink      *Sink
 	logger    *slog.Logger
+	media     InboundMediaStore
 }
 
 func NewAdapter(adapterID string, adapterConfig appconfig.PlatformAdapterConfig) (*Adapter, error) {
@@ -96,6 +97,19 @@ func (a *Adapter) HandleEvent(ctx context.Context, event Event) (platform.Handle
 	if a.logger != nil {
 		a.logger.Info("onebot inbound accepted", "id", a.id, "message_type", event.MessageType, "external_message_id", inbound.ExternalMessageID)
 	}
+	if a.cfg.Message.InboundMedia.Enabled {
+		parts, text, err := resolveInboundMedia(ctx, event.Message, a.cfg.Message, a.media)
+		if err != nil {
+			if notifyErr := a.notifyInboundMediaFailure(ctx, inbound, err); notifyErr != nil {
+				return platform.HandleResult{}, notifyErr
+			}
+			return platform.HandleResult{Ignored: true}, nil
+		}
+		if len(parts) > 0 {
+			inbound.Parts = parts
+			inbound.Text = text
+		}
+	}
 	return a.handler.HandleInbound(ctx, inbound, a.sink)
 }
 
@@ -122,6 +136,31 @@ func (a *Adapter) SetLogger(logger *slog.Logger) {
 	if a.sink != nil {
 		a.sink.SetLogger(logger)
 	}
+}
+
+func (a *Adapter) SetInboundMediaStore(store InboundMediaStore) {
+	if a == nil {
+		return
+	}
+	a.media = store
+}
+
+func (a *Adapter) notifyInboundMediaFailure(ctx context.Context, inbound platform.InboundMessage, err error) error {
+	if a == nil || a.sink == nil || a.cfg.Message.InboundMedia.OnFailure != InboundMediaFailureNotify {
+		return nil
+	}
+	origin, originErr := platform.OriginFromInbound(inbound, inbound.OriginScope)
+	if originErr != nil {
+		return originErr
+	}
+	return a.sink.Emit(ctx, platform.OutboundEvent{
+		Type:                     "error",
+		Origin:                   origin,
+		Content:                  "图片接收失败：" + strings.TrimSpace(err.Error()),
+		Status:                   "failed",
+		ErrorKind:                "media_input_failed",
+		ReplyToExternalMessageID: inbound.ExternalMessageID,
+	})
 }
 
 func (a *Adapter) Status() platform.AdapterStatus {
