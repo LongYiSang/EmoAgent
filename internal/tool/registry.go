@@ -32,6 +32,7 @@ func (r *Registry) Register(spec Spec, handler Handler) {
 	if _, exists := r.specs[spec.Name]; exists {
 		panic(fmt.Sprintf("tool %q already registered", spec.Name))
 	}
+	spec.RoutingClass = NormalizeRoutingClass(spec.RoutingClass)
 	r.specs[spec.Name] = spec
 	r.funcs[spec.Name] = handler
 }
@@ -57,6 +58,7 @@ func (r *Registry) TryRegister(spec Spec, handler Handler) error {
 	if _, exists := r.specs[spec.Name]; exists {
 		return fmt.Errorf("tool %q already registered", spec.Name)
 	}
+	spec.RoutingClass = NormalizeRoutingClass(spec.RoutingClass)
 	r.specs[spec.Name] = spec
 	r.funcs[spec.Name] = handler
 	return nil
@@ -79,6 +81,7 @@ func (r *Registry) Upsert(spec Spec, handler Handler) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	spec.RoutingClass = NormalizeRoutingClass(spec.RoutingClass)
 	r.specs[spec.Name] = spec
 	r.funcs[spec.Name] = handler
 	return nil

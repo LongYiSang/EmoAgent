@@ -114,16 +114,21 @@ func TestSDKExamplePluginInstallEnableHookToolProviderAudit(t *testing.T) {
 	}
 
 	var echoInvocation, providerInvocation InvocationPolicy
+	var echoRouting tool.RoutingClass
 	for _, processTool := range supervisor.Tools(result.PluginID) {
 		switch processTool.Name {
 		case "echo":
 			echoInvocation = processTool.InvocationPolicy
+			echoRouting = processTool.RoutingClass
 		case "provider_ping":
 			providerInvocation = processTool.InvocationPolicy
 		}
 	}
 	if echoInvocation != InvocationAuto {
 		t.Fatalf("echo invocation = %q, want %q", echoInvocation, InvocationAuto)
+	}
+	if echoRouting != tool.RoutingClassCasual {
+		t.Fatalf("echo routing = %q, want %q", echoRouting, tool.RoutingClassCasual)
 	}
 	if providerInvocation != InvocationAsk {
 		t.Fatalf("provider_ping invocation = %q, want %q", providerInvocation, InvocationAsk)

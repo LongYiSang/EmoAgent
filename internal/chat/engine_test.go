@@ -1770,7 +1770,7 @@ func TestEngineSendMessageEmitsAndPersistsContextStats(t *testing.T) {
 func TestEnginePromptRouterAlwaysCasualBuildsCasualPromptAndTools(t *testing.T) {
 	fakeLLM := &fakeLLMClient{response: &llm.ChatResponse{ID: "resp-casual", Content: "晚安", StopReason: "end_turn"}}
 	registry := tool.NewRegistry()
-	registerTestTool(t, registry, "web_search", tool.ScopeBoth)
+	registerTestTool(t, registry, "web_search", tool.ScopeBoth, tool.RoutingClassCasual)
 	registerTestTool(t, registry, work.ToolNameDelegateToWork, tool.ScopeEmotion)
 	registerTestTool(t, registry, work.ToolNameResumeWork, tool.ScopeEmotion)
 	registerTestTool(t, registry, work.ToolNameListPendingDecisions, tool.ScopeEmotion)
@@ -1807,15 +1807,18 @@ func TestEnginePromptRouterAlwaysCasualBuildsCasualPromptAndTools(t *testing.T) 
 	}
 }
 
-func TestEnginePromptRouterStickyKeepsWorkModeAndDecrements(t *testing.T) {
-	fakeLLM := &fakeLLMClient{response: &llm.ChatResponse{ID: "resp-work", Content: "继续", StopReason: "end_turn"}}
+func TestEnginePromptRouterStickyCallsLLMAndCanKeepWorkMode(t *testing.T) {
+	client := &promptRouterEngineClient{
+		routerContent: `{"mode":"work_mode","sticky_action":"reset"}`,
+		response:      &llm.ChatResponse{ID: "resp-work", Content: "继续", StopReason: "end_turn"},
+	}
 	registry := tool.NewRegistry()
-	registerTestTool(t, registry, "web_search", tool.ScopeBoth)
+	registerTestTool(t, registry, "web_search", tool.ScopeBoth, tool.RoutingClassCasual)
 	registerTestTool(t, registry, work.ToolNameDelegateToWork, tool.ScopeEmotion)
 	registerTestTool(t, registry, work.ToolNameResumeWork, tool.ScopeEmotion)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, logger)
-	engine, db, _ := newTestEngineWithPromptRouter(t, fakeLLM, registry, dispatcher, config.PromptRouterConfig{Mode: config.PromptRouterModeAuto, StickyTurns: 5})
+	engine, db, _ := newTestEngineWithPromptRouter(t, client, registry, dispatcher, config.PromptRouterConfig{Mode: config.PromptRouterModeAuto, StickyTurns: 5})
 
 	sessionID, err := engine.StartSession(context.Background(), "default")
 	if err != nil {
@@ -1834,19 +1837,22 @@ func TestEnginePromptRouterStickyKeepsWorkModeAndDecrements(t *testing.T) {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
-	if !strings.Contains(fakeLLM.lastRequest.System, "Emotion Work Delegation Contract") {
-		t.Fatalf("work system missing contract:\n%s", fakeLLM.lastRequest.System)
+	if len(client.routerRequests) != 1 {
+		t.Fatalf("router requests = %d, want sticky to call router", len(client.routerRequests))
 	}
-	names := toolDefNames(fakeLLM.lastRequest.Tools)
+	if !strings.Contains(client.lastRequest.System, "Emotion Work Delegation Contract") {
+		t.Fatalf("work system missing contract:\n%s", client.lastRequest.System)
+	}
+	names := toolDefNames(client.lastRequest.Tools)
 	if !names[work.ToolNameDelegateToWork] || !names[work.ToolNameResumeWork] {
-		t.Fatalf("work tools missing bridge tools: %#v", fakeLLM.lastRequest.Tools)
+		t.Fatalf("work tools missing bridge tools: %#v", client.lastRequest.Tools)
 	}
 	state, err := contextutil.LoadSessionState(context.Background(), db, sessionID, config.DefaultConfig().Context)
 	if err != nil {
 		t.Fatalf("LoadSessionState: %v", err)
 	}
-	if state.PromptRoute.LastMode != contextutil.PromptModeWorkMode || state.PromptRoute.WorkStickyRemaining != 1 {
-		t.Fatalf("PromptRoute = %#v, want work sticky 1", state.PromptRoute)
+	if state.PromptRoute.LastMode != contextutil.PromptModeWorkMode || state.PromptRoute.WorkStickyRemaining != 5 {
+		t.Fatalf("PromptRoute = %#v, want work sticky reset", state.PromptRoute)
 	}
 }
 
@@ -1856,7 +1862,7 @@ func TestEnginePromptRouterAutoLLMCasualBuildsCasualPromptAndTools(t *testing.T)
 		response:      &llm.ChatResponse{ID: "resp-casual", Content: "晚安", StopReason: "end_turn"},
 	}
 	registry := tool.NewRegistry()
-	registerTestTool(t, registry, "web_search", tool.ScopeBoth)
+	registerTestTool(t, registry, "web_search", tool.ScopeBoth, tool.RoutingClassCasual)
 	registerTestTool(t, registry, work.ToolNameDelegateToWork, tool.ScopeEmotion)
 	registerTestTool(t, registry, work.ToolNameResumeWork, tool.ScopeEmotion)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -1873,6 +1879,10 @@ func TestEnginePromptRouterAutoLLMCasualBuildsCasualPromptAndTools(t *testing.T)
 
 	if len(client.routerRequests) != 1 {
 		t.Fatalf("router requests = %d, want 1", len(client.routerRequests))
+	}
+	if !strings.Contains(client.routerRequests[0].Messages[0].Content, "casual_tools") ||
+		!strings.Contains(client.routerRequests[0].Messages[0].Content, "web_search") {
+		t.Fatalf("router payload missing casual tools: %q", client.routerRequests[0].Messages[0].Content)
 	}
 	if strings.Contains(client.lastRequest.System, "Emotion Work Delegation Contract") {
 		t.Fatalf("casual system contains work contract:\n%s", client.lastRequest.System)
@@ -1896,7 +1906,7 @@ func TestEnginePromptRouterAutoLLMWorkBuildsWorkPromptAndResetsSticky(t *testing
 		response:      &llm.ChatResponse{ID: "resp-work", Content: "继续", StopReason: "end_turn"},
 	}
 	registry := tool.NewRegistry()
-	registerTestTool(t, registry, "web_search", tool.ScopeBoth)
+	registerTestTool(t, registry, "web_search", tool.ScopeBoth, tool.RoutingClassCasual)
 	registerTestTool(t, registry, work.ToolNameDelegateToWork, tool.ScopeEmotion)
 	registerTestTool(t, registry, work.ToolNameResumeWork, tool.ScopeEmotion)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -2021,7 +2031,7 @@ func TestEnginePromptRouterStickyOneCallsLLMAndCanClearWorkMode(t *testing.T) {
 		response:      &llm.ChatResponse{ID: "resp-casual", Content: "好", StopReason: "end_turn"},
 	}
 	registry := tool.NewRegistry()
-	registerTestTool(t, registry, "web_search", tool.ScopeBoth)
+	registerTestTool(t, registry, "web_search", tool.ScopeBoth, tool.RoutingClassCasual)
 	registerTestTool(t, registry, work.ToolNameDelegateToWork, tool.ScopeEmotion)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	dispatcher := tool.NewDispatcher(registry, tool.MinimalSchemaValidator{}, logger)

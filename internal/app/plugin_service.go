@@ -1804,7 +1804,7 @@ func (s *PluginService) summaryForInstallationWithGrant(ctx context.Context, ins
 	trustReview = s.issuePluginTrustReviewAcknowledgement(trustReview)
 	trustAcceptance := pluginTrustAcceptanceFromState(state, enabled)
 	hostAPIPolicy := s.pluginHostAPIPolicySummary(installation, manifest, state)
-	toolPolicy := s.pluginToolPolicySummary(installation, status, enabled)
+	toolPolicy := s.pluginToolPolicySummary(installation, manifest, status, enabled)
 	hookPolicy := s.pluginHookPolicySummary(manifest)
 	dependencySummary := s.pluginDependencyLockSummary(manifest)
 	var settingsSchema *plugin.PluginSettingsSchema
@@ -1916,7 +1916,7 @@ func (s *PluginService) pluginHostAPIPolicySummary(installation storage.PluginIn
 	return summary
 }
 
-func (s *PluginService) pluginToolPolicySummary(installation storage.PluginInstallation, status plugin.RuntimeStatus, enabled bool) plugin.PluginToolPolicySummary {
+func (s *PluginService) pluginToolPolicySummary(installation storage.PluginInstallation, manifest plugin.ManifestV2, status plugin.RuntimeStatus, enabled bool) plugin.PluginToolPolicySummary {
 	summary := plugin.PluginToolPolicySummary{
 		DefaultExposure:   plugin.ExposureWork,
 		DefaultInvocation: plugin.InvocationAsk,
@@ -1936,6 +1936,7 @@ func (s *PluginService) pluginToolPolicySummary(installation storage.PluginInsta
 			Name:                   processTool.Name,
 			HostExposure:           plugin.ExposureWork,
 			HostInvocation:         invocation,
+			RoutingClass:           string(processTool.EffectiveRoutingClass(manifest.ToolDefaults.RoutingClass)),
 			SelfReportedScope:      string(processTool.Scope),
 			SelfReportedPermission: string(processTool.Permission),
 		})

@@ -24,7 +24,7 @@ Choose exactly one mode:
 casual_chat:
 - normal chat, emotional support, small talk, venting, companionship
 - simple advice or simple factual Q&A
-- may use ordinary lightweight tools such as web_search
+- may use ordinary lightweight tools listed in casual_tools, such as web_search or read-only plugin lookups
 - does not need Work prompt/tooling
 
 work_mode:
@@ -37,6 +37,8 @@ Rules:
 - Do not choose tools.
 - Do not solve the user request.
 - Only decide whether to inject Work prompt/tooling.
+- The sticky field is context, not a hard lock.
+- If the latest user message starts a separate request that can be handled by casual_tools, choose casual_chat.
 - If the recent conversation is still about an ongoing Work task, choose work_mode.
 - If no Work prompt/tooling is needed, choose casual_chat.
 
@@ -57,8 +59,14 @@ type PromptRouteRequest struct {
 	LastMode            contextutil.PromptMode
 	Sticky              contextutil.PromptRouteState
 	CurrentConversation string
+	CasualTools         []PromptRouteToolHint
 	PendingWorkCount    int
 	InboundKind         turn.InboundKind
+}
+
+type PromptRouteToolHint struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
 }
 
 type PromptRouteDecision struct {
@@ -87,9 +95,6 @@ func decidePromptMode(ctx context.Context, req PromptRouteRequest, cfg config.Pr
 	if req.PendingWorkCount > 0 {
 		return PromptRouteDecision{Mode: contextutil.PromptModeWorkMode, StickyAction: promptRouteStickyReset}
 	}
-	if req.Sticky.WorkStickyRemaining > 1 {
-		return PromptRouteDecision{Mode: contextutil.PromptModeWorkMode, StickyAction: promptRouteStickyDecrement}
-	}
 
 	mode, err := callPromptRouterLLM(ctx, req, cfg, client, model, params)
 	if err != nil {
@@ -116,6 +121,7 @@ func callPromptRouterLLM(ctx context.Context, req PromptRouteRequest, cfg config
 		LastMode            contextutil.PromptMode `json:"last_mode,omitempty"`
 		Sticky              routerStickyEnvelope   `json:"sticky"`
 		CurrentConversation string                 `json:"current_conversation,omitempty"`
+		CasualTools         []PromptRouteToolHint  `json:"casual_tools,omitempty"`
 	}{
 		LatestUserMessage: req.LatestUserMessage,
 		LastMode:          contextutil.NormalizePromptModeOrEmpty(req.LastMode),
@@ -125,6 +131,7 @@ func callPromptRouterLLM(ctx context.Context, req PromptRouteRequest, cfg config
 			DefaultTurns: cfg.StickyTurns,
 		},
 		CurrentConversation: req.CurrentConversation,
+		CasualTools:         append([]PromptRouteToolHint(nil), req.CasualTools...),
 	})
 	if err != nil {
 		return "", fmt.Errorf("marshal prompt router payload: %w", err)

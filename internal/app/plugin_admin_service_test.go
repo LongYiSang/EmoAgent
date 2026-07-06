@@ -2049,6 +2049,7 @@ func TestPluginServiceToolPolicySummaryUsesProcessInvocationPolicy(t *testing.T)
 	ctx := context.Background()
 	sourceDir := writeAdminProcessPluginVersion(t, dir, "0.1.0", "echo_auto", "v1", "fail_closed")
 	patchAdminProcessPluginToolInvocation(t, sourceDir, plugin.InvocationAuto)
+	patchAdminProcessPluginToolRoutingClass(t, sourceDir, tool.RoutingClassCasual)
 
 	installed, err := service.InstallLocal(ctx, plugin.AdminPluginInstallRequest{Path: sourceDir})
 	if err != nil {
@@ -2065,8 +2066,8 @@ func TestPluginServiceToolPolicySummaryUsesProcessInvocationPolicy(t *testing.T)
 		t.Fatalf("registered tools = %#v, want one process tool", enabled.ToolPolicy.RegisteredTools)
 	}
 	entry := enabled.ToolPolicy.RegisteredTools[0]
-	if entry.Name != "echo_auto" || entry.HostInvocation != plugin.InvocationAuto {
-		t.Fatalf("tool policy entry = %#v, want echo_auto with auto invocation", entry)
+	if entry.Name != "echo_auto" || entry.HostInvocation != plugin.InvocationAuto || entry.RoutingClass != string(tool.RoutingClassCasual) {
+		t.Fatalf("tool policy entry = %#v, want echo_auto with auto invocation and casual routing", entry)
 	}
 }
 
@@ -3066,6 +3067,21 @@ func patchAdminProcessPluginToolInvocation(t *testing.T, dir string, invocation 
 	raw := string(readFileBytes(t, path))
 	needle := `            "permission": "read-only"`
 	replacement := needle + `,` + "\n" + `            "invocation": "` + string(invocation) + `"`
+	updated := strings.Replace(raw, needle, replacement, 1)
+	if updated == raw {
+		t.Fatalf("main.py fixture did not contain process tool permission marker")
+	}
+	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+		t.Fatalf("write patched main.py: %v", err)
+	}
+}
+
+func patchAdminProcessPluginToolRoutingClass(t *testing.T, dir string, routingClass tool.RoutingClass) {
+	t.Helper()
+	path := filepath.Join(dir, "main.py")
+	raw := string(readFileBytes(t, path))
+	needle := `            "permission": "read-only"`
+	replacement := needle + `,` + "\n" + `            "routing_class": "` + string(routingClass) + `"`
 	updated := strings.Replace(raw, needle, replacement, 1)
 	if updated == raw {
 		t.Fatalf("main.py fixture did not contain process tool permission marker")

@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/longyisang/emoagent/internal/tool"
 	"gopkg.in/yaml.v3"
 )
 
@@ -22,18 +23,23 @@ const (
 )
 
 type ManifestV2 struct {
-	SchemaVersion   string              `json:"schema_version" yaml:"schema_version"`
-	ID              string              `json:"id" yaml:"id"`
-	Name            string              `json:"name" yaml:"name"`
-	Version         string              `json:"version" yaml:"version"`
-	EmoAgentVersion string              `json:"emoagent_version" yaml:"emoagent_version"`
-	Runtime         ManifestV2Runtime   `json:"runtime" yaml:"runtime"`
-	Access          ManifestV2Access    `json:"access" yaml:"access"`
-	Hooks           []HookSpec          `json:"hooks" yaml:"hooks"`
-	Provider        ManifestV2Provider  `json:"provider,omitempty" yaml:"provider"`
-	Container       ManifestV2Container `json:"container,omitempty" yaml:"container"`
-	Settings        *ManifestV2Settings `json:"settings,omitempty" yaml:"settings"`
-	Commands        []ManifestV2Command `json:"commands,omitempty" yaml:"commands"`
+	SchemaVersion   string                 `json:"schema_version" yaml:"schema_version"`
+	ID              string                 `json:"id" yaml:"id"`
+	Name            string                 `json:"name" yaml:"name"`
+	Version         string                 `json:"version" yaml:"version"`
+	EmoAgentVersion string                 `json:"emoagent_version" yaml:"emoagent_version"`
+	Runtime         ManifestV2Runtime      `json:"runtime" yaml:"runtime"`
+	Access          ManifestV2Access       `json:"access" yaml:"access"`
+	Hooks           []HookSpec             `json:"hooks" yaml:"hooks"`
+	Provider        ManifestV2Provider     `json:"provider,omitempty" yaml:"provider"`
+	Container       ManifestV2Container    `json:"container,omitempty" yaml:"container"`
+	Settings        *ManifestV2Settings    `json:"settings,omitempty" yaml:"settings"`
+	Commands        []ManifestV2Command    `json:"commands,omitempty" yaml:"commands"`
+	ToolDefaults    ManifestV2ToolDefaults `json:"tool_defaults,omitempty" yaml:"tool_defaults"`
+}
+
+type ManifestV2ToolDefaults struct {
+	RoutingClass tool.RoutingClass `json:"routing_class,omitempty" yaml:"routing_class"`
 }
 
 type ManifestV2Command struct {
@@ -150,6 +156,9 @@ func (m ManifestV2) Validate(options ManifestValidationOptions) error {
 		if err := m.Settings.Validate(); err != nil {
 			return err
 		}
+	}
+	if m.ToolDefaults.RoutingClass != "" && !tool.KnownRoutingClass(m.ToolDefaults.RoutingClass) {
+		return fmt.Errorf("tool_defaults.routing_class must be work or casual")
 	}
 	if err := m.validateCommands(options); err != nil {
 		return err

@@ -194,6 +194,7 @@ type ProcessToolSpec struct {
 	Parameters       json.RawMessage        `json:"parameters"`
 	Scope            tool.Scope             `json:"scope"`
 	Permission       tool.Permission        `json:"permission"`
+	RoutingClass     tool.RoutingClass      `json:"routing_class,omitempty"`
 	InvocationPolicy InvocationPolicy       `json:"invocation,omitempty"`
 	Trust            resultv2.ContentLabels `json:"trust,omitempty"`
 }

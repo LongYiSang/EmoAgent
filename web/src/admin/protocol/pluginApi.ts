@@ -75,6 +75,7 @@ export type PluginToolPolicyEntry = {
   name?: string;
   host_exposure?: string;
   host_invocation?: string;
+  routing_class?: string;
   self_reported_scope?: string;
   self_reported_permission?: string;
 };

@@ -847,11 +847,16 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	if inboundKind == "" && (opts.persistUser || opts.userContent != "" || len(opts.userParts) > 0) {
 		inboundKind = turn.InboundUserMessage
 	}
+	var casualToolHints []PromptRouteToolHint
+	if !opts.disableTools && registry != nil && dispatcher != nil {
+		casualToolHints = promptRouteCasualToolHints(registry)
+	}
 	routeDecision := decidePromptMode(ctx, PromptRouteRequest{
 		LatestUserMessage:   firstNonEmptyString(memoryAnchor.userHistoryContent, opts.userContent),
 		LastMode:            state.PromptRoute.LastMode,
 		Sticky:              state.PromptRoute,
 		CurrentConversation: buildPromptRouterConversationDigest(historyForLLM, state, promptRouterCfg),
+		CasualTools:         casualToolHints,
 		PendingWorkCount:    len(pendingDecisions),
 		InboundKind:         inboundKind,
 	}, promptRouterCfg, summaryClient, summaryRequestModel, summaryParams, e.logger)

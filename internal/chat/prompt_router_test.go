@@ -35,10 +35,6 @@ func TestDecidePromptModeOverridesAndStateShortCircuitLLM(t *testing.T) {
 		t.Fatalf("approval decision = %#v", approval)
 	}
 
-	sticky := decidePromptMode(context.Background(), PromptRouteRequest{Sticky: contextutil.PromptRouteState{WorkStickyRemaining: 2}}, config.PromptRouterConfig{Mode: config.PromptRouterModeAuto}, client, "router-model", llm.RequestParams{}, nil)
-	if sticky.Mode != contextutil.PromptModeWorkMode || sticky.StickyAction != promptRouteStickyDecrement || sticky.CallLLM {
-		t.Fatalf("sticky decision = %#v", sticky)
-	}
 	if client.calls != 0 {
 		t.Fatalf("router calls = %d, want 0 for short-circuits", client.calls)
 	}
@@ -71,6 +67,34 @@ func TestDecidePromptModeCallsLLMForAutoMode(t *testing.T) {
 	}
 	if !strings.Contains(client.lastRequest.System, "prompt injection router") || !strings.Contains(client.lastRequest.Messages[0].Content, "latest_user_message") {
 		t.Fatalf("router request missing prompt/envelope: %#v", client.lastRequest)
+	}
+}
+
+func TestDecidePromptModeAllowsCasualToolToClearStickyWork(t *testing.T) {
+	client := &promptRouterTestClient{content: `{"mode":"casual_chat","sticky_action":"clear"}`}
+
+	decision := decidePromptMode(context.Background(), PromptRouteRequest{
+		LatestUserMessage: "看看未来几天天气",
+		LastMode:          contextutil.PromptModeWorkMode,
+		Sticky:            contextutil.PromptRouteState{WorkStickyRemaining: 3},
+		CasualTools: []PromptRouteToolHint{{
+			Name:        "plugin_com_example_weather_weather",
+			Description: "查询天气",
+		}},
+	}, config.PromptRouterConfig{Mode: config.PromptRouterModeAuto}, client, "router-model", llm.RequestParams{}, nil)
+
+	if decision.Mode != contextutil.PromptModeCasualChat || decision.StickyAction != promptRouteStickyClear || !decision.CallLLM {
+		t.Fatalf("decision = %#v, want casual clear through router", decision)
+	}
+	if client.calls != 1 {
+		t.Fatalf("router calls = %d, want sticky to call router", client.calls)
+	}
+	if !strings.Contains(client.lastRequest.System, "casual_tools") {
+		t.Fatalf("router system prompt missing casual tool guidance: %q", client.lastRequest.System)
+	}
+	if !strings.Contains(client.lastRequest.Messages[0].Content, "casual_tools") ||
+		!strings.Contains(client.lastRequest.Messages[0].Content, "plugin_com_example_weather_weather") {
+		t.Fatalf("router payload missing casual tools: %q", client.lastRequest.Messages[0].Content)
 	}
 }
 

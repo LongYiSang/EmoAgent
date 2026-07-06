@@ -360,6 +360,65 @@ func TestPlatformGatewayNormalTextEmitsFinalMessage(t *testing.T) {
 	requirePlatformReceiptResult(t, db, "napcat", "main", "msg-text", "handled", "message")
 }
 
+func TestPlatformGatewayNormalTextEmitsReplyDeliverySegments(t *testing.T) {
+	ctx := context.Background()
+	app, db, gateway, activeLLM := newTestPlatformGateway(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl-segmented","model":"bound-model","choices":[{"delta":{"content":"第一句。第二句。"}}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl-segmented","model":"bound-model","choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\n"))
+	}))
+	t.Cleanup(server.Close)
+	cfg := testConfig(app)
+	cfg.Chat.TurnPipeline.Enabled = true
+	cfg.Chat.TurnPipeline.MemoryStages = true
+	cfg.Chat.PromptRouter.Mode = config.PromptRouterModeAlwaysCasual
+	cfg.Chat.ReplyDelivery.Enabled = true
+	cfg.Chat.ReplyDelivery.Timing.Enabled = false
+	cfg.AgentConfigs = []config.AgentConfig{{ID: "default-agent", PersonaKey: "default"}}
+	upsertPlatformGatewayAgent(t, app, "default-agent", "default", server.URL)
+	sink := &platform.BufferedPlatformSink{}
+
+	result, err := gateway.HandleInbound(ctx, platform.InboundMessage{
+		ExternalMessageID:      "msg-text-segmented",
+		SourceType:             "napcat",
+		AdapterInstanceID:      "main",
+		PlatformID:             "qq",
+		ChannelType:            "private",
+		ExternalConversationID: "10001",
+		ExternalActorID:        "10001",
+		PersonaKey:             "default",
+		Text:                   "hello",
+		Actor:                  platform.Actor{ID: "10001", Role: platform.ActorRoleMember},
+	}, sink)
+	if err != nil {
+		t.Fatalf("HandleInbound: %v", err)
+	}
+	if !result.Handled || result.Duplicate || result.SessionID == "" {
+		t.Fatalf("result = %#v, want handled text", result)
+	}
+	if activeLLM.calls != 0 {
+		t.Fatalf("active LLM calls = %d, want platform fallback agent only", activeLLM.calls)
+	}
+	if len(sink.Events) != 2 {
+		t.Fatalf("sink events = %#v, want two segmented messages", sink.Events)
+	}
+	if sink.Events[0].Type != "message" || sink.Events[0].Content != "第一句。" {
+		t.Fatalf("first sink event = %#v, want first segment", sink.Events[0])
+	}
+	if sink.Events[1].Type != "message" || sink.Events[1].Content != "第二句。" {
+		t.Fatalf("second sink event = %#v, want second segment", sink.Events[1])
+	}
+	messages, err := db.GetAllMessages(ctx, result.SessionID)
+	if err != nil {
+		t.Fatalf("GetAllMessages: %v", err)
+	}
+	if len(messages) != 2 || messages[1].Content != "第一句。第二句。" {
+		t.Fatalf("messages = %#v, want one persisted assistant reply", messages)
+	}
+	requirePlatformReceiptResult(t, db, "napcat", "main", "msg-text-segmented", "handled", "message")
+}
+
 func TestPlatformGatewayTextRequiresTurnPipeline(t *testing.T) {
 	ctx := context.Background()
 	app, db, gateway, activeLLM := newTestPlatformGateway(t)

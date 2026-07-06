@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/tool/resultv2"
@@ -26,6 +27,31 @@ const (
 	PermWorkspaceWrite      Permission = "workspace-write"
 	PermApprovedDestructive Permission = "approved-destructive"
 )
+
+type RoutingClass string
+
+const (
+	RoutingClassWork   RoutingClass = "work"
+	RoutingClassCasual RoutingClass = "casual"
+)
+
+func NormalizeRoutingClass(value RoutingClass) RoutingClass {
+	switch RoutingClass(strings.ToLower(strings.TrimSpace(string(value)))) {
+	case RoutingClassCasual:
+		return RoutingClassCasual
+	default:
+		return RoutingClassWork
+	}
+}
+
+func KnownRoutingClass(value RoutingClass) bool {
+	switch RoutingClass(strings.ToLower(strings.TrimSpace(string(value)))) {
+	case RoutingClassWork, RoutingClassCasual:
+		return true
+	default:
+		return false
+	}
+}
 
 // permissionLevel returns a numeric level for permission comparison.
 func permissionLevel(p Permission) int {
@@ -90,6 +116,7 @@ type Spec struct {
 	Parameters            json.RawMessage       `json:"parameters"` // JSON Schema
 	Scope                 Scope                 `json:"scope"`
 	Permission            Permission            `json:"permission"`
+	RoutingClass          RoutingClass          `json:"routing_class,omitempty"`
 	Source                ToolSourceMetadata    `json:"source,omitempty"`
 	DestructiveClassifier DestructiveClassifier `json:"-"`
 	ApprovalClassifier    ApprovalClassifier    `json:"-"`

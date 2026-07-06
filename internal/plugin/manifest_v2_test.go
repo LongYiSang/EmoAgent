@@ -3,6 +3,8 @@ package plugin
 import (
 	"strings"
 	"testing"
+
+	"github.com/longyisang/emoagent/internal/tool"
 )
 
 func TestDecodeManifestV2YAMLValidPythonProcess(t *testing.T) {
@@ -147,6 +149,59 @@ hooks: []
 	}
 	if !manifest.Settings.Schema.Properties["api_key"].Secret {
 		t.Fatalf("api_key secret = false, want true")
+	}
+}
+
+func TestDecodeManifestV2YAMLToolDefaultsRoutingClass(t *testing.T) {
+	data := []byte(`
+schema_version: emoagent.plugin.v0.2
+id: com.example.weather
+name: Weather Plugin
+version: 0.1.0
+emoagent_version: ">=0.2.0"
+runtime:
+  kind: managed_python_process
+  entry: main.py
+access:
+  tier: runtime_safe
+  capabilities:
+    - tool.register
+tool_defaults:
+  routing_class: casual
+hooks: []
+`)
+
+	manifest, err := DecodeManifestV2YAML(data, ManifestValidationOptions{MaxTimeoutMS: 1000})
+	if err != nil {
+		t.Fatalf("DecodeManifestV2YAML: %v", err)
+	}
+	if manifest.ToolDefaults.RoutingClass != tool.RoutingClassCasual {
+		t.Fatalf("routing_class = %q, want casual", manifest.ToolDefaults.RoutingClass)
+	}
+}
+
+func TestDecodeManifestV2YAMLRejectsInvalidToolDefaultsRoutingClass(t *testing.T) {
+	data := []byte(`
+schema_version: emoagent.plugin.v0.2
+id: com.example.weather
+name: Weather Plugin
+version: 0.1.0
+emoagent_version: ">=0.2.0"
+runtime:
+  kind: managed_python_process
+  entry: main.py
+access:
+  tier: runtime_safe
+  capabilities:
+    - tool.register
+tool_defaults:
+  routing_class: complex
+hooks: []
+`)
+
+	_, err := DecodeManifestV2YAML(data, ManifestValidationOptions{MaxTimeoutMS: 1000})
+	if err == nil || !strings.Contains(err.Error(), "tool_defaults.routing_class") {
+		t.Fatalf("DecodeManifestV2YAML error = %v, want routing_class validation", err)
 	}
 }
 

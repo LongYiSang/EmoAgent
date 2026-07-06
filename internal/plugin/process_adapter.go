@@ -59,6 +59,9 @@ func RegisterProcessPluginWithPolicy(ctx context.Context, manifest ManifestV2, p
 		if normalizePluginInvocationPolicy(processTool.InvocationPolicy) == InvocationDeny {
 			continue
 		}
+		if processTool.RoutingClass == "" {
+			processTool.RoutingClass = manifest.ToolDefaults.RoutingClass
+		}
 		spec := processTool.ToToolSpec(manifest.ID, manifest.Version, manifest.Runtime.Kind)
 		name := processTool.Name
 		if err := registrar.Tools.Register(ctx, spec, func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
@@ -93,6 +96,7 @@ func (s ProcessToolSpec) ToToolSpec(pluginID, version string, runtimeKind Runtim
 	sourceRuntime, executor := processToolSourceRuntime(runtimeKind)
 	permission := processToolPermission(s.Permission)
 	scope := processToolScope(s.Scope, permission)
+	routingClass := s.EffectiveRoutingClass("")
 	approvalClassifier := pluginInvocationApprovalClassifier(pluginID, s.Name, s.InvocationPolicy)
 	return tool.Spec{
 		Name:               s.Name,
@@ -100,6 +104,7 @@ func (s ProcessToolSpec) ToToolSpec(pluginID, version string, runtimeKind Runtim
 		Parameters:         append(json.RawMessage(nil), s.Parameters...),
 		Scope:              scope,
 		Permission:         permission,
+		RoutingClass:       routingClass,
 		ApprovalClassifier: approvalClassifier,
 		Source: tool.ToolSourceMetadata{
 			Kind:            tool.ToolSourcePlugin,
@@ -114,6 +119,16 @@ func (s ProcessToolSpec) ToToolSpec(pluginID, version string, runtimeKind Runtim
 			},
 		},
 	}
+}
+
+func (s ProcessToolSpec) EffectiveRoutingClass(defaultRoutingClass tool.RoutingClass) tool.RoutingClass {
+	permission := processToolPermission(s.Permission)
+	scope := processToolScope(s.Scope, permission)
+	routingClass := s.RoutingClass
+	if routingClass == "" {
+		routingClass = defaultRoutingClass
+	}
+	return processToolRoutingClass(routingClass, scope, permission)
 }
 
 func processToolScope(scope tool.Scope, permission tool.Permission) tool.Scope {
@@ -135,6 +150,19 @@ func processToolPermission(permission tool.Permission) tool.Permission {
 	default:
 		return tool.PermReadOnly
 	}
+}
+
+func processToolRoutingClass(routingClass tool.RoutingClass, scope tool.Scope, permission tool.Permission) tool.RoutingClass {
+	if permission != tool.PermReadOnly {
+		return tool.RoutingClassWork
+	}
+	if scope != tool.ScopeEmotion && scope != tool.ScopeBoth {
+		return tool.RoutingClassWork
+	}
+	if tool.NormalizeRoutingClass(routingClass) == tool.RoutingClassCasual {
+		return tool.RoutingClassCasual
+	}
+	return tool.RoutingClassWork
 }
 
 func pluginInvocationApprovalClassifier(pluginID, toolName string, policy InvocationPolicy) tool.ApprovalClassifier {

@@ -131,13 +131,20 @@ func (g *PlatformGateway) HandleInbound(ctx context.Context, in platform.Inbound
 		_ = emitPlatformError(ctx, sink, origin, binding.SessionID, personaKey, in.ExternalMessageID, err)
 		return platform.HandleResult{}, err
 	}
-	if strings.TrimSpace(turnResult.Text) != "" {
+	outbound := turnResult.Segments
+	if len(outbound) == 0 && strings.TrimSpace(turnResult.Text) != "" {
+		outbound = []string{turnResult.Text}
+	}
+	for _, content := range outbound {
+		if strings.TrimSpace(content) == "" {
+			continue
+		}
 		if err := sink.Emit(ctx, platform.OutboundEvent{
 			Type:                     "message",
 			Origin:                   origin,
 			SessionID:                binding.SessionID,
 			PersonaKey:               personaKey,
-			Content:                  turnResult.Text,
+			Content:                  content,
 			ReplyToExternalMessageID: in.ExternalMessageID,
 		}); err != nil {
 			g.failReceipt(ctx, receipt.ID, binding.SessionID, err)

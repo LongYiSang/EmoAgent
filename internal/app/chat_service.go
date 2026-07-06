@@ -52,6 +52,7 @@ func (s *ChatService) BuildEngine(dispatcher *tool.Dispatcher) *chat.Engine {
 
 type PlatformTurnResult struct {
 	Text       string
+	Segments   []string
 	ResultType string
 }
 
@@ -73,11 +74,14 @@ func (s *ChatService) SendPlatformTurn(ctx context.Context, runtime *ActiveAgent
 	if engine == nil {
 		return PlatformTurnResult{}, fmt.Errorf("chat engine is not configured")
 	}
+	replyDelivery := cfg.Chat.ReplyDelivery
+	replyDelivery.Timing.Enabled = false
+	engine.UpdateReplyDeliveryConfig(replyDelivery)
 	env := platformTurnEnvelope(in, sessionID, runtime.PersonaKey)
-	sink := &finalTextTurnSink{}
+	sink := &platformTurnSink{}
 	runCtx := workctx.WithAgentID(ctx, runtime.ID)
 	result, err := s.turnRunnerForEngine(engine).Execute(runCtx, env, persona, sink)
-	out := PlatformTurnResult{Text: sink.Text()}
+	out := PlatformTurnResult{Text: sink.Text(), Segments: sink.Segments()}
 	switch {
 	case result.Status == "approval_wait":
 		out.ResultType = "approval_wait"
@@ -256,22 +260,36 @@ func (s *ChatService) turnRunnerForEngine(engine *chat.Engine) *chat.TurnRunner 
 	return chat.NewTurnRunnerWithStores(engine, cfg.Chat.TurnPipeline, s.EnsureTurnStores(), logger, host)
 }
 
-type finalTextTurnSink struct {
-	text strings.Builder
+type platformTurnSink struct {
+	text     strings.Builder
+	segments []string
 }
 
-func (s *finalTextTurnSink) Emit(_ context.Context, event turn.OutboundEvent) error {
-	if event.Type == turn.EventStreamDelta || event.Type == turn.EventAssistantSegment {
+func (s *platformTurnSink) Emit(_ context.Context, event turn.OutboundEvent) error {
+	switch event.Type {
+	case turn.EventStreamDelta:
 		s.text.WriteString(event.Content)
+	case turn.EventAssistantSegment:
+		s.text.WriteString(event.Content)
+		if strings.TrimSpace(event.Content) != "" {
+			s.segments = append(s.segments, event.Content)
+		}
 	}
 	return nil
 }
 
-func (s *finalTextTurnSink) Text() string {
+func (s *platformTurnSink) Text() string {
 	if s == nil {
 		return ""
 	}
 	return s.text.String()
+}
+
+func (s *platformTurnSink) Segments() []string {
+	if s == nil || len(s.segments) == 0 {
+		return nil
+	}
+	return append([]string(nil), s.segments...)
 }
 
 func platformTurnEnvelope(in platform.InboundMessage, sessionID string, personaKey string) turn.InboundEnvelope {

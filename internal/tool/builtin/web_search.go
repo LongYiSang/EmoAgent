@@ -13,12 +13,13 @@ import (
 
 // WebSearchSpec defines the tool specification for web_search.
 var WebSearchSpec = tool.Spec{
-	Name:        "web_search",
-	Description: "Search the web for current or external facts. Returns curated, ranked source URLs with title, URL, snippet, score, evidence, reasons, needs_fetch/fetch_hint, warnings, and usage. Use web_fetch only for a specific top 1-2 result URL when needs_fetch is true or you need full tables, code blocks, or exact source wording beyond returned evidence.",
-	Parameters:  json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer"},"profile":{"type":"string"},"include_domains":{"type":"array","items":{"type":"string"}},"exclude_domains":{"type":"array","items":{"type":"string"}},"time_range":{"type":"string"},"start_date":{"type":"string"},"end_date":{"type":"string"},"exact_match":{"type":"boolean"}},"required":["query"],"additionalProperties":false}`),
-	Scope:       tool.ScopeBoth,
-	Permission:  tool.PermReadOnly,
-	Source:      externalWebSource(),
+	Name:         "web_search",
+	Description:  "Search the web for current or external facts. Returns curated, ranked source URLs with title, URL, snippet, score, evidence, reasons, needs_fetch/fetch_hint, warnings, and usage. Use web_fetch only for a specific top 1-2 result URL when needs_fetch is true or you need full tables, code blocks, or exact source wording beyond returned evidence.",
+	Parameters:   json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer"},"profile":{"type":"string"},"include_domains":{"type":"array","items":{"type":"string"}},"exclude_domains":{"type":"array","items":{"type":"string"}},"time_range":{"type":"string"},"start_date":{"type":"string"},"end_date":{"type":"string"},"exact_match":{"type":"boolean"}},"required":["query"],"additionalProperties":false}`),
+	Scope:        tool.ScopeBoth,
+	Permission:   tool.PermReadOnly,
+	RoutingClass: tool.RoutingClassCasual,
+	Source:       externalWebSource(),
 }
 
 // webSearchMaxResultsHardCap is the maximum number of results the handler will request.

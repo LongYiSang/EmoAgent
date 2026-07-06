@@ -11,6 +11,7 @@ from .types import AttrView
 HookHandler = Callable[["Context"], Any | Awaitable[Any]]
 ToolHandler = Callable[..., Any | Awaitable[Any]]
 _INVOCATION_POLICIES = {"auto", "ask", "deny"}
+_ROUTING_CLASSES = {"work", "casual"}
 
 _default_plugin: "Plugin | None" = None
 
@@ -75,18 +76,23 @@ class Plugin:
         scope: str = "both",
         permission: str = "read-only",
         invocation_policy: str = "ask",
+        routing_class: str | None = None,
     ) -> Callable[[ToolHandler], ToolHandler]:
         invocation_policy = _normalize_invocation_policy(invocation_policy)
+        routing_class = _normalize_routing_class(routing_class)
 
         def decorator(func: ToolHandler) -> ToolHandler:
-            self._tools[name] = ({
+            spec = {
                 "name": name,
                 "description": description,
                 "parameters": parameters or {"type": "object"},
                 "scope": scope,
                 "permission": permission,
                 "invocation": invocation_policy,
-            }, func)
+            }
+            if routing_class is not None:
+                spec["routing_class"] = routing_class
+            self._tools[name] = (spec, func)
             return func
         return decorator
 
@@ -149,6 +155,7 @@ def tool(
     scope: str = "both",
     permission: str = "read-only",
     invocation_policy: str = "ask",
+    routing_class: str | None = None,
 ) -> Callable[[ToolHandler], ToolHandler]:
     if _default_plugin is None:
         Plugin()
@@ -159,6 +166,7 @@ def tool(
         scope=scope,
         permission=permission,
         invocation_policy=invocation_policy,
+        routing_class=routing_class,
     )  # type: ignore[union-attr]
 
 
@@ -167,6 +175,17 @@ def _normalize_invocation_policy(value: str) -> str:
     if policy not in _INVOCATION_POLICIES:
         raise ValueError(f"invalid invocation_policy {value!r}: expected auto, ask, or deny")
     return policy
+
+
+def _normalize_routing_class(value: str | None) -> str | None:
+    if value is None:
+        return None
+    routing_class = str(value).strip().lower()
+    if routing_class == "":
+        return None
+    if routing_class not in _ROUTING_CLASSES:
+        raise ValueError(f"invalid routing_class {value!r}: expected work or casual")
+    return routing_class
 
 
 def _run(value: Any) -> Any:

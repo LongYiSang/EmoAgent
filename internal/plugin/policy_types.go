@@ -99,6 +99,7 @@ type PluginToolPolicyEntry struct {
 	Name                   string           `json:"name"`
 	HostExposure           ToolExposure     `json:"host_exposure"`
 	HostInvocation         InvocationPolicy `json:"host_invocation"`
+	RoutingClass           string           `json:"routing_class,omitempty"`
 	SelfReportedScope      string           `json:"self_reported_scope,omitempty"`
 	SelfReportedPermission string           `json:"self_reported_permission,omitempty"`
 }

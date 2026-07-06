@@ -215,6 +215,9 @@ func TestProcessToolSpecDefaults(t *testing.T) {
 	if spec.Scope != tool.ScopeWork || spec.Permission != tool.PermReadOnly {
 		t.Fatalf("spec defaults = %#v", spec)
 	}
+	if spec.RoutingClass != tool.RoutingClassWork {
+		t.Fatalf("routing class = %q, want work", spec.RoutingClass)
+	}
 	if spec.ApprovalClassifier == nil {
 		t.Fatal("ApprovalClassifier is nil, want default plugin invocation ask policy")
 	}
@@ -226,6 +229,68 @@ func TestProcessToolSpecDefaults(t *testing.T) {
 	}
 	if spec.Source.ProducerVersion != "0.1.0" {
 		t.Fatalf("producer version = %q, want 0.1.0", spec.Source.ProducerVersion)
+	}
+}
+
+func TestProcessToolSpecRoutingClassKeepsReadOnlyCasual(t *testing.T) {
+	spec := ProcessToolSpec{
+		Name:         "weather",
+		Scope:        tool.ScopeEmotion,
+		Permission:   tool.PermReadOnly,
+		RoutingClass: tool.RoutingClassCasual,
+		Parameters:   json.RawMessage(`{"type":"object"}`),
+	}.ToToolSpec("com.example.weather", "0.1.0", RuntimePythonProcess)
+	if spec.RoutingClass != tool.RoutingClassCasual {
+		t.Fatalf("routing class = %q, want casual", spec.RoutingClass)
+	}
+}
+
+func TestProcessToolSpecRoutingClassForcesWriteToolsToWork(t *testing.T) {
+	spec := ProcessToolSpec{
+		Name:         "write",
+		Scope:        tool.ScopeEmotion,
+		Permission:   tool.PermWorkspaceWrite,
+		RoutingClass: tool.RoutingClassCasual,
+		Parameters:   json.RawMessage(`{"type":"object"}`),
+	}.ToToolSpec("com.example.write", "0.1.0", RuntimePythonProcess)
+	if spec.RoutingClass != tool.RoutingClassWork {
+		t.Fatalf("routing class = %q, want work", spec.RoutingClass)
+	}
+}
+
+func TestRegisterProcessPluginAppliesManifestToolDefaultRoutingClass(t *testing.T) {
+	manifest := ManifestV2{
+		SchemaVersion:   ManifestSchemaV02,
+		ID:              "com.example.weather",
+		Name:            "Weather",
+		Version:         "0.1.0",
+		EmoAgentVersion: ">=0.2.0",
+		Runtime:         ManifestV2Runtime{Kind: RuntimePythonProcess, Entry: "main.py"},
+		Access: ManifestV2Access{
+			Tier:         AccessTierRuntimeSafe,
+			Capabilities: []Capability{CapabilityToolRegister},
+		},
+		ToolDefaults: ManifestV2ToolDefaults{RoutingClass: tool.RoutingClassCasual},
+	}
+	supervisor := &fakeProcessSupervisor{
+		tools: []ProcessToolSpec{{
+			Name:       "weather",
+			Scope:      tool.ScopeEmotion,
+			Permission: tool.PermReadOnly,
+			Parameters: json.RawMessage(`{"type":"object"}`),
+		}},
+	}
+	toolRegistry := tool.NewRegistry()
+
+	if err := RegisterProcessPlugin(t.Context(), manifest, NewPluginRegistry(), toolRegistry, NewHookBus(HookBusConfig{}, nil), supervisor); err != nil {
+		t.Fatalf("RegisterProcessPlugin: %v", err)
+	}
+	spec, ok := toolRegistry.GetSpec("plugin_com_example_weather_weather")
+	if !ok {
+		t.Fatal("weather tool not registered")
+	}
+	if spec.RoutingClass != tool.RoutingClassCasual {
+		t.Fatalf("routing class = %q, want manifest default casual", spec.RoutingClass)
 	}
 }
 
