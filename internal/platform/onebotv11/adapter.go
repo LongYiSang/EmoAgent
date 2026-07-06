@@ -89,7 +89,7 @@ func (a *Adapter) HandleEvent(ctx context.Context, event Event) (platform.Handle
 	}
 	if !accepted {
 		if a.logger != nil {
-			a.logger.Info("onebot inbound ignored", "id", a.id, "reason", ignoredReason(event, a.cfg))
+			a.logger.Debug("onebot inbound ignored", "id", a.id, "reason", ignoredReason(event, a.cfg))
 		}
 		return platform.HandleResult{Ignored: true}, nil
 	}

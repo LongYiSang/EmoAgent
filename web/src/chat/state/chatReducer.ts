@@ -49,6 +49,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case 'CLEAR_TIMELINE':
       return { ...state, timeline: [], approvals: [], pendingAssistantId: '', contextStats: undefined };
     case 'ADD_COMMAND_RESULT':
+      if (isHiddenSwitchCommandResult(action.commandName || '', action.status || 'success')) {
+        return { ...state, sending: false };
+      }
       return {
         ...state,
         sending: false,
@@ -64,6 +67,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         }]),
       };
     case 'ADD_CONTEXT_SWITCHED':
+      if (isHiddenSwitchContext(action.reason || '')) return state;
       return {
         ...state,
         timeline: orderTimeline([...state.timeline, {
@@ -219,12 +223,15 @@ function historyToTimeline(messages: MessageRecord[], events: ConversationEventR
     const createdAt = stringField(event, 'created_at') || new Date().toISOString();
     const id = stringField(event, 'id') || crypto.randomUUID();
     if (eventType === 'command_result') {
+      const commandName = stringField(payload, 'command_name');
+      const status = stringField(payload, 'status') || 'success';
+      if (isHiddenSwitchCommandResult(commandName, status)) continue;
       items.push({
         kind: 'command_result',
         id,
         commandID: stringField(payload, 'command_id'),
-        commandName: stringField(payload, 'command_name'),
-        status: stringField(payload, 'status') || 'success',
+        commandName,
+        status,
         content: stringField(event, 'visible_content'),
         createdAt,
         payload,
@@ -232,10 +239,12 @@ function historyToTimeline(messages: MessageRecord[], events: ConversationEventR
       continue;
     }
     if (eventType === 'context_switched') {
+      const reason = stringField(payload, 'reason');
+      if (isHiddenSwitchContext(reason)) continue;
       items.push({
         kind: 'context_switched',
         id,
-        reason: stringField(payload, 'reason'),
+        reason,
         content: stringField(event, 'visible_content'),
         createdAt,
         payload,
@@ -243,6 +252,14 @@ function historyToTimeline(messages: MessageRecord[], events: ConversationEventR
     }
   }
   return orderTimeline(items);
+}
+
+function isHiddenSwitchCommandResult(commandName: string, status: string): boolean {
+  return commandName.trim().toLowerCase() === 'switch' && status.trim().toLowerCase() === 'success';
+}
+
+function isHiddenSwitchContext(reason: string): boolean {
+  return reason.trim().toLowerCase() === 'switch';
 }
 
 function replyDeliverySegments(metadata: AnyRecord): string[] {
