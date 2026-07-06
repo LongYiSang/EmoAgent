@@ -58,22 +58,16 @@ func (g *PlatformGateway) HandleInbound(ctx context.Context, in platform.Inbound
 			return platform.HandleResult{Handled: true, Duplicate: true}, nil
 		}
 	}
-	agentRuntime, agentID, err := g.boundAgentRuntime(ctx)
-	if err != nil {
-		g.failReceipt(ctx, receipt.ID, "", err)
-		_ = emitPlatformError(ctx, sink, origin, "", "", in.ExternalMessageID, err)
-		return platform.HandleResult{}, err
-	}
+	agentID := g.platformAgentID()
 	personaKey := strings.TrimSpace(in.PersonaKey)
-	if agentRuntime != nil {
-		personaKey = strings.TrimSpace(agentRuntime.PersonaKey)
-	} else {
-		if personaKey == "" {
-			personaKey = g.defaultPersonaKey()
-		}
-		if personaKey == "" {
-			personaKey = "default"
-		}
+	if agentID != "" {
+		personaKey = g.platformAgentPersonaKey(agentID, personaKey)
+	}
+	if personaKey == "" {
+		personaKey = g.defaultPersonaKey()
+	}
+	if personaKey == "" {
+		personaKey = "default"
 	}
 	binding, err := g.ensureCurrent(ctx, origin, personaKey)
 	if err != nil {
@@ -113,30 +107,44 @@ func (g *PlatformGateway) HandleInbound(ctx context.Context, in platform.Inbound
 			return platform.HandleResult{Handled: true, SessionID: sessionID}, nil
 		}
 	}
-	persona, ok := g.persona(personaKey)
-	if !ok {
-		persona = &config.Persona{Name: personaKey}
-	}
-	reply, err := g.sendText(ctx, origin, binding.SessionID, agentRuntime, persona, in.Text)
+	agentRuntime, err := g.platformAgentRuntime(agentID)
 	if err != nil {
 		g.failReceipt(ctx, receipt.ID, binding.SessionID, err)
 		_ = emitPlatformError(ctx, sink, origin, binding.SessionID, personaKey, in.ExternalMessageID, err)
 		return platform.HandleResult{}, err
 	}
-	if strings.TrimSpace(reply) != "" {
+	if runtimePersona := strings.TrimSpace(agentRuntime.PersonaKey); runtimePersona != "" && runtimePersona != personaKey {
+		personaKey = runtimePersona
+		binding, err = g.ensureCurrent(ctx, origin, personaKey)
+		if err != nil {
+			g.failReceipt(ctx, receipt.ID, "", err)
+			return platform.HandleResult{}, err
+		}
+	}
+	persona, ok := g.persona(personaKey)
+	if !ok {
+		persona = &config.Persona{Name: personaKey}
+	}
+	turnResult, err := g.sendText(ctx, origin, binding.SessionID, agentRuntime, persona, in)
+	if err != nil {
+		g.failReceipt(ctx, receipt.ID, binding.SessionID, err)
+		_ = emitPlatformError(ctx, sink, origin, binding.SessionID, personaKey, in.ExternalMessageID, err)
+		return platform.HandleResult{}, err
+	}
+	if strings.TrimSpace(turnResult.Text) != "" {
 		if err := sink.Emit(ctx, platform.OutboundEvent{
 			Type:                     "message",
 			Origin:                   origin,
 			SessionID:                binding.SessionID,
 			PersonaKey:               personaKey,
-			Content:                  reply,
+			Content:                  turnResult.Text,
 			ReplyToExternalMessageID: in.ExternalMessageID,
 		}); err != nil {
 			g.failReceipt(ctx, receipt.ID, binding.SessionID, err)
 			return platform.HandleResult{}, err
 		}
 	}
-	g.completeReceipt(ctx, receipt.ID, binding.SessionID, "message")
+	g.completeReceipt(ctx, receipt.ID, binding.SessionID, turnResult.ResultType)
 	return platform.HandleResult{Handled: true, SessionID: binding.SessionID}, nil
 }
 
@@ -147,9 +155,9 @@ func (g *PlatformGateway) ensureCurrent(ctx context.Context, origin conversation
 	return g.conversation.Bindings().EnsureCurrent(ctx, origin, personaKey)
 }
 
-func (g *PlatformGateway) sendText(ctx context.Context, origin conversation.Origin, sessionID string, agentRuntime *ActiveAgentRuntime, persona *config.Persona, text string) (string, error) {
+func (g *PlatformGateway) sendText(ctx context.Context, origin conversation.Origin, sessionID string, agentRuntime *ActiveAgentRuntime, persona *config.Persona, in platform.InboundMessage) (PlatformTurnResult, error) {
 	if g == nil || g.chat == nil {
-		return "", fmt.Errorf("chat engine is not configured")
+		return PlatformTurnResult{}, fmt.Errorf("chat engine is not configured")
 	}
 	runCtx := ctx
 	done := func() {}
@@ -167,48 +175,52 @@ func (g *PlatformGateway) sendText(ctx context.Context, origin conversation.Orig
 		}
 	}
 	defer done()
-	var streamed strings.Builder
-	var (
-		reply string
-		err   error
-	)
-	if agentRuntime != nil {
-		reply, err = g.chat.SendPlatformMessage(runCtx, agentRuntime, sessionID, persona, text, func(delta string) {
-			streamed.WriteString(delta)
-		})
-	} else {
-		if g.chat.Engine() == nil {
-			return "", fmt.Errorf("chat engine is not configured")
-		}
-		reply, err = g.chat.Engine().SendMessage(runCtx, sessionID, persona, text, func(delta string) {
-			streamed.WriteString(delta)
-		})
-	}
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(reply) != "" {
-		return reply, nil
-	}
-	return streamed.String(), nil
+	return g.chat.SendPlatformTurn(runCtx, agentRuntime, sessionID, persona, in)
 }
 
-func (g *PlatformGateway) boundAgentRuntime(ctx context.Context) (*ActiveAgentRuntime, string, error) {
+func (g *PlatformGateway) platformAgentID() string {
 	if g == nil || g.infra == nil || g.infra.Config == nil {
-		return nil, "", nil
+		return ""
 	}
 	agentID := strings.TrimSpace(g.infra.Config.Platforms.Common.DefaultAgentID)
+	if agentID != "" {
+		return agentID
+	}
+	if g.agentRuntime != nil {
+		agents, err := g.agentRuntime.ListAgentConfigs()
+		if err == nil && len(agents) > 0 {
+			return strings.TrimSpace(agents[0].ID)
+		}
+	}
+	if len(g.infra.Config.AgentConfigs) > 0 {
+		return strings.TrimSpace(g.infra.Config.AgentConfigs[0].ID)
+	}
+	return ""
+}
+
+func (g *PlatformGateway) platformAgentPersonaKey(agentID string, fallback string) string {
+	agentID = strings.TrimSpace(agentID)
+	if agentID != "" && g != nil && g.agentRuntime != nil {
+		if agent, err := g.agentRuntime.GetAgentConfig(agentID); err == nil && agent != nil && strings.TrimSpace(agent.PersonaKey) != "" {
+			return strings.TrimSpace(agent.PersonaKey)
+		}
+	}
+	return strings.TrimSpace(fallback)
+}
+
+func (g *PlatformGateway) platformAgentRuntime(agentID string) (*ActiveAgentRuntime, error) {
+	agentID = strings.TrimSpace(agentID)
 	if agentID == "" {
-		return nil, "", nil
+		return nil, fmt.Errorf("platform agent config is not configured")
 	}
 	if g.agentRuntime == nil {
-		return nil, agentID, fmt.Errorf("platform default_agent_id %q is configured but agent runtime service is unavailable", agentID)
+		return nil, fmt.Errorf("platform agent config %q is configured but agent runtime service is unavailable", agentID)
 	}
 	runtime, err := g.agentRuntime.Build(agentID, true)
 	if err != nil {
-		return nil, agentID, fmt.Errorf("platform default_agent_id %q: %w", agentID, err)
+		return nil, fmt.Errorf("platform agent config %q: %w", agentID, err)
 	}
-	return runtime, agentID, nil
+	return runtime, nil
 }
 
 func (g *PlatformGateway) persona(personaKey string) (*config.Persona, bool) {

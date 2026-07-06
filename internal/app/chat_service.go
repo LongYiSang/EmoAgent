@@ -2,13 +2,19 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"log/slog"
+	"strings"
+	"sync"
 
 	"github.com/longyisang/emoagent/internal/chat"
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/media"
+	"github.com/longyisang/emoagent/internal/platform"
 	"github.com/longyisang/emoagent/internal/tool"
+	"github.com/longyisang/emoagent/internal/turn"
 	workctx "github.com/longyisang/emoagent/internal/work"
 )
 
@@ -26,6 +32,9 @@ type ChatService struct {
 	commands     *CommandService
 	dispatcher   *tool.Dispatcher
 	engine       *chat.Engine
+	turnMu       sync.Mutex
+	turnStores   chat.TurnStores
+	turnReady    bool
 }
 
 func (s *ChatService) Engine() *chat.Engine {
@@ -41,19 +50,46 @@ func (s *ChatService) BuildEngine(dispatcher *tool.Dispatcher) *chat.Engine {
 	return s.engine
 }
 
-func (s *ChatService) SendPlatformMessage(ctx context.Context, runtime *ActiveAgentRuntime, sessionID string, persona *config.Persona, text string, cb func(string)) (string, error) {
+type PlatformTurnResult struct {
+	Text       string
+	ResultType string
+}
+
+func (s *ChatService) SendPlatformTurn(ctx context.Context, runtime *ActiveAgentRuntime, sessionID string, persona *config.Persona, in platform.InboundMessage) (PlatformTurnResult, error) {
 	if s == nil {
-		return "", fmt.Errorf("chat service is not configured")
+		return PlatformTurnResult{}, fmt.Errorf("chat service is not configured")
 	}
 	if runtime == nil {
-		return "", fmt.Errorf("platform agent runtime is not configured")
+		return PlatformTurnResult{}, fmt.Errorf("platform agent runtime is not configured")
+	}
+	cfg := config.DefaultConfig()
+	if s.infra != nil && s.infra.Config != nil {
+		cfg = s.infra.Config
+	}
+	if !cfg.Chat.TurnPipeline.Enabled || !cfg.Chat.TurnPipeline.MemoryStages {
+		return PlatformTurnResult{}, fmt.Errorf("platform text requires chat.turn_pipeline.enabled and memory_stages")
 	}
 	engine := s.newEngine(runtime, s.dispatcher)
 	if engine == nil {
-		return "", fmt.Errorf("chat engine is not configured")
+		return PlatformTurnResult{}, fmt.Errorf("chat engine is not configured")
 	}
+	env := platformTurnEnvelope(in, sessionID, runtime.PersonaKey)
+	sink := &finalTextTurnSink{}
 	runCtx := workctx.WithAgentID(ctx, runtime.ID)
-	return engine.SendMessage(runCtx, sessionID, persona, text, cb)
+	result, err := s.turnRunnerForEngine(engine).Execute(runCtx, env, persona, sink)
+	out := PlatformTurnResult{Text: sink.Text()}
+	switch {
+	case result.Status == "approval_wait":
+		out.ResultType = "approval_wait"
+	case strings.TrimSpace(out.Text) == "":
+		out.ResultType = "no_output"
+	default:
+		out.ResultType = "message"
+	}
+	if err != nil {
+		return out, err
+	}
+	return out, nil
 }
 
 func (s *ChatService) newEngine(activeRuntime *ActiveAgentRuntime, dispatcher *tool.Dispatcher) *chat.Engine {
@@ -144,6 +180,39 @@ func (s *ChatService) newEngine(activeRuntime *ActiveAgentRuntime, dispatcher *t
 	})
 }
 
+func (s *ChatService) EnsureTurnStores() chat.TurnStores {
+	if s == nil {
+		return chat.TurnStores{}
+	}
+	s.turnMu.Lock()
+	defer s.turnMu.Unlock()
+	if s.turnReady {
+		return s.turnStores
+	}
+	cfg := config.DefaultConfig()
+	if s.infra != nil && s.infra.Config != nil {
+		cfg = s.infra.Config
+	}
+	var db *sql.DB
+	if s.infra != nil && s.infra.DB != nil {
+		db = s.infra.DB.SqlDB()
+	}
+	var logger *slog.Logger
+	if s.infra != nil {
+		logger = s.infra.Logger
+	}
+	s.turnStores = chat.NewTurnStores(cfg.Chat.TurnPipeline, db, logger, cfg.Time.Timezone)
+	if s.plugins != nil && s.plugins.Host() != nil {
+		if setter, ok := any(s.plugins.Host()).(interface {
+			SetTurnJournal(turn.TurnJournal)
+		}); ok {
+			setter.SetTurnJournal(s.turnStores.Journal)
+		}
+	}
+	s.turnReady = true
+	return s.turnStores
+}
+
 func (s *ChatService) HandlerOptions() []chat.HandlerOption {
 	cfg := s.infra.Config
 	options := []chat.HandlerOption{
@@ -165,7 +234,71 @@ func (s *ChatService) HandlerOptions() []chat.HandlerOption {
 	if s.plugins.Host() != nil && s.plugins.Host().Enabled() {
 		options = append(options, chat.WithPluginHost(s.plugins.Host()))
 	}
+	if s.engine != nil {
+		options = append(options, chat.WithTurnRunner(s.turnRunnerForEngine(s.engine)))
+	}
 	return options
+}
+
+func (s *ChatService) turnRunnerForEngine(engine *chat.Engine) *chat.TurnRunner {
+	cfg := config.DefaultConfig()
+	if s != nil && s.infra != nil && s.infra.Config != nil {
+		cfg = s.infra.Config
+	}
+	var logger *slog.Logger
+	if s != nil && s.infra != nil {
+		logger = s.infra.Logger
+	}
+	var host chat.TurnPluginHost
+	if s != nil && s.plugins != nil && s.plugins.Host() != nil && s.plugins.Host().Enabled() {
+		host = s.plugins.Host()
+	}
+	return chat.NewTurnRunnerWithStores(engine, cfg.Chat.TurnPipeline, s.EnsureTurnStores(), logger, host)
+}
+
+type finalTextTurnSink struct {
+	text strings.Builder
+}
+
+func (s *finalTextTurnSink) Emit(_ context.Context, event turn.OutboundEvent) error {
+	if event.Type == turn.EventStreamDelta || event.Type == turn.EventAssistantSegment {
+		s.text.WriteString(event.Content)
+	}
+	return nil
+}
+
+func (s *finalTextTurnSink) Text() string {
+	if s == nil {
+		return ""
+	}
+	return s.text.String()
+}
+
+func platformTurnEnvelope(in platform.InboundMessage, sessionID string, personaKey string) turn.InboundEnvelope {
+	content := strings.TrimSpace(in.Text)
+	sourceEventID := strings.TrimSpace(in.ExternalMessageID)
+	env := turn.InboundEnvelope{
+		Source:        turn.SourcePlatform,
+		SourceEventID: sourceEventID,
+		Kind:          turn.InboundUserMessage,
+		SessionID:     strings.TrimSpace(sessionID),
+		PersonaKey:    strings.TrimSpace(personaKey),
+		Content:       content,
+		UserMessage: &turn.UserMessageInput{
+			Content: content,
+		},
+		RawMeta: map[string]any{
+			"source_type":         strings.TrimSpace(in.SourceType),
+			"adapter_instance_id": strings.TrimSpace(in.AdapterInstanceID),
+			"platform_id":         strings.TrimSpace(in.PlatformID),
+			"channel_type":        strings.TrimSpace(in.ChannelType),
+		},
+	}
+	if sourceEventID == "" {
+		env.RawMeta["inbound_id"] = strings.TrimSpace(in.ID)
+	}
+	env.IdempotencyKey = turn.BuildIdempotencyKey(env)
+	return env
 }
 
 func (s *ChatService) UpdateRealtimeStreaming(enabled bool) {

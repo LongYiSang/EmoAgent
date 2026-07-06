@@ -12,8 +12,9 @@ import (
 type InboundSource string
 
 const (
-	SourceWebUI  InboundSource = "webui"
-	SourceSystem InboundSource = "system"
+	SourceWebUI    InboundSource = "webui"
+	SourcePlatform InboundSource = "platform"
+	SourceSystem   InboundSource = "system"
 )
 
 type InboundKind string

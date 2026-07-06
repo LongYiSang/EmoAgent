@@ -104,9 +104,41 @@ func TestPlatformGatewayUsesBoundAgentForSID(t *testing.T) {
 	}
 }
 
+func TestPlatformGatewayHandlesCommandBeforeInvalidBoundAgentRuntime(t *testing.T) {
+	ctx := context.Background()
+	app, _, gateway, fakeLLM := newTestPlatformGateway(t)
+	testConfig(app).Platforms.Common.DefaultAgentID = "missing-agent"
+	sink := &platform.BufferedPlatformSink{}
+
+	result, err := gateway.HandleInbound(ctx, platform.InboundMessage{
+		ExternalMessageID:      "msg-sid-missing-agent",
+		SourceType:             "onebot",
+		AdapterInstanceID:      "qq-main",
+		PlatformID:             "qq",
+		ChannelType:            "private",
+		ExternalConversationID: "10001",
+		ExternalActorID:        "10001",
+		Text:                   "/sid",
+		Actor:                  platform.Actor{ID: "10001", Role: platform.ActorRoleMember},
+	}, sink)
+	if err != nil {
+		t.Fatalf("HandleInbound: %v", err)
+	}
+	if !result.Handled || result.SessionID == "" {
+		t.Fatalf("result = %#v, want handled command", result)
+	}
+	event := requirePlatformCommandEvent(t, sink.Events, "sid")
+	if !strings.Contains(event.Content, "agent_id=missing-agent") {
+		t.Fatalf("/sid content missing configured agent id:\n%s", event.Content)
+	}
+	if fakeLLM.calls != 0 {
+		t.Fatalf("LLM calls = %d, want /sid to bypass invalid runtime", fakeLLM.calls)
+	}
+}
+
 func TestPlatformGatewayUsesBoundAgentForText(t *testing.T) {
 	ctx := context.Background()
-	app, _, gateway, activeLLM := newTestPlatformGateway(t)
+	app, db, gateway, activeLLM := newTestPlatformGateway(t)
 	var requestedModel string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -121,7 +153,11 @@ func TestPlatformGatewayUsesBoundAgentForText(t *testing.T) {
 		_, _ = w.Write([]byte(`data: {"id":"chatcmpl-bound","model":"bound-model","choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\n"))
 	}))
 	t.Cleanup(server.Close)
-	testConfig(app).Platforms.Common.DefaultAgentID = "Chat"
+	cfg := testConfig(app)
+	cfg.Platforms.Common.DefaultAgentID = "Chat"
+	cfg.Chat.TurnPipeline.Enabled = true
+	cfg.Chat.TurnPipeline.MemoryStages = true
+	cfg.Chat.PromptRouter.Mode = config.PromptRouterModeAlwaysCasual
 	upsertPlatformGatewayAgent(t, app, "Chat", "Xia", server.URL)
 	setTestPersonas(app, map[string]*config.Persona{
 		"default": {Name: "default", SystemPrompt: "Default persona."},
@@ -155,6 +191,12 @@ func TestPlatformGatewayUsesBoundAgentForText(t *testing.T) {
 	if len(sink.Events) != 1 || sink.Events[0].Type != "message" || sink.Events[0].PersonaKey != "Xia" || sink.Events[0].Content != "bound reply" {
 		t.Fatalf("sink events = %#v, want bound reply for Xia", sink.Events)
 	}
+	turnRow := requirePlatformTurnRow(t, db, "msg-text-bound-agent")
+	if turnRow.Source != "platform" || turnRow.PersonaKey != "Xia" || turnRow.Status != "done" {
+		t.Fatalf("turn row = %#v, want platform Xia done turn", turnRow)
+	}
+	requireTurnStage(t, db, turnRow.ID, "memory_commit")
+	requirePlatformReceiptResult(t, db, "onebot", "qq-main", "msg-text-bound-agent", "handled", "message")
 }
 
 func TestPlatformGatewayDeduplicatesExternalMessageID(t *testing.T) {
@@ -258,7 +300,27 @@ func TestPlatformGatewayHandlesBuiltinCommandMatrix(t *testing.T) {
 
 func TestPlatformGatewayNormalTextEmitsFinalMessage(t *testing.T) {
 	ctx := context.Background()
-	_, db, gateway, fakeLLM := newTestPlatformGateway(t)
+	app, db, gateway, activeLLM := newTestPlatformGateway(t)
+	var requestedModel string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("Decode request: %v", err)
+		}
+		requestedModel = req.Model
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl-default","model":"bound-model","choices":[{"delta":{"content":"fallback reply"}}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl-default","model":"bound-model","choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\n"))
+	}))
+	t.Cleanup(server.Close)
+	cfg := testConfig(app)
+	cfg.Chat.TurnPipeline.Enabled = true
+	cfg.Chat.TurnPipeline.MemoryStages = true
+	cfg.Chat.PromptRouter.Mode = config.PromptRouterModeAlwaysCasual
+	cfg.AgentConfigs = []config.AgentConfig{{ID: "default-agent", PersonaKey: "default"}}
+	upsertPlatformGatewayAgent(t, app, "default-agent", "default", server.URL)
 	sink := &platform.BufferedPlatformSink{}
 
 	result, err := gateway.HandleInbound(ctx, platform.InboundMessage{
@@ -279,10 +341,13 @@ func TestPlatformGatewayNormalTextEmitsFinalMessage(t *testing.T) {
 	if !result.Handled || result.Duplicate || result.SessionID == "" {
 		t.Fatalf("result = %#v, want handled text", result)
 	}
-	if fakeLLM.calls != 1 {
-		t.Fatalf("LLM calls = %d, want 1", fakeLLM.calls)
+	if activeLLM.calls != 0 {
+		t.Fatalf("active LLM calls = %d, want platform fallback agent only", activeLLM.calls)
 	}
-	if len(sink.Events) != 1 || sink.Events[0].Type != "message" || sink.Events[0].Content != "platform reply" {
+	if requestedModel != "bound-model" {
+		t.Fatalf("requested model = %q, want bound-model", requestedModel)
+	}
+	if len(sink.Events) != 1 || sink.Events[0].Type != "message" || sink.Events[0].Content != "fallback reply" {
 		t.Fatalf("sink events = %#v, want final message", sink.Events)
 	}
 	messages, err := db.GetAllMessages(ctx, result.SessionID)
@@ -292,6 +357,51 @@ func TestPlatformGatewayNormalTextEmitsFinalMessage(t *testing.T) {
 	if len(messages) != 2 {
 		t.Fatalf("messages len = %d, want user and assistant persisted", len(messages))
 	}
+	requirePlatformReceiptResult(t, db, "napcat", "main", "msg-text", "handled", "message")
+}
+
+func TestPlatformGatewayTextRequiresTurnPipeline(t *testing.T) {
+	ctx := context.Background()
+	app, db, gateway, activeLLM := newTestPlatformGateway(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl-disabled","model":"bound-model","choices":[{"delta":{"content":"should not send"}}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl-disabled","model":"bound-model","choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\n"))
+	}))
+	t.Cleanup(server.Close)
+	cfg := testConfig(app)
+	cfg.Platforms.Common.DefaultAgentID = "Chat"
+	cfg.Chat.TurnPipeline.Enabled = false
+	cfg.Chat.TurnPipeline.MemoryStages = true
+	cfg.Chat.PromptRouter.Mode = config.PromptRouterModeAlwaysCasual
+	upsertPlatformGatewayAgent(t, app, "Chat", "Xia", server.URL)
+	setTestPersonas(app, map[string]*config.Persona{
+		"default": {Name: "default", SystemPrompt: "Default persona."},
+		"Xia":     {Name: "Xia", SystemPrompt: "Xia persona."},
+	})
+	sink := &platform.BufferedPlatformSink{}
+
+	result, err := gateway.HandleInbound(ctx, platform.InboundMessage{
+		ExternalMessageID:      "msg-no-output",
+		SourceType:             "onebot",
+		AdapterInstanceID:      "qq-main",
+		PlatformID:             "qq",
+		ChannelType:            "private",
+		ExternalConversationID: "10001",
+		ExternalActorID:        "10001",
+		Text:                   "hello",
+		Actor:                  platform.Actor{ID: "10001", Role: platform.ActorRoleMember},
+	}, sink)
+	if err == nil {
+		t.Fatalf("HandleInbound err = nil, want turn pipeline requirement failure; result=%#v", result)
+	}
+	if activeLLM.calls != 0 {
+		t.Fatalf("active LLM calls = %d, want bound agent runtime only", activeLLM.calls)
+	}
+	if len(sink.Events) != 1 || sink.Events[0].Type != "error" || sink.Events[0].Content == "" {
+		t.Fatalf("sink events = %#v, want one platform error event when pipeline is disabled", sink.Events)
+	}
+	requirePlatformReceiptResult(t, db, "onebot", "qq-main", "msg-no-output", "failed", "")
 }
 
 func TestPlatformGatewayRejectsPartsInput(t *testing.T) {
@@ -398,6 +508,59 @@ func upsertPlatformGatewayAgent(t *testing.T, app *App, agentID string, personaK
 		},
 	}); err != nil {
 		t.Fatalf("UpsertAgentConfig: %v", err)
+	}
+}
+
+type platformTurnRow struct {
+	ID         string
+	Source     string
+	PersonaKey string
+	Status     string
+}
+
+func requirePlatformTurnRow(t *testing.T, db *storage.DB, sourceEventID string) platformTurnRow {
+	t.Helper()
+	var row platformTurnRow
+	err := db.SqlDB().QueryRow(`
+		SELECT id, source, persona_key, status
+		FROM turns
+		WHERE source_event_id = ?
+	`, sourceEventID).Scan(&row.ID, &row.Source, &row.PersonaKey, &row.Status)
+	if err != nil {
+		t.Fatalf("query turn source_event_id=%q: %v", sourceEventID, err)
+	}
+	return row
+}
+
+func requireTurnStage(t *testing.T, db *storage.DB, turnID string, stage string) {
+	t.Helper()
+	var count int
+	err := db.SqlDB().QueryRow(`
+		SELECT COUNT(1)
+		FROM turn_events
+		WHERE turn_id = ? AND stage = ?
+	`, turnID, stage).Scan(&count)
+	if err != nil {
+		t.Fatalf("query turn stage %s/%s: %v", turnID, stage, err)
+	}
+	if count == 0 {
+		t.Fatalf("turn %s missing stage %s", turnID, stage)
+	}
+}
+
+func requirePlatformReceiptResult(t *testing.T, db *storage.DB, sourceType string, adapterID string, externalMessageID string, wantStatus string, wantResultType string) {
+	t.Helper()
+	var status, resultType string
+	err := db.SqlDB().QueryRow(`
+		SELECT status, result_type
+		FROM platform_message_receipts
+		WHERE source_type = ? AND adapter_instance_id = ? AND external_message_id = ?
+	`, sourceType, adapterID, externalMessageID).Scan(&status, &resultType)
+	if err != nil {
+		t.Fatalf("query receipt %s/%s/%s: %v", sourceType, adapterID, externalMessageID, err)
+	}
+	if status != wantStatus || resultType != wantResultType {
+		t.Fatalf("receipt status/result_type = %q/%q, want %q/%q", status, resultType, wantStatus, wantResultType)
 	}
 }
 

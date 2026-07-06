@@ -185,6 +185,14 @@ func WithTurnDB(db *sql.DB) HandlerOption {
 	}
 }
 
+func WithTurnRunner(runner *TurnRunner) HandlerOption {
+	return func(h *Handler) {
+		if runner != nil {
+			h.turnRuntime = runner.runtime
+		}
+	}
+}
+
 func WithPluginHost(host turnPluginHost) HandlerOption {
 	return func(h *Handler) {
 		h.pluginHost = host
@@ -217,23 +225,25 @@ func NewHandler(engine conversationEngine, app AppInterface, logger *slog.Logger
 			option(h)
 		}
 	}
-	if h.turnJournal == nil || h.turnIDs == nil {
-		journal, ids := buildTurnRuntimeStores(h.turnConfig, h.turnDB, logger, h.turnTimezone)
-		if h.turnJournal == nil {
-			h.turnJournal = journal
+	if h.turnRuntime == nil {
+		if h.turnJournal == nil || h.turnIDs == nil {
+			journal, ids := buildTurnRuntimeStores(h.turnConfig, h.turnDB, logger, h.turnTimezone)
+			if h.turnJournal == nil {
+				h.turnJournal = journal
+			}
+			if h.turnIDs == nil {
+				h.turnIDs = ids
+			}
 		}
-		if h.turnIDs == nil {
-			h.turnIDs = ids
+		if setter, ok := h.pluginHost.(interface {
+			SetTurnJournal(turn.TurnJournal)
+		}); ok {
+			setter.SetTurnJournal(h.turnJournal)
 		}
+		h.turnRuntime = newChatTurnRuntimeWithStore(engine, h.turnConfig, h.turnJournal, h.turnIDs, logger, h.pluginHost)
+		h.turnRuntime.realtimeStreaming = h.realtimeStreaming
+		h.turnRuntime.replyDelivery = config.NormalizeReplyDeliveryConfig(h.replyDelivery)
 	}
-	if setter, ok := h.pluginHost.(interface {
-		SetTurnJournal(turn.TurnJournal)
-	}); ok {
-		setter.SetTurnJournal(h.turnJournal)
-	}
-	h.turnRuntime = newChatTurnRuntimeWithStore(engine, h.turnConfig, h.turnJournal, h.turnIDs, logger, h.pluginHost)
-	h.turnRuntime.realtimeStreaming = h.realtimeStreaming
-	h.turnRuntime.replyDelivery = config.NormalizeReplyDeliveryConfig(h.replyDelivery)
 	return h
 }
 

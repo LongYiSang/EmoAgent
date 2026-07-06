@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -68,7 +70,23 @@ func TestOneBotAdapterRoutesPrivateCommandsThroughPlatformGateway(t *testing.T) 
 
 func TestOneBotAdapterRoutesPrivateTextThroughPlatformGateway(t *testing.T) {
 	ctx := context.Background()
-	_, _, gateway, fakeLLM := newTestPlatformGateway(t)
+	app, _, gateway, fakeLLM := newTestPlatformGateway(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl-onebot","model":"bound-model","choices":[{"delta":{"content":"onebot reply"}}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl-onebot","model":"bound-model","choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\n"))
+	}))
+	t.Cleanup(server.Close)
+	cfg := testConfig(app)
+	cfg.Platforms.Common.DefaultAgentID = "Chat"
+	cfg.Chat.TurnPipeline.Enabled = true
+	cfg.Chat.TurnPipeline.MemoryStages = true
+	cfg.Chat.PromptRouter.Mode = appconfig.PromptRouterModeAlwaysCasual
+	upsertPlatformGatewayAgent(t, app, "Chat", "Xia", server.URL)
+	setTestPersonas(app, map[string]*appconfig.Persona{
+		"default": {Name: "default", SystemPrompt: "Default persona."},
+		"Xia":     {Name: "Xia", SystemPrompt: "Xia persona."},
+	})
 	transport := &fakeOneBotTransport{}
 	adapter := newTestOneBotAdapter(t, transport)
 	if err := adapter.Start(ctx, gateway); err != nil {
@@ -83,11 +101,11 @@ func TestOneBotAdapterRoutesPrivateTextThroughPlatformGateway(t *testing.T) {
 	if !result.Handled || result.SessionID == "" {
 		t.Fatalf("result = %#v, want handled text", result)
 	}
-	if fakeLLM.calls != 1 {
-		t.Fatalf("LLM calls = %d, want one normal chat call", fakeLLM.calls)
+	if fakeLLM.calls != 0 {
+		t.Fatalf("active LLM calls = %d, want platform agent runtime only", fakeLLM.calls)
 	}
-	if len(transport.requests) != 1 || onebotRequestText(transport.requests[0]) != "platform reply" {
-		t.Fatalf("onebot requests = %#v, want platform reply", transport.requests)
+	if len(transport.requests) != 1 || onebotRequestText(transport.requests[0]) != "onebot reply" {
+		t.Fatalf("onebot requests = %#v, want onebot reply", transport.requests)
 	}
 }
 
