@@ -15,6 +15,10 @@ func Init(level, format string) *slog.Logger {
 }
 
 func InitWithTimezone(level, format, timezone string) *slog.Logger {
+	return InitWithTimezoneAndHandler(level, format, timezone, nil)
+}
+
+func InitWithTimezoneAndHandler(level, format, timezone string, extra slog.Handler) *slog.Logger {
 	lvl := parseLevel(level)
 	loc, err := time.LoadLocation(strings.TrimSpace(timezone))
 	if err != nil {
@@ -37,6 +41,9 @@ func InitWithTimezone(level, format, timezone string) *slog.Logger {
 		handler = slog.NewJSONHandler(os.Stderr, opts)
 	} else {
 		handler = slog.NewTextHandler(os.Stderr, opts)
+	}
+	if extra != nil {
+		handler = teeHandler{primary: handler, extra: extra}
 	}
 
 	logger := slog.New(handler)

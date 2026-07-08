@@ -39,6 +39,9 @@ func BuildServer(ctx context.Context, kernel *Kernel, facade *App) (*Server, err
 	if err := kernel.Services.Plugins.Configure(ctx, dispatcher, nil); err != nil {
 		return nil, err
 	}
+	if kernel.Services.LogCenter != nil {
+		kernel.Services.LogCenter.Start(ctx)
+	}
 	if err := kernel.Services.Work.Configure(ctx, dispatcher); err != nil {
 		return nil, err
 	}
@@ -157,6 +160,9 @@ func registerRoutes(mux *http.ServeMux, api *web.APIHandler, chatHandler http.Ha
 	mux.HandleFunc("PUT /api/memory/features", api.HandleUpdateMemoryFeatures)
 	mux.HandleFunc("GET /api/llm-usage/events", api.HandleListLLMUsageEvents)
 	mux.HandleFunc("GET /api/llm-usage/summary", api.HandleSummarizeLLMUsage)
+	mux.HandleFunc("GET /api/logs/sources", api.HandleListLogSources)
+	mux.HandleFunc("GET /api/logs/events", api.HandleListLogEvents)
+	mux.HandleFunc("GET /api/logs/stream", api.HandleStreamLogEvents)
 	mux.HandleFunc("GET /api/token-estimator/calibrations", api.HandleListTokenEstimatorCalibrations)
 	mux.HandleFunc("POST /api/token-estimator/calibrations/refresh", api.HandleRefreshTokenEstimatorCalibrations)
 	mux.HandleFunc("GET /api/sidecar/status", api.HandleGetSidecarStatus)

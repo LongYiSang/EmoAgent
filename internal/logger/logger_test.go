@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"context"
 	"log/slog"
 	"testing"
 )
@@ -33,3 +34,27 @@ func TestParseLevel(t *testing.T) {
 		}
 	}
 }
+
+func TestTeeHandlerDoesNotBypassPrimaryLevel(t *testing.T) {
+	extra := &captureHandler{}
+	l := InitWithTimezoneAndHandler("warn", "text", "Asia/Shanghai", extra)
+	l.Info("ignored")
+	l.Warn("captured")
+	if len(extra.records) != 1 || extra.records[0].Message != "captured" {
+		t.Fatalf("extra records = %#v", extra.records)
+	}
+}
+
+type captureHandler struct {
+	records []slog.Record
+}
+
+func (h *captureHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *captureHandler) Handle(_ context.Context, record slog.Record) error {
+	h.records = append(h.records, record.Clone())
+	return nil
+}
+
+func (h *captureHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *captureHandler) WithGroup(string) slog.Handler      { return h }

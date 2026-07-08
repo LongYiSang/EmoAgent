@@ -9,6 +9,7 @@ import (
 	"github.com/longyisang/emoagent/internal/config"
 	"github.com/longyisang/emoagent/internal/conversation"
 	"github.com/longyisang/emoagent/internal/llm"
+	"github.com/longyisang/emoagent/internal/logcenter"
 	"github.com/longyisang/emoagent/internal/runtimeenv"
 	"github.com/longyisang/emoagent/internal/storage"
 )
@@ -24,6 +25,7 @@ type Infra struct {
 	Config      *config.Config
 	DB          *storage.DB
 	Logger      *slog.Logger
+	LogCenter   *logcenter.Service
 	LLM         llm.Client
 	Environment runtimeenv.Facts
 	ProjectRoot string
@@ -40,6 +42,7 @@ type Services struct {
 	AgentRuntime *AgentRuntimeService
 	AgentAffect  *AgentAffectService
 	Sidecar      *SidecarService
+	LogCenter    *logcenter.Service
 	Memory       *MemoryService
 	Media        *MediaService
 	Tools        *ToolService
@@ -70,12 +73,18 @@ func newServices(infra *Infra) *Services {
 	services.AgentRuntime = &AgentRuntimeService{infra: infra, personas: services.Personas}
 	services.AgentAffect = &AgentAffectService{infra: infra, agentRuntime: services.AgentRuntime}
 	services.Sidecar = &SidecarService{infra: infra, config: services.Config}
+	services.LogCenter = infra.LogCenter
+	if services.LogCenter == nil {
+		services.LogCenter = logcenter.NewService()
+		infra.LogCenter = services.LogCenter
+	}
 	services.Memory = &MemoryService{infra: infra, config: services.Config, sidecar: services.Sidecar}
 	services.Media = &MediaService{infra: infra}
 	services.Tools = &ToolService{infra: infra}
 	services.Resource = &ResourceService{infra: infra}
 	services.Config.tools = services.Tools
 	services.Plugins = &PluginService{infra: infra, tools: services.Tools, agentAffect: services.AgentAffect, agentRuntime: services.AgentRuntime}
+	services.LogCenter.SetProviders(sidecarLogSource{service: services.Sidecar}, pluginLogSource{service: services.Plugins})
 	services.AgentAffect.plugins = services.Plugins
 	services.Work = &WorkService{
 		infra:        infra,
@@ -148,6 +157,9 @@ func (k *Kernel) Close(ctx context.Context) error {
 	if k.Background.Cancel != nil {
 		k.Background.Cancel()
 		k.Background.Cancel = nil
+	}
+	if k.Services != nil && k.Services.LogCenter != nil {
+		k.Services.LogCenter.Close()
 	}
 
 	var closeErr error

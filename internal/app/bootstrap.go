@@ -8,6 +8,7 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/logcenter"
 	"github.com/longyisang/emoagent/internal/logger"
 	"github.com/longyisang/emoagent/internal/memoryruntime"
 	"github.com/longyisang/emoagent/internal/runtimeenv"
@@ -28,6 +29,13 @@ func (b Bootstrapper) Build(ctx context.Context) (kernel *Kernel, cancel context
 	}
 	log := logger.InitWithTimezone(cfg.Log.Level, cfg.Log.Format, cfg.Time.Timezone)
 	log.Info("config loaded", "path", b.ConfigPath)
+	logs := logcenter.NewService()
+	log = logger.InitWithTimezoneAndHandler(cfg.Log.Level, cfg.Log.Format, cfg.Time.Timezone, logs.Handler(logcenter.Source{
+		Type:   logcenter.SourceTypeMain,
+		ID:     "host",
+		Label:  "EmoAgent 主程序",
+		Status: logcenter.SourceStatusActive,
+	}))
 
 	db, err := storage.OpenWithOptions(cfg.DB.Path, log, storage.StorageOptions{Timezone: cfg.Time.Timezone})
 	if err != nil {
@@ -47,6 +55,7 @@ func (b Bootstrapper) Build(ctx context.Context) (kernel *Kernel, cancel context
 		Config:      cfg,
 		DB:          db,
 		Logger:      log,
+		LogCenter:   logs,
 		ProjectRoot: projectRoot,
 		Environment: env,
 	})
