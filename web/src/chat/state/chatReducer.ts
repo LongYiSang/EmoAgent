@@ -47,7 +47,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case 'SET_HISTORY':
       return { ...state, timeline: historyToTimeline(action.messages, action.events), pendingAssistantId: '' };
     case 'CLEAR_TIMELINE':
-      return { ...state, timeline: [], approvals: [], pendingAssistantId: '', contextStats: undefined };
+      return { ...state, timeline: [], approvals: [], pendingApprovalIDs: [], pendingAssistantId: '', contextStats: undefined };
     case 'ADD_COMMAND_RESULT':
       if (isHiddenSwitchCommandResult(action.commandName || '', action.status || 'success')) {
         return { ...state, sending: false };
@@ -146,20 +146,24 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return { ...state, timeline: upsertItem(state.timeline, { kind: 'work', id: 'work-progress', content: action.content, createdAt: new Date().toISOString() }) };
     case 'CLEAR_WORK_PROGRESS':
       return { ...state, timeline: state.timeline.filter(item => item.kind !== 'work') };
-    case 'SET_APPROVALS':
+    case 'SET_APPROVALS': {
+      const approvals = mergeApprovals(action.approvals);
       return {
         ...state,
-        approvals: mergeApprovals(action.approvals),
+        approvals,
+        pendingApprovalIDs: prunePendingApprovalIDs(state.pendingApprovalIDs, approvals),
         timeline: orderTimeline([
           ...state.timeline.filter(item => item.kind !== 'approval'),
-          ...visibleApprovals(action.approvals, state.dismissedApprovals).map(approvalToItem),
+          ...visibleApprovals(approvals, state.dismissedApprovals).map(approvalToItem),
         ]),
       };
+    }
     case 'UPSERT_APPROVAL': {
       const approvals = mergeApprovals([...state.approvals, action.approval]);
       return {
         ...state,
         approvals,
+        pendingApprovalIDs: prunePendingApprovalIDs(state.pendingApprovalIDs, approvals),
         timeline: orderTimeline([
           ...state.timeline.filter(item => item.kind !== 'approval'),
           ...visibleApprovals(approvals, state.dismissedApprovals).map(approvalToItem),
@@ -171,6 +175,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return {
         ...state,
         dismissedApprovals,
+        pendingApprovalIDs: state.pendingApprovalIDs.filter(id => id !== action.id),
         timeline: state.timeline.filter(item => item.kind !== 'approval' || item.id !== action.id),
       };
     }
@@ -396,4 +401,17 @@ function visibleApprovals(items: ApprovalRequest[], dismissed: string[]): Approv
     const status = stringField(item, 'status') || 'pending';
     return !!id && (status === 'pending' || !dismissedSet.has(id));
   });
+}
+
+/** Drop local in-flight markers once the server reports a non-pending status. */
+function prunePendingApprovalIDs(pendingIDs: string[], approvals: ApprovalRequest[]): string[] {
+  if (pendingIDs.length === 0) return pendingIDs;
+  const settled = new Set<string>();
+  for (const item of approvals) {
+    const id = stringField(item, 'id');
+    const status = stringField(item, 'status') || 'pending';
+    if (id && status !== 'pending') settled.add(id);
+  }
+  if (settled.size === 0) return pendingIDs;
+  return pendingIDs.filter(id => !settled.has(id));
 }

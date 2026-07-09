@@ -180,10 +180,16 @@ export function useChatWebSocket({ dispatch, contextRef, refreshSessions, refres
           dispatch({ type: 'SET_CONTEXT', sessionID, personaKey });
           contextRef.current = { sessionID, personaKey };
           if (reloadHistory) {
+            // Drop previous session messages immediately, then load the target history.
+            // (command_result may also reload; generation guards discard stale responses.)
             dispatch({ type: 'CLEAR_TIMELINE' });
+            await reloadSessionHistory(sessionID);
           } else {
             dispatch({ type: 'ADD_CONTEXT_SWITCHED', reason: stringField(payloadData, 'reason'), content: payload.content || '', payload: payloadData });
           }
+          // If another switch already moved context, skip stale surface refreshes so we do not
+          // bump generation counters and invalidate the newer session's in-flight loads.
+          if (contextRef.current.sessionID !== sessionID || contextRef.current.personaKey !== personaKey) break;
           await Promise.all([
             refreshSessions(personaKey),
             refreshApprovals(sessionID),
@@ -210,6 +216,7 @@ export function useChatWebSocket({ dispatch, contextRef, refreshSessions, refres
           if (reloadHistory) {
             await reloadSessionHistory(sessionID);
           }
+          if (contextRef.current.sessionID !== sessionID || contextRef.current.personaKey !== personaKey) break;
           await Promise.all([
             refreshSessions(personaKey),
             refreshApprovals(sessionID),

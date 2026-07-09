@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import type { Dispatch, MutableRefObject } from 'react';
 import { deleteSession, loadDefaultPersona, loadSessionApprovals, loadSessionDetail, loadSessions } from '../protocol/sessionApi';
 import { loadMemoryStatus } from '../protocol/memoryApi';
@@ -28,9 +28,24 @@ type UseChatSessionOptions = {
 const DEFAULT_ORIGIN_KEY = 'webui:local:main';
 
 export function useChatSession({ state, dispatch, contextRef, closeSocketRef, sendCommandRef, setSidebarOpen }: UseChatSessionOptions): ChatSessionControls {
+  const historyRequestRef = useRef(0);
+  const approvalsRequestRef = useRef(0);
+  const memoryRequestRef = useRef(0);
+  const sessionsRequestRef = useRef(0);
+  const switchRequestRef = useRef(0);
+
   const refreshMemoryStatus = useCallback(async (sessionID = contextRef.current.sessionID) => {
+    if (!sessionID) {
+      memoryRequestRef.current += 1;
+      dispatch({ type: 'SET_MEMORY_STATUS', segments: [], jobs: [] });
+      return;
+    }
+    const requestID = ++memoryRequestRef.current;
+    const targetSessionID = sessionID;
     try {
-      const status = await loadMemoryStatus(sessionID);
+      const status = await loadMemoryStatus(targetSessionID);
+      if (memoryRequestRef.current !== requestID) return;
+      if (contextRef.current.sessionID !== targetSessionID) return;
       dispatch({ type: 'SET_MEMORY_STATUS', segments: status.segments, jobs: status.jobs });
     } catch {
       // Memory status is diagnostic UI; chat should continue if it is unavailable.
@@ -39,24 +54,40 @@ export function useChatSession({ state, dispatch, contextRef, closeSocketRef, se
 
   const refreshApprovals = useCallback(async (sessionID = contextRef.current.sessionID) => {
     if (!sessionID) {
+      approvalsRequestRef.current += 1;
       dispatch({ type: 'SET_APPROVALS', approvals: [] });
       return;
     }
+    const requestID = ++approvalsRequestRef.current;
+    const targetSessionID = sessionID;
     try {
-      dispatch({ type: 'SET_APPROVALS', approvals: await loadSessionApprovals(sessionID) });
+      const approvals = await loadSessionApprovals(targetSessionID);
+      if (approvalsRequestRef.current !== requestID) return;
+      if (contextRef.current.sessionID !== targetSessionID) return;
+      dispatch({ type: 'SET_APPROVALS', approvals });
     } catch {
+      if (approvalsRequestRef.current !== requestID) return;
+      if (contextRef.current.sessionID !== targetSessionID) return;
       dispatch({ type: 'SET_APPROVALS', approvals: [] });
     }
   }, [contextRef, dispatch]);
 
   const refreshSessions = useCallback(async (personaKey = contextRef.current.personaKey) => {
     if (!personaKey) {
+      sessionsRequestRef.current += 1;
       dispatch({ type: 'SET_SESSIONS', sessions: [] });
       return;
     }
+    const requestID = ++sessionsRequestRef.current;
+    const targetPersona = personaKey;
     try {
-      dispatch({ type: 'SET_SESSIONS', sessions: await loadSessions(personaKey) });
+      const sessions = await loadSessions(targetPersona);
+      if (sessionsRequestRef.current !== requestID) return;
+      if (contextRef.current.personaKey !== targetPersona) return;
+      dispatch({ type: 'SET_SESSIONS', sessions });
     } catch (error) {
+      if (sessionsRequestRef.current !== requestID) return;
+      if (contextRef.current.personaKey !== targetPersona) return;
       dispatch({ type: 'SET_SESSIONS', sessions: [] });
       dispatch({ type: 'SET_STATUS', status: error instanceof Error ? error.message : '会话加载失败' });
     }
@@ -64,9 +95,19 @@ export function useChatSession({ state, dispatch, contextRef, closeSocketRef, se
 
   const reloadSessionHistory = useCallback(async (sessionID = contextRef.current.sessionID) => {
     if (!sessionID) return;
-    const detail = await loadSessionDetail(sessionID, DEFAULT_ORIGIN_KEY);
-    dispatch({ type: 'SET_HISTORY', messages: detail.messages || detail.Messages || [], events: detail.events || detail.Events || [] });
-    dispatch({ type: 'SET_CONTEXT_STATS', stats: sessionDetailContextStats(detail) });
+    const requestID = ++historyRequestRef.current;
+    const targetSessionID = sessionID;
+    try {
+      const detail = await loadSessionDetail(targetSessionID, DEFAULT_ORIGIN_KEY);
+      if (historyRequestRef.current !== requestID) return;
+      if (contextRef.current.sessionID !== targetSessionID) return;
+      dispatch({ type: 'SET_HISTORY', messages: detail.messages || detail.Messages || [], events: detail.events || detail.Events || [] });
+      dispatch({ type: 'SET_CONTEXT_STATS', stats: sessionDetailContextStats(detail) });
+    } catch (error) {
+      if (historyRequestRef.current !== requestID) return;
+      if (contextRef.current.sessionID !== targetSessionID) return;
+      throw error;
+    }
   }, [contextRef, dispatch]);
 
   useEffect(() => {
@@ -119,6 +160,9 @@ export function useChatSession({ state, dispatch, contextRef, closeSocketRef, se
       setSidebarOpen(false);
     } catch (error) {
       await closeSocketRef.current();
+      historyRequestRef.current += 1;
+      approvalsRequestRef.current += 1;
+      memoryRequestRef.current += 1;
       dispatch({ type: 'SET_CONTEXT', sessionID: '' });
       contextRef.current = { ...contextRef.current, sessionID: '' };
       dispatch({ type: 'CLEAR_TIMELINE' });
@@ -129,21 +173,27 @@ export function useChatSession({ state, dispatch, contextRef, closeSocketRef, se
   }, [closeSocketRef, contextRef, dispatch, refreshSessions, sendCommandRef, setSidebarOpen]);
 
   const switchSession = useCallback(async (sessionID: string, personaKey: string) => {
+    const requestID = ++switchRequestRef.current;
     dispatch({ type: 'SET_STATUS', status: '正在加载会话...' });
     try {
       await sendCommandRef.current(`/switch ${sessionID}`);
+      if (switchRequestRef.current !== requestID) return;
       setSidebarOpen(false);
     } catch (error) {
       const detail = await loadSessionDetail(sessionID, DEFAULT_ORIGIN_KEY);
+      if (switchRequestRef.current !== requestID) return;
       await closeSocketRef.current();
+      if (switchRequestRef.current !== requestID) return;
       const nextPersona = detail.persona || detail.Persona || personaKey || contextRef.current.personaKey;
       dispatch({ type: 'SET_CONTEXT', sessionID, personaKey: nextPersona, contextStats: sessionDetailContextStats(detail) });
       contextRef.current = { sessionID, personaKey: nextPersona };
-      dispatch({ type: 'SET_HISTORY', messages: detail.messages || detail.Messages || [], events: detail.events || detail.Events || [] });
+      await reloadSessionHistory(sessionID);
+      if (switchRequestRef.current !== requestID) return;
       await Promise.all([refreshApprovals(sessionID), refreshMemoryStatus(sessionID), refreshSessions(nextPersona)]);
+      if (switchRequestRef.current !== requestID) return;
       dispatch({ type: 'SET_STATUS', status: error instanceof Error ? error.message : '会话加载失败' });
     }
-  }, [closeSocketRef, contextRef, dispatch, refreshApprovals, refreshMemoryStatus, refreshSessions, sendCommandRef, setSidebarOpen]);
+  }, [closeSocketRef, contextRef, dispatch, refreshApprovals, refreshMemoryStatus, refreshSessions, reloadSessionHistory, sendCommandRef, setSidebarOpen]);
 
   const removeSession = useCallback(async (sessionID: string) => {
     if (!sessionID) return;
