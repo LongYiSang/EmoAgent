@@ -53,7 +53,7 @@ export default memo(function ChatSettingsTab({ chatSettings, reloadChatSettings,
 
   return (
     <div className="section chat-settings-tab">
-      <div className="hero">
+      <div className="hero sticky-hero">
         <div>
           <h2>聊天设置</h2>
           <div className="meta">流式行为、路由策略与分段输出节奏</div>

@@ -40,7 +40,7 @@ export default memo(function PythonToolchainTab({
 
   return (
     <div className="section">
-      <div className="hero">
+      <div className="hero sticky-hero">
         <div>
           <h2>Python 工具链</h2>
           <div className="meta">CPython + uv 托管环境</div>

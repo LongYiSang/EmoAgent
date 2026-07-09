@@ -18,6 +18,7 @@ export default memo(function PrivacyForgetTab({ memoryDraft, effectiveConfig, pr
       id="privacy-forget"
       value={privacyDraft}
       onValue={setPrivacyDraft}
+      description="隐私与遗忘策略的高级 JSON 配置。修改前请确认影响范围。"
       output={pretty({ memory: field(memoryDraft, 'forgetting_privacy', {}), effective: field(field(effectiveConfig, 'memory_core', {}), 'forgetting_privacy', {}) })}
       onSave={savePrivacyForget}
     />

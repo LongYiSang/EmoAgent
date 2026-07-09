@@ -56,7 +56,7 @@ export default memo(function ProvidersTab({
       </ListPane>
       <section className="detail-pane">
         <form className="section" id="provider-form" onSubmit={submitProvider}>
-          <div className="hero"><div><h2 id="provider-title">{providerDraft.name || providerDraft.id || '新 Provider'}</h2><div className="meta" id="provider-meta">{String(providerDraft.protocol || 'openai_compatible')} / {String(providerDraft.model_discovery || 'manual')}</div></div><div className="actions"><button className="btn ghost" id="test-provider" type="button" disabled={!selectedProvider} onClick={testSelectedProvider}>测试</button><button className="btn ghost" id="refresh-models" type="button" disabled={!selectedProvider} onClick={refreshSelectedProviderModels}>刷新模型</button><button className="btn primary" id="save-provider" type="submit">保存 Provider</button></div></div>
+          <div className="hero sticky-hero"><div><h2 id="provider-title">{providerDraft.name || providerDraft.id || '新 Provider'}</h2><div className="meta" id="provider-meta">{String(providerDraft.protocol || 'openai_compatible')} / {String(providerDraft.model_discovery || 'manual')}</div></div><div className="actions"><button className="btn ghost" id="test-provider" type="button" disabled={!selectedProvider} onClick={testSelectedProvider}>测试</button><button className="btn ghost" id="refresh-models" type="button" disabled={!selectedProvider} onClick={refreshSelectedProviderModels}>刷新模型</button><button className="btn primary" id="save-provider" type="submit">保存 Provider</button></div></div>
           <div className="grid">
             <Field id="p-id" label="ID" value={String(providerDraft.id || '')} onChange={value => patchProviderDraft('id', value)} readOnly={!!selectedProvider} mono />
             <Field id="p-name" label="名称" value={String(providerDraft.name || '')} onChange={value => patchProviderDraft('name', value)} />
@@ -71,7 +71,7 @@ export default memo(function ProvidersTab({
             <label className="check"><input id="p-cap-rerank" type="checkbox" checked={capabilities.has('rerank')} onChange={event => setProviderCapability('rerank', event.target.checked)} /> Rerank</label>
             <div className="field"><label>环境状态</label><span className="badge" id="provider-env-status">{String(field(providerEnv, 'status', field(providerEnv, 'state', selectedProvider ? 'checked' : 'not checked')))}</span></div>
           </div>
-          <div className="actions foot"><button className="btn danger" id="delete-provider" type="button" disabled={!selectedProvider} onClick={deleteSelectedProvider}>删除</button></div>
+          <div className="actions foot danger-zone"><div className="danger-zone-copy"><strong>危险操作</strong><span className="meta">删除后需重新配置 Provider 与模型绑定</span></div><button className="btn danger" id="delete-provider" type="button" disabled={!selectedProvider} onClick={deleteSelectedProvider}>删除</button></div>
         </form>
         <div className="section"><h3>模型</h3><div className="models" id="provider-models">{models.map(model => {
           const name = modelName(model);

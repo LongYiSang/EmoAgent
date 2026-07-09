@@ -66,7 +66,7 @@ export default memo(function AgentsTab({
       </ListPane>
       <section className="detail-pane">
         <form className="section" id="agent-form" onSubmit={submitAgent}>
-          <div className="hero"><div><h2 id="agent-title">{agentDraft.name || agentDraft.id || '新配置'}</h2><div className="meta" id="agent-meta">当前：{activeAgentID || '无'}</div></div><div className="actions"><button className="btn good" id="activate-agent" type="button" disabled={!selectedAgent || selectedAgent === activeAgentID} onClick={activateSelectedAgent}>设为当前</button><button className="btn primary" id="save-agent" type="submit">保存配置</button></div></div>
+          <div className="hero sticky-hero"><div><h2 id="agent-title">{agentDraft.name || agentDraft.id || '新配置'}</h2><div className="meta" id="agent-meta">当前：{activeAgentID || '无'}</div></div><div className="actions"><button className="btn good" id="activate-agent" type="button" disabled={!selectedAgent || selectedAgent === activeAgentID} onClick={activateSelectedAgent}>设为当前</button><button className="btn primary" id="save-agent" type="submit">保存配置</button></div></div>
           <div className="grid">
             <Field id="a-id" label="ID" value={String(agentDraft.id || '')} onChange={value => patchAgentDraft('id', value)} readOnly={!!selectedAgent} mono />
             <Field id="a-name" label="名称" value={String(agentDraft.name || '')} onChange={value => patchAgentDraft('name', value)} />
@@ -84,7 +84,7 @@ export default memo(function AgentsTab({
           <div className="slot-grid" id="slot-grid">
             {slotDefs.map(([id, label]) => <SlotEditor key={id} id={id} label={label} draft={agentDraft} providers={providers} providerPresets={providerPresets} models={modelOptions} onDraft={replaceAgentDraft} />)}
           </div>
-          <div className="actions foot"><button className="btn danger" id="delete-agent" type="button" disabled={!selectedAgent} onClick={deleteSelectedAgent}>删除</button></div>
+          <div className="actions foot danger-zone"><div className="danger-zone-copy"><strong>危险操作</strong><span className="meta">删除 Agent 配置不可自动恢复</span></div><button className="btn danger" id="delete-agent" type="button" disabled={!selectedAgent} onClick={deleteSelectedAgent}>删除</button></div>
         </form>
       </section>
     </div>

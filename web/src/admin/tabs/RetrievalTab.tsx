@@ -19,7 +19,7 @@ export default memo(function RetrievalTab({ memoryDraft, effectiveConfig, update
 
   return (
     <div className="section retrieval-tab">
-      <div className="hero">
+      <div className="hero sticky-hero">
         <div>
           <h2>检索 / Mirror</h2>
           <div className="meta">SQLite 是权威数据源；Mirror 用于快速检索，可降级</div>

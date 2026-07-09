@@ -91,7 +91,7 @@ export default memo(function UsageTab({
 
   return (
     <div className="section">
-      <div className="hero">
+      <div className="hero sticky-hero">
         <div>
           <h2>用量统计</h2>
           <div className="meta">LLM 调用用量、汇总与 Token 估算校准</div>

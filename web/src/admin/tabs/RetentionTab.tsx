@@ -17,6 +17,7 @@ export default memo(function RetentionTab({ effectiveConfig, retentionDraft, set
       id="retention"
       value={retentionDraft}
       onValue={setRetentionDraft}
+      description="记忆与数据保留周期策略。请谨慎调整删除与归档相关字段。"
       output={pretty(field(field(effectiveConfig, 'memory_core', {}), 'retention', {}))}
       onSave={saveRetention}
     />

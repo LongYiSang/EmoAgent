@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { AppRail } from '../shared/components/AppRail';
 import { classNames } from '../shared/lib/classNames';
 import { useAdminStatus } from './hooks/useAdminStatus';
@@ -14,10 +14,18 @@ import { useWebSearchAdmin } from './hooks/useWebSearchAdmin';
 import { usePlatformAdmin } from './hooks/usePlatformAdmin';
 import { usePythonToolchainAdmin } from './hooks/usePythonToolchainAdmin';
 import { useUsageAdmin } from './hooks/useUsageAdmin';
+import { useOverviewAdmin } from './hooks/useOverviewAdmin';
 import { useAdminBootstrap } from './hooks/useAdminBootstrap';
-import { tabs, type TabID } from './lib/adminData';
+import { findAdminGroupForTab, findAdminTab, tabGroups, tabIDFromHash, type TabID } from './lib/adminData';
 import '../styles.css';
 
+function writeTabHash(id: TabID) {
+  const next = `${window.location.pathname}${window.location.search}#${id}`;
+  const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (current !== next) history.replaceState(null, '', next);
+}
+
+const OverviewTab = lazy(() => import('./tabs/OverviewTab'));
 const ProvidersTab = lazy(() => import('./tabs/ProvidersTab'));
 const AgentsTab = lazy(() => import('./tabs/AgentsTab'));
 const PersonasTab = lazy(() => import('./tabs/PersonasTab'));
@@ -37,7 +45,7 @@ const RetentionTab = lazy(() => import('./tabs/RetentionTab'));
 const DiagnosticsTab = lazy(() => import('./tabs/DiagnosticsTab'));
 
 export function AdminApp() {
-  const [tab, setTab] = useState<TabID>('providers');
+  const [tab, setTabState] = useState<TabID>(() => tabIDFromHash());
   const status = useAdminStatus();
   const providers = useProviderAdmin(status);
   const agents = useAgentAdmin(status);
@@ -51,11 +59,32 @@ export function AdminApp() {
   const platforms = usePlatformAdmin(status);
   const pythonToolchain = usePythonToolchainAdmin(status);
   const usage = useUsageAdmin(status);
+  const overview = useOverviewAdmin(status);
 
-  useAdminBootstrap(tab, { providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, webSearch, platforms, pythonToolchain, usage, sidecar, status });
+  const setTab = useCallback((id: TabID) => {
+    setTabState(id);
+    writeTabHash(id);
+  }, []);
+
+  useEffect(() => {
+    writeTabHash(tab);
+    const onHashChange = () => {
+      const next = tabIDFromHash();
+      setTabState(current => (current === next ? current : next));
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  useAdminBootstrap(tab, { providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, webSearch, platforms, pythonToolchain, usage, sidecar, overview, status });
+
+  const activeTab = useMemo(() => findAdminTab(tab), [tab]);
+  const activeGroup = useMemo(() => findAdminGroupForTab(tab), [tab]);
 
   function renderActiveTab() {
     switch (tab) {
+      case 'overview':
+        return <OverviewTab {...overview} onNavigate={setTab} />;
       case 'providers':
         return (
           <ProvidersTab
@@ -176,18 +205,36 @@ export function AdminApp() {
       <AppRail active="admin" />
       <main className="admin-page-wrap">
         <header className="admin-header">
-          <div>
-            <h1>管理配置</h1>
-            <p>模型服务、Persona、记忆、Sidecar 与运行时生效配置</p>
+          <div className="admin-header-text">
+            {activeGroup ? <span className="admin-header-group">{activeGroup.label}</span> : null}
+            <h1>{activeTab?.label || '管理配置'}</h1>
+            <p>{activeTab?.description || '模型服务、Persona、记忆、Sidecar 与运行时生效配置'}</p>
           </div>
           <span className="status-chip"><span className="dot" /><span id="status">{status.status}</span></span>
         </header>
         <div className="admin-body">
-          <aside className="admin-tabs">
-            {tabs.map(item => <button className={classNames('admin-tab', tab === item.id && 'active')} data-tab={item.id} type="button" key={item.id} onClick={() => setTab(item.id)}>{item.label}</button>)}
+          <aside className="admin-tabs" aria-label="配置导航">
+            {tabGroups.map(group => (
+              <div className="admin-tab-group" key={group.id}>
+                <div className="admin-tab-group-label">{group.label}</div>
+                <div className="admin-tab-group-items">
+                  {group.items.map(item => (
+                    <button
+                      className={classNames('admin-tab', tab === item.id && 'active')}
+                      data-tab={item.id}
+                      type="button"
+                      key={item.id}
+                      onClick={() => setTab(item.id)}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
           </aside>
-          <section className="admin-content">
-            <Suspense fallback={<div className="section">加载中...</div>}>
+          <section className="admin-content" key={tab}>
+            <Suspense fallback={<div className="section"><div className="meta">加载中...</div></div>}>
               {renderActiveTab()}
             </Suspense>
           </section>

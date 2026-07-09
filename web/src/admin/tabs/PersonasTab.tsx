@@ -52,7 +52,7 @@ export default memo(function PersonasTab({
       </ListPane>
       <section className="detail-pane">
         <form className="section" id="persona-form" onSubmit={submitPersona}>
-          <div className="hero"><div><h2 id="persona-title">{personaDraft.name || personaDraft.key || '新 Persona'}</h2><div className="meta" id="persona-meta">{personaDraft.key || 'Persona 文件以 ID 作为键'}</div></div><button className="btn primary" id="save-persona" type="submit">保存 Persona</button></div>
+          <div className="hero sticky-hero"><div><h2 id="persona-title">{personaDraft.name || personaDraft.key || '新 Persona'}</h2><div className="meta" id="persona-meta">{personaDraft.key || 'Persona 文件以 ID 作为键'}</div></div><button className="btn primary" id="save-persona" type="submit">保存 Persona</button></div>
           <div className="grid">
             <Field id="persona-key" label="Key" value={String(personaDraft.key || '')} onChange={value => patchPersonaDraft('key', value)} readOnly={!!selectedPersona} mono />
             <Field id="persona-name" label="名称" value={String(personaDraft.name || '')} onChange={value => patchPersonaDraft('name', value)} />
@@ -66,7 +66,7 @@ export default memo(function PersonasTab({
             <div className="field"><label htmlFor="persona-progress">工作进度短语 JSON</label><textarea id="persona-progress" value={progressDraftJSON} onChange={event => patchProgressDraftJSON(event.target.value)} />{progressDraftError && <div className="field-error">{progressDraftError}</div>}</div>
           </div>
           <pre className="code" id="persona-progress-defaults">{pretty({ current: progressDraft, defaults: progressDefaults })}</pre>
-          <div className="actions foot"><button className="btn danger" id="delete-persona" type="button" disabled={!selectedPersona} onClick={deleteSelectedPersona}>删除</button></div>
+          <div className="actions foot danger-zone"><div className="danger-zone-copy"><strong>危险操作</strong><span className="meta">删除 Persona 将影响相关 Agent 绑定</span></div><button className="btn danger" id="delete-persona" type="button" disabled={!selectedPersona} onClick={deleteSelectedPersona}>删除</button></div>
         </form>
       </section>
     </div>

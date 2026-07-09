@@ -44,7 +44,7 @@ export default memo(function MemoryCoreTab({
 
   return (
     <div className="section memory-core-tab">
-      <div className="hero">
+      <div className="hero sticky-hero">
         <div>
           <h2>Memory Core</h2>
           <div className="meta">种子配置、运行时与生效配置</div>

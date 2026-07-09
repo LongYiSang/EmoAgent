@@ -4,27 +4,93 @@ import type { AgentConfig, Persona, Provider, ProviderPreset } from '../protocol
 
 export { matchesQuery } from '../../shared/lib/search';
 
-export type TabID = 'providers' | 'agents' | 'personas' | 'chat-settings' | 'usage' | 'memory-core' | 'agent-affect' | 'prompt-center' | 'websearch-pipeline' | 'platforms' | 'pipelines' | 'retrieval-mirror' | 'python-toolchain' | 'sidecar' | 'privacy-forget' | 'retention' | 'diagnostics';
+export type TabID = 'overview' | 'providers' | 'agents' | 'personas' | 'chat-settings' | 'usage' | 'memory-core' | 'agent-affect' | 'prompt-center' | 'websearch-pipeline' | 'platforms' | 'pipelines' | 'retrieval-mirror' | 'python-toolchain' | 'sidecar' | 'privacy-forget' | 'retention' | 'diagnostics';
 
-export const tabs: Array<{ id: TabID; label: string }> = [
-  { id: 'providers', label: '模型服务' },
-  { id: 'agents', label: 'Agent 配置' },
-  { id: 'personas', label: 'Persona' },
-  { id: 'usage', label: 'Usage' },
-  { id: 'chat-settings', label: '聊天设置' },
-  { id: 'memory-core', label: 'Memory Core' },
-  { id: 'agent-affect', label: 'Agent Affect' },
-  { id: 'prompt-center', label: '提示词中心' },
-  { id: 'websearch-pipeline', label: '搜索流水线' },
-  { id: 'platforms', label: '消息平台' },
-  { id: 'pipelines', label: 'Pipeline' },
-  { id: 'retrieval-mirror', label: '检索' },
-  { id: 'python-toolchain', label: 'Python' },
-  { id: 'sidecar', label: 'Sidecar' },
-  { id: 'privacy-forget', label: '隐私' },
-  { id: 'retention', label: '保留策略' },
-  { id: 'diagnostics', label: '诊断' },
+export type TabGroupID = 'overview' | 'agents' | 'capabilities' | 'runtime' | 'system';
+
+export type AdminTabItem = {
+  id: TabID;
+  label: string;
+  description: string;
+};
+
+export type AdminTabGroup = {
+  id: TabGroupID;
+  label: string;
+  items: AdminTabItem[];
+};
+
+/** Grouped admin navigation: 总览 / 智能体 / 能力 / 运行 / 系统 */
+export const tabGroups: AdminTabGroup[] = [
+  {
+    id: 'overview',
+    label: '总览',
+    items: [
+      { id: 'overview', label: '系统总览', description: '一眼看到当前 Agent、模型、记忆、插件与近期用量状态。' },
+    ],
+  },
+  {
+    id: 'agents',
+    label: '智能体',
+    items: [
+      { id: 'providers', label: '模型服务', description: '配置 LLM Provider、协议、密钥环境变量与可用模型。' },
+      { id: 'agents', label: 'Agent 配置', description: '绑定 Emotion/Work 模型槽位、Persona 与上下文覆盖。' },
+      { id: 'personas', label: 'Persona', description: '人设文案、口吻与 Work 进度话术模板。' },
+      { id: 'chat-settings', label: '聊天设置', description: '流式输出、路由策略与分段回复节奏。' },
+      { id: 'prompt-center', label: '提示词中心', description: '集中查看与编辑系统提示词片段。' },
+      { id: 'agent-affect', label: 'Agent Affect', description: '情感状态、profile 与提交式更新流程。' },
+    ],
+  },
+  {
+    id: 'capabilities',
+    label: '能力',
+    items: [
+      { id: 'memory-core', label: 'Memory Core', description: '记忆核心开关、功能面与 Natural Memory 任务。' },
+      { id: 'retrieval-mirror', label: '检索', description: '检索参数、镜像与召回相关配置。' },
+      { id: 'pipelines', label: 'Pipeline', description: '记忆管线各阶段的 Provider / Model 绑定。' },
+      { id: 'websearch-pipeline', label: '搜索流水线', description: '联网搜索提供方、抽取与回传策略。' },
+      { id: 'platforms', label: '消息平台', description: '外部消息平台接入与 Agent 映射。' },
+    ],
+  },
+  {
+    id: 'runtime',
+    label: '运行',
+    items: [
+      { id: 'usage', label: 'Usage', description: 'Token 与调用用量统计，观察系统负载。' },
+      { id: 'diagnostics', label: '诊断', description: '生效配置校验、配置问题与插件健康状态。' },
+      { id: 'sidecar', label: 'Sidecar', description: 'Sidecar 进程与配套服务配置。' },
+    ],
+  },
+  {
+    id: 'system',
+    label: '系统',
+    items: [
+      { id: 'python-toolchain', label: 'Python', description: 'Python 工具链、环境与依赖相关设置。' },
+      { id: 'privacy-forget', label: '隐私', description: '隐私与遗忘策略的高级 JSON 配置。' },
+      { id: 'retention', label: '保留策略', description: '记忆与日志保留周期等策略配置。' },
+    ],
+  },
 ];
+
+export const tabs: AdminTabItem[] = tabGroups.flatMap(group => group.items);
+
+export function findAdminTab(id: TabID): AdminTabItem | undefined {
+  return tabs.find(item => item.id === id);
+}
+
+export function findAdminGroupForTab(id: TabID): AdminTabGroup | undefined {
+  return tabGroups.find(group => group.items.some(item => item.id === id));
+}
+
+export function isAdminTabID(value: string): value is TabID {
+  return tabs.some(item => item.id === value);
+}
+
+/** Resolve admin tab from location hash, e.g. `#memory-core` → `memory-core`. */
+export function tabIDFromHash(hash = typeof window !== 'undefined' ? window.location.hash : ''): TabID {
+  const raw = hash.replace(/^#/, '').trim();
+  return isAdminTabID(raw) ? raw : 'overview';
+}
 
 export const slotDefs = [
   ['emotion-main', '聊天主模型'],

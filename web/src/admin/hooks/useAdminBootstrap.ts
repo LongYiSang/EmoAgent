@@ -11,6 +11,7 @@ import type { WebSearchAdmin } from './useWebSearchAdmin';
 import type { PlatformAdmin } from './usePlatformAdmin';
 import type { PythonToolchainAdmin } from './usePythonToolchainAdmin';
 import type { UsageAdmin } from './useUsageAdmin';
+import type { OverviewAdmin } from './useOverviewAdmin';
 import type { AdminStatusControls } from './useAdminStatus';
 import type { TabID } from '../lib/adminData';
 
@@ -27,14 +28,15 @@ type BootstrapOptions = {
   pythonToolchain: Pick<PythonToolchainAdmin, 'reloadPythonToolchainSurfaces'>;
   usage: Pick<UsageAdmin, 'reloadUsageAdmin'>;
   sidecar: Pick<SidecarAdmin, 'reloadSidecar'>;
+  overview: Pick<OverviewAdmin, 'reloadOverview'>;
   status: Pick<AdminStatusControls, 'showError'>;
 };
 
-export function useAdminBootstrap(activeTab: TabID, { providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, webSearch, platforms, pythonToolchain, usage, sidecar, status }: BootstrapOptions) {
+export function useAdminBootstrap(activeTab: TabID, { providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, webSearch, platforms, pythonToolchain, usage, sidecar, overview, status }: BootstrapOptions) {
   const loadedResourcesRef = useRef(new Set<string>());
   const resourceRequestsRef = useRef(new Map<string, Promise<void>>());
-  const loadersRef = useRef({ providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, webSearch, platforms, pythonToolchain, usage, sidecar, status });
-  loadersRef.current = { providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, webSearch, platforms, pythonToolchain, usage, sidecar, status };
+  const loadersRef = useRef({ providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, webSearch, platforms, pythonToolchain, usage, sidecar, overview, status });
+  loadersRef.current = { providers, agents, personas, chatSettings, memory, agentAffect, promptCenter, webSearch, platforms, pythonToolchain, usage, sidecar, overview, status };
 
   useEffect(() => {
     let cancelled = false;
@@ -70,6 +72,9 @@ export function useAdminBootstrap(activeTab: TabID, { providers, agents, persona
         const loadEffectiveConfig = () => loadOnce('effective-config', loaders.memory.reloadEffectiveConfig);
 
         switch (activeTab) {
+          case 'overview':
+            await loaders.overview.reloadOverview();
+            break;
           case 'providers':
             await loadProviderBasics();
             break;

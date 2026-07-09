@@ -130,7 +130,7 @@ export default memo(function PromptCenterTab({
 
       <section className="detail-pane">
         <div className="section">
-          <div className="hero">
+          <div className="hero sticky-hero">
             <div>
               <h2>{selectedComponent?.name || '提示词中心'}</h2>
               <div className="meta">{selectedComponent?.id || '未选择'} · effective_source: {sourceLabel(selectedComponent?.effective_source || '')}</div>
