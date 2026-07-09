@@ -17,9 +17,13 @@ const (
 )
 
 type ReceiptResult struct {
-	ID        string
-	Status    ReceiptStatus
-	Duplicate bool
+	ID             string
+	Status         ReceiptStatus
+	Duplicate      bool
+	Retry          bool
+	DuplicateKind  string
+	ExistingStatus string
+	AttemptCount   int
 }
 
 type ReceiptStore interface {

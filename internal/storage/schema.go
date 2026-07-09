@@ -1538,6 +1538,16 @@ CREATE INDEX IF NOT EXISTS idx_platform_message_receipts_status
     ON platform_message_receipts(status, received_at DESC);
 `,
 	},
+	{
+		Version: 40,
+		SQL: `
+ALTER TABLE platform_message_receipts ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE platform_message_receipts ADD COLUMN last_attempt_at TEXT;
+ALTER TABLE platform_message_receipts ADD COLUMN turn_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE platform_message_receipts ADD COLUMN agent_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE platform_message_receipts ADD COLUMN resolved_persona_key TEXT NOT NULL DEFAULT '';
+`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.
@@ -1621,8 +1631,30 @@ func ApplySchemaRepairs(db *sql.DB) error {
 	if err := ensureHostResourceChangeSetSchema(db); err != nil {
 		return err
 	}
+	if err := ensurePlatformMessageReceiptsSchema(db); err != nil {
+		return err
+	}
 	if err := ensureNoImageBase64Guards(db); err != nil {
 		return err
+	}
+	return nil
+}
+
+func ensurePlatformMessageReceiptsSchema(db *sql.DB) error {
+	repairs := map[string][]struct {
+		name string
+		sql  string
+	}{
+		"platform_message_receipts": {
+			{"attempt_count", "ALTER TABLE platform_message_receipts ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 1"},
+			{"last_attempt_at", "ALTER TABLE platform_message_receipts ADD COLUMN last_attempt_at TEXT"},
+			{"turn_id", "ALTER TABLE platform_message_receipts ADD COLUMN turn_id TEXT NOT NULL DEFAULT ''"},
+			{"agent_id", "ALTER TABLE platform_message_receipts ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''"},
+			{"resolved_persona_key", "ALTER TABLE platform_message_receipts ADD COLUMN resolved_persona_key TEXT NOT NULL DEFAULT ''"},
+		},
+	}
+	if err := ensureTableColumns(db, repairs); err != nil {
+		return fmt.Errorf("repair platform_message_receipts schema: %w", err)
 	}
 	return nil
 }

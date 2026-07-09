@@ -9,6 +9,7 @@ import (
 
 type InboundMessage struct {
 	ID                     string
+	RequestID              string
 	ExternalMessageID      string
 	SourceType             string
 	AdapterInstanceID      string

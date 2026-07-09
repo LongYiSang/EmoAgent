@@ -177,6 +177,12 @@ EmoAgent 侧默认不接收入站图片，需要在 `platforms.adapters.<instanc
 
 首版只支持 OneBot 私聊 `image.data.url` 入站图片；不处理群图片、出站图片、内置表情或收藏表情。改完运行时配置后需要重启 EmoAgent。若 SnowLuma 返回的是本机图片 URL，再把对应 host 加入 `allowed_hosts`。
 
+### OneBot 平台 Turn Pipeline
+
+OneBot / SnowLuma 普通私聊文本会通过平台绑定 Agent 进入 Turn Pipeline；需要保持 `chat.turn_pipeline.enabled: true` 与 `chat.turn_pipeline.memory_stages: true`。生产配置建议显式设置 `platforms.common.default_agent_id`，否则启用平台 adapter 时会记录 fallback 警告。
+
+同一 OneBot 来源和会话同时只运行一条普通回复；第二条会收到 busy 提示，可等待回复完成或发送 `/stop`。平台侧支持 `/approvals`、`/approve <request_id> [option_id]`、`/reject <request_id>` 处理 Turn Pipeline 审批。排查重复、重试或无响应时，可从 `platform_message_receipts.external_message_id` 查到 `turn_id`，再关联 `turns` / `turn_events`。群消息默认仍在 OneBot adapter 层忽略。
+
 ### Sidecar 简易安装
 
 MemoryCore Go module 通过 `go.mod` 引入，但 Python sidecar 不会随 Go 依赖自动安装。启用 `memory.sidecar.enabled=true` 前，需要先在 sidecar 目录安装 Python 依赖；默认配置假设 `EmoAgent` 与 `EmoAgent-MemoryCore` 是相邻目录：

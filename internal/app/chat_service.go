@@ -10,9 +10,11 @@ import (
 
 	"github.com/longyisang/emoagent/internal/chat"
 	"github.com/longyisang/emoagent/internal/config"
+	"github.com/longyisang/emoagent/internal/conversation"
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/media"
 	"github.com/longyisang/emoagent/internal/platform"
+	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/tool"
 	"github.com/longyisang/emoagent/internal/turn"
 	workctx "github.com/longyisang/emoagent/internal/work"
@@ -53,10 +55,24 @@ func (s *ChatService) BuildEngine(dispatcher *tool.Dispatcher) *chat.Engine {
 type PlatformTurnResult struct {
 	Text       string
 	Segments   []string
+	Events     []platform.OutboundEvent
+	TurnID     string
+	Status     string
+	ErrorKind  string
 	ResultType string
 }
 
-func (s *ChatService) SendPlatformTurn(ctx context.Context, runtime *ActiveAgentRuntime, sessionID string, persona *config.Persona, in platform.InboundMessage) (PlatformTurnResult, error) {
+func (s *ChatService) SendPlatformTurn(ctx context.Context, runtime *ActiveAgentRuntime, sessionID string, persona *config.Persona, origin conversation.Origin, in platform.InboundMessage) (PlatformTurnResult, error) {
+	env := platformTurnEnvelope(in, sessionID, runtimePersonaKey(runtime))
+	return s.executePlatformTurn(ctx, runtime, sessionID, persona, origin, in, env)
+}
+
+func (s *ChatService) SendPlatformApprovalTurn(ctx context.Context, runtime *ActiveAgentRuntime, sessionID string, persona *config.Persona, origin conversation.Origin, in platform.InboundMessage, approval turn.InboundApproval) (PlatformTurnResult, error) {
+	env := platformApprovalEnvelope(in, sessionID, runtimePersonaKey(runtime), approval)
+	return s.executePlatformTurn(ctx, runtime, sessionID, persona, origin, in, env)
+}
+
+func (s *ChatService) executePlatformTurn(ctx context.Context, runtime *ActiveAgentRuntime, sessionID string, persona *config.Persona, origin conversation.Origin, in platform.InboundMessage, env turn.InboundEnvelope) (PlatformTurnResult, error) {
 	if s == nil {
 		return PlatformTurnResult{}, fmt.Errorf("chat service is not configured")
 	}
@@ -77,12 +93,25 @@ func (s *ChatService) SendPlatformTurn(ctx context.Context, runtime *ActiveAgent
 	replyDelivery := cfg.Chat.ReplyDelivery
 	replyDelivery.Timing.Enabled = false
 	engine.UpdateReplyDeliveryConfig(replyDelivery)
-	env := platformTurnEnvelope(in, sessionID, runtime.PersonaKey)
-	sink := &platformTurnSink{}
+	sink := &platformTurnSink{
+		origin:     origin,
+		sessionID:  sessionID,
+		personaKey: runtime.PersonaKey,
+		replyTo:    in.ExternalMessageID,
+	}
 	runCtx := workctx.WithAgentID(ctx, runtime.ID)
 	result, err := s.turnRunnerForEngine(engine).Execute(runCtx, env, persona, sink)
-	out := PlatformTurnResult{Text: sink.Text(), Segments: sink.Segments()}
+	out := PlatformTurnResult{
+		Text:      sink.Text(),
+		Segments:  sink.Segments(),
+		Events:    sink.Events(),
+		TurnID:    result.TurnID,
+		Status:    result.Status,
+		ErrorKind: result.ErrorKind,
+	}
 	switch {
+	case sink.ResultType() != "":
+		out.ResultType = sink.ResultType()
 	case result.Status == "approval_wait":
 		out.ResultType = "approval_wait"
 	case strings.TrimSpace(out.Text) == "":
@@ -263,6 +292,13 @@ func (s *ChatService) turnRunnerForEngine(engine *chat.Engine) *chat.TurnRunner 
 type platformTurnSink struct {
 	text     strings.Builder
 	segments []string
+	events   []platform.OutboundEvent
+
+	origin     conversation.Origin
+	sessionID  string
+	personaKey string
+	replyTo    string
+	resultType string
 }
 
 func (s *platformTurnSink) Emit(_ context.Context, event turn.OutboundEvent) error {
@@ -274,6 +310,33 @@ func (s *platformTurnSink) Emit(_ context.Context, event turn.OutboundEvent) err
 		if strings.TrimSpace(event.Content) != "" {
 			s.segments = append(s.segments, event.Content)
 		}
+	case turn.EventApprovalRequired:
+		if event.Approval != nil && event.Approval.Request != nil {
+			s.resultType = "approval_wait"
+			s.events = append(s.events, s.messageEvent(platformApprovalRequiredMessage(event.Approval.Request)))
+		}
+	case turn.EventApprovalUpdated:
+		if event.Approval != nil && event.Approval.Request != nil {
+			s.events = append(s.events, s.messageEvent(platformApprovalUpdatedMessage(event.Approval.Request)))
+		}
+	case turn.EventTurnStatus:
+		status := platformEventStatus(event)
+		if status == "busy" || status == "previous_failed" {
+			s.resultType = status
+			s.events = append(s.events, s.messageEvent(platformTurnStatusMessage(status)))
+		}
+	case turn.EventError:
+		s.resultType = "error"
+		s.events = append(s.events, platform.OutboundEvent{
+			Type:                     "error",
+			Origin:                   s.origin,
+			SessionID:                s.sessionID,
+			PersonaKey:               s.personaKey,
+			Content:                  firstNonEmptyCommandValue(event.Content, "平台回复失败。"),
+			Status:                   "failed",
+			ErrorKind:                platformEventErrorKind(event),
+			ReplyToExternalMessageID: s.replyTo,
+		})
 	}
 	return nil
 }
@@ -292,15 +355,41 @@ func (s *platformTurnSink) Segments() []string {
 	return append([]string(nil), s.segments...)
 }
 
+func (s *platformTurnSink) Events() []platform.OutboundEvent {
+	if s == nil || len(s.events) == 0 {
+		return nil
+	}
+	return append([]platform.OutboundEvent(nil), s.events...)
+}
+
+func (s *platformTurnSink) ResultType() string {
+	if s == nil {
+		return ""
+	}
+	return s.resultType
+}
+
+func (s *platformTurnSink) messageEvent(content string) platform.OutboundEvent {
+	return platform.OutboundEvent{
+		Type:                     "message",
+		Origin:                   s.origin,
+		SessionID:                s.sessionID,
+		PersonaKey:               s.personaKey,
+		Content:                  content,
+		ReplyToExternalMessageID: s.replyTo,
+	}
+}
+
 func platformTurnEnvelope(in platform.InboundMessage, sessionID string, personaKey string) turn.InboundEnvelope {
 	content := strings.TrimSpace(in.Text)
-	sourceEventID := strings.TrimSpace(in.ExternalMessageID)
+	sourceEventID := platformSourceEventID(in)
 	env := turn.InboundEnvelope{
 		Source:        turn.SourcePlatform,
 		SourceEventID: sourceEventID,
 		Kind:          turn.InboundUserMessage,
 		SessionID:     strings.TrimSpace(sessionID),
 		PersonaKey:    strings.TrimSpace(personaKey),
+		RequestID:     strings.TrimSpace(in.RequestID),
 		Content:       content,
 		UserMessage: &turn.UserMessageInput{
 			Content: content,
@@ -311,13 +400,121 @@ func platformTurnEnvelope(in platform.InboundMessage, sessionID string, personaK
 			"adapter_instance_id": strings.TrimSpace(in.AdapterInstanceID),
 			"platform_id":         strings.TrimSpace(in.PlatformID),
 			"channel_type":        strings.TrimSpace(in.ChannelType),
+			"inbound_id":          strings.TrimSpace(in.ID),
+			"raw_event_hash":      strings.TrimSpace(in.RawEventHash),
 		},
-	}
-	if sourceEventID == "" {
-		env.RawMeta["inbound_id"] = strings.TrimSpace(in.ID)
 	}
 	env.IdempotencyKey = turn.BuildIdempotencyKey(env)
 	return env
+}
+
+func platformApprovalEnvelope(in platform.InboundMessage, sessionID string, personaKey string, approval turn.InboundApproval) turn.InboundEnvelope {
+	env := turn.InboundEnvelope{
+		Source:        turn.SourcePlatform,
+		SourceEventID: platformSourceEventID(in),
+		Kind:          turn.InboundApprovalAction,
+		SessionID:     strings.TrimSpace(sessionID),
+		PersonaKey:    strings.TrimSpace(personaKey),
+		Approval: &turn.InboundApproval{
+			RequestID: strings.TrimSpace(approval.RequestID),
+			Action:    strings.TrimSpace(strings.ToLower(approval.Action)),
+			OptionID:  strings.TrimSpace(approval.OptionID),
+		},
+		RawMeta: map[string]any{
+			"source_type":         strings.TrimSpace(in.SourceType),
+			"adapter_instance_id": strings.TrimSpace(in.AdapterInstanceID),
+			"platform_id":         strings.TrimSpace(in.PlatformID),
+			"channel_type":        strings.TrimSpace(in.ChannelType),
+			"inbound_id":          strings.TrimSpace(in.ID),
+			"raw_event_hash":      strings.TrimSpace(in.RawEventHash),
+		},
+	}
+	env.IdempotencyKey = turn.BuildIdempotencyKey(env)
+	return env
+}
+
+func platformSourceEventID(in platform.InboundMessage) string {
+	sourceEventID := strings.TrimSpace(in.ExternalMessageID)
+	if sourceEventID == "" {
+		sourceEventID = strings.TrimSpace(in.ID)
+	}
+	if sourceEventID == "" {
+		sourceEventID = strings.TrimSpace(in.RawEventHash)
+	}
+	return sourceEventID
+}
+
+func runtimePersonaKey(runtime *ActiveAgentRuntime) string {
+	if runtime == nil {
+		return ""
+	}
+	return runtime.PersonaKey
+}
+
+func platformApprovalRequiredMessage(req *protocol.ApprovalRequest) string {
+	if req == nil {
+		return "需要你的确认。"
+	}
+	subject := firstNonEmptyCommandValue(req.Question, req.GoalSummary, "需要执行一项操作")
+	lines := []string{"需要你的确认：" + subject}
+	if strings.TrimSpace(req.RiskLevel) != "" {
+		lines = append(lines, "风险等级："+strings.TrimSpace(req.RiskLevel))
+	}
+	if len(req.Options) > 0 {
+		lines = append(lines, "", "可选项：")
+		for _, option := range req.Options {
+			summary := strings.TrimSpace(option.Summary)
+			if summary == "" {
+				summary = option.ID
+			}
+			lines = append(lines, "- "+strings.TrimSpace(option.ID)+"："+summary)
+		}
+	}
+	lines = append(lines, "", "可选操作：")
+	if len(req.Options) > 0 {
+		lines = append(lines, "/approve "+req.ID+" <option_id>")
+	} else {
+		lines = append(lines, "/approve "+req.ID)
+	}
+	lines = append(lines, "/reject "+req.ID, "/approvals")
+	return strings.Join(lines, "\n")
+}
+
+func platformApprovalUpdatedMessage(req *protocol.ApprovalRequest) string {
+	if req == nil {
+		return "审批状态已更新。"
+	}
+	status := firstNonEmptyCommandValue(req.Status, "updated")
+	return "审批状态已更新：" + req.ID + " -> " + status
+}
+
+func platformTurnStatusMessage(status string) string {
+	switch status {
+	case "busy":
+		return platformBusyMessage()
+	case "previous_failed":
+		return "上一轮回复失败，未重复执行。请重新发送消息再试。"
+	default:
+		return "平台回复状态：" + status
+	}
+}
+
+func platformEventStatus(event turn.OutboundEvent) string {
+	if event.Payload != nil {
+		if status, ok := event.Payload["status"].(string); ok {
+			return strings.TrimSpace(status)
+		}
+	}
+	return strings.TrimSpace(event.Content)
+}
+
+func platformEventErrorKind(event turn.OutboundEvent) string {
+	if event.Payload != nil {
+		if kind, ok := event.Payload["error_kind"].(string); ok && strings.TrimSpace(kind) != "" {
+			return strings.TrimSpace(kind)
+		}
+	}
+	return "turn_error"
 }
 
 func clonePlatformTurnParts(parts []llm.ContentBlock) []llm.ContentBlock {

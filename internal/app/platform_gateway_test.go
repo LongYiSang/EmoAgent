@@ -10,7 +10,9 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	chatcore "github.com/longyisang/emoagent/internal/chat"
 	"github.com/longyisang/emoagent/internal/config"
@@ -18,7 +20,10 @@ import (
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/media"
 	"github.com/longyisang/emoagent/internal/platform"
+	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/storage"
+	"github.com/longyisang/emoagent/internal/turn"
+	"github.com/longyisang/emoagent/internal/work"
 )
 
 func TestPlatformGatewayHandlesCommandWithFullOriginAndActor(t *testing.T) {
@@ -300,6 +305,86 @@ func TestPlatformGatewayHandlesBuiltinCommandMatrix(t *testing.T) {
 	}
 }
 
+func TestPlatformApprovalsCommandListsPendingApprovals(t *testing.T) {
+	ctx := context.Background()
+	app, db, gateway, fakeLLM := newTestPlatformGateway(t)
+	app.kernel.Services.Work.approvals = work.NewApprovalService(db.SqlDB(), app.kernel.Infra.Logger)
+	inbound := testPlatformInbound("msg-approvals", "/approvals")
+	origin, err := platform.OriginFromInbound(inbound, "")
+	if err != nil {
+		t.Fatalf("OriginFromInbound: %v", err)
+	}
+	binding, err := app.kernel.Services.Conversation.Bindings().EnsureCurrent(ctx, origin, "default")
+	if err != nil {
+		t.Fatalf("EnsureCurrent: %v", err)
+	}
+	approval, err := app.kernel.Services.Work.Approvals().CreateRequestFromDecision(binding.SessionID, protocol.DecisionPacket{
+		TaskID:            "task-approval-list",
+		Category:          protocol.CatHumanConfirmation,
+		RiskLevel:         "medium",
+		GoalSummary:       "确认是否继续执行平台操作。",
+		Question:          "允许继续执行吗？",
+		WhyBlocked:        "需要用户确认。",
+		Options:           []protocol.DecisionOption{{ID: "allow", Summary: "允许继续。"}, {ID: "deny", Summary: "拒绝。"}},
+		RecommendedOption: "allow",
+		RejectOptionID:    "deny",
+	}, time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("CreateRequestFromDecision: %v", err)
+	}
+	sink := &platform.BufferedPlatformSink{}
+
+	result, err := gateway.HandleInbound(ctx, inbound, sink)
+	if err != nil {
+		t.Fatalf("HandleInbound: %v", err)
+	}
+	if !result.Handled || result.SessionID != binding.SessionID {
+		t.Fatalf("result = %#v, want handled approvals command", result)
+	}
+	if fakeLLM.calls != 0 {
+		t.Fatalf("LLM calls = %d, want /approvals to bypass LLM", fakeLLM.calls)
+	}
+	if len(sink.Events) != 1 || !strings.Contains(sink.Events[0].Content, approval.ID) || !strings.Contains(sink.Events[0].Content, "/approve") {
+		t.Fatalf("events = %#v, want pending approval guidance", sink.Events)
+	}
+	requirePlatformReceiptResult(t, db, "napcat", "main", "msg-approvals", "handled", "command_result")
+}
+
+func TestPlatformTurnTranslatesApprovalRequiredToMessage(t *testing.T) {
+	origin := conversation.Origin{OriginKey: "onebot:main:private:10001"}
+	sink := &platformTurnSink{
+		origin:     origin,
+		sessionID:  "session-1",
+		personaKey: "default",
+		replyTo:    "msg-approval",
+	}
+
+	err := sink.Emit(context.Background(), turn.OutboundEvent{
+		Type: turn.EventApprovalRequired,
+		Approval: &turn.ApprovalActivity{Request: &protocol.ApprovalRequest{
+			ID:             "approval-1",
+			Question:       "允许执行操作吗？",
+			RiskLevel:      "medium",
+			Status:         string(protocol.ApprovalStatusPending),
+			Options:        []protocol.DecisionOption{{ID: "allow", Summary: "允许执行。"}},
+			RejectOptionID: "deny",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	events := sink.Events()
+	if sink.ResultType() != "approval_wait" || len(events) != 1 {
+		t.Fatalf("result_type=%q events=%#v, want approval_wait event", sink.ResultType(), events)
+	}
+	content := events[0].Content
+	for _, want := range []string{"approval-1", "/approve approval-1", "/reject approval-1"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("approval message missing %q:\n%s", want, content)
+		}
+	}
+}
+
 func TestPlatformGatewayNormalTextEmitsFinalMessage(t *testing.T) {
 	ctx := context.Background()
 	app, db, gateway, activeLLM := newTestPlatformGateway(t)
@@ -419,6 +504,192 @@ func TestPlatformGatewayNormalTextEmitsReplyDeliverySegments(t *testing.T) {
 		t.Fatalf("messages = %#v, want one persisted assistant reply", messages)
 	}
 	requirePlatformReceiptResult(t, db, "napcat", "main", "msg-text-segmented", "handled", "message")
+}
+
+func TestPlatformGatewayRejectsConcurrentTextForSameSessionAsBusy(t *testing.T) {
+	ctx := context.Background()
+	app, db, gateway, activeLLM := newTestPlatformGateway(t)
+	var calls atomic.Int32
+	var released atomic.Bool
+	release := make(chan struct{})
+	releaseBlock := func() {
+		if released.CompareAndSwap(false, true) {
+			close(release)
+		}
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		<-release
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl-busy","model":"bound-model","choices":[{"delta":{"content":"first reply"}}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl-busy","model":"bound-model","choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\n"))
+	}))
+	t.Cleanup(server.Close)
+	t.Cleanup(releaseBlock)
+	cfg := testConfig(app)
+	cfg.Chat.TurnPipeline.Enabled = true
+	cfg.Chat.TurnPipeline.MemoryStages = true
+	cfg.Chat.PromptRouter.Mode = config.PromptRouterModeAlwaysCasual
+	cfg.AgentConfigs = []config.AgentConfig{{ID: "default-agent", PersonaKey: "default"}}
+	upsertPlatformGatewayAgent(t, app, "default-agent", "default", server.URL)
+	firstSink := &platform.BufferedPlatformSink{}
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := gateway.HandleInbound(ctx, testPlatformInbound("msg-busy-first", "hello"), firstSink)
+		firstDone <- err
+	}()
+	waitPlatformLLMCalls(t, &calls, 1)
+
+	secondSink := &platform.BufferedPlatformSink{}
+	second, err := gateway.HandleInbound(ctx, testPlatformInbound("msg-busy-second", "hello again"), secondSink)
+	if err != nil {
+		t.Fatalf("HandleInbound second: %v", err)
+	}
+	if !second.Handled || second.SessionID == "" {
+		t.Fatalf("second = %#v, want handled busy", second)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("LLM calls = %d, want only first turn", calls.Load())
+	}
+	if activeLLM.calls != 0 {
+		t.Fatalf("active LLM calls = %d, want platform agent runtime only", activeLLM.calls)
+	}
+	if len(secondSink.Events) != 1 || secondSink.Events[0].Type != "message" || secondSink.Events[0].Content != platformBusyMessage() {
+		t.Fatalf("second events = %#v, want one busy message", secondSink.Events)
+	}
+	requirePlatformReceiptResult(t, db, "napcat", "main", "msg-busy-second", "handled", "busy")
+
+	releaseBlock()
+	if err := <-firstDone; err != nil {
+		t.Fatalf("HandleInbound first: %v", err)
+	}
+	if len(firstSink.Events) != 1 || firstSink.Events[0].Content != "first reply" {
+		t.Fatalf("first events = %#v, want first reply", firstSink.Events)
+	}
+}
+
+func TestPlatformGatewayAllowsDifferentOriginsInParallel(t *testing.T) {
+	ctx := context.Background()
+	app, _, gateway, activeLLM := newTestPlatformGateway(t)
+	var calls atomic.Int32
+	var released atomic.Bool
+	release := make(chan struct{})
+	releaseBlock := func() {
+		if released.CompareAndSwap(false, true) {
+			close(release)
+		}
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		call := calls.Add(1)
+		<-release
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl-parallel","model":"bound-model","choices":[{"delta":{"content":"reply ` + string(rune('0'+call)) + `"}}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl-parallel","model":"bound-model","choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\n"))
+	}))
+	t.Cleanup(server.Close)
+	t.Cleanup(releaseBlock)
+	cfg := testConfig(app)
+	cfg.Chat.TurnPipeline.Enabled = true
+	cfg.Chat.TurnPipeline.MemoryStages = true
+	cfg.Chat.PromptRouter.Mode = config.PromptRouterModeAlwaysCasual
+	cfg.AgentConfigs = []config.AgentConfig{{ID: "default-agent", PersonaKey: "default"}}
+	upsertPlatformGatewayAgent(t, app, "default-agent", "default", server.URL)
+	first := testPlatformInbound("msg-parallel-1", "hello")
+	second := testPlatformInbound("msg-parallel-2", "hello")
+	second.ExternalConversationID = "10002"
+	second.ExternalActorID = "10002"
+	second.Actor.ID = "10002"
+	firstSink := &platform.BufferedPlatformSink{}
+	secondSink := &platform.BufferedPlatformSink{}
+	firstDone := make(chan error, 1)
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := gateway.HandleInbound(ctx, first, firstSink)
+		firstDone <- err
+	}()
+	go func() {
+		_, err := gateway.HandleInbound(ctx, second, secondSink)
+		secondDone <- err
+	}()
+	waitPlatformLLMCalls(t, &calls, 2)
+	releaseBlock()
+	if err := <-firstDone; err != nil {
+		t.Fatalf("HandleInbound first: %v", err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("HandleInbound second: %v", err)
+	}
+	if activeLLM.calls != 0 {
+		t.Fatalf("active LLM calls = %d, want platform agent runtime only", activeLLM.calls)
+	}
+	if len(firstSink.Events) != 1 || len(secondSink.Events) != 1 {
+		t.Fatalf("first events=%#v second events=%#v, want one reply each", firstSink.Events, secondSink.Events)
+	}
+}
+
+func TestPlatformStopCancelsPlatformRunAndReleasesGate(t *testing.T) {
+	ctx := context.Background()
+	app, _, gateway, activeLLM := newTestPlatformGateway(t)
+	var calls atomic.Int32
+	var released atomic.Bool
+	release := make(chan struct{})
+	releaseBlock := func() {
+		if released.CompareAndSwap(false, true) {
+			close(release)
+		}
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		call := calls.Add(1)
+		if call == 1 {
+			<-release
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl-after-stop","model":"bound-model","choices":[{"delta":{"content":"after stop"}}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl-after-stop","model":"bound-model","choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\n"))
+	}))
+	t.Cleanup(server.Close)
+	t.Cleanup(releaseBlock)
+	cfg := testConfig(app)
+	cfg.Chat.TurnPipeline.Enabled = true
+	cfg.Chat.TurnPipeline.MemoryStages = true
+	cfg.Chat.PromptRouter.Mode = config.PromptRouterModeAlwaysCasual
+	cfg.AgentConfigs = []config.AgentConfig{{ID: "default-agent", PersonaKey: "default"}}
+	upsertPlatformGatewayAgent(t, app, "default-agent", "default", server.URL)
+	firstSink := &platform.BufferedPlatformSink{}
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := gateway.HandleInbound(ctx, testPlatformInbound("msg-stop-first", "slow"), firstSink)
+		firstDone <- err
+	}()
+	waitPlatformLLMCalls(t, &calls, 1)
+
+	stopSink := &platform.BufferedPlatformSink{}
+	stopResult, err := gateway.HandleInbound(ctx, testPlatformInbound("msg-stop-command", "/stop"), stopSink)
+	if err != nil {
+		t.Fatalf("HandleInbound stop: %v", err)
+	}
+	if !stopResult.Handled {
+		t.Fatalf("stop result = %#v, want handled", stopResult)
+	}
+	event := requirePlatformCommandEvent(t, stopSink.Events, "stop")
+	if event.Payload["stopped_count"] != float64(1) && event.Payload["stopped_count"] != 1 {
+		t.Fatalf("stop event = %#v, want stopped_count=1", event)
+	}
+	releaseBlock()
+	<-firstDone
+
+	nextSink := &platform.BufferedPlatformSink{}
+	next, err := gateway.HandleInbound(ctx, testPlatformInbound("msg-stop-next", "next"), nextSink)
+	if err != nil {
+		t.Fatalf("HandleInbound next: %v", err)
+	}
+	if !next.Handled || len(nextSink.Events) != 1 || nextSink.Events[0].Content != "after stop" {
+		t.Fatalf("next=%#v events=%#v, want next reply", next, nextSink.Events)
+	}
+	if activeLLM.calls != 0 {
+		t.Fatalf("active LLM calls = %d, want platform agent runtime only", activeLLM.calls)
+	}
 }
 
 func TestPlatformGatewayTextRequiresTurnPipeline(t *testing.T) {
@@ -645,6 +916,20 @@ func testPlatformInbound(messageID string, text string) platform.InboundMessage 
 		PersonaKey:             "default",
 		Text:                   text,
 		Actor:                  platform.Actor{ID: "10001", DisplayName: "Alice", Role: platform.ActorRoleMember},
+	}
+}
+
+func waitPlatformLLMCalls(t *testing.T, calls *atomic.Int32, want int32) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for calls.Load() < want {
+		select {
+		case <-deadline:
+			t.Fatalf("LLM calls = %d, want at least %d", calls.Load(), want)
+		case <-ticker.C:
+		}
 	}
 }
 

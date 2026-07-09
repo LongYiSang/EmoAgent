@@ -47,6 +47,27 @@ func (r *RunRegistry) Register(ref RunRef, cancel context.CancelFunc) func() {
 	}
 }
 
+func (r *RunRegistry) TryRegister(ref RunRef, cancel context.CancelFunc) (func(), bool) {
+	if r == nil || cancel == nil {
+		return func() {}, true
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, run := range r.runs {
+		if sameRun(ref, run.ref) {
+			return func() {}, false
+		}
+	}
+	r.nextID++
+	id := r.nextID
+	r.runs[id] = registeredRun{ref: ref, cancel: cancel}
+	return func() {
+		r.mu.Lock()
+		delete(r.runs, id)
+		r.mu.Unlock()
+	}, true
+}
+
 func (r *RunRegistry) Stop(selector StopSelector) int {
 	if r == nil {
 		return 0
@@ -75,4 +96,8 @@ func (s StopSelector) matches(ref RunRef) bool {
 		return false
 	}
 	return s.OriginKey != "" || s.SessionID != ""
+}
+
+func sameRun(a, b RunRef) bool {
+	return a.OriginKey == b.OriginKey && a.SessionID == b.SessionID && a.Kind == b.Kind
 }
