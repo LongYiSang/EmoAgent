@@ -6,11 +6,11 @@ import type { MemoryJob, MemorySegment } from '../protocol/memoryApi';
 export type MessageStatus = 'sent' | 'pending' | 'failed';
 
 export type TimelineItem =
-  | { kind: 'message'; id: string; role: string; content: string; createdAt: string; status?: MessageStatus; parts?: ContentPart[]; displayParts?: MessageDisplayPart[]; groupID?: string; segmentIndex?: number; segmentTotal?: number }
+  | { kind: 'message'; id: string; role: string; content: string; createdAt: string; status?: MessageStatus; parts?: ContentPart[]; displayParts?: MessageDisplayPart[]; groupID?: string; segmentIndex?: number; segmentTotal?: number; fresh?: boolean }
   | { kind: 'approval'; id: string; approval: ApprovalRequest; createdAt: string }
-  | { kind: 'tool'; id: string; tool: ToolActivity; createdAt: string; collapsed: boolean }
-  | { kind: 'reasoning'; id: string; reasoning: ReasoningActivity; createdAt: string; collapsed: boolean }
-  | { kind: 'work'; id: string; content: string; createdAt: string }
+  | { kind: 'tool'; id: string; tool: ToolActivity; createdAt: string; collapsed: boolean; fresh?: boolean }
+  | { kind: 'reasoning'; id: string; reasoning: ReasoningActivity; createdAt: string; collapsed: boolean; fresh?: boolean }
+  | { kind: 'work'; id: string; content: string; createdAt: string; fresh?: boolean }
   | { kind: 'memory_pipeline'; id: string; snapshot: AnyRecord; createdAt: string }
   | { kind: 'command_result'; id: string; commandID: string; commandName: string; status: string; content: string; createdAt: string; payload?: AnyRecord }
   | { kind: 'context_switched'; id: string; reason: string; content: string; createdAt: string; payload?: AnyRecord };

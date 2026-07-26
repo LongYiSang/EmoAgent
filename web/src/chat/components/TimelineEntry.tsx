@@ -13,6 +13,7 @@ export const TimelineEntry = memo(function TimelineEntry(props: {
   activityOpen?: boolean;
   pendingApprovalIDs: string[];
   sending: boolean;
+  streaming?: boolean;
   onActivityOpenChange?: (open: boolean) => void;
   onApprovalAction: (id: string, action: string, optionID?: string) => void;
   onDismissApproval: (id: string) => void;
@@ -20,7 +21,7 @@ export const TimelineEntry = memo(function TimelineEntry(props: {
   onRetry: (message: Extract<TimelineItem, { kind: 'message' }>) => void;
 }) {
   const { item } = props;
-  if (item.kind === 'message') return <MessageBubble item={item} onRetry={() => props.onRetry(item)} />;
+  if (item.kind === 'message') return <MessageBubble item={item} streaming={props.streaming} onRetry={() => props.onRetry(item)} />;
   if (item.kind === 'approval') {
     return <ApprovalCard item={item.approval} pending={props.pendingApprovalIDs.includes(item.id)} sending={props.sending} onAction={props.onApprovalAction} onDismiss={props.onDismissApproval} />;
   }

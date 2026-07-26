@@ -21,9 +21,18 @@ type DraftAttachment = UploadedMedia & {
   preview_url?: string;
 };
 
+const THEME_STORAGE_KEY = 'emoagent-theme';
+
 export function ChatApp() {
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
   const [composer, setComposer] = useState('');
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    try {
+      return localStorage.getItem(THEME_STORAGE_KEY) === 'dark' ? 'dark' : 'light';
+    } catch {
+      return 'light';
+    }
+  });
   const [attachments, setAttachments] = useState<DraftAttachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -38,6 +47,23 @@ export function ChatApp() {
     contextRef.current = { personaKey: state.currentPersonaKey, sessionID: state.currentSessionId };
     syncURL(state.currentPersonaKey, state.currentSessionId);
   }, [state.currentPersonaKey, state.currentSessionId]);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      // localStorage unavailable — theme just won't persist
+    }
+  }, [theme]);
+
+  const toggleTheme = useCallback(() => {
+    setTheme(current => current === 'dark' ? 'light' : 'dark');
+  }, []);
+
+  const focusComposer = useCallback(() => {
+    document.getElementById('input')?.focus();
+  }, []);
 
   const session = useChatSession({ state, dispatch, contextRef, closeSocketRef, sendCommandRef, setSidebarOpen });
   const { ensureConnected, sendWS, closeSocket } = useChatWebSocket({
@@ -261,6 +287,8 @@ export function ChatApp() {
             contextStats={state.contextStats}
             memoryStatusVisible={state.memoryStatusVisible}
             hasSession={Boolean(state.currentSessionId)}
+            theme={theme}
+            onToggleTheme={toggleTheme}
             onToggleSidebar={() => setSidebarOpen(value => !value)}
             onToggleMemory={() => dispatch({ type: 'SET_MEMORY_VISIBLE', visible: !state.memoryStatusVisible })}
             onScanMemory={scanMemory}
@@ -276,6 +304,7 @@ export function ChatApp() {
             onDismissApproval={dismissApproval}
             onOpenPipeline={setPipelineSnapshot}
             onRetry={retryMessage}
+            onStartChat={focusComposer}
           />
           <Composer
             value={composer}

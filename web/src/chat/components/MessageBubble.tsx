@@ -1,19 +1,27 @@
 import { classNames } from '../../shared/lib/classNames';
 import { Avatar } from '../../shared/components/Avatar';
 import type { TimelineItem } from '../state/chatTypes';
+import { Markdown } from './Markdown';
 
-export function MessageBubble({ item, onRetry }: { item: Extract<TimelineItem, { kind: 'message' }>; onRetry: () => void }) {
+export function MessageBubble({ item, streaming, onRetry }: {
+  item: Extract<TimelineItem, { kind: 'message' }>;
+  streaming?: boolean;
+  onRetry: () => void;
+}) {
   const role = item.role === 'user' ? 'user' : item.role === 'error' ? 'error' : 'emotion';
   const displayParts = item.displayParts?.length ? item.displayParts : undefined;
+  const richText = role === 'emotion';
   return (
-    <div className={classNames('msg', item.role, item.status === 'pending' && 'pending', item.status === 'failed' && 'failed')}>
+    <div className={classNames('msg', item.role, item.status === 'pending' && 'pending', item.status === 'failed' && 'failed', streaming && 'streaming')}>
       <Avatar role={role} />
       <div className="bubble">
         {displayParts ? (
           <div className="message-parts">
             {displayParts.map((part, index) => {
               if (part.type === 'text') {
-                return <div className="message-part-text" key={`text-${index}`}>{part.text}</div>;
+                return richText
+                  ? <Markdown className="message-part-text markdown-body" content={part.text || ''} key={`text-${index}`} />
+                  : <div className="message-part-text" key={`text-${index}`}>{part.text}</div>;
               }
               if (part.type === 'image') {
                 if (!part.display_url) {
@@ -35,6 +43,8 @@ export function MessageBubble({ item, onRetry }: { item: Extract<TimelineItem, {
               return null;
             })}
           </div>
+        ) : richText ? (
+          <Markdown className="message-content markdown-body" content={item.content} />
         ) : (
           <div className="message-content">{item.content}</div>
         )}
@@ -46,6 +56,13 @@ export function MessageBubble({ item, onRetry }: { item: Extract<TimelineItem, {
           </>
         )}
       </div>
+      <time className="msg-time" dateTime={item.createdAt}>{formatClock(item.createdAt)}</time>
     </div>
   );
+}
+
+function formatClock(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 }

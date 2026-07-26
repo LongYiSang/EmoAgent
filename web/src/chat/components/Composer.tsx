@@ -1,4 +1,4 @@
-import { useRef, useState, type ClipboardEvent, type DragEvent } from 'react';
+import { useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent } from 'react';
 
 export function Composer({
   value,
@@ -20,7 +20,16 @@ export function Composer({
   onSubmit: () => void;
 }) {
   const dragDepth = useRef(0);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [dragActive, setDragActive] = useState(false);
+
+  // Auto-grow with content, clamped to the CSS max-height (140px)
+  useLayoutEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = Math.min(140, Math.max(40, el.scrollHeight)) + 'px';
+  }, [value]);
   const fileDisabled = sending || uploading;
   const inputDisabled = Boolean(uploading);
   const hasInput = Boolean(value.trim()) || Boolean(attachments?.length);
@@ -94,6 +103,7 @@ export function Composer({
         ) : null}
       <textarea
         id="input"
+        ref={textareaRef}
         value={value}
         rows={1}
         disabled={inputDisabled}

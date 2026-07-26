@@ -89,6 +89,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         status: action.status,
         parts: action.parts,
         displayParts: action.displayParts,
+        fresh: true,
       };
       return { ...state, timeline: orderTimeline([...state.timeline, item]) };
     }
@@ -111,6 +112,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         role: 'assistant',
         content: action.content,
         createdAt: new Date().toISOString(),
+        fresh: true,
       };
       return { ...state, pendingAssistantId: id, timeline: orderTimeline([...state.timeline, item]) };
     }
@@ -125,13 +127,17 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         groupID: action.groupID,
         segmentIndex: action.segmentIndex,
         segmentTotal: action.segmentTotal,
+        fresh: true,
       };
       return { ...state, pendingAssistantId: '', timeline: orderTimeline([...state.timeline, item]) };
     }
     case 'STREAM_END':
       return { ...state, sending: false, pendingAssistantId: '', pendingApprovalIDs: [] };
-    case 'UPSERT_TOOL':
-      return { ...state, timeline: upsertItem(state.timeline, toolToItem(action.tool, action.collapsed)) };
+    case 'UPSERT_TOOL': {
+      const existing = state.timeline.find(item => item.kind === 'tool' && item.id === action.tool.id);
+      const fresh = existing?.kind === 'tool' ? existing.fresh : true;
+      return { ...state, timeline: upsertItem(state.timeline, toolToItem(action.tool, action.collapsed, fresh)) };
+    }
     case 'UPSERT_REASONING':
       return { ...state, timeline: upsertReasoning(state.timeline, action.reasoning, action.collapsed, action.append, action.createdAt) };
     case 'COLLAPSE_ACTIVITIES':
@@ -142,8 +148,11 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           return item;
         }),
       };
-    case 'SET_WORK_PROGRESS':
-      return { ...state, timeline: upsertItem(state.timeline, { kind: 'work', id: 'work-progress', content: action.content, createdAt: new Date().toISOString() }) };
+    case 'SET_WORK_PROGRESS': {
+      const existing = state.timeline.find(item => item.kind === 'work' && item.id === 'work-progress');
+      const fresh = existing?.kind === 'work' ? existing.fresh : true;
+      return { ...state, timeline: upsertItem(state.timeline, { kind: 'work', id: 'work-progress', content: action.content, createdAt: new Date().toISOString(), fresh }) };
+    }
     case 'CLEAR_WORK_PROGRESS':
       return { ...state, timeline: state.timeline.filter(item => item.kind !== 'work') };
     case 'SET_APPROVALS': {
@@ -331,8 +340,8 @@ function thinkingBlocksToTimeline(metadata: AnyRecord, createdAt: string, messag
   });
 }
 
-function toolToItem(tool: ToolActivity, collapsed: boolean): TimelineItem {
-  return { kind: 'tool', id: tool.id, tool, collapsed, createdAt: new Date().toISOString() };
+function toolToItem(tool: ToolActivity, collapsed: boolean, fresh?: boolean): TimelineItem {
+  return { kind: 'tool', id: tool.id, tool, collapsed, createdAt: new Date().toISOString(), fresh };
 }
 
 function approvalToItem(approval: ApprovalRequest): TimelineItem {
@@ -364,6 +373,7 @@ function upsertReasoning(timeline: TimelineItem[], incoming: ReasoningActivity, 
     reasoning: { ...(previous || {}), ...incoming, content },
     collapsed,
     createdAt: current?.createdAt || createdAt || new Date().toISOString(),
+    fresh: current?.kind === 'reasoning' ? current.fresh : true,
   };
   if (index < 0) return orderTimeline([...timeline, item]);
   const next = timeline.slice();

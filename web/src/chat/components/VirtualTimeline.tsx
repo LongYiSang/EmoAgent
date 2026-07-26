@@ -13,6 +13,7 @@ type VirtualTimelineProps = {
   onDismissApproval: (id: string) => void;
   onOpenPipeline: (snapshot: unknown) => void;
   onRetry: (message: Extract<TimelineItem, { kind: 'message' }>) => void;
+  onStartChat?: () => void;
 };
 
 function timelineItemKey(item: TimelineItem) {
@@ -50,8 +51,12 @@ export function VirtualTimeline({
   onDismissApproval,
   onOpenPipeline,
   onRetry,
+  onStartChat,
 }: VirtualTimelineProps) {
   const parentRef = useRef<HTMLDivElement | null>(null);
+  // Keys whose entrance animation already played — survives re-renders and
+  // prevents replays when a virtual row unmounts and remounts on scroll.
+  const animatedKeysRef = useRef(new Set<string>());
   const sessionRef = useRef(sessionID);
   const forceScrollAfterSessionChangeRef = useRef(true);
   const sessionScrollFrameRef = useRef<number | null>(null);
@@ -68,7 +73,7 @@ export function VirtualTimeline({
     getItemKey,
     estimateSize: index => estimateTimelineItemSize(items[index]),
     overscan: 6,
-    gap: 14,
+    gap: 18,
     anchorTo: 'end',
     followOnAppend: true,
     scrollEndThreshold: 48,
@@ -106,6 +111,7 @@ export function VirtualTimeline({
     forceScrollAfterSessionChangeRef.current = true;
     shouldFollowToBottomRef.current = true;
     setActivityOpenByKey({});
+    animatedKeysRef.current.clear();
   }, [sessionID]);
 
   useLayoutEffect(() => {
@@ -154,6 +160,13 @@ export function VirtualTimeline({
 
   return (
     <div className="messages" id="messages" ref={parentRef}>
+      {items.length === 0 && (
+        <div className="timeline-empty">
+          <div className="timeline-empty-emoji" aria-hidden="true">🫧</div>
+          <p>还没有消息，和 Emotion 打个招呼吧</p>
+          {onStartChat && <button className="btn primary" type="button" onClick={onStartChat}>开始新对话</button>}
+        </div>
+      )}
       <div className="timeline-virtualizer" ref={virtualizer.containerRef}>
         {virtualizer.getVirtualItems().map(virtualItem => {
           const item = items[virtualItem.index];
@@ -162,6 +175,8 @@ export function VirtualTimeline({
           const activityOpen = item.kind === 'tool' || item.kind === 'reasoning'
             ? activityOpenByKey[key] ?? !item.collapsed
             : undefined;
+          const fresh = Boolean((item as { fresh?: boolean }).fresh) && !animatedKeysRef.current.has(key);
+          const streaming = item.kind === 'message' && !!pendingAssistantId && item.id === pendingAssistantId;
           return (
             <div
               key={virtualItem.key}
@@ -169,17 +184,25 @@ export function VirtualTimeline({
               data-index={virtualItem.index}
               ref={virtualizer.measureElement}
             >
-              <TimelineEntry
-                item={item}
-                activityOpen={activityOpen}
-                pendingApprovalIDs={pendingApprovalIDs}
-                sending={sending}
-                onActivityOpenChange={open => setActivityOpenByKey(current => ({ ...current, [key]: open }))}
-                onApprovalAction={onApprovalAction}
-                onDismissApproval={onDismissApproval}
-                onOpenPipeline={onOpenPipeline}
-                onRetry={onRetry}
-              />
+              <div
+                className={fresh ? 'entry-fresh' : undefined}
+                onAnimationEnd={fresh ? event => {
+                  if (event.animationName === 'msg-in') animatedKeysRef.current.add(key);
+                } : undefined}
+              >
+                <TimelineEntry
+                  item={item}
+                  activityOpen={activityOpen}
+                  pendingApprovalIDs={pendingApprovalIDs}
+                  sending={sending}
+                  streaming={streaming}
+                  onActivityOpenChange={open => setActivityOpenByKey(current => ({ ...current, [key]: open }))}
+                  onApprovalAction={onApprovalAction}
+                  onDismissApproval={onDismissApproval}
+                  onOpenPipeline={onOpenPipeline}
+                  onRetry={onRetry}
+                />
+              </div>
             </div>
           );
         })}

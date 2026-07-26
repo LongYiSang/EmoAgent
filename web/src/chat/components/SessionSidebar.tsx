@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import { classNames } from '../../shared/lib/classNames';
 import { field, formatTime, stringField } from '../../shared/lib/data';
 import type { SessionSummary } from '../protocol/sessionApi';
@@ -53,10 +54,20 @@ function SessionRow({ item, active, onOpen, onDelete }: { item: SessionSummary; 
   const time = formatTime(field(item, 'updated_at', field(item, 'UpdatedAt', '')));
   const count = field<number>(item, 'message_count', field<number>(item, 'MessageCount', 0));
 
+  // Two-step delete: first click arms the button ("确认?"), auto-disarms after 3s
+  const [confirming, setConfirming] = useState(false);
+  const confirmTimerRef = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(confirmTimerRef.current), []);
+
   const handleDelete = (event: React.MouseEvent | React.KeyboardEvent) => {
     event.stopPropagation();
-    const displayName = title || time || '无标题会话';
-    if (!window.confirm(`确认删除会话「${displayName}」？\n删除后无法恢复。`)) return;
+    if (!confirming) {
+      setConfirming(true);
+      confirmTimerRef.current = window.setTimeout(() => setConfirming(false), 3000);
+      return;
+    }
+    window.clearTimeout(confirmTimerRef.current);
+    setConfirming(false);
     onDelete();
   };
 
@@ -84,28 +95,30 @@ function SessionRow({ item, active, onOpen, onDelete }: { item: SessionSummary; 
       </div>
 
       <button
-        className="s-del"
+        className={classNames('s-del', confirming && 'confirm')}
         type="button"
-        aria-label={`删除会话 ${title || time || id}`}
-        title="删除会话"
+        aria-label={confirming ? `确认删除会话 ${title || time || id}，删除后无法恢复` : `删除会话 ${title || time || id}`}
+        title={confirming ? '再点一次确认删除' : '删除会话'}
         onClick={handleDelete}
       >
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.25"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <polyline points="3 6 5 6 21 6" />
-          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-          <line x1="10" y1="11" x2="10" y2="17" />
-          <line x1="14" y1="11" x2="14" y2="17" />
-        </svg>
+        {confirming ? '确认?' : (
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.25"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <polyline points="3 6 5 6 21 6" />
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+            <line x1="10" y1="11" x2="10" y2="17" />
+            <line x1="14" y1="11" x2="14" y2="17" />
+          </svg>
+        )}
       </button>
     </div>
   );

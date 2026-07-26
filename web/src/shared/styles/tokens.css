@@ -98,11 +98,80 @@
   --primary-solid: var(--color-primary);
   --app-viewport-height: 100vh;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --ease-bounce: cubic-bezier(0.16, 1, 0.3, 1);
+  /* Slight overshoot — for small elements (buttons, carets, pills) */
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-bounce: var(--ease-spring);
   --sidebar-width: 200px;
   --sidebar-width-collapsed: 72px;
   --sidebar-motion: 280ms cubic-bezier(0.22, 1, 0.36, 1);
   --ring-focus: 0 0 0 3px rgb(14 165 233 / 0.22);
+
+  /* Theme-dependent surfaces that used to be hardcoded in app.css */
+  --surface-glass: rgb(255 255 255 / 0.92);
+  --surface-glass-strong: rgb(255 255 255 / 0.94);
+  --conv-glow: rgb(224 242 254 / 0.55);
+  --chat-sidebar-grad: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  --rail-hover-bg: rgb(255 255 255 / 0.72);
+  --meter-track: rgb(15 23 42 / 0.08);
+  --image-surface: rgb(255 255 255 / 0.7);
+}
+
+/* ── Dark theme (opt-in via the chat page toggle; persisted in localStorage) ──
+   Only the chat entry sets data-theme, so admin/logs pages keep the light look. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --color-background: #0b1220;
+  --color-foreground: #e2e8f0;
+  --color-card: #111c30;
+  --color-card-foreground: #e2e8f0;
+  --color-muted: #8ea1ba;
+  --color-muted-foreground: #8ea1ba;
+  --color-border: #22314a;
+  --color-input: #22314a;
+
+  --color-primary: #0ea5e9;
+  --color-primary-hover: #38bdf8;
+  --color-primary-soft: #0d2c45;
+  --color-primary-foreground: #f8fafc;
+
+  --color-sidebar: #0d1728;
+  --color-sidebar-foreground: #b6c2d4;
+  --color-sidebar-accent: #0d2c45;
+  --color-sidebar-accent-foreground: #7dd3fc;
+  --color-sidebar-border: #1c2a40;
+
+  --color-success-ink: #34d399;
+  --color-success-soft: #0b2b22;
+  --color-warning-ink: #fbbf24;
+  --color-warning-soft: #2b2110;
+  --color-danger-ink: #f87171;
+  --color-danger-soft: #2e1518;
+
+  --color-surface-2: #16223a;
+  --color-surface-3: #1e2d49;
+  --color-ink: #e2e8f0;
+  --color-ink-2: #cbd5e1;
+  --color-ink-soft: #a6b4c8;
+  --color-muted-2: #7d8fa8;
+  --color-white: #111c30;
+  --color-bg-cool: #0e1830;
+  --color-tooltip-bg: #e8eefb;
+
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.45);
+  --shadow-md: 0 4px 16px rgb(0 0 0 / 0.5);
+  --shadow-lg: 0 12px 32px rgb(0 0 0 / 0.55);
+
+  --hair: rgb(51 65 85 / 0.7);
+  --line: rgb(56 189 248 / 0.3);
+
+  --surface-glass: rgb(15 24 42 / 0.88);
+  --surface-glass-strong: rgb(15 24 42 / 0.92);
+  --conv-glow: rgb(14 165 233 / 0.09);
+  --chat-sidebar-grad: linear-gradient(180deg, #101b30 0%, #0b1220 100%);
+  --rail-hover-bg: rgb(255 255 255 / 0.06);
+  --meter-track: rgb(255 255 255 / 0.14);
+  --image-surface: rgb(255 255 255 / 0.06);
 }
 
 @supports (height: 100dvh) {

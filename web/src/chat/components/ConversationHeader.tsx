@@ -8,6 +8,8 @@ export function ConversationHeader({
   contextStats,
   memoryStatusVisible,
   hasSession,
+  theme,
+  onToggleTheme,
   onToggleSidebar,
   onToggleMemory,
   onScanMemory,
@@ -17,6 +19,8 @@ export function ConversationHeader({
   contextStats?: ContextStats;
   memoryStatusVisible: boolean;
   hasSession: boolean;
+  theme: 'light' | 'dark';
+  onToggleTheme: () => void;
   onToggleSidebar: () => void;
   onToggleMemory: () => void;
   onScanMemory: () => void;
@@ -51,6 +55,16 @@ export function ConversationHeader({
           记忆状态
         </button>
         <button className="btn primary" id="memory-scan" type="button" disabled={!hasSession} onClick={onScanMemory}>记忆扫描</button>
+        <button
+          className="btn ghost theme-toggle"
+          id="theme-toggle"
+          type="button"
+          aria-label={theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'}
+          title={theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'}
+          onClick={onToggleTheme}
+        >
+          {theme === 'dark' ? '☀️' : '🌙'}
+        </button>
       </div>
     </header>
   );

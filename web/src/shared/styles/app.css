@@ -258,7 +258,7 @@ button:disabled {
 
 .rail-btn:hover {
   color: var(--color-ink);
-  background: rgb(255 255 255 / 0.72);
+  background: var(--rail-hover-bg);
 }
 
 .rail-btn.active {
@@ -428,7 +428,15 @@ button:disabled {
   border-radius: var(--radius-sm);
   font-size: 13px;
   font-weight: 650;
-  transition: background 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out);
+  transition: background 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), border-color 0.15s var(--ease-out), color 0.15s var(--ease-out), transform 0.22s var(--ease-spring);
+}
+
+.btn:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.btn.icon:active:not(:disabled) {
+  transform: scale(0.92);
 }
 
 .btn.primary {
@@ -634,7 +642,7 @@ code {
   flex: 0 0 44px;
   overflow: hidden;
   border-radius: 999px;
-  background: rgb(15 23 42 / 0.08);
+  background: var(--meter-track);
 }
 
 .context-chip-meter span {
@@ -725,13 +733,13 @@ code {
   gap: 12px;
   padding: 16px;
   border-right: 1px solid var(--color-border);
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  background: var(--chat-sidebar-grad);
 }
 
 .chat-sidebar .side-head .label {
   color: var(--color-primary);
-  font-size: 11px;
-  font-weight: 750;
+  font-size: 12px;
+  font-weight: 700;
   letter-spacing: 0.04em;
 }
 
@@ -787,7 +795,7 @@ code {
   text-align: left;
   box-shadow: var(--shadow-sm);
   overflow: hidden;
-  transition: border-color 0.15s var(--ease-out), background 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out);
+  transition: border-color 0.15s var(--ease-out), background 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), transform 0.22s var(--ease-spring);
 }
 
 .session {
@@ -810,6 +818,7 @@ code {
 .item:hover {
   border-color: rgb(14 165 233 / 0.28);
   box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
 }
 
 .session:hover .s-title,
@@ -953,6 +962,27 @@ code {
   opacity: 0.85;
 }
 
+/* Two-step delete: first click turns the button into a red "确认?", auto-reverts after 3s */
+.s-del.confirm {
+  width: auto;
+  min-width: 44px;
+  padding: 0 8px;
+  opacity: 1;
+  color: #fff;
+  background: var(--color-danger);
+  border-color: var(--color-danger);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.s-del.confirm:hover,
+.s-del.confirm:focus-visible {
+  background: #dc2626;
+  border-color: #dc2626;
+  transform: none;
+}
+
 /* Make the main content area of the card the primary clickable target */
 .session-body {
   min-width: 0;
@@ -974,7 +1004,7 @@ code {
   grid-template-rows: auto auto minmax(0, 1fr) auto auto;
   overflow: clip;
   background:
-    radial-gradient(1200px 480px at 70% -10%, rgb(224 242 254 / 0.55), transparent 60%),
+    radial-gradient(1200px 480px at 70% -10%, var(--conv-glow), transparent 60%),
     var(--color-background);
 }
 
@@ -1001,7 +1031,7 @@ code {
 .conv-top {
   padding: 14px 20px;
   border-bottom: 1px solid var(--color-border);
-  background: rgb(255 255 255 / 0.92);
+  background: var(--surface-glass);
   backdrop-filter: blur(10px);
 }
 
@@ -1041,6 +1071,13 @@ code {
   justify-content: flex-end;
 }
 
+.theme-toggle {
+  width: 36px;
+  padding: 0;
+  font-size: 15px;
+  line-height: 1;
+}
+
 .mobile-toggle {
   display: none;
 }
@@ -1068,7 +1105,7 @@ code {
 .memory-status-title {
   margin-bottom: 8px;
   font-size: 12px;
-  font-weight: 850;
+  font-weight: 700;
 }
 
 .memory-status-row {
@@ -1085,8 +1122,8 @@ code {
   border-radius: 999px;
   color: var(--color-lavender-ink);
   background: var(--color-lavender-soft);
-  font-size: 10px;
-  font-weight: 850;
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .messages {
@@ -1200,7 +1237,7 @@ code {
 .command-card,
 .memory-pipeline-card {
   border-radius: var(--radius-md);
-  background: rgb(255 255 255 / 0.92);
+  background: var(--surface-glass);
 }
 
 .message-content {
@@ -1237,7 +1274,7 @@ code {
   max-width: 100%;
   max-height: 320px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.7);
+  background: var(--image-surface);
   object-fit: contain;
   transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
@@ -1272,7 +1309,7 @@ code {
   gap: 8px;
   color: var(--color-tooltip-bg);
   font-size: 13px;
-  font-weight: 850;
+  font-weight: 700;
 }
 
 .command-title code {
@@ -1280,8 +1317,8 @@ code {
   border-radius: 999px;
   color: var(--color-lavender-ink);
   background: var(--color-lavender-soft);
-  font-size: 11px;
-  font-weight: 850;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .command-content {
@@ -1298,7 +1335,7 @@ code {
   margin-top: 8px;
   color: var(--color-muted);
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 650;
 }
 
 .message-retry {
@@ -1319,7 +1356,7 @@ code {
   border: 0;
   background: transparent;
   color: var(--color-tooltip-bg);
-  font-weight: 850;
+  font-weight: 700;
   text-align: left;
 }
 
@@ -1356,24 +1393,236 @@ code {
   gap: 5px;
 }
 
-.sparkle {
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: var(--color-primary);
-  box-shadow: 0 0 0 5px rgb(14 165 233 / 0.16);
-  animation: sparkle-pulse 1.6s ease-in-out infinite;
+/* Waiting state: three staggered bouncing dots (replaces the static sparkle) */
+.typing {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 2px;
 }
 
-@keyframes sparkle-pulse {
+.typing-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--color-primary);
+  animation: dot-bounce 1.2s ease-in-out infinite;
+}
+
+.typing-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.typing-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes dot-bounce {
+  0%, 60%, 100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+/* Assistant avatar breathes gently while its reply is still streaming */
+.msg.streaming .msg-av {
+  animation: breathe 2.4s ease-in-out infinite;
+}
+
+@keyframes breathe {
   0%, 100% {
     transform: scale(1);
-    opacity: 0.9;
   }
   50% {
-    transform: scale(1.25);
-    opacity: 0.55;
+    transform: scale(1.06);
   }
+}
+
+/* Timeline entrance — applied to a shell inside the virtual row, because the
+   row's own transform belongs to the virtualizer (directDomUpdates). Only
+   entries flagged `fresh` by the reducer (live additions, not history) animate. */
+.entry-fresh {
+  animation: msg-in 300ms var(--ease-out) backwards;
+}
+
+@keyframes msg-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Hover timestamp — sits in the 18px gap below the bubble */
+.msg {
+  position: relative;
+}
+
+.msg-time {
+  position: absolute;
+  top: calc(100% + 3px);
+  left: 48px;
+  color: var(--color-muted-2);
+  font-size: 10.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  opacity: 0;
+  transition: opacity 0.18s var(--ease-out);
+  pointer-events: none;
+}
+
+.msg.user .msg-time {
+  left: auto;
+  right: 48px;
+}
+
+.msg:hover .msg-time {
+  opacity: 1;
+}
+
+/* Empty conversation state */
+.timeline-empty {
+  height: 100%;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  text-align: center;
+  color: var(--color-muted);
+}
+
+.timeline-empty-emoji {
+  font-size: 42px;
+  line-height: 1;
+  animation: breathe 3.2s ease-in-out infinite;
+}
+
+.timeline-empty p {
+  margin: 0;
+  font-size: 13.5px;
+}
+
+.timeline-empty .btn {
+  margin-top: 4px;
+}
+
+/* Markdown body inside assistant bubbles */
+.markdown-body {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.62;
+  font-size: 14.5px;
+  color: var(--color-ink);
+}
+
+.markdown-body > :first-child {
+  margin-top: 0;
+}
+
+.markdown-body > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-body p {
+  margin: 0 0 0.6em;
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  margin: 0.4em 0 0.6em;
+  padding-left: 1.4em;
+}
+
+.markdown-body li + li {
+  margin-top: 0.25em;
+}
+
+.markdown-body h1,
+.markdown-body h2 {
+  margin: 0.9em 0 0.4em;
+  font-size: 16px;
+  font-weight: 750;
+}
+
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  margin: 0.8em 0 0.35em;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.markdown-body code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--color-surface-2);
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+}
+
+.markdown-body pre {
+  margin: 0.6em 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface-2);
+  overflow-x: auto;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.markdown-body pre code {
+  padding: 0;
+  background: transparent;
+  font-size: inherit;
+}
+
+.markdown-body blockquote {
+  margin: 0.6em 0;
+  padding: 2px 0 2px 10px;
+  border-left: 3px solid var(--line);
+  color: var(--color-ink-soft);
+}
+
+.markdown-body a {
+  color: var(--color-primary);
+}
+
+.markdown-body table {
+  margin: 0.6em 0;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.markdown-body th,
+.markdown-body td {
+  padding: 4px 8px;
+  border: 1px solid var(--color-border);
+}
+
+.markdown-body hr {
+  margin: 0.8em 0;
+  border: 0;
+  border-top: 1px solid var(--hair);
+}
+
+.markdown-body img {
+  max-width: 100%;
+  border-radius: 8px;
+}
+
+/* User bubbles keep readable markdown colors on the solid sky background */
+.msg.user .markdown-body,
+.msg.user .markdown-body a,
+.msg.user .markdown-body code {
+  color: var(--color-primary-foreground);
 }
 
 .tool-badge,
@@ -1384,8 +1633,8 @@ code {
   border-radius: 999px;
   background: var(--color-lavender-soft);
   color: var(--color-lavender-ink);
-  font-size: 11px;
-  font-weight: 850;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .reasoning-state-toggle .reasoning-badge {
@@ -1411,6 +1660,7 @@ code {
   border-right: 1.5px solid currentColor;
   border-bottom: 1.5px solid currentColor;
   transform: translate(-50%, -60%) rotate(45deg);
+  transition: transform 0.24s var(--ease-spring);
 }
 
 .reasoning.expanded .reasoning-disclosure::before {
@@ -1431,7 +1681,7 @@ code {
   border-top: 6px solid currentColor;
   color: var(--color-lavender-ink);
   opacity: 0.7;
-  transition: transform 0.18s var(--ease-out);
+  transition: transform 0.24s var(--ease-spring);
   margin-left: 2px;
 }
 
@@ -1479,7 +1729,7 @@ code {
 .approval-title {
   margin-top: 10px;
   color: var(--color-tooltip-bg);
-  font-weight: 850;
+  font-weight: 700;
 }
 
 .approval-q,
@@ -1514,7 +1764,14 @@ code {
   border-radius: 12px;
   padding: 0 12px;
   font-size: 12px;
-  font-weight: 850;
+  font-weight: 750;
+  transition: transform 0.22s var(--ease-spring), background 0.15s var(--ease-out);
+}
+
+.approval-btn:active:not(:disabled),
+.approval-close:active:not(:disabled),
+.memory-pipeline-btn:active:not(:disabled) {
+  transform: scale(0.96);
 }
 
 .approval-btn.allow,
@@ -1543,7 +1800,7 @@ code {
   gap: 10px;
   padding: 12px 20px 14px;
   border-top: 1px solid var(--color-border);
-  background: rgb(255 255 255 / 0.94);
+  background: var(--surface-glass-strong);
   backdrop-filter: blur(10px);
 }
 
@@ -1673,6 +1930,11 @@ code {
   box-shadow: 0 4px 12px rgb(2 132 199 / 0.22);
 }
 
+.btn.primary.icon:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgb(2 132 199 / 0.3);
+}
+
 .session-hint {
   padding: 0 20px 12px;
   background: transparent;
@@ -1720,8 +1982,8 @@ code {
 .memory-pipeline-section-title,
 .memory-pipeline-stage-name {
   color: var(--color-muted);
-  font-size: 11px;
-  font-weight: 850;
+  font-size: 11.5px;
+  font-weight: 700;
   text-transform: uppercase;
 }
 
@@ -3181,5 +3443,30 @@ details[open] > summary.slot-head::after {
 
   .log-stream {
     --log-grid: 118px 68px 180px minmax(420px, max-content) 54px;
+  }
+}
+
+/* Motion opt-out for the chat micro-interactions & entrance animations */
+@media (prefers-reduced-motion: reduce) {
+  .entry-fresh,
+  .typing-dot,
+  .msg.streaming .msg-av,
+  .timeline-empty-emoji {
+    animation: none !important;
+  }
+
+  .typing-dot {
+    opacity: 0.8;
+  }
+
+  .btn:active:not(:disabled),
+  .btn.icon:active:not(:disabled),
+  .btn.primary.icon:hover:not(:disabled),
+  .approval-btn:active:not(:disabled),
+  .approval-close:active:not(:disabled),
+  .memory-pipeline-btn:active:not(:disabled),
+  .session:hover,
+  .item:hover {
+    transform: none;
   }
 }
