@@ -16,7 +16,7 @@ EmoAgent 是一个部署在本地的个人情感陪伴 Agent。它有记忆、�
 
 ## 系统架构
 
-> 虚线节点 = 规划中；点线箭头 = 可降级的外部增强依赖；粗箭头 = 核心协议流。
+> 点线箭头 = 可降级的外部增强依赖；粗箭头 = 核心协议流。
 
 ```mermaid
 ---
@@ -31,7 +31,7 @@ flowchart TB
   subgraph L4["交互层"]
     direction LR
     WebUI["WebUI · WebSocket · Admin/API"]
-    TG["Telegram / QQ"]
+    QQ["QQ · OneBot v11 适配器"]
   end
 
   subgraph Cores[" "]
@@ -42,7 +42,7 @@ flowchart TB
       E_core[" persona · Agent人设"]
       E_tool["当前时间上下文<br/>web_search"]
       E_mem["长期记忆<br/>prompt 注入"]
-      E_emo["情感状态机<br/>Valence · Arousal"]
+      E_emo["Agent Affect v2<br/>11 维 MoodVector"]
     end
 
     subgraph W["Work 执行代理 · 用户无感"]
@@ -61,15 +61,17 @@ flowchart TB
     direction LR
     LLM["LLM Client · SSE"]
     DB[("SQLite<br/>chat · turn · memory metadata")]
-    MC["MemoryCore Go Service<br/>MemoryHost Bridge"]
+    MC["MemoryCore Go 库<br/>MemoryHost Bridge"]
     VS["Mirror / Vector Index"]
     PY["Python Sidecar<br/>Trivium mirror · query/rerank"]
+    PLG["插件运行时 v0.2<br/>hook · JSON-RPC · 能力分层"]
   end
 
   User <==>|对话| WebUI
-  TG -.-> WebUI
+  User <==>|对话| QQ
 
   WebUI ==> E_core
+  QQ ==>|Turn Pipeline| E_core
   E_core ==>|TaskBrief| W_core
   W_core ==>|TaskReport · DecisionPacket| E_core
   W_core -.-> W_perm
@@ -83,9 +85,6 @@ flowchart TB
   MC ==> DB
   MC -.-> PY
   PY -.-> VS
-
-  classDef planned stroke-dasharray: 6 4,opacity:0.55,color:#666
-  class TG,E_emo planned
 ```
 
 ### 决策升级流（Work 阻塞时）
@@ -114,12 +113,14 @@ flowchart LR
 
 ## 当前状态
 
-WebUI、Admin API、Session、Persona、Work 运行时、工具审批、Turn Pipeline、长期记忆桥、异步记忆抽取队列和 MemoryCore 集成已接入。
+WebUI（聊天 / Admin / 日志中心 / 插件四页）、Session、Persona、Work 运行时、工具审批、Turn Pipeline、长期记忆桥、异步记忆抽取队列、MemoryCore 集成、Agent Affect（情感状态）、OneBot v11 平台适配器和插件运行时 v0.2 均已接入。
 
-长期记忆的权威层： MemoryCore Go Service + SQLite。
-Python sidecar 是 loopback HTTP 增强依赖，用于 Trivium mirror、query analysis / rerank 等能力；可配置为 external 模式复用已有进程，也可配置为 managed 模式由 EmoAgent 生成 TOML、启动、健康检查并在关闭时终止。
+**Agent Affect v2**：Agent 自身的情绪状态机 —— 11 维 MoodVector（valence/arousal/dominance/energy/warmth/concern/curiosity/playfulness/attachment/frustration/uncertainty），默认回复后异步 LLM 评估，带限幅与随时间衰减，以 prompt block 注入下一轮上下文；提供 plugin-safe 读写 API 与审计。
 
-插件系统已有实验骨架：`internal/plugin` 提供 hook bus、能力声明、内置插件和 Turn stage / outbound sink 包裹能力；默认配置里 `plugins.enabled: false`，适合继续作为受控实验开关。
+长期记忆的权威层：MemoryCore Go 库（embedded，非 HTTP 服务）+ SQLite。
+Python sidecar 是 loopback HTTP 增强依赖，用于 Trivium mirror、query analysis / rerank 等能力；可配置为 external 模式复用已有进程，也可配置为 managed 模式由 EmoAgent 生成 TOML、启动、健康检查并在关闭时终止。sidecar 的 Python 环境由 `internal/pytoolchain` 用 uv 托管。
+
+**插件运行时 v0.2**（`internal/plugin`）：`emo_plugin.yaml` manifest、能力分层（runtime_safe → user_context → workspace → trusted）、本地/GitHub 安装器、进程与托管 Python 运行时（stdio JSON-RPC + processguard 资源限制）、约 25 个围绕 Turn 各阶段的 hook、brokered host API 与审计，附 Python SDK（`sdk/python/`）。代码默认 `plugins.enabled: false`，需显式开启。
 
 ## 运行与配置
 
@@ -131,10 +132,11 @@ go build -o ./bin/emoagent ./cmd/emoagent
 go test ./...
 ```
 
-默认服务监听 `127.0.0.1:8080`。WebUI 和 Admin 的源码在 `web/`；仓库不提交 Vite 编译产物。需要打包完整 WebUI 的 release 二进制时，先运行：
+默认服务监听 `127.0.0.1:8080`。WebUI 和 Admin 的源码在 `web/`（Vite + React 19 + TypeScript + Tailwind v4，**pnpm 管理**，直接用 npm 会报错）；仓库不提交 Vite 编译产物。需要打包完整 WebUI 的 release 二进制时，先运行：
 
 ```powershell
-npm --prefix web run build
+npx --yes pnpm -C web install
+npx --yes pnpm -C web run build
 go build -o ./bin/emoagent ./cmd/emoagent
 ```
 
@@ -239,19 +241,20 @@ Admin 配置中心中的 Memory Core、Pipelines、Retrieval/Mirror、Sidecar、
 
 ## Web、工具与审批
 
-HTTP API 覆盖 LLM providers、agent configs、chat settings、personas、sessions、approvals、memory extractions 和 memory segments。WebSocket `/ws` 支持 session resume、persona query、流式输出、工具/推理活动和审批事件。
+HTTP API（约 120 个端点）覆盖 LLM providers、agent configs、chat settings、personas、sessions、approvals、memory、agent affect、插件、prompt center、平台、Python 工具链、sidecar、宿主资源授权/变更集、日志中心和用量账本。WebSocket `/ws` 支持 session resume、persona query、流式输出、工具/推理活动和审批事件。
 
-内置工具包括 `get_current_time`、`read_file`、`list_dir`、`write_file`、`edit_file`、`web_search`、`web_fetch`、`bash`。其中 `web_search`、`web_fetch`、`bash` 按配置和 provider 可用性注册。`bash` 是当前用户权限下的 managed host process，不是安全沙箱；Resource Broker / ChangeSet 只约束对应的宿主资源工具。`read_file` / `list_dir` 支持 `read_scope=workspace|all`；外部敏感读取和破坏性写入都会进入 `tool_approval`。
+内置工具共 19 个：核心 8 个（`get_current_time`、`read_file`、`list_dir`、`write_file`、`edit_file`、`web_search`、`web_fetch`、`bash`）+ 11 个宿主资源工具（`host_read/list/stat/search`、`host_stage_resource`、`host_copy_to_workspace`、`host_prepare/preview/apply/cancel_change`、`host_restore_quarantine`，随 `host_resources.enabled` 注册）。其中 `web_search`、`web_fetch`、`bash` 按配置和 provider 可用性注册。`bash` 是当前用户权限下的 managed host process，不是安全沙箱；Resource Broker / ChangeSet 只约束对应的宿主资源工具。`read_file` / `list_dir` 支持 `read_scope=workspace|all`；外部敏感读取和破坏性写入都会进入 `tool_approval`。
 
 ## 技术栈
 
 |        | 选型                                                     |
 |--------|----------------------------------------------------------|
 | 主语言    | Go（单二进制部署）                                           |
-| AI 工具链 | MemoryCore Go Service；Python Sidecar 作为可降级 loopback 增强 |
-| 存储     | SQLite（chat / turn / memory metadata / MemoryCore authority） |
-| LLM    | HTTP + SSE 流式，兼容 OpenAI / Anthropic 协议               |
-| 前端     | 轻量 WebUI + Admin API，embed.FS 打包                       |
+| AI 工具链 | MemoryCore Go 库（embedded）；Python Sidecar 作为可降级 loopback 增强（uv 托管环境） |
+| 存储     | SQLite（emo.db 主库 / memory.db MemoryCore 权威层 / embedding cache / trivium 向量镜像） |
+| LLM    | HTTP + SSE 流式，兼容 OpenAI / Anthropic 协议，13 个 provider 预设 |
+| 前端     | Vite + React 19 + TypeScript + Tailwind v4（pnpm），构建产物经 embed.FS 打包 |
+| 平台接入  | OneBot v11（QQ 私聊，ws_client / ws_reverse）                |
 
 ## Roadmap
 
@@ -301,14 +304,16 @@ HTTP API 覆盖 LLM providers、agent configs、chat settings、personas、sessi
   - [x] 后台 extraction worker、idle scheduler、manual scan API
   - [x] 手动固定记忆与手动忘记预览/确认
   - [x] Python sidecar / Trivium mirror 配置接入
-  - [ ] sidecar 一键监督启动与操作文档完善
-- [x] Phase 8 · 插件接口实验骨架
+  - [x] sidecar 一键监督启动（managed 模式：生成 TOML、启动、健康检查、随停）+ pytoolchain uv 环境托管
+- [x] Phase 8 · 插件运行时 v0.2
   - [x] PluginHost、HookBus、能力声明和内置插件加载
   - [x] Turn stage / outbound sink / tool hook 包裹
-  - [ ] 外部插件 runner 与资源隔离
+  - [x] 外部插件 runner 与资源隔离（process / managed_python_process + processguard、能力分层、签名与信任、审计）
+  - [x] 安装器（本地目录 / GitHub release）、Python SDK、插件管理页
+- [x] 情感状态机 — Agent Affect v2（超出原 2D 规划：11 维 MoodVector、异步 LLM 评估、限幅衰减、prompt 注入）
+- [x] 第三方平台接入 · QQ（OneBot v11：私聊文本 + 入站图片、审批命令、Turn Pipeline 加固）
+- [ ] 第三方平台接入 · Telegram
 - [ ] MVP 剩余项
-- [ ] 情感状态机（Valence/Arousal 2D 模型）
-- [ ] 第三方平台接入（Telegram / QQ）
 - [ ] 定时任务 / 主动关心
 
 ## 灵感来源
