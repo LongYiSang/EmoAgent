@@ -1,0 +1,19 @@
+{
+  "snowluma": {
+    "dir": "D:\\Dev\\Deploy\\SnowLuma-v1.11.4-win-x64",
+    "base_url": "http://127.0.0.1:5099",
+    "ready_timeout_seconds": 30
+  },
+  "qq": {
+    "exe_path": "C:\\MySoftware\\QQNT\\QQ.exe",
+    "bot_uin": "1765843429",
+    "login_wait_seconds": 300
+  },
+  "emoagent": {
+    "project_dir": "D:\\Dev\\Project\\Agent\\EmoAgent",
+    "exe": "bin\\emoagent.exe",
+    "config": "config.yaml",
+    "base_url": "http://127.0.0.1:8080",
+    "ready_timeout_seconds": 120
+  }
+}

@@ -151,6 +151,51 @@ go build -o ./bin/emoagent ./cmd/emoagent
 
 当 `memory.enabled=true` 时，EmoAgent 会通过 `memoryhost.OpenFromConfigWithOptions` 打开 MemoryCore，并把 Provider Center 中的 provider 转成 MemoryCore `ProviderRegistry`。MemoryCore pipeline 的运行时选择应写入 `memory.provider_bindings.*` 或 DB `runtime_settings`，保存 `provider_id`、`model` 以及可选的 `max_tokens` / `thinking`；旧的 `memory.extraction.provider` 仅作为过渡兼容字段，不再作为主配置入口。`memory.sidecar.enabled=true` 时会先按 `managed/external` 模式检查 sidecar；健康时注入 `sidecar.url`，失败且 `fail_open=true` 时降级关闭 mirror/sidecar，保留 SQLite/FTS 路径。
 
+### 一键启动器（Windows）
+
+日常"启动 SnowLuma → 注入 Bot QQ → 启动 EmoAgent"的链路被压缩成三个命令，脚本在 `scripts/launcher/`：
+
+```powershell
+.\scripts\launcher\emo.ps1 up       # 幂等拉起全链路（已在跑的环节自动跳过）
+.\scripts\launcher\emo.ps1 up -Rebuild   # 先重建前端+后端再启动
+.\scripts\launcher\emo.ps1 status   # 四项链路自检，全就绪 exit 0，否则 exit 1
+.\scripts\launcher\emo.ps1 down     # 全停（个人 QQ 不受影响）
+```
+
+全程唯一的人工动作是在弹出的 QQ 登录窗里选择 Agent 使用的账号；若误选了其他账号，脚本会卸载注入并提示，不会关闭该 QQ 进程。停止侧遵循"绝不猜杀"：PID 必须能通过进程名 / 命令行 / 启动时间证明归属才会被终止。
+
+**必须用 Windows PowerShell 5.1（`powershell.exe`）运行，不要用 PowerShell 7（`pwsh`）** —— Toast 通知依赖的 WinRT 类型只有 5.1 能加载，7 下会静默降级为仅写日志。
+
+#### 在另一台电脑上部署
+
+`data/launcher/`（配置、凭据、状态、日志）被 `.gitignore` 忽略，属于每台机器各自的运行态，不随仓库同步，因此换机器要重做一遍下面的步骤：
+
+1. **准备好被编排的三件东西**：SnowLuma 部署目录、QQ 客户端、已构建的 `bin/emoagent.exe`（构建命令见上文）。
+2. **生成配置骨架**——首次运行会从样例复制一份并要求你核对后重跑：
+
+   ```powershell
+   .\scripts\launcher\emo.ps1 status
+   ```
+
+   然后编辑 `data\launcher\launcher.config.json`，把四个路径 / 标识改成这台机器的实际值：`snowluma.dir`、`qq.exe_path`、`qq.bot_uin`、`emoagent.project_dir`（JSON 里的反斜杠要写成 `\\`）。配置里的路径会在启动前做存在性校验，写错会直接报出是哪一项。
+3. **录入 SnowLuma 控制台密码**（每台机器都要单独录一次）：
+
+   ```powershell
+   . .\scripts\launcher\emo-common.ps1
+   Set-SnowLumaPassword -Paths (Get-EmoLauncherPaths)
+   ```
+
+   密码用 DPAPI 加密存到 `data\launcher\snowluma.cred`，**与当前 Windows 用户和机器绑定**——直接把这个文件拷到别的机器上是解不开的，脚本会提示删除后重新录入。
+4. **生成桌面快捷方式**（重复运行会覆盖更新，换了仓库路径后重跑一次即可）：
+
+   ```powershell
+   .\scripts\launcher\New-Shortcuts.ps1
+   ```
+
+   桌面会出现"启动 EmoAgent" / "停止 EmoAgent"，均以隐藏窗口调用 `powershell.exe`，结果通过 Toast 通知反馈。启动快捷方式带 `-Quiet`：无窗口时不会弹交互式密码提示，缺凭据会直接失败并提示去终端补录（即上面第 3 步）。
+
+如果直接运行 `.\scripts\launcher\emo.ps1` 被执行策略拦下，用 `powershell -ExecutionPolicy Bypass -File .\scripts\launcher\emo.ps1 status` 绕过，或为当前用户放开策略。排查问题看 `data\launcher\logs\`：`emo-<日期>.log` 是编排日志，`snowluma-console*.log` / `emoagent-console*.log` 是两个被托管进程的标准输出与错误。
+
 ### OneBot 私聊图片接入
 
 SnowLuma 侧连接 EmoAgent 的 OneBot 网络适配器需要使用段数组事件，确认 `config/onebot_<uin>.json` 中对应 `wsClients` 项包含：
