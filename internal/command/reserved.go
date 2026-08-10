@@ -14,6 +14,7 @@ var implementedBuiltinRootCommands = []string{
 	"compact",
 	"forget",
 	"stop",
+	"bad",
 }
 
 var reservedRootCommands = append(append([]string(nil), implementedBuiltinRootCommands...),

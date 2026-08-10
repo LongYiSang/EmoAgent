@@ -68,4 +68,8 @@ var builtinMetadata = map[string]builtinCommandMetadata{
 		summary: "停止当前来源/会话正在运行的回复",
 		usage:   "/stop",
 	},
+	"bad": {
+		summary: "标记一次不满意的回复并冻结当时现场",
+		usage:   "/bad <哪里不对>",
+	},
 }

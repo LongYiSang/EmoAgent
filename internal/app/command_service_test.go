@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -860,6 +861,119 @@ func assertInvocation(t *testing.T, db *storage.DB, commandID string, status str
 		t.Fatalf("invocation status = %q, want %q", invocations[0].Status, status)
 	}
 	return invocations[0]
+}
+
+// The load-bearing invariant for /bad: the flag itself must never become a
+// dialogue message. If it did, (1) Emotion would see the user complaining about
+// it and start apologising, and (2) memory extraction would lift the complaint
+// ("用户讨厌香菜") into long-term memory — the bug report would fix the bug,
+// destroying the sample's reproducibility.
+//
+// Command interception already guarantees this, but only implicitly. This test
+// makes it a contract so a future refactor of command dispatch cannot break it
+// silently.
+func TestCommandServiceBadDoesNotEnterConversation(t *testing.T) {
+	ctx := context.Background()
+	_, db, commands := newTestCommandService(t)
+	sessionID := createTestSession(t, db, "session-bad", "default")
+
+	resp, handled, err := commands.TryHandle(ctx, chat.CommandRequest{
+		Content:    "/bad 又忘了我讨厌香菜",
+		Origin:     conversation.Origin{OriginKey: "webui:local:main", SourceType: "webui", ChannelType: "web"},
+		SessionID:  sessionID,
+		PersonaKey: "default",
+		ActorRole:  "member",
+	})
+	if err != nil {
+		t.Fatalf("TryHandle: %v", err)
+	}
+	if !handled {
+		t.Fatal("/bad was not handled")
+	}
+	requireCommandMessage(t, resp, "bad", "success")
+	assertNoMessages(t, db, sessionID)
+
+	samples, err := db.ListBadSamples(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListBadSamples: %v", err)
+	}
+	if len(samples) != 1 {
+		t.Fatalf("bad_samples rows = %d, want 1", len(samples))
+	}
+	if samples[0].Reason != "又忘了我讨厌香菜" {
+		t.Fatalf("Reason = %q", samples[0].Reason)
+	}
+	if samples[0].SessionID != sessionID || samples[0].OriginKey != "webui:local:main" {
+		t.Fatalf("sample identity wrong: %#v", samples[0])
+	}
+	var frozen map[string]any
+	if err := json.Unmarshal([]byte(samples[0].ContextJSON), &frozen); err != nil {
+		t.Fatalf("context_json invalid: %v", err)
+	}
+	if frozen["context_schema_version"] == nil {
+		t.Fatal("context_json is missing context_schema_version")
+	}
+}
+
+// The reason must survive the parser intact, including tokens that look like
+// flags — parsed.Args would drop "语气=太机械" into Flags and lose it.
+func TestCommandServiceBadKeepsFlagLikeReasonText(t *testing.T) {
+	ctx := context.Background()
+	_, db, commands := newTestCommandService(t)
+	sessionID := createTestSession(t, db, "session-bad-flags", "default")
+
+	if _, _, err := commands.TryHandle(ctx, chat.CommandRequest{
+		Content:    "/bad 语气=太机械 而且忘事",
+		Origin:     conversation.Origin{OriginKey: "webui:local:main", SourceType: "webui", ChannelType: "web"},
+		SessionID:  sessionID,
+		PersonaKey: "default",
+		ActorRole:  "member",
+	}); err != nil {
+		t.Fatalf("TryHandle: %v", err)
+	}
+
+	samples, err := db.ListBadSamples(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListBadSamples: %v", err)
+	}
+	if len(samples) != 1 {
+		t.Fatalf("bad_samples rows = %d, want 1", len(samples))
+	}
+	if samples[0].Reason != "语气=太机械 而且忘事" {
+		t.Fatalf("Reason = %q, want the full raw text", samples[0].Reason)
+	}
+}
+
+func TestCommandServiceBadRejectsEmptyReason(t *testing.T) {
+	ctx := context.Background()
+	_, db, commands := newTestCommandService(t)
+	sessionID := createTestSession(t, db, "session-bad-empty", "default")
+
+	resp, handled, err := commands.TryHandle(ctx, chat.CommandRequest{
+		Content:    "/bad   ",
+		Origin:     conversation.Origin{OriginKey: "webui:local:main", SourceType: "webui", ChannelType: "web"},
+		SessionID:  sessionID,
+		PersonaKey: "default",
+		ActorRole:  "member",
+	})
+	if err != nil {
+		t.Fatalf("TryHandle: %v", err)
+	}
+	if !handled {
+		t.Fatal("/bad was not handled")
+	}
+	msg := requireCommandMessage(t, resp, "bad", "failed")
+	if !strings.Contains(msg.Content, "用法：/bad") {
+		t.Fatalf("expected usage hint, got %q", msg.Content)
+	}
+	samples, err := db.ListBadSamples(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListBadSamples: %v", err)
+	}
+	if len(samples) != 0 {
+		t.Fatalf("bad_samples rows = %d, want 0 for an empty reason", len(samples))
+	}
+	assertNoMessages(t, db, sessionID)
 }
 
 func assertConversationEvent(t *testing.T, db *storage.DB, sessionID string, eventType string) {

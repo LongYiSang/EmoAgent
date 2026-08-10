@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
+	"github.com/longyisang/emoagent/internal/badsample"
 	"github.com/longyisang/emoagent/internal/chat"
 	commandcore "github.com/longyisang/emoagent/internal/command"
 	"github.com/longyisang/emoagent/internal/config"
@@ -147,6 +148,8 @@ func (s *CommandService) TryHandle(ctx context.Context, req chat.CommandRequest)
 		return exec.finish(ctx, s.handleForget(ctx, req, parsed)), true, nil
 	case "stop":
 		return exec.finish(ctx, s.handleStop(req)), true, nil
+	case "bad":
+		return exec.finish(ctx, s.handleBad(ctx, req, parsed)), true, nil
 	default:
 		if descriptor.ProviderKind == commandcore.CommandProviderPlugin {
 			return exec.finish(ctx, s.handlePluginCommand(ctx, req, parsed, descriptor)), true, nil
@@ -434,6 +437,80 @@ func (s *CommandService) handleNew(ctx context.Context, req chat.CommandRequest)
 		ContextSwitch: "new",
 		Payload:       warningsPayload(warnings),
 	}
+}
+
+// handleBad freezes the current scene for later attribution. The reason is
+// mandatory: it is the only part of "what should have happened" that the frozen
+// scene cannot supply on its own.
+func (s *CommandService) handleBad(ctx context.Context, req chat.CommandRequest, parsed commandcore.ParsedCommand) commandResult {
+	reason := badCommandReason(parsed)
+	if reason == "" {
+		return commandResult{
+			Status:    "failed",
+			Content:   "用法：/bad <哪里不对>，例：/bad 又忘了我讨厌香菜",
+			ErrorKind: "validation_error",
+		}
+	}
+	if s == nil || s.infra == nil || s.infra.DB == nil {
+		return commandResult{Status: "failed", Content: "存储不可用，未能记录坏样本。", ErrorKind: "internal_error"}
+	}
+	sessionID := strings.TrimSpace(req.SessionID)
+	if sessionID == "" {
+		return commandResult{Status: "failed", Content: "当前来源尚未绑定会话，无法记录坏样本。", ErrorKind: "validation_error"}
+	}
+
+	result, err := badsample.NewRecorder(s.infra.DB).Record(ctx, badsample.RecordRequest{
+		SessionID:  sessionID,
+		OriginKey:  req.Origin.OriginKey,
+		PersonaKey: req.PersonaKey,
+		Reason:     reason,
+	})
+	if err != nil {
+		return commandResult{Status: "failed", Content: "记录坏样本失败：" + err.Error(), ErrorKind: "internal_error"}
+	}
+
+	// Counts reported here are what was actually frozen, never the configured
+	// maximums — the receipt must not look rosier than the stored scene.
+	content := fmt.Sprintf("已记录第 %d 条坏样本 · 冻结了最近 %d 条消息 / %d 轮现场",
+		result.TotalCount, result.FrozenMessages, result.FrozenSnapshots)
+	if result.Truncated {
+		content += "（现场过大已截断）"
+	}
+	if len(result.BlockErrors) > 0 {
+		missing := make([]string, 0, len(result.BlockErrors))
+		for _, blockErr := range result.BlockErrors {
+			missing = append(missing, blockErr.Block)
+		}
+		content += "（部分现场缺失：" + strings.Join(missing, "、") + "）"
+	}
+	return commandResult{
+		Status:  "success",
+		Content: content,
+		Payload: map[string]any{
+			"sample_id":        result.SampleID,
+			"total_count":      result.TotalCount,
+			"frozen_messages":  result.FrozenMessages,
+			"frozen_snapshots": result.FrozenSnapshots,
+			"truncated":        result.Truncated,
+		},
+	}
+}
+
+// badCommandReason takes the reason from the raw input rather than parsed.Args.
+// The parser pulls key=value tokens into Flags, so rebuilding the text from Args
+// would silently drop words (e.g. "/bad 语气=太机械").
+func badCommandReason(parsed commandcore.ParsedCommand) string {
+	raw := strings.TrimSpace(parsed.Raw)
+	if raw == "" {
+		return strings.TrimSpace(strings.Join(parsed.Args, " "))
+	}
+	if !strings.HasPrefix(raw, "/") {
+		return strings.TrimSpace(raw)
+	}
+	if idx := strings.IndexFunc(raw, func(r rune) bool { return r == ' ' || r == '\t' || r == '\n' }); idx >= 0 {
+		return strings.TrimSpace(raw[idx+1:])
+	}
+	return ""
 }
 
 func (s *CommandService) handleSwitch(ctx context.Context, req chat.CommandRequest, parsed commandcore.ParsedCommand) commandResult {

@@ -1548,6 +1548,23 @@ ALTER TABLE platform_message_receipts ADD COLUMN agent_id TEXT NOT NULL DEFAULT 
 ALTER TABLE platform_message_receipts ADD COLUMN resolved_persona_key TEXT NOT NULL DEFAULT '';
 `,
 	},
+	{
+		Version: 41,
+		SQL: `
+CREATE TABLE IF NOT EXISTS bad_samples (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    reason TEXT NOT NULL,
+    session_id TEXT NOT NULL DEFAULT '',
+    origin_key TEXT NOT NULL DEFAULT '',
+    persona_key TEXT NOT NULL DEFAULT '',
+    target_turn_id TEXT NOT NULL DEFAULT '',
+    context_json TEXT NOT NULL,
+    context_schema_version INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_bad_samples_created_at ON bad_samples(created_at DESC);
+`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.
