@@ -27,6 +27,13 @@ Update rules:
 - decisions should contain user or assistant decisions that change future behavior, task direction, or preferences.
 - do_not_forget should contain high-importance memory only; keep it short and deduplicated.
 - Remove obsolete items when the new messages clearly make them false or fulfilled.
+
+Time rules:
+- Each incoming message carries created_at, and the current time is given below. Use them to judge how old an event is.
+- Never write a bare relative time word ("刚", "刚才", "今天", "昨天", "明天", "现在", "凌晨", "今晚", "等下", "just now", "earlier today") into any array item. Such wording is read back verbatim weeks later and turns a stale event into a current one.
+- Date events absolutely instead: "用户在 2026-07-06 晚上切了西瓜" rather than "用户刚切了西瓜在吃".
+- Prefer the durable form of a fact over the momentary one. "用户喜欢吃西瓜" is worth keeping; "用户正在吃西瓜" is not.
+- While merging, rewrite any existing item that still contains a bare relative time word into its absolute form. If it cannot be dated from the current messages, drop it.
 - Deduplicate semantically similar entries. Keep each array item to one concise sentence.
 - Use empty strings and empty arrays when unknown.
 - JSON only. No markdown, prose, code fences, or explanations.

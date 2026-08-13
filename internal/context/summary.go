@@ -204,12 +204,18 @@ func UpdateRunningSummaryWithParamsAndPromptResolver(
 		Model:        model,
 		Attempted:    true,
 	}
-	req, err := buildSummaryRequestWithParamsAndSystemPrompt(model, params, persona, current.RunningSummary, delta, systemPrompt)
+	// Deliberately not the `now` above: that one is UTC for retry bookkeeping,
+	// while this one is presented to the summariser and must read as a wall clock.
+	req, err := buildSummaryRequestWithParamsAndSystemPrompt(model, params, persona, current.RunningSummary, delta, systemPrompt, time.Now())
 	if err != nil {
 		markSummaryFailure(&current, err, now, defaultSummaryFailureCooldown)
 		copyFailureStateToReport(&report, current)
 		return &current, report, err
 	}
+	// The audit has to show the prompt as sent, injected clock included. An
+	// audit trail that omits the time injection is precisely what makes a
+	// time-reasoning bug hard to attribute later.
+	report.PromptAudit.SystemPrompt = req.System
 	start := time.Now()
 	resp, err := client.Chat(ctx, req)
 	report.DurationMS = time.Since(start).Milliseconds()
@@ -338,10 +344,10 @@ func buildSummaryRequest(model string, summaryMaxTokens int, summaryTemperature 
 }
 
 func buildSummaryRequestWithParams(model string, params llm.RequestParams, persona *config.Persona, current RunningSummary, delta []storage.MessageRecord) (llm.ChatRequest, error) {
-	return buildSummaryRequestWithParamsAndSystemPrompt(model, params, persona, current, delta, summarySystemPrompt)
+	return buildSummaryRequestWithParamsAndSystemPrompt(model, params, persona, current, delta, summarySystemPrompt, time.Now())
 }
 
-func buildSummaryRequestWithParamsAndSystemPrompt(model string, params llm.RequestParams, persona *config.Persona, current RunningSummary, delta []storage.MessageRecord, systemPrompt string) (llm.ChatRequest, error) {
+func buildSummaryRequestWithParamsAndSystemPrompt(model string, params llm.RequestParams, persona *config.Persona, current RunningSummary, delta []storage.MessageRecord, systemPrompt string, now time.Time) (llm.ChatRequest, error) {
 	currentPayload, err := json.Marshal(struct {
 		RunningSummary RunningSummary `json:"running_summary"`
 	}{
@@ -351,17 +357,22 @@ func buildSummaryRequestWithParamsAndSystemPrompt(model string, params llm.Reque
 		return llm.ChatRequest{}, fmt.Errorf("marshal current running summary: %w", err)
 	}
 
+	// CreatedAt travels with each message so the summariser can date what it
+	// writes. Without it every fact came out phrased relatively ("刚切了西瓜"),
+	// and that wording keeps reading as current for as long as the fact lives.
 	type summaryMessage struct {
-		ID      string `json:"id"`
-		Role    string `json:"role"`
-		Content string `json:"content"`
+		ID        string `json:"id"`
+		Role      string `json:"role"`
+		Content   string `json:"content"`
+		CreatedAt string `json:"created_at,omitempty"`
 	}
 	items := make([]summaryMessage, 0, len(delta))
 	for _, msg := range delta {
 		items = append(items, summaryMessage{
-			ID:      msg.ID,
-			Role:    msg.Role,
-			Content: msg.Content,
+			ID:        msg.ID,
+			Role:      msg.Role,
+			Content:   msg.Content,
+			CreatedAt: msg.CreatedAt,
 		})
 	}
 	historyPayload, err := json.Marshal(struct {
@@ -386,7 +397,7 @@ func buildSummaryRequestWithParamsAndSystemPrompt(model string, params llm.Reque
 	params.Stream = &stream
 	return llm.ChatRequest{
 		Model:       model,
-		System:      strings.TrimSpace(systemPrompt),
+		System:      strings.TrimSpace(systemPrompt) + "\n\n" + formatCurrentTimeContext(now.In(deltaLocation(delta))),
 		Params:      params,
 		MaxTokens:   params.MaxTokens,
 		Temperature: *params.Temperature,

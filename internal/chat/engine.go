@@ -939,6 +939,11 @@ func (e *Engine) sendTurn(ctx context.Context, sessionID string, persona *config
 	}
 	mediaDeliveries = appendMissingMediaDeliveries(mediaDeliveries, e.historicalPlaceholderDeliveries(ctx, sessionID, messages, memoryAnchor.userMessageID, memoryAnchor.turnID, providerID, model))
 
+	// Applied last: every step above may rebuild Content from ContentBlocks,
+	// which would silently drop the anchors on exactly the media-bearing
+	// messages hardest to notice them missing on.
+	messages = contextutil.ApplyTimeAnchors(messages, assembled.TimeAnchors)
+
 	// maxToolRounds prevents infinite tool call loops.
 	const maxToolRounds = 10
 

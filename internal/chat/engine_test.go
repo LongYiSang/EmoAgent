@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -517,10 +518,10 @@ func TestEngineSendMessageStreamsAndPersistsConversation(t *testing.T) {
 	if len(fakeLLM.lastRequest.Messages) != 3 {
 		t.Fatalf("len(Messages) = %d, want 3", len(fakeLLM.lastRequest.Messages))
 	}
-	if fakeLLM.lastRequest.Messages[0].Content != "Earlier question" {
+	if stripTimeAnchor(fakeLLM.lastRequest.Messages[0].Content) != "Earlier question" {
 		t.Fatalf("Messages[0] = %#v, want Earlier question first", fakeLLM.lastRequest.Messages[0])
 	}
-	if fakeLLM.lastRequest.Messages[2].Content != "How are you?" {
+	if stripTimeAnchor(fakeLLM.lastRequest.Messages[2].Content) != "How are you?" {
 		t.Fatalf("Messages[2] = %#v, want current user message last", fakeLLM.lastRequest.Messages[2])
 	}
 
@@ -1626,7 +1627,7 @@ func TestEngineSendMessageUsesAssemblerInsteadOfRecentMessagesOnly(t *testing.T)
 	if !strings.Contains(fakeLLM.lastRequest.Messages[0].Content, `"running_summary"`) {
 		t.Fatalf("Messages[0] = %#v, want running summary envelope first", fakeLLM.lastRequest.Messages[0])
 	}
-	if fakeLLM.lastRequest.Messages[1].Content != "latest user" {
+	if stripTimeAnchor(fakeLLM.lastRequest.Messages[1].Content) != "latest user" {
 		t.Fatalf("Messages[1] = %#v, want latest user last", fakeLLM.lastRequest.Messages[1])
 	}
 }
@@ -3023,7 +3024,7 @@ func TestSummaryFailureFallsBackWithoutBlockingChat(t *testing.T) {
 	if len(fakeLLM.chatRequests) == 0 {
 		t.Fatal("summary Chat was not attempted")
 	}
-	if len(fakeLLM.lastRequest.Messages) != 1 || fakeLLM.lastRequest.Messages[0].Content != "latest user" {
+	if len(fakeLLM.lastRequest.Messages) != 1 || stripTimeAnchor(fakeLLM.lastRequest.Messages[0].Content) != "latest user" {
 		t.Fatalf("Messages = %#v, want chat to continue with recent turn only", fakeLLM.lastRequest.Messages)
 	}
 }
@@ -3353,7 +3354,7 @@ func TestReactiveCompactToolLoopUsesCompactedWorkingSetAfterRetry(t *testing.T) 
 	if len(client.requests[2].Messages) != 3 {
 		t.Fatalf("post-tool-loop messages len = %d, want 3 compacted working-set messages", len(client.requests[2].Messages))
 	}
-	if client.requests[2].Messages[0].Content != "latest user" {
+	if stripTimeAnchor(client.requests[2].Messages[0].Content) != "latest user" {
 		t.Fatalf("post-tool-loop first message = %#v, want latest user", client.requests[2].Messages[0])
 	}
 }
@@ -4471,4 +4472,53 @@ func TestEngineRoutesProgressEventsToWSWriter(t *testing.T) {
 	if !sawEnd {
 		t.Fatalf("ws messages = %#v, want work_progress_end", wsMessages)
 	}
+}
+
+// The /bad sample from 2026-08-11 showed the model reading its own 42-hour-old
+// "都快四点半了" as the current time. User messages therefore have to reach the
+// provider carrying an absolute timestamp.
+func TestEngineSendMessageAnchorsUserMessagesInTime(t *testing.T) {
+	fakeLLM := &fakeLLMClient{
+		deltas:   []string{"ok"},
+		response: &llm.ChatResponse{ID: "resp-1", Content: "ok", Model: "test-model"},
+	}
+	engine, db, _ := newTestEngine(t, fakeLLM)
+
+	sessionID, err := engine.StartSession(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if err := db.AddMessage(context.Background(), "earlier-user", sessionID, "user", "Earlier question"); err != nil {
+		t.Fatalf("AddMessage(user): %v", err)
+	}
+	if err := db.AddMessage(context.Background(), "earlier-assistant", sessionID, "assistant", "Earlier answer"); err != nil {
+		t.Fatalf("AddMessage(assistant): %v", err)
+	}
+
+	persona := &config.Persona{Name: "default", SystemPrompt: "You are warm."}
+	if _, err := engine.SendMessage(context.Background(), sessionID, persona, "How are you?", func(string) {}); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	anchorPattern := regexp.MustCompile(`^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} 周.\]\n`)
+	for _, msg := range fakeLLM.lastRequest.Messages {
+		if msg.Role != llm.RoleUser {
+			continue
+		}
+		if !anchorPattern.MatchString(msg.Content) {
+			t.Fatalf("user message reached the provider without a time anchor: %q", msg.Content)
+		}
+	}
+	if strings.Contains(fakeLLM.lastRequest.Messages[1].Content, "[") {
+		t.Fatalf("assistant message was anchored: %q", fakeLLM.lastRequest.Messages[1].Content)
+	}
+}
+
+// timeAnchorPattern matches the absolute-time prefix every user message now
+// carries into the provider request. Tests that assert on message text strip it
+// so they keep describing the conversation rather than the clock.
+var timeAnchorPattern = regexp.MustCompile(`^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} 周.\]\n`)
+
+func stripTimeAnchor(content string) string {
+	return timeAnchorPattern.ReplaceAllString(content, "")
 }

@@ -162,6 +162,10 @@ type AssembledContext struct {
 	Messages         []llm.Message
 	Budget           Budget
 	CompactReport    CompactReport
+	// TimeAnchors maps message ID to text that must be prepended to that
+	// message before it reaches the model. Apply it with ApplyTimeAnchors
+	// after any media rendering, not here — see that function for why.
+	TimeAnchors map[string]string
 }
 
 type ContextStats struct {

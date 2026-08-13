@@ -29,10 +29,16 @@ func main() {
 	selfTest := flag.Bool("self-test", false, "initialize, run local diagnostics, then exit")
 	selfTestJSON := flag.Bool("self-test-json", false, "write self-test diagnostics as JSON to stdout")
 	selfTestStrict := flag.Bool("self-test-strict", false, "return non-zero unless self-test status is ok")
+	cleanStaleFacts := flag.Bool("clean-stale-summary-facts", false, "report running_summary facts whose wording misdates itself, then exit")
+	cleanStaleFactsApply := flag.Bool("clean-stale-summary-facts-apply", false, "remove the facts reported by --clean-stale-summary-facts (stop the server first)")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if *cleanStaleFacts || *cleanStaleFactsApply {
+		os.Exit(runCleanStaleSummaryFacts(ctx, *configPath, slog.Default(), os.Stdout, *cleanStaleFactsApply))
+	}
 
 	instance := app.New()
 	if *selfTest || *selfTestJSON || *selfTestStrict {

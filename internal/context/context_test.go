@@ -1146,13 +1146,13 @@ func TestRunningSummaryUsesPromptCenterResolver(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateRunningSummaryWithParamsAndPromptResolver: %v", err)
 	}
-	if client.lastReq.System != "custom summary system" {
+	if !strings.Contains(client.lastReq.System, "custom summary system") {
 		t.Fatalf("summary system prompt = %q, want custom override", client.lastReq.System)
 	}
 	if report.PromptAudit == nil {
 		t.Fatalf("PromptAudit is nil")
 	}
-	if report.PromptAudit.Purpose != "context.running_summary.update" || report.PromptAudit.SystemPrompt != "custom summary system" {
+	if report.PromptAudit.Purpose != "context.running_summary.update" || !strings.Contains(report.PromptAudit.SystemPrompt, "custom summary system") {
 		t.Fatalf("PromptAudit = %#v", report.PromptAudit)
 	}
 	if len(report.PromptAudit.Components) != 1 || report.PromptAudit.Components[0].ComponentID != promptcenter.ComponentRunningSummarySystem {
