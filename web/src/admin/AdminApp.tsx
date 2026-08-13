@@ -1,5 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { AppRail } from '../shared/components/AppRail';
+import { ThemeToggle } from '../shared/components/ThemeToggle';
+import { useTheme } from '../shared/hooks/useTheme';
 import { classNames } from '../shared/lib/classNames';
 import { useAdminStatus } from './hooks/useAdminStatus';
 import { useProviderAdmin } from './hooks/useProviderAdmin';
@@ -45,6 +47,7 @@ const RetentionTab = lazy(() => import('./tabs/RetentionTab'));
 const DiagnosticsTab = lazy(() => import('./tabs/DiagnosticsTab'));
 
 export function AdminApp() {
+  const { theme, toggleTheme } = useTheme();
   const [tab, setTabState] = useState<TabID>(() => tabIDFromHash());
   const status = useAdminStatus();
   const providers = useProviderAdmin(status);
@@ -211,6 +214,7 @@ export function AdminApp() {
             <p>{activeTab?.description || '模型服务、Persona、记忆、Sidecar 与运行时生效配置'}</p>
           </div>
           <span className="status-chip"><span className="dot" /><span id="status">{status.status}</span></span>
+          <ThemeToggle theme={theme} onToggle={toggleTheme} />
         </header>
         <div className="admin-body">
           <aside className="admin-tabs" aria-label="配置导航">

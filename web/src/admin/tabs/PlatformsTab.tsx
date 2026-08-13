@@ -41,7 +41,6 @@ export default memo(function PlatformsTab({
     <div className="section">
       <div className="hero sticky-hero">
         <div>
-          <h2>消息平台</h2>
           <div className="meta">SnowLuma / OneBot v11 · {adapterID}</div>
         </div>
         <div className="actions">

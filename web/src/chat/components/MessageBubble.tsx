@@ -11,9 +11,23 @@ export function MessageBubble({ item, streaming, onRetry }: {
   const role = item.role === 'user' ? 'user' : item.role === 'error' ? 'error' : 'emotion';
   const displayParts = item.displayParts?.length ? item.displayParts : undefined;
   const richText = role === 'emotion';
+  // Grouping defaults to standalone so a message still renders correctly if it
+  // reaches the bubble without having been annotated.
+  const groupStart = item.groupStart !== false;
+  const groupEnd = item.groupEnd !== false;
   return (
-    <div className={classNames('msg', item.role, item.status === 'pending' && 'pending', item.status === 'failed' && 'failed', streaming && 'streaming')}>
-      <Avatar role={role} />
+    <div className={classNames(
+      'msg',
+      item.role,
+      groupStart && 'group-start',
+      groupEnd && 'group-end',
+      !groupStart && 'group-cont',
+      item.status === 'pending' && 'pending',
+      item.status === 'failed' && 'failed',
+      streaming && 'streaming',
+    )}>
+      {/* One avatar per turn, not per delivered segment. */}
+      {groupStart && <Avatar role={role} />}
       <div className="bubble">
         {displayParts ? (
           <div className="message-parts">
@@ -56,7 +70,7 @@ export function MessageBubble({ item, streaming, onRetry }: {
           </>
         )}
       </div>
-      <time className="msg-time" dateTime={item.createdAt}>{formatClock(item.createdAt)}</time>
+      {groupEnd && <time className="msg-time" dateTime={item.createdAt}>{formatClock(item.createdAt)}</time>}
     </div>
   );
 }

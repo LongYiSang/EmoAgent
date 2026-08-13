@@ -2,9 +2,45 @@
    Structure: semantic roles first; legacy names alias for gradual migration. */
 
 @theme {
-  --font-ui: "Inter", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
-  --font-data: "Inter", "Noto Sans SC", "PingFang SC", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, monospace;
+  /* "Inter Variable" is bundled (see fonts.css) and covers latin only, so CJK
+     falls through to the Chinese families below — which is the intent. The
+     previous stack named a font that was never shipped, so Noto Sans SC ended
+     up setting all the Latin text too. */
+  --font-ui: "Inter Variable", "Inter", "Segoe UI", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-data: "Inter Variable", "Inter", "Segoe UI", "Noto Sans SC", "PingFang SC", system-ui, sans-serif;
+  /* JetBrains Mono is not bundled either; name the monospace faces that ship
+     with Windows/macOS before the generic fallback so the log body lands on a
+     chosen face rather than whatever the browser defaults to. */
+  --font-mono: "JetBrains Mono", "Cascadia Mono", "SF Mono", Consolas, "Menlo", ui-monospace, monospace;
+
+  /* ── Type scale: 7 steps. Nothing outside this list. ──
+     11px is the floor and is reserved for badges / all-caps Latin labels —
+     never for Chinese body copy, which needs 12px+ to stay legible. */
+  --text-2xs: 11px;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-display: 28px;
+
+  /* ── Weight scale: 4 steps, hard ceiling at 700. ──
+     Hierarchy comes from COLOR first, weight second. Demote secondary text by
+     switching to a muted color, not by nudging the weight — that is how this
+     file previously ended up with 7 weights and no hierarchy at all. */
+  --weight-normal: 400;   /* body, message content, log lines, form values */
+  --weight-medium: 500;   /* labels, meta, buttons, nav items */
+  --weight-semibold: 600; /* card titles, emphasised values, badges */
+  --weight-bold: 700;     /* page titles only */
+
+  /* ── Spacing: 4px base with two half-steps for pill/badge internals ── */
+  --space-05: 2px;
+  --space-1: 4px;
+  --space-15: 6px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
 
   /* ── Semantic surfaces (cool neutrals, blue-tinted) ── */
   --color-background: #f8fafc;
@@ -23,6 +59,14 @@
   --color-primary-soft: #e0f2fe;
   --color-primary-foreground: #f8fafc;
   --color-primary-mid: #38bdf8;
+
+  /* Ink colours for text sitting on a *-soft tint. The plain primary/muted inks
+     were designed against white and fall below AA once the background is
+     tinted: #0284c7 on #e0f2fe is 3.57:1 and #64748b on #f1f5f9 is 4.34:1,
+     both under the 4.5:1 needed at these sizes. These darker pairs measure
+     5.17:1 and 6.86:1 respectively. */
+  --color-primary-on-soft: #0369a1;
+  --color-muted-on-soft: #475569;
 
   /* Sidebar */
   --color-sidebar: #f1f5f9;
@@ -114,10 +158,21 @@
   --rail-hover-bg: rgb(255 255 255 / 0.72);
   --meter-track: rgb(15 23 42 / 0.08);
   --image-surface: rgb(255 255 255 / 0.7);
+
+  /* Translucent "lifted panel" surfaces. These were 8 different hardcoded
+     rgba(255,255,255,…) alphas scattered through app.css, which rendered as
+     white blocks the moment the page went dark. In dark mode a low-alpha white
+     veil lifts a surface off the background the same way. */
+  --surface-veil: rgb(255 255 255 / 0.72);
+  --surface-veil-strong: rgb(255 255 255 / 0.88);
 }
 
-/* ── Dark theme (opt-in via the chat page toggle; persisted in localStorage) ──
-   Only the chat entry sets data-theme, so admin/logs pages keep the light look. */
+/* ── Dark theme ──
+   Every entry point resolves and stamps data-theme before first paint (see the
+   inline script in each HTML file), seeded from localStorage or, with no stored
+   choice, from prefers-color-scheme. Because the attribute is always present
+   there is exactly one dark palette here rather than a duplicate media-query
+   copy that would have to be kept in sync. */
 :root[data-theme="dark"] {
   color-scheme: dark;
 
@@ -133,7 +188,13 @@
   --color-primary: #0ea5e9;
   --color-primary-hover: #38bdf8;
   --color-primary-soft: #0d2c45;
-  --color-primary-foreground: #f8fafc;
+  /* The dark accent is a bright cyan, so near-white text on it measures only
+     2.65:1. Dark ink on that same fill is 6.80:1. */
+  --color-primary-foreground: #0b1220;
+
+  /* Dark equivalents: lift instead of darken. 6.61:1 and 7.50:1. */
+  --color-primary-on-soft: #38bdf8;
+  --color-muted-on-soft: #a6b4c8;
 
   --color-sidebar: #0d1728;
   --color-sidebar-foreground: #b6c2d4;
@@ -172,6 +233,9 @@
   --rail-hover-bg: rgb(255 255 255 / 0.06);
   --meter-track: rgb(255 255 255 / 0.14);
   --image-surface: rgb(255 255 255 / 0.06);
+
+  --surface-veil: rgb(255 255 255 / 0.04);
+  --surface-veil-strong: rgb(255 255 255 / 0.08);
 }
 
 @supports (height: 100dvh) {

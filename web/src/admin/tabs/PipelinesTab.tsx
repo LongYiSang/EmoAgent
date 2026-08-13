@@ -31,7 +31,7 @@ export default memo(function PipelinesTab({ providers, memoryDraft, updateMemory
 
   return (
     <div className="section">
-      <div className="hero sticky-hero"><div><h2>管线</h2><div className="meta">通过 provider_id 与 model 选择 Provider/Model 绑定</div></div><button className="btn primary" id="save-pipelines" type="button" onClick={savePipelines}>保存</button></div>
+      <div className="hero sticky-hero"><div><div className="meta">通过 provider_id 与 model 选择 Provider/Model 绑定</div></div><button className="btn primary" id="save-pipelines" type="button" onClick={savePipelines}>保存</button></div>
       <div className="grid" id="pipeline-binding-form">
         {memoryPipelineBindings.map(([key, label]) => {
           const binding = field<AnyRecord>(bindings, key, {});

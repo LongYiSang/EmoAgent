@@ -67,7 +67,6 @@ export default memo(function AgentAffectTab({
     <div className="section">
       <div className="hero sticky-hero">
         <div>
-          <h2>Agent Affect</h2>
           <div className="meta">当前 mood、运行时配置、调试写入与审计</div>
         </div>
         <div className="actions">

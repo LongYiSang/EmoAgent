@@ -23,7 +23,7 @@ export default memo(function DiagnosticsTab({ effectiveConfig, configIssues, plu
   const checks = Array.isArray(pluginDiagnostics.checks) ? pluginDiagnostics.checks as AnyRecord[] : [];
   return (
     <div className="admin-split">
-      <aside className="list-pane"><div className="pane-head"><div><h2>诊断</h2><div className="hint">配置问题与生效 JSON</div></div></div><div className="items" id="config-issues-list">{configIssues.length ? configIssues.map((issue, index) => <button className="item" key={index} type="button"><span className="item-title">{String(issue.path || 'config')}<span className={classNames('badge', issue.severity === 'error' && 'warn')}>{issueSeverityLabel(issue.severity)}</span></span><span className="item-meta">{String(issue.message || '')}</span></button>) : <div className="hint">暂无配置问题</div>}</div></aside>
+      <aside className="list-pane"><div className="pane-head"><div><div className="hint">配置问题与生效 JSON</div></div></div><div className="items" id="config-issues-list">{configIssues.length ? configIssues.map((issue, index) => <button className="item" key={index} type="button"><span className="item-title">{String(issue.path || 'config')}<span className={classNames('badge', issue.severity === 'error' && 'warn')}>{issueSeverityLabel(issue.severity)}</span></span><span className="item-meta">{String(issue.message || '')}</span></button>) : <div className="hint">暂无配置问题</div>}</div></aside>
       <section className="detail-pane">
         <div className="section">
           <div className="hero sticky-hero">

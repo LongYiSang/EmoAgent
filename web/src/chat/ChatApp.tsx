@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { AppRail } from '../shared/components/AppRail';
+import { useTheme } from '../shared/hooks/useTheme';
 import { queueMemoryExtraction } from './protocol/memoryApi';
 import { uploadMedia, type UploadedMedia } from './protocol/mediaApi';
 import type { MessageDisplayPart } from './protocol/sessionApi';
@@ -13,6 +14,7 @@ import { PipelinePanel } from './components/PipelinePanel';
 import { SessionSidebar } from './components/SessionSidebar';
 import { VirtualTimeline } from './components/VirtualTimeline';
 import { syncURL } from './lib/chatViewData';
+import { annotateMessageGroups } from './lib/groupTimeline';
 import { useChatSession } from './hooks/useChatSession';
 import { useChatWebSocket } from './hooks/useChatWebSocket';
 import '../styles.css';
@@ -21,18 +23,10 @@ type DraftAttachment = UploadedMedia & {
   preview_url?: string;
 };
 
-const THEME_STORAGE_KEY = 'emoagent-theme';
-
 export function ChatApp() {
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
   const [composer, setComposer] = useState('');
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    try {
-      return localStorage.getItem(THEME_STORAGE_KEY) === 'dark' ? 'dark' : 'light';
-    } catch {
-      return 'light';
-    }
-  });
+  const { theme, toggleTheme } = useTheme();
   const [attachments, setAttachments] = useState<DraftAttachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -47,19 +41,6 @@ export function ChatApp() {
     contextRef.current = { personaKey: state.currentPersonaKey, sessionID: state.currentSessionId };
     syncURL(state.currentPersonaKey, state.currentSessionId);
   }, [state.currentPersonaKey, state.currentSessionId]);
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    try {
-      localStorage.setItem(THEME_STORAGE_KEY, theme);
-    } catch {
-      // localStorage unavailable — theme just won't persist
-    }
-  }, [theme]);
-
-  const toggleTheme = useCallback(() => {
-    setTheme(current => current === 'dark' ? 'light' : 'dark');
-  }, []);
 
   const focusComposer = useCallback(() => {
     document.getElementById('input')?.focus();
@@ -125,6 +106,10 @@ export function ChatApp() {
       previewURLsRef.current.delete(url);
     }
   }, [attachments, state.timeline]);
+
+  // Reply delivery splits one reply into several messages; annotate runs of the
+  // same turn so the renderer draws one avatar and one timestamp per turn.
+  const groupedTimeline = useMemo(() => annotateMessageGroups(state.timeline), [state.timeline]);
 
   useEffect(() => () => {
     for (const url of previewURLsRef.current) {
@@ -295,7 +280,7 @@ export function ChatApp() {
           />
           <MemoryStatusPanel visible={state.memoryStatusVisible} segments={state.memorySegments} jobs={state.memoryJobs} />
           <VirtualTimeline
-            items={state.timeline}
+            items={groupedTimeline}
             pendingApprovalIDs={state.pendingApprovalIDs}
             sending={state.sending}
             sessionID={state.currentSessionId}

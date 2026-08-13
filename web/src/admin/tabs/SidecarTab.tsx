@@ -30,7 +30,6 @@ export default memo(function SidecarTab({
     <div className="section sidecar-tab">
       <div className="hero sticky-hero">
         <div>
-          <h2>Sidecar</h2>
           <div className="meta">Python 记忆侧车配置（API Key 仍在环境变量中）</div>
         </div>
         <div className="actions">

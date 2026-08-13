@@ -36,7 +36,6 @@ export default memo(function WebSearchPipelineTab({
     <div className="section">
       <div className="hero sticky-hero">
         <div>
-          <h2>搜索流水线</h2>
           <div className="meta">web_search 的 Search / Reader / Rerank 运行时配置</div>
         </div>
         <div className="actions">

@@ -117,12 +117,17 @@ export default memo(function PluginsTab({
                 <span className={classNames('badge', status === 'running' ? 'ok' : status === 'stopped' ? 'warn' : '')}>{status}</span>
               </div>
             </div>
-            <div className="actions">
-              <button className="btn ghost" type="button" disabled={!selectedPluginID} onClick={restartSelectedPlugin}>重启</button>
-              <button className="btn primary" type="button" disabled={!selectedPluginID} onClick={enableSelectedPlugin}>{trustReviewRequired ? '确认变更并启用' : '启用此版本'}</button>
-              <button className="btn ghost" type="button" disabled={!selectedPluginID} onClick={disableSelectedPlugin}>禁用</button>
-              <button className="btn danger" type="button" disabled={!selectedPluginID} onClick={deleteSelectedPlugin}>删除</button>
-            </div>
+            {/* These were only `disabled` with no selection, so a full row of
+                destructive controls — including a red 删除 — sat on screen
+                pointing at nothing. Hide the row until a plugin is chosen. */}
+            {selectedPluginID ? (
+              <div className="actions">
+                <button className="btn ghost" type="button" onClick={restartSelectedPlugin}>重启</button>
+                <button className="btn primary" type="button" onClick={enableSelectedPlugin}>{trustReviewRequired ? '确认变更并启用' : '启用此版本'}</button>
+                <button className="btn ghost" type="button" onClick={disableSelectedPlugin}>禁用</button>
+                <button className="btn danger" type="button" onClick={deleteSelectedPlugin}>删除</button>
+              </div>
+            ) : null}
           </div>
           {trustReviewRequired && <p className="meta">本次启用需要重新确认：<span className="mono">{trustReviewReasons || '-'}</span></p>}
 

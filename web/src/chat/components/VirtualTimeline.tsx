@@ -73,7 +73,10 @@ export function VirtualTimeline({
     getItemKey,
     estimateSize: index => estimateTimelineItemSize(items[index]),
     overscan: 6,
-    gap: 18,
+    // Small base gap; `.timeline-virtual-row` adds the rest as padding so that
+    // continuation segments of one turn can close up to 6px while separate
+    // turns keep the full 18px.
+    gap: 6,
     anchorTo: 'end',
     followOnAppend: true,
     scrollEndThreshold: 48,

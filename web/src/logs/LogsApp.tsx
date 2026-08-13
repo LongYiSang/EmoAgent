@@ -1,6 +1,8 @@
 import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { AppRail } from '../shared/components/AppRail';
+import { ThemeToggle } from '../shared/components/ThemeToggle';
+import { useTheme } from '../shared/hooks/useTheme';
 import { requestJSON } from '../shared/lib/api';
 import { classNames } from '../shared/lib/classNames';
 import '../styles.css';
@@ -56,6 +58,7 @@ const levelOptions = [
 ];
 
 export function LogsApp() {
+  const { theme, toggleTheme } = useTheme();
   const [sources, setSources] = useState<LogSource[]>([]);
   const [sourceValue, setSourceValue] = useState('');
   const [minLevel, setMinLevel] = useState('');
@@ -337,6 +340,7 @@ export function LogsApp() {
             <span className="dot" />
             <span>{streamStatus}</span>
           </span>
+          <ThemeToggle theme={theme} onToggle={toggleTheme} />
         </header>
 
         <section className="logs-toolbar" aria-label="日志筛选">

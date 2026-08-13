@@ -6,7 +6,7 @@ import type { MemoryJob, MemorySegment } from '../protocol/memoryApi';
 export type MessageStatus = 'sent' | 'pending' | 'failed';
 
 export type TimelineItem =
-  | { kind: 'message'; id: string; role: string; content: string; createdAt: string; status?: MessageStatus; parts?: ContentPart[]; displayParts?: MessageDisplayPart[]; groupID?: string; segmentIndex?: number; segmentTotal?: number; fresh?: boolean }
+  | { kind: 'message'; id: string; role: string; content: string; createdAt: string; status?: MessageStatus; parts?: ContentPart[]; displayParts?: MessageDisplayPart[]; groupID?: string; segmentIndex?: number; segmentTotal?: number; fresh?: boolean; groupStart?: boolean; groupEnd?: boolean }
   | { kind: 'approval'; id: string; approval: ApprovalRequest; createdAt: string }
   | { kind: 'tool'; id: string; tool: ToolActivity; createdAt: string; collapsed: boolean; fresh?: boolean }
   | { kind: 'reasoning'; id: string; reasoning: ReasoningActivity; createdAt: string; collapsed: boolean; fresh?: boolean }

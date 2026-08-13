@@ -46,7 +46,6 @@ export default memo(function MemoryCoreTab({
     <div className="section memory-core-tab">
       <div className="hero sticky-hero">
         <div>
-          <h2>Memory Core</h2>
           <div className="meta">种子配置、运行时与生效配置</div>
         </div>
         <button className="btn primary" type="button" onClick={saveMemoryCore}>保存</button>

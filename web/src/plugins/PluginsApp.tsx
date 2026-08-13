@@ -1,11 +1,14 @@
 import { useEffect, useRef } from 'react';
 import { AppRail } from '../shared/components/AppRail';
+import { ThemeToggle } from '../shared/components/ThemeToggle';
+import { useTheme } from '../shared/hooks/useTheme';
 import { useAdminStatus } from '../admin/hooks/useAdminStatus';
 import { usePluginAdmin } from '../admin/hooks/usePluginAdmin';
 import PluginsTab from '../admin/tabs/PluginsTab';
 import '../styles.css';
 
 export function PluginsApp() {
+  const { theme, toggleTheme } = useTheme();
   const status = useAdminStatus();
   const plugins = usePluginAdmin(status);
   const didInitialLoadRef = useRef(false);
@@ -26,6 +29,7 @@ export function PluginsApp() {
             <p>安装、启用、审计与运行时插件</p>
           </div>
           <span className="status-chip"><span className="dot" /><span id="status">{status.status}</span></span>
+          <ThemeToggle theme={theme} onToggle={toggleTheme} />
         </header>
         <div style={{ padding: '18px', minHeight: 0, overflow: 'auto' }}>
           <PluginsTab {...plugins} />

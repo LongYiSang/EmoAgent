@@ -1,4 +1,6 @@
 import { classNames } from '../../shared/lib/classNames';
+import { ThemeToggle } from '../../shared/components/ThemeToggle';
+import type { Theme } from '../../shared/hooks/useTheme';
 import type { ContextStats } from '../protocol/wsTypes';
 import { contextStatsDisplayModel } from './contextStatsDisplay';
 
@@ -19,7 +21,7 @@ export function ConversationHeader({
   contextStats?: ContextStats;
   memoryStatusVisible: boolean;
   hasSession: boolean;
-  theme: 'light' | 'dark';
+  theme: Theme;
   onToggleTheme: () => void;
   onToggleSidebar: () => void;
   onToggleMemory: () => void;
@@ -55,16 +57,7 @@ export function ConversationHeader({
           记忆状态
         </button>
         <button className="btn primary" id="memory-scan" type="button" disabled={!hasSession} onClick={onScanMemory}>记忆扫描</button>
-        <button
-          className="btn ghost theme-toggle"
-          id="theme-toggle"
-          type="button"
-          aria-label={theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'}
-          title={theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'}
-          onClick={onToggleTheme}
-        >
-          {theme === 'dark' ? '☀️' : '🌙'}
-        </button>
+        <ThemeToggle theme={theme} onToggle={onToggleTheme} />
       </div>
     </header>
   );

@@ -1,0 +1,25 @@
+/* Inter, latin subset only.
+ *
+ * `Inter` was declared as the first family in --font-ui but was never shipped:
+ * there was no @font-face and no webfont link, so on any machine without it
+ * installed the stack fell through to the SECOND family — Noto Sans SC — which
+ * then rendered every piece of Latin text in the UI. That is why the log page,
+ * which is almost entirely Latin (timestamps, session ids, key=value pairs),
+ * looked subtly wrong: it was being set in a Chinese typeface.
+ *
+ * Only the latin subset is referenced on purpose. @fontsource's own wght.css
+ * pulls in 7 subsets (~224KB); the browser would fetch just one, but every file
+ * ends up inside the Go binary via go:embed. Referencing the latin file
+ * directly keeps that to 48KB. CJK is unaffected — it still comes from
+ * Noto Sans SC / PingFang SC / Microsoft YaHei further down the stack.
+ */
+@font-face {
+  font-family: 'Inter Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('@fontsource-variable/inter/files/inter-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}

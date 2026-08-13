@@ -22,12 +22,12 @@ export default memo(function OverviewTab({
   reloadOverview,
   onNavigate,
 }: OverviewTabProps) {
+  const firstLoad = loading && !loadedAt;
   return (
     <div className="overview-page">
       <div className="section overview-hero-card">
         <div className="hero sticky-hero">
           <div>
-            <h2>系统总览</h2>
             <div className="meta">
               {loading ? '正在刷新状态…' : loadedAt ? `更新于 ${formatTime(loadedAt)}` : '汇总当前运行与配置健康状态'}
             </div>
@@ -68,12 +68,14 @@ export default memo(function OverviewTab({
           <button
             key={card.id}
             type="button"
-            className={classNames('overview-stat', `tone-${card.tone}`)}
+            className={classNames('overview-stat', `tone-${card.tone}`, firstLoad && 'is-loading')}
             onClick={() => onNavigate(card.tab)}
           >
             <span className="overview-stat-label">{card.label}</span>
-            <strong className="overview-stat-value">{card.value}</strong>
-            <span className="overview-stat-hint">{card.hint}</span>
+            {/* Before the first load lands every counter is legitimately 0, which
+                reads as "nothing configured" rather than "not known yet". */}
+            <strong className="overview-stat-value">{firstLoad ? '—' : card.value}</strong>
+            <span className="overview-stat-hint">{firstLoad ? '读取中…' : card.hint}</span>
           </button>
         ))}
       </div>
