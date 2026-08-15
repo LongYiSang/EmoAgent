@@ -80,10 +80,7 @@ type OutboundView struct {
 func NewHookContext(tc *turn.TurnContext, hook HookName, stage turn.StageName) HookContext {
 	view := TurnView{}
 	if tc != nil {
-		content := ""
-		if tc.Inbound.UserMessage != nil {
-			content = tc.Inbound.UserMessage.Content
-		}
+		content := tc.Inbound.UserContent()
 		view = TurnView{
 			TurnID:           tc.TurnID,
 			State:            tc.State,

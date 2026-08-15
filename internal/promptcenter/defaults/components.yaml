@@ -163,3 +163,14 @@
   max_chars: 16000
   order: 430
   default_file: tool.request_decision.description.md
+- id: proactive.gate.system
+  group: proactive
+  name: 主动消息门控提示词
+  description: 判断「现在打断用户是否合适」的门控提示词。只判断时机，不产生话术；说什么由 Emotion 用完整上下文决定。
+  kind: system_prompt
+  editable: true
+  risk_level: normal
+  scope_support: [global, agent]
+  max_chars: 8000
+  order: 500
+  default_file: proactive.gate.system.md

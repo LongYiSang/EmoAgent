@@ -28,6 +28,36 @@ type chatTurnRuntime struct {
 	plugin            turnPluginHost
 	realtimeStreaming bool
 	replyDelivery     config.ReplyDeliveryConfig
+	proactive         config.ProactiveConfig
+	ambient           AmbientActivityProvider
+}
+
+// AmbientActivityProvider renders what the user has been doing recently, for
+// turns the user started. Supplied by the host; nil disables the block.
+type AmbientActivityProvider interface {
+	Block(ctx context.Context, cfg config.ProactiveConfig, personaKey string) string
+}
+
+// SetAmbientActivityProvider wires the ambient-activity context block.
+func (r *chatTurnRuntime) SetAmbientActivityProvider(provider AmbientActivityProvider) {
+	if r != nil {
+		r.ambient = provider
+	}
+}
+
+// SetProactiveConfig updates the proactive settings the turn pipeline consults
+// (currently only whether Emotion may decline a proactive turn).
+func (r *chatTurnRuntime) SetProactiveConfig(cfg config.ProactiveConfig) {
+	if r != nil {
+		r.proactive = config.NormalizeProactiveConfig(cfg)
+	}
+}
+
+func (r *chatTurnRuntime) currentSilentTerminationEnabled() bool {
+	if r == nil {
+		return false
+	}
+	return r.proactive.SilentTermination.Enabled
 }
 
 type turnPluginHost interface {
@@ -310,11 +340,27 @@ func (r *chatTurnRuntime) stages(env turn.InboundEnvelope, persona *config.Perso
 			r.resumeStage(persona),
 			r.emitApprovalsStage(),
 		}
+	case turn.InboundProactivePrompt:
+		// No approval stage: a proactive turn must never open an approval loop,
+		// since there is no user waiting to answer one.
+		if r.cfg.MemoryStages {
+			return []turn.Stage{
+				r.normalizeStage(),
+				r.memoryPrepareStage(false),
+				r.emotionPrepareStage(),
+				r.messageStage(persona),
+				r.memoryCommitStage(),
+			}
+		}
+		return []turn.Stage{
+			r.normalizeStage(),
+			r.messageStage(persona),
+		}
 	default:
 		if r.cfg.MemoryStages {
 			return []turn.Stage{
 				r.normalizeStage(),
-				r.memoryPrepareStage(),
+				r.memoryPrepareStage(true),
 				r.emotionPrepareStage(),
 				r.messageStage(persona),
 				r.memoryCommitStage(),
@@ -329,7 +375,11 @@ func (r *chatTurnRuntime) stages(env turn.InboundEnvelope, persona *config.Perso
 	}
 }
 
-func (r *chatTurnRuntime) memoryPrepareStage() turn.Stage {
+// memoryPrepareStage persists the inbound user message and anchors memory.
+// persistUser is false for proactive turns: they have no user message, and the
+// trigger text must never be written to the messages table as if the user had
+// said it — the next turn's Emotion would read it back as the user's words.
+func (r *chatTurnRuntime) memoryPrepareStage(persistUser bool) turn.Stage {
 	return turn.StageFunc{
 		NameValue: turn.StageMemoryPrepare,
 		RunFunc: func(ctx context.Context, tc *turn.TurnContext) (turn.StageResult, error) {
@@ -338,9 +388,9 @@ func (r *chatTurnRuntime) memoryPrepareStage() turn.Stage {
 				return turn.StageResult{NextState: turn.StateMemoryPrepared}, nil
 			}
 			anchor, err := engine.prepareInputAndMemoryAnchor(ctx, tc.Inbound.SessionID, turnOptions{
-				persistUser: true,
-				userContent: tc.Inbound.UserMessage.Content,
-				userParts:   tc.Inbound.UserMessage.Parts,
+				persistUser: persistUser,
+				userContent: tc.Inbound.UserContent(),
+				userParts:   tc.Inbound.UserParts(),
 				turnID:      tc.TurnID,
 				inboundKind: tc.Inbound.Kind,
 			})
@@ -374,13 +424,30 @@ func (r *chatTurnRuntime) emotionPrepareStage() turn.Stage {
 			memoryRetrieval := engine.memoryRetrieval
 			agentAffect := engine.agentAffect
 			engine.mu.RUnlock()
-			snapshot, err := engine.retrieveMemoryPrompt(ctx, tc.Inbound.SessionID, tc.Inbound.UserMessage.Content, anchor.userEpisodeID, memoryRetrieval)
+			// A proactive turn has no user text, so the observed activity stands
+			// in as the memory retrieval query.
+			retrievalQuery := tc.Inbound.UserContent()
+			if retrievalQuery == "" && tc.Inbound.Proactive != nil {
+				retrievalQuery = firstNonEmptyString(tc.Inbound.Proactive.Activity, tc.Inbound.Proactive.Hint)
+			}
+			snapshot, err := engine.retrieveMemoryPrompt(ctx, tc.Inbound.SessionID, retrievalQuery, anchor.userEpisodeID, memoryRetrieval)
 			if err != nil {
 				return turn.StageResult{NextState: turn.StateFailed, Terminal: true, Status: "failed", ErrorKind: "emotion_prepare_failed"}, err
 			}
 			if snapshot != nil && snapshot.PromptBlock != "" {
 				tc.Diagnostics["memory_prompt_block"] = snapshot.PromptBlock
 				tc.Diagnostics["memory_prompt_snapshot"] = snapshot
+			}
+			if block := buildProactiveTriggerBlock(tc.Inbound.Proactive, r.currentSilentTerminationEnabled()); block != "" {
+				tc.Diagnostics["proactive_trigger_block"] = block
+			}
+			// Candidates the gate declined are not discarded: they become context
+			// for the turn the user starts next, so the agent knows what they were
+			// doing without ever having interrupted.
+			if r.ambient != nil && tc.Inbound.Kind == turn.InboundUserMessage {
+				if block := r.ambient.Block(ctx, r.proactive, tc.Inbound.PersonaKey); block != "" {
+					tc.Diagnostics["ambient_activity_block"] = block
+				}
 			}
 			if agentAffect != nil && tc.Inbound.Kind == turn.InboundUserMessage && tc.Inbound.UserMessage != nil {
 				memoryBlock := ""
@@ -400,7 +467,7 @@ func (r *chatTurnRuntime) emotionPrepareStage() turn.Stage {
 							SourceRefType: "episode",
 							SourceRefID:   anchor.userEpisodeID,
 						},
-						Input: agentaffect.MoodImpactInput{Mode: "raw", Text: tc.Inbound.UserMessage.Content},
+						Input: agentaffect.MoodImpactInput{Mode: "raw", Text: tc.Inbound.UserContent()},
 					})
 					if err != nil {
 						tc.Diagnostics["agent_affect_error"] = err.Error()
@@ -484,7 +551,7 @@ func (r *chatTurnRuntime) memoryCommitStage() turn.Stage {
 					PersonaID:         tc.Inbound.PersonaKey,
 					SessionID:         tc.Inbound.SessionID,
 					TurnID:            tc.TurnID,
-					UserText:          tc.Inbound.UserMessage.Content,
+					UserText:          tc.Inbound.UserContent(),
 					AssistantText:     output.assistantContent,
 					MemoryPromptBlock: stringDiagnostic(tc, "memory_prompt_block"),
 					Trigger: agentaffect.TriggerDescriptor{
@@ -536,7 +603,7 @@ func joinSystemBlocks(blocks ...string) string {
 	return strings.Join(out, "\n\n")
 }
 
-func extraSystemRenderComponents(tc *turn.TurnContext, memoryBlock, agentAffectBlock string) []promptcenter.RenderComponent {
+func extraSystemRenderComponents(tc *turn.TurnContext, memoryBlock, agentAffectBlock, proactiveBlock, ambientBlock string) []promptcenter.RenderComponent {
 	if tc == nil || tc.Diagnostics == nil {
 		return nil
 	}
@@ -556,6 +623,18 @@ func extraSystemRenderComponents(tc *turn.TurnContext, memoryBlock, agentAffectB
 			"session_id":  tc.Inbound.SessionID,
 		}))
 	}
+	if strings.TrimSpace(ambientBlock) != "" {
+		components = append(components, promptcenter.DynamicComponent(promptcenter.ComponentProactiveAmbientActivity, "proactive", promptcenter.SourceProactiveDynamic, ambientBlock, map[string]any{
+			"persona_key": tc.Inbound.PersonaKey,
+		}))
+	}
+	if strings.TrimSpace(proactiveBlock) != "" {
+		meta := map[string]any{"persona_key": tc.Inbound.PersonaKey}
+		if tc.Inbound.Proactive != nil {
+			meta["decision_id"] = tc.Inbound.Proactive.DecisionID
+		}
+		components = append(components, promptcenter.DynamicComponent(promptcenter.ComponentProactiveTriggerBlock, "proactive", promptcenter.SourceProactiveDynamic, proactiveBlock, meta))
+	}
 	return components
 }
 
@@ -572,8 +651,14 @@ func (r *chatTurnRuntime) normalizeStage() turn.Stage {
 					return turn.StageResult{NextState: turn.StateFailed, Terminal: true, Status: "failed", ErrorKind: "validation_error"}, errors.New("action is required")
 				}
 			case turn.InboundUserMessage:
-				if tc.Inbound.UserMessage == nil || strings.TrimSpace(tc.Inbound.UserMessage.Content) == "" {
+				if strings.TrimSpace(tc.Inbound.UserContent()) == "" {
 					return turn.StageResult{NextState: turn.StateFailed, Terminal: true, Status: "failed", ErrorKind: "validation_error"}, errors.New("message content is required")
+				}
+			case turn.InboundProactivePrompt:
+				// A proactive turn has no user message by design, but it must
+				// still be traceable to the gate decision that authorised it.
+				if tc.Inbound.Proactive == nil || strings.TrimSpace(tc.Inbound.Proactive.DecisionID) == "" {
+					return turn.StageResult{NextState: turn.StateFailed, Terminal: true, Status: "failed", ErrorKind: "validation_error"}, errors.New("proactive decision_id is required")
 				}
 			}
 			return turn.StageResult{NextState: turn.StateNormalizing}, nil
@@ -601,7 +686,14 @@ func (r *chatTurnRuntime) messageStage(persona *config.Persona) turn.Stage {
 					},
 				}, nil
 			}
-			if tc.Stream != nil {
+			// A proactive turn may still end in silence. Nothing at all may leave
+			// before Emotion has committed to speaking — which means deferring the
+			// start event AND suppressing token streaming, since streamed deltas
+			// escape while the reply is still being generated and would carry the
+			// silence marker itself out to the user.
+			deferProactiveOutput := tc.Inbound.Kind == turn.InboundProactivePrompt && r.currentSilentTerminationEnabled()
+			deferStreamStart := deferProactiveOutput
+			if tc.Stream != nil && !deferStreamStart {
 				if err := tc.Stream.Emit(ctx, turn.OutboundEvent{Type: turn.EventStreamStart}); err != nil {
 					return turn.StageResult{NextState: turn.StateFailed, Terminal: true, Status: "failed", ErrorKind: "outbound_failed"}, err
 				}
@@ -630,24 +722,30 @@ func (r *chatTurnRuntime) messageStage(persona *config.Persona) turn.Stage {
 				streamedDelta = true
 				_ = tc.Stream.Emit(ctx, turn.OutboundEvent{Type: turn.EventStreamDelta, Content: delta})
 			}
-			if useReplyDelivery {
+			if useReplyDelivery || deferProactiveOutput {
+				// Buffer the whole reply instead of streaming it: the silence check
+				// below can only veto output that has not left yet.
 				deltaCB = nil
 			}
 			if r.cfg.MemoryStages {
 				if engine, ok := r.engine.(*Engine); ok {
 					memoryBlock := stringDiagnostic(tc, "memory_prompt_block")
 					agentAffectBlock := stringDiagnostic(tc, "agent_affect_prompt_block")
+					proactiveBlock := stringDiagnostic(tc, "proactive_trigger_block")
+					ambientBlock := stringDiagnostic(tc, "ambient_activity_block")
 					extraSystem := joinSystemBlocks(
 						memoryBlock,
 						agentAffectBlock,
+						ambientBlock,
+						proactiveBlock,
 					)
-					extraSystemComponents := extraSystemRenderComponents(tc, memoryBlock, agentAffectBlock)
+					extraSystemComponents := extraSystemRenderComponents(tc, memoryBlock, agentAffectBlock, proactiveBlock, ambientBlock)
 					var output deferredTurnOutput
 					preparedAnchor, hasPreparedAnchor := tc.Diagnostics["memory_anchor"].(turnMemoryAnchor)
 					reply, err = engine.sendTurn(ctx, tc.Inbound.SessionID, persona, deltaCB, turnOptions{
 						persistUser:           false,
-						userContent:           tc.Inbound.UserMessage.Content,
-						userParts:             tc.Inbound.UserMessage.Parts,
+						userContent:           tc.Inbound.UserContent(),
+						userParts:             tc.Inbound.UserParts(),
 						turnID:                tc.TurnID,
 						requestID:             tc.Inbound.RequestID,
 						inboundKind:           tc.Inbound.Kind,
@@ -668,24 +766,42 @@ func (r *chatTurnRuntime) messageStage(persona *config.Persona) turn.Stage {
 					ensureDiagnostics(tc)
 					tc.Diagnostics["turn_output"] = output
 				} else {
-					reply, err = r.engine.SendMessage(ctx, tc.Inbound.SessionID, persona, tc.Inbound.UserMessage.Content, deltaCB)
+					reply, err = r.engine.SendMessage(ctx, tc.Inbound.SessionID, persona, tc.Inbound.UserContent(), deltaCB)
 				}
 			} else {
 				if engine, ok := r.engine.(*Engine); ok {
 					reply, err = engine.sendTurn(ctx, tc.Inbound.SessionID, persona, deltaCB, turnOptions{
 						persistUser: true,
-						userContent: tc.Inbound.UserMessage.Content,
-						userParts:   tc.Inbound.UserMessage.Parts,
+						userContent: tc.Inbound.UserContent(),
+						userParts:   tc.Inbound.UserParts(),
 						turnID:      tc.TurnID,
 						requestID:   tc.Inbound.RequestID,
 						inboundKind: tc.Inbound.Kind,
 					})
 				} else {
-					reply, err = r.engine.SendMessage(ctx, tc.Inbound.SessionID, persona, tc.Inbound.UserMessage.Content, deltaCB)
+					reply, err = r.engine.SendMessage(ctx, tc.Inbound.SessionID, persona, tc.Inbound.UserContent(), deltaCB)
 				}
 			}
 			if err != nil && !errors.Is(err, errApprovalPending) {
 				return turn.StageResult{NextState: turn.StateFailed, Terminal: true, Status: "failed", ErrorKind: "llm_failed"}, err
+			}
+			// Emotion's chance to decline a proactive turn. This must run before
+			// the reply-delivery segments below: once those are emitted the
+			// message is already on its way to the user.
+			if err == nil && tc.Inbound.Kind == turn.InboundProactivePrompt &&
+				r.currentSilentTerminationEnabled() && isProactiveSilence(reply) {
+				ensureDiagnostics(tc)
+				tc.Diagnostics["proactive_silenced"] = true
+				// Dropping turn_output makes memoryCommitStage skip the commit,
+				// so nothing is written to the messages table either.
+				delete(tc.Diagnostics, "turn_output")
+				delete(tc.Diagnostics, "stream_end_after_memory_commit")
+				return turn.StageResult{NextState: turn.StateDone, Terminal: true, Status: "done"}, nil
+			}
+			if deferStreamStart && tc.Stream != nil {
+				if err := tc.Stream.Emit(ctx, turn.OutboundEvent{Type: turn.EventStreamStart}); err != nil {
+					return turn.StageResult{NextState: turn.StateFailed, Terminal: true, Status: "failed", ErrorKind: "outbound_failed"}, err
+				}
 			}
 			deferStreamEnd := err == nil && r.cfg.MemoryStages
 			if err == nil && useReplyDelivery && reply != "" && tc.Stream != nil {

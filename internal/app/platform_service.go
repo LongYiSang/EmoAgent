@@ -127,6 +127,31 @@ func (s *PlatformService) Status() platform.PlatformStatus {
 	return status
 }
 
+// OutboundFor returns the long-lived sink of a running adapter, so the host can
+// deliver a message no inbound event asked for. Adapters that expose no such
+// sink (or are not started) return false.
+func (s *PlatformService) OutboundFor(adapterInstanceID string) (platform.OutboundSink, bool) {
+	if s == nil || s.manager == nil || !s.enabled {
+		return nil, false
+	}
+	adapterInstanceID = strings.TrimSpace(adapterInstanceID)
+	for _, registered := range s.manager.List() {
+		if adapterInstanceID != "" && registered.ID != adapterInstanceID {
+			continue
+		}
+		provider, ok := registered.Adapter.(interface {
+			OutboundSink() (platform.OutboundSink, bool)
+		})
+		if !ok {
+			continue
+		}
+		if sink, ok := provider.OutboundSink(); ok {
+			return sink, true
+		}
+	}
+	return nil, false
+}
+
 func (s *PlatformService) InstallHTTPRoutes(mux *http.ServeMux) {
 	if s == nil || mux == nil {
 		return

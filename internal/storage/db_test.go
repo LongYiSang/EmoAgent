@@ -82,6 +82,8 @@ func TestOpenAndMigrate(t *testing.T) {
 		"conversation_events",
 		"command_configs",
 		"command_invocations",
+		"proactive_candidates",
+		"proactive_decisions",
 	}
 	for _, table := range tables {
 		var name string
@@ -152,8 +154,8 @@ func TestOpenAndMigrate(t *testing.T) {
 	if err := db.SqlDB().QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_version").Scan(&latestVersion); err != nil {
 		t.Fatalf("read latest schema_version: %v", err)
 	}
-	if latestVersion != 41 {
-		t.Fatalf("latest schema_version = %d, want 41", latestVersion)
+	if latestVersion != 42 {
+		t.Fatalf("latest schema_version = %d, want 42", latestVersion)
 	}
 }
 

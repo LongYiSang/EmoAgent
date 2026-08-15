@@ -56,6 +56,13 @@ func BuildIdempotencyKey(env InboundEnvelope) string {
 			return joinKey(source, string(env.Kind), env.SourceEventID)
 		}
 		return joinKey(source, string(env.Kind), env.RequestID)
+	case InboundProactivePrompt:
+		// One gate decision may produce at most one turn: keying on the decision
+		// id makes a retried dispatch a replay rather than a second message.
+		if env.Proactive != nil && env.Proactive.DecisionID != "" {
+			return joinKey(source, string(env.Kind), env.Proactive.DecisionID)
+		}
+		return joinKey(source, string(env.Kind), env.RequestID)
 	default:
 		if env.RequestID == "" && env.SourceEventID == "" {
 			return joinKey(source, env.SessionID, string(env.Kind), "ephemeral", uuid.NewString())

@@ -1615,27 +1615,7 @@ func hasRequestParams(params llm.RequestParams) bool {
 }
 
 func cloneRequestParams(params llm.RequestParams) llm.RequestParams {
-	cp := params
-	cp.Temperature = cloneFloat64Ptr(params.Temperature)
-	cp.TopP = cloneFloat64Ptr(params.TopP)
-	cp.PresencePenalty = cloneFloat64Ptr(params.PresencePenalty)
-	cp.FrequencyPenalty = cloneFloat64Ptr(params.FrequencyPenalty)
-	cp.Stream = cloneBoolPtr(params.Stream)
-	if params.Thinking != nil {
-		thinking := *params.Thinking
-		if params.Thinking.BudgetTokens != nil {
-			budget := *params.Thinking.BudgetTokens
-			thinking.BudgetTokens = &budget
-		}
-		cp.Thinking = &thinking
-	}
-	if params.Extra != nil {
-		cp.Extra = make(map[string]any, len(params.Extra))
-		for key, value := range params.Extra {
-			cp.Extra[key] = value
-		}
-	}
-	return cp
+	return llm.CloneRequestParams(params)
 }
 
 func cloneBoolPtr(value *bool) *bool {

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -148,6 +149,8 @@ func (s *CommandService) TryHandle(ctx context.Context, req chat.CommandRequest)
 		return exec.finish(ctx, s.handleForget(ctx, req, parsed)), true, nil
 	case "stop":
 		return exec.finish(ctx, s.handleStop(req)), true, nil
+	case "quiet":
+		return exec.finish(ctx, s.handleQuiet(ctx, parsed)), true, nil
 	case "bad":
 		return exec.finish(ctx, s.handleBad(ctx, req, parsed)), true, nil
 	default:
@@ -746,6 +749,60 @@ func (s *CommandService) handleForget(ctx context.Context, req chat.CommandReque
 			"preview_hash": preview.PreviewHash,
 			"destructive":  false,
 		},
+	}
+}
+
+const (
+	quietDefaultHours = 2
+	quietMaxHours     = 24
+)
+
+// handleQuiet mutes proactive messaging for a while.
+//
+// This is the brake the user can reach without opening the admin UI — it must
+// work from whatever chat window they are already in, because by the time they
+// want it they are already being bothered.
+func (s *CommandService) handleQuiet(ctx context.Context, parsed commandcore.ParsedCommand) commandResult {
+	if s.infra == nil || s.infra.DB == nil {
+		return commandResult{Status: "error", Content: "存储不可用，无法设置静音。"}
+	}
+
+	arg := ""
+	if len(parsed.Args) > 0 {
+		arg = strings.TrimSpace(parsed.Args[0])
+	}
+
+	if strings.EqualFold(arg, "off") {
+		if err := s.infra.DB.UpsertRuntimeSetting(quietSettingScope, quietSettingKey, `""`, "command"); err != nil {
+			return commandResult{Status: "error", Content: fmt.Sprintf("解除静音失败：%v", err)}
+		}
+		return commandResult{Status: "success", Content: "已解除静音，我可以主动找你了。"}
+	}
+
+	hours := float64(quietDefaultHours)
+	if arg != "" {
+		parsedHours, err := strconv.ParseFloat(arg, 64)
+		if err != nil || parsedHours <= 0 {
+			return commandResult{Status: "error", Content: "用法：/quiet [小时数|off]，例如 /quiet 3 或 /quiet off。"}
+		}
+		hours = parsedHours
+	}
+	if hours > quietMaxHours {
+		hours = quietMaxHours
+	}
+
+	until := time.Now().Add(time.Duration(hours * float64(time.Hour)))
+	encoded, err := json.Marshal(until.Format(time.RFC3339Nano))
+	if err != nil {
+		return commandResult{Status: "error", Content: fmt.Sprintf("设置静音失败：%v", err)}
+	}
+	if err := s.infra.DB.UpsertRuntimeSetting(quietSettingScope, quietSettingKey, string(encoded), "command"); err != nil {
+		return commandResult{Status: "error", Content: fmt.Sprintf("设置静音失败：%v", err)}
+	}
+	return commandResult{
+		Status:  "success",
+		Content: fmt.Sprintf("好，%s 之前我不主动打扰你。", until.Format("15:04")),
+		Payload: map[string]any{"quiet_until": until.Format(time.RFC3339Nano)},
 	}
 }
 

@@ -60,6 +60,9 @@ func BuildServer(ctx context.Context, kernel *Kernel, facade *App) (*Server, err
 		}
 		kernel.Services.Platforms.InstallHTTPRoutes(mux)
 	}
+	if kernel.Services.Proactive != nil {
+		kernel.Services.Proactive.Configure(cfg.Proactive)
+	}
 	registerRoutes(mux, api, chatHandler, web.NewStaticHandler(web.StaticFS))
 	if kernel.Services.Platforms != nil {
 		if err := kernel.Services.Platforms.Start(ctx); err != nil {

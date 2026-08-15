@@ -55,6 +55,7 @@ type Services struct {
 	Platforms    *PlatformService
 	Sessions     *SessionService
 	PromptCenter *PromptCenterService
+	Proactive    *ProactiveService
 }
 
 func NewKernel(infra *Infra) *Kernel {
@@ -119,6 +120,12 @@ func newServices(infra *Infra) *Services {
 	services.Platforms = NewPlatformService(infra, services.Conversation, services.Commands, services.Chat, services.AgentRuntime, services.Personas, services.Media)
 	services.Sessions = &SessionService{infra: infra, work: services.Work}
 	services.PromptCenter = &PromptCenterService{infra: infra, agentRuntime: services.AgentRuntime, personas: services.Personas, memory: services.Memory, agentAffect: services.AgentAffect}
+	services.Proactive = NewProactiveService(infra, services.Chat, services.Platforms, services.Personas,
+		services.AgentRuntime, services.Conversation, services.AgentAffect, services.PromptCenter)
+	services.Plugins.proactive = services.Proactive
+	if services.Platforms != nil && services.Platforms.Gateway() != nil {
+		services.Platforms.Gateway().SetProactive(services.Proactive)
+	}
 	services.AgentRuntime.chat = services.Chat
 	return services
 }

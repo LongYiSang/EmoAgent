@@ -14,6 +14,7 @@ var implementedBuiltinRootCommands = []string{
 	"compact",
 	"forget",
 	"stop",
+	"quiet",
 	"bad",
 }
 

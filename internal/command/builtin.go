@@ -68,6 +68,10 @@ var builtinMetadata = map[string]builtinCommandMetadata{
 		summary: "停止当前来源/会话正在运行的回复",
 		usage:   "/stop",
 	},
+	"quiet": {
+		summary: "暂停主动消息一段时间，默认 2 小时",
+		usage:   "/quiet [小时数|off]",
+	},
 	"bad": {
 		summary: "标记一次不满意的回复并冻结当时现场",
 		usage:   "/bad <哪里不对>",

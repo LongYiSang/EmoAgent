@@ -55,6 +55,7 @@ const (
 	CapabilityAgentAffectObserve      Capability = "agent_affect.observe"
 	CapabilityProviderGenerate        Capability = "provider.generate"
 	CapabilityProviderEmbed           Capability = "provider.embed"
+	CapabilityProactivePropose        Capability = "proactive.propose"
 	CapabilityPluginKV                Capability = "plugin.kv"
 	CapabilityPluginFiles             Capability = "plugin.files"
 	CapabilityNetworkWeb              Capability = "network.web"
@@ -231,6 +232,7 @@ func KnownCapability(capability Capability) bool {
 		CapabilityAgentAffectConfigure,
 		CapabilityAgentAffectObserve,
 		CapabilityProviderGenerate,
+		CapabilityProactivePropose,
 		CapabilityProviderEmbed,
 		CapabilityPluginKV,
 		CapabilityPluginFiles,

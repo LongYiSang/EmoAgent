@@ -1565,6 +1565,49 @@ CREATE TABLE IF NOT EXISTS bad_samples (
 CREATE INDEX IF NOT EXISTS idx_bad_samples_created_at ON bad_samples(created_at DESC);
 `,
 	},
+	{
+		Version: 42,
+		SQL: `
+CREATE TABLE IF NOT EXISTS proactive_candidates (
+    id               TEXT PRIMARY KEY,
+    source_plugin_id TEXT NOT NULL DEFAULT '',
+    persona_key      TEXT NOT NULL,
+    event_type       TEXT NOT NULL,
+    summary          TEXT NOT NULL,
+    observed_from    TEXT NOT NULL,
+    observed_to      TEXT NOT NULL,
+    importance       REAL NOT NULL DEFAULT 0.5,
+    payload_json     TEXT NOT NULL DEFAULT '{}',
+    status           TEXT NOT NULL DEFAULT 'pending',
+    skip_count       INTEGER NOT NULL DEFAULT 0,
+    last_decision_id TEXT NOT NULL DEFAULT '',
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_proactive_candidates_pending
+    ON proactive_candidates(persona_key, status, created_at);
+
+CREATE TABLE IF NOT EXISTS proactive_decisions (
+    id                  TEXT PRIMARY KEY,
+    persona_key         TEXT NOT NULL,
+    origin_key          TEXT NOT NULL DEFAULT '',
+    candidate_ids_json  TEXT NOT NULL DEFAULT '[]',
+    decision            TEXT NOT NULL,
+    reason              TEXT NOT NULL DEFAULT '',
+    urgency             REAL NOT NULL DEFAULT 0,
+    hint                TEXT NOT NULL DEFAULT '',
+    gate_model          TEXT NOT NULL DEFAULT '',
+    gate_latency_ms     INTEGER NOT NULL DEFAULT 0,
+    gate_tokens         INTEGER NOT NULL DEFAULT 0,
+    turn_id             TEXT NOT NULL DEFAULT '',
+    silenced_by_emotion INTEGER NOT NULL DEFAULT 0,
+    user_replied_at     TEXT,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_proactive_decisions_persona
+    ON proactive_decisions(persona_key, created_at);
+`,
+	},
 }
 
 // ApplyMigrations runs any pending migrations inside transactions.

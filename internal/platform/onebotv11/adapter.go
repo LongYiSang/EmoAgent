@@ -68,6 +68,17 @@ func (a *Adapter) Start(ctx context.Context, handler platform.InboundHandler) er
 	return a.transport.Start(ctx, a)
 }
 
+// OutboundSink exposes the adapter's long-lived sink so the host can deliver
+// messages that no inbound event asked for (proactive messages). The sink is
+// addressed purely by event.Origin, so it needs no inbound context — see
+// requestForEvent. Returns false before Start has run.
+func (a *Adapter) OutboundSink() (platform.OutboundSink, bool) {
+	if a == nil || a.sink == nil {
+		return nil, false
+	}
+	return a.sink, true
+}
+
 func (a *Adapter) Stop(ctx context.Context) error {
 	if a == nil || a.transport == nil {
 		return nil

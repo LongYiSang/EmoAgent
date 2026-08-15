@@ -33,6 +33,7 @@ type PluginService struct {
 	agentAffect  *AgentAffectService
 	agentRuntime *AgentRuntimeService
 	commands     *CommandService
+	proactive    plugin.ProactiveProposer
 	host         *plugin.PluginHost
 	runner       *plugin.BuiltinRunner
 	dispatcher   *tool.Dispatcher
@@ -136,6 +137,9 @@ func (s *PluginService) ensureRuntimeLocked() error {
 	facadeBroker := plugin.NewFacadeBroker(s.infra.DB, providerGateway)
 	facadeBroker.SetStore(store)
 	facadeBroker.SetHostPolicy(s.pluginFacadeHostPolicy())
+	if s.proactive != nil {
+		facadeBroker.SetProactiveProposer(s.proactive)
+	}
 	supervisor := plugin.NewRuntimeSupervisor(store, s.infra.Config.Plugins.Runtime, nil)
 	supervisor.SetManagedPythonEnvironmentResolver(s.prepareManagedPluginEnvironment)
 	supervisor.SetHostHandlerForPlugin(s.hostRPCHandlerForPlugin)

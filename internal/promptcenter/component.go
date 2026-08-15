@@ -19,6 +19,7 @@ const (
 	SourceAgentAffectDynamic = "agent_affect_dynamic"
 	SourceAgentConfigDynamic = "agent_config_dynamic"
 	SourceExtraSystemDynamic = "extra_system_dynamic"
+	SourceProactiveDynamic   = "proactive_dynamic"
 )
 
 const (
@@ -44,6 +45,9 @@ const (
 	ComponentToolResumeDescription            = "tool.resume_work.description"
 	ComponentToolFinishTaskDescription        = "tool.finish_task.description"
 	ComponentToolRequestDecisionDescription   = "tool.request_decision.description"
+	ComponentProactiveGateSystem              = "proactive.gate.system"
+	ComponentProactiveTriggerBlock            = "proactive.trigger_block"
+	ComponentProactiveAmbientActivity         = "proactive.ambient_activity"
 )
 
 type OverrideMode string

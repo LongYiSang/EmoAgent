@@ -422,3 +422,27 @@ websearch:
 
 bash:
   enabled: true
+
+# 主动消息通路。这是全仓唯一能在用户没说话时产生出站消息的路径，
+# 因此默认关闭，且默认只对私聊生效。
+proactive:
+  enabled: false
+  gate:
+    provider_id: ""          # 留空 = 复用主 provider
+    model: ""                # 留空 = 复用主模型；建议填一个便宜些的中档模型
+    timeout_ms: 5000
+    max_output_tokens: 256
+  silent_termination:
+    enabled: true            # 允许 Emotion 在门控放行后仍然选择不说话
+  cooldown:
+    min_interval_minutes: 45
+    max_per_day: 8
+    backoff_after_ignored: 3
+    reply_attribution_window_minutes: 30
+  quiet_hours: ["23:00-09:00"]
+  targets:
+    allow_group_channels: false   # 机器人在群里自发说话是完全不同量级的社交风险
+    allow_origins: []             # 空 = 所有私聊 origin
+  candidates:
+    ttl_hours: 6
+    max_pending: 50

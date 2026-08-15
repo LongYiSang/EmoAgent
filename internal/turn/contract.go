@@ -23,7 +23,20 @@ const (
 	InboundUserMessage    InboundKind = "user_message"
 	InboundApprovalAction InboundKind = "approval_action"
 	InboundSystemResume   InboundKind = "system_resume"
+	// InboundProactivePrompt is a turn the host started on its own initiative.
+	// It has no UserMessage: the reason for speaking arrives as a one-shot system
+	// block instead, and must never be persisted as something the user said.
+	InboundProactivePrompt InboundKind = "proactive_prompt"
 )
+
+// ProactiveTrigger carries why the host decided to consider speaking. Hint comes
+// from the proactive gate and is guidance for Emotion, never a scripted line.
+type ProactiveTrigger struct {
+	DecisionID string
+	Hint       string
+	Activity   string
+	Urgency    float64
+}
 
 type InboundEnvelope struct {
 	EnvelopeID     string
@@ -40,6 +53,7 @@ type InboundEnvelope struct {
 	Content     string
 	UserMessage *UserMessageInput
 	Approval    *InboundApproval
+	Proactive   *ProactiveTrigger
 
 	Traceparent string
 	RawMeta     map[string]any
@@ -48,6 +62,25 @@ type InboundEnvelope struct {
 type UserMessageInput struct {
 	Content string
 	Parts   []llm.ContentBlock
+}
+
+// UserContent returns the inbound user text, or "" when the envelope carries no
+// user message. System-initiated turns (proactive prompts, resumes) have no
+// UserMessage, so callers must never dereference it directly.
+func (e InboundEnvelope) UserContent() string {
+	if e.UserMessage == nil {
+		return ""
+	}
+	return e.UserMessage.Content
+}
+
+// UserParts returns the inbound user content blocks, or nil when the envelope
+// carries no user message.
+func (e InboundEnvelope) UserParts() []llm.ContentBlock {
+	if e.UserMessage == nil {
+		return nil
+	}
+	return e.UserMessage.Parts
 }
 
 type InboundApproval struct {

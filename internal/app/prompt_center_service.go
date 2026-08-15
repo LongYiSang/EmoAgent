@@ -425,6 +425,20 @@ func (s *PromptCenterService) requireAgent(ctx context.Context, id string) (stri
 	return id, nil
 }
 
+// Resolver returns a prompt resolver for callers outside the HTTP handlers
+// (currently the proactive gate). Returns nil when the catalog cannot be loaded,
+// which callers must treat as "fall back to the embedded default".
+func (s *PromptCenterService) Resolver() *promptcenter.Resolver {
+	if s == nil || s.infra == nil || s.infra.DB == nil {
+		return nil
+	}
+	catalog, err := promptcenter.DefaultCatalog()
+	if err != nil {
+		return nil
+	}
+	return promptcenter.NewResolver(catalog, s.infra.DB)
+}
+
 func (s *PromptCenterService) store() *storage.DB {
 	if s == nil || s.infra == nil || s.infra.DB == nil {
 		panic("prompt center requires database")

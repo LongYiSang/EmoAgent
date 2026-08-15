@@ -14,6 +14,7 @@ import (
 	"github.com/longyisang/emoagent/internal/llm"
 	"github.com/longyisang/emoagent/internal/media"
 	"github.com/longyisang/emoagent/internal/platform"
+	"github.com/longyisang/emoagent/internal/proactive"
 	"github.com/longyisang/emoagent/internal/protocol"
 	"github.com/longyisang/emoagent/internal/tool"
 	"github.com/longyisang/emoagent/internal/turn"
@@ -65,6 +66,78 @@ type PlatformTurnResult struct {
 func (s *ChatService) SendPlatformTurn(ctx context.Context, runtime *ActiveAgentRuntime, sessionID string, persona *config.Persona, origin conversation.Origin, in platform.InboundMessage) (PlatformTurnResult, error) {
 	env := platformTurnEnvelope(in, sessionID, runtimePersonaKey(runtime))
 	return s.executePlatformTurn(ctx, runtime, sessionID, persona, origin, in, env)
+}
+
+// SendProactiveTurn runs a full Emotion turn that the host started on its own
+// initiative. It returns the raw outbound events rather than assembled text so
+// the caller can tell a delivered message apart from one Emotion declined.
+func (s *ChatService) SendProactiveTurn(ctx context.Context, persona *config.Persona, evaluation proactive.Evaluation, cfg config.ProactiveConfig) (turn.TurnResult, []turn.OutboundEvent, error) {
+	if s == nil {
+		return turn.TurnResult{}, nil, fmt.Errorf("chat service is not configured")
+	}
+	runtime := s.agentRuntime.Active()
+	if runtime == nil {
+		return turn.TurnResult{}, nil, fmt.Errorf("agent runtime is not configured")
+	}
+	appCfg := config.DefaultConfig()
+	if s.infra != nil && s.infra.Config != nil {
+		appCfg = s.infra.Config
+	}
+	if !appCfg.Chat.TurnPipeline.Enabled || !appCfg.Chat.TurnPipeline.MemoryStages {
+		return turn.TurnResult{}, nil, fmt.Errorf("proactive messaging requires chat.turn_pipeline.enabled and memory_stages")
+	}
+	engine := s.newEngine(runtime, s.dispatcher)
+	if engine == nil {
+		return turn.TurnResult{}, nil, fmt.Errorf("chat engine is not configured")
+	}
+	// Proactive messages are casual by nature, so they keep reply-delivery
+	// segmentation but drop the typing delays: nobody is watching a cursor.
+	replyDelivery := appCfg.Chat.ReplyDelivery
+	replyDelivery.Timing.Enabled = false
+	engine.UpdateReplyDeliveryConfig(replyDelivery)
+
+	if persona == nil {
+		return turn.TurnResult{}, nil, fmt.Errorf("persona is required")
+	}
+	personaKey := evaluation.PersonaKey
+	if personaKey == "" {
+		personaKey = runtime.PersonaKey
+	}
+
+	env := turn.InboundEnvelope{
+		Source:     turn.SourceSystem,
+		Kind:       turn.InboundProactivePrompt,
+		SessionID:  evaluation.Target.SessionID,
+		PersonaKey: personaKey,
+		Proactive: &turn.ProactiveTrigger{
+			DecisionID: evaluation.DecisionID,
+			Hint:       evaluation.Decision.Hint,
+			Activity:   proactiveActivityDigest(evaluation.Candidates),
+			Urgency:    evaluation.Decision.Urgency,
+		},
+	}
+
+	var events []turn.OutboundEvent
+	sink := turn.SinkFunc(func(_ context.Context, event turn.OutboundEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	runner := s.turnRunnerForEngine(engine)
+	runner.SetProactiveConfig(cfg)
+	result, err := runner.Execute(workctx.WithAgentID(ctx, runtime.ID), env, persona, sink)
+	return result, events, err
+}
+
+func proactiveActivityDigest(candidates []proactive.Candidate) string {
+	lines := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		summary := strings.TrimSpace(candidate.Summary)
+		if summary == "" {
+			continue
+		}
+		lines = append(lines, "- "+summary)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (s *ChatService) SendPlatformApprovalTurn(ctx context.Context, runtime *ActiveAgentRuntime, sessionID string, persona *config.Persona, origin conversation.Origin, in platform.InboundMessage, approval turn.InboundApproval) (PlatformTurnResult, error) {
@@ -286,7 +359,12 @@ func (s *ChatService) turnRunnerForEngine(engine *chat.Engine) *chat.TurnRunner 
 	if s != nil && s.plugins != nil && s.plugins.Host() != nil && s.plugins.Host().Enabled() {
 		host = s.plugins.Host()
 	}
-	return chat.NewTurnRunnerWithStores(engine, cfg.Chat.TurnPipeline, s.EnsureTurnStores(), logger, host)
+	runner := chat.NewTurnRunnerWithStores(engine, cfg.Chat.TurnPipeline, s.EnsureTurnStores(), logger, host)
+	runner.SetProactiveConfig(cfg.Proactive)
+	if s != nil && s.infra != nil && s.infra.DB != nil {
+		runner.SetAmbientActivityProvider(proactive.NewInjector(s.infra.DB))
+	}
+	return runner
 }
 
 type platformTurnSink struct {

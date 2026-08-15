@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/longyisang/emoagent/internal/chat"
 	"github.com/longyisang/emoagent/internal/config"
@@ -22,6 +23,15 @@ type PlatformGateway struct {
 	agentRuntime *AgentRuntimeService
 	personas     *PersonaService
 	receipts     platform.ReceiptStore
+	proactive    *ProactiveService
+}
+
+// SetProactive wires the proactive service so inbound messages can be attributed
+// as replies to proactive ones.
+func (g *PlatformGateway) SetProactive(service *ProactiveService) {
+	if g != nil {
+		g.proactive = service
+	}
 }
 
 func NewPlatformGateway(infra *Infra, conversation *ConversationService, commands *CommandService, chat *ChatService, agentRuntime *AgentRuntimeService, personas *PersonaService, receipts platform.ReceiptStore) *PlatformGateway {
@@ -44,6 +54,16 @@ func (g *PlatformGateway) HandleInbound(ctx context.Context, in platform.Inbound
 	if strings.TrimSpace(in.Text) == "" && !hasParts {
 		return platform.HandleResult{}, fmt.Errorf("inbound message text is required")
 	}
+	// A user message on this origin may be an answer to a proactive message.
+	// Attributing it is the only real feedback the gate ever gets about whether
+	// its interruptions were welcome.
+	defer func() {
+		if g.proactive != nil {
+			if attributed, attrErr := platform.OriginFromInbound(in, in.OriginScope); attrErr == nil {
+				g.proactive.NoteUserMessage(ctx, attributed.OriginKey, time.Now())
+			}
+		}
+	}()
 	origin, err := platform.OriginFromInbound(in, in.OriginScope)
 	if err != nil {
 		return platform.HandleResult{}, err

@@ -38,6 +38,7 @@ type Config struct {
 	Plugins         PluginsConfig         `yaml:"plugins"`
 	Platforms       PlatformsConfig       `yaml:"platforms" json:"platforms"`
 	PythonToolchain PythonToolchainConfig `yaml:"python_toolchain" json:"python_toolchain"`
+	Proactive       ProactiveConfig       `yaml:"proactive" json:"proactive"`
 }
 
 func (c *Config) UnmarshalYAML(value *yaml.Node) error {
@@ -73,6 +74,7 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		"plugins":            {},
 		"platforms":          {},
 		"python_toolchain":   {},
+		"proactive":          {},
 	}
 	for i := 0; i < len(value.Content); i += 2 {
 		key := strings.TrimSpace(value.Content[i].Value)
@@ -2099,6 +2101,7 @@ func DefaultConfig() *Config {
 			SyncTimeoutSeconds:    600,
 			UseSystemCertificates: true,
 		},
+		Proactive: DefaultProactiveConfig(),
 	}
 	cfg.Work.ApplyDefaults()
 	cfg.HostResources.applyDefaults()
@@ -2386,6 +2389,10 @@ func (c *Config) applyTimezoneDefaults(explicitMemoryExtractionTimezone bool, me
 // Validate checks that required fields are set.
 func (c *Config) Validate() error {
 	c.Chat.ReplyDelivery = NormalizeReplyDeliveryConfig(c.Chat.ReplyDelivery)
+	c.Proactive = NormalizeProactiveConfig(c.Proactive)
+	if err := ValidateProactiveConfig(c.Proactive); err != nil {
+		return err
+	}
 	if c.Server.Port < 1 || c.Server.Port > 65535 {
 		return fmt.Errorf("server.port must be 1-65535, got %d", c.Server.Port)
 	}

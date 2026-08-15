@@ -205,66 +205,11 @@ func parsePromptRouterResponse(resp *llm.ChatResponse) (promptRouterLLMResponse,
 }
 
 func promptRouterResponseCandidates(resp *llm.ChatResponse) []string {
-	var candidates []string
-	if content := strings.TrimSpace(resp.Content); content != "" {
-		candidates = append(candidates, content)
-	}
-	var blockText strings.Builder
-	for _, block := range resp.ContentBlocks {
-		if strings.TrimSpace(block.Text) != "" {
-			if blockText.Len() > 0 {
-				blockText.WriteByte('\n')
-			}
-			blockText.WriteString(block.Text)
-		}
-	}
-	if content := strings.TrimSpace(blockText.String()); content != "" {
-		candidates = append(candidates, content)
-	}
-	if content := strings.TrimSpace(resp.ReasoningContent); content != "" {
-		candidates = append(candidates, content)
-	}
-	return candidates
+	return llm.ResponseTextCandidates(resp)
 }
 
 func extractFirstJSONObject(content string) (string, bool) {
-	trimmed := strings.TrimSpace(content)
-	for start := 0; start < len(trimmed); start++ {
-		if trimmed[start] != '{' {
-			continue
-		}
-		depth := 0
-		inString := false
-		escaped := false
-		for i := start; i < len(trimmed); i++ {
-			ch := trimmed[i]
-			if inString {
-				if escaped {
-					escaped = false
-					continue
-				}
-				switch ch {
-				case '\\':
-					escaped = true
-				case '"':
-					inString = false
-				}
-				continue
-			}
-			switch ch {
-			case '"':
-				inString = true
-			case '{':
-				depth++
-			case '}':
-				depth--
-				if depth == 0 {
-					return trimmed[start : i+1], true
-				}
-			}
-		}
-	}
-	return "", false
+	return llm.ExtractFirstJSONObject(content)
 }
 
 func ApplyPromptRouteDecision(state *contextutil.ContextState, decision PromptRouteDecision, cfg config.PromptRouterConfig) {

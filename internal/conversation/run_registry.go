@@ -68,6 +68,18 @@ func (r *RunRegistry) TryRegister(ref RunRef, cancel context.CancelFunc) (func()
 	}, true
 }
 
+// HasActiveRuns reports whether any reply is currently in flight. Proactive
+// messaging consults this before interrupting: talking over a reply the user is
+// waiting for is the worst thing that feature can do.
+func (r *RunRegistry) HasActiveRuns() bool {
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.runs) > 0
+}
+
 func (r *RunRegistry) Stop(selector StopSelector) int {
 	if r == nil {
 		return 0

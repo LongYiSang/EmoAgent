@@ -39,6 +39,24 @@ func (r *TurnRunner) Execute(ctx context.Context, env turn.InboundEnvelope, pers
 	return r.runtime.Execute(ctx, env, persona, sink)
 }
 
+// SetProactiveConfig updates the proactive settings the pipeline consults
+// (currently whether Emotion may decline a proactive turn).
+func (r *TurnRunner) SetProactiveConfig(cfg config.ProactiveConfig) {
+	if r == nil || r.runtime == nil {
+		return
+	}
+	r.runtime.SetProactiveConfig(cfg)
+}
+
+// SetAmbientActivityProvider wires the block that tells Emotion what the user
+// has been doing while they were not talking.
+func (r *TurnRunner) SetAmbientActivityProvider(provider AmbientActivityProvider) {
+	if r == nil || r.runtime == nil {
+		return
+	}
+	r.runtime.SetAmbientActivityProvider(provider)
+}
+
 func (r *TurnRunner) Shadow(ctx context.Context, env turn.InboundEnvelope) (turn.TurnResult, error) {
 	if r == nil || r.runtime == nil {
 		return turn.TurnResult{}, errors.New("turn runner is not configured")

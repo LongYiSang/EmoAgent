@@ -14,9 +14,10 @@ import (
 )
 
 type FacadeBroker struct {
-	storage  PluginFacadeStorage
-	provider *ProviderGateway
-	store    *PluginStore
+	storage   PluginFacadeStorage
+	provider  *ProviderGateway
+	store     *PluginStore
+	proactive ProactiveProposer
 
 	mu         sync.RWMutex
 	manifests  map[string]ManifestV2
@@ -36,6 +37,31 @@ type PluginFacadeStorage interface {
 
 func NewFacadeBroker(storage PluginFacadeStorage, provider *ProviderGateway) *FacadeBroker {
 	return &FacadeBroker{storage: storage, provider: provider, manifests: map[string]ManifestV2{}}
+}
+
+// ProactiveProposal is a plugin's suggestion that something the user is doing
+// might be worth speaking up about. It carries no delivery target and no message
+// text: both are the host's to decide.
+type ProactiveProposal struct {
+	SourcePluginID string         `json:"-"`
+	PersonaKey     string         `json:"persona_key"`
+	EventType      string         `json:"event_type"`
+	Summary        string         `json:"summary"`
+	ObservedFrom   string         `json:"observed_from"`
+	ObservedTo     string         `json:"observed_to"`
+	Importance     float64        `json:"importance"`
+	Payload        map[string]any `json:"payload,omitempty"`
+}
+
+// ProactiveProposer accepts candidate events from plugins.
+type ProactiveProposer interface {
+	Propose(ctx context.Context, proposal ProactiveProposal) (string, error)
+}
+
+func (b *FacadeBroker) SetProactiveProposer(proposer ProactiveProposer) {
+	if b != nil {
+		b.proactive = proposer
+	}
 }
 
 func (b *FacadeBroker) SetStore(store *PluginStore) {
@@ -351,6 +377,23 @@ func (b *FacadeBroker) dispatch(ctx context.Context, pluginID string, method str
 			return nil, err
 		}
 		return nil, fmt.Errorf("web.fetch facade is reserved but not implemented")
+	case "proactive.propose":
+		// Plugins may only propose a reason to speak; the host decides whether,
+		// when, and where anything is actually said. Same shape as Work escalating
+		// through a DecisionPacket instead of acting on its own.
+		if b.proactive == nil {
+			return nil, fmt.Errorf("proactive proposals are not enabled")
+		}
+		var req ProactiveProposal
+		if err := decodeFacadeParams(params, &req); err != nil {
+			return nil, err
+		}
+		req.SourcePluginID = pluginID
+		id, err := b.proactive.Propose(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		return marshalRaw(map[string]any{"candidate_id": id, "status": "queued"})
 	case "provider.generate":
 		if b.provider == nil {
 			return nil, fmt.Errorf("provider gateway is not configured")
@@ -427,6 +470,8 @@ func capabilityForFacadeMethod(method string) (Capability, bool) {
 		return CapabilityNetworkWeb, true
 	case "provider.generate":
 		return CapabilityProviderGenerate, true
+	case "proactive.propose":
+		return CapabilityProactivePropose, true
 	default:
 		return "", true
 	}
