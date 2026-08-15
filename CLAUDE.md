@@ -172,11 +172,14 @@ Key flows worth knowing before editing:
 
 ## Documentation
 
-Mixed Chinese/English, in `docs/`. Start points:
+Mixed Chinese/English, in `docs/`. **`docs/README.md` labels every directory by genre and trustworthiness — read it before trusting any doc.** Superseded specs now live in `docs/archive/` and do NOT describe current code.
+
+Start points:
+- **`docs/dev/` — start here before changing code**: change recipes (which files couple, what breaks silently, how to verify) + `docs/dev/invariants.md` (cross-module constraints the compiler does not check). Current and verified.
 - `docs/architecture/架构.md`, `设计方案.md` — original whitepapers (dual-core philosophy)
 - `docs/architecture/EmoAgent_ManagedLocalRuntime_Architecture_v0.4.md` — current runtime architecture
 - `docs/architecture/Agent_Affect_v2_Architecture.md` — mood system
 - `docs/architecture/EmoAgent_OneBotV11_Adapter_ImplementationSpec.md` + `platform_turn_pipeline_hardening_spec.md` — platform integration
-- `docs/architecture/emoagent_plugin_runtime_architecture_v0.2.md` + `docs/plugin_development_guide.md` — plugins
+- `docs/architecture/plugin_runtime_v0.2.md` + `docs/plugin_development_guide.md` — plugins
 - `docs/architecture/reply_delivery_segmenter.md`, `上下文-token预算与压缩.md`, `Work运行时实现说明.md`
 - MemoryCore's own docs: `../EmoAgent-MemoryCore/README.md`, `docs/emoagent_integration.md`

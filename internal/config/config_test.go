@@ -1689,7 +1689,7 @@ func TestPluginRuntimeDocsAndRepositoryConfigDoNotPromoteLegacySandboxContainerK
 	for _, path := range []string{
 		filepath.Join("..", "..", "config.yaml"),
 		filepath.Join("..", "..", "docs", "plugin_development_guide.md"),
-		filepath.Join("..", "..", "docs", "specs", "plugin_runtime_v0.2_update_spec.md"),
+		filepath.Join("..", "..", "docs", "archive", "specs", "plugin_runtime_v0.2_update_spec.md"),
 	} {
 		raw, err := os.ReadFile(path)
 		if err != nil {

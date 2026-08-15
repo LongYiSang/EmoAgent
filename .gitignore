@@ -47,8 +47,6 @@ logs/
 !web/src/logs/**
 tmp/
 *.log
-/docs/todo/
-/docs/reference
 /personas/*
 !/personas/default.yaml
 /.gocache/

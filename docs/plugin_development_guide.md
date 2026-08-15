@@ -2,6 +2,8 @@
 
 本文面向插件作者，描述当前仓库里的 Plugin Runtime v0.2 实际接口。代码依据主要在 `internal/plugin`、`internal/app/plugin_service.go`、`internal/tool` 和 `sdk/python`。
 
+> **这是参考手册**（字段、capability、hook 的全集）。要动手写一个插件，先读 [`docs/dev/recipes/add-plugin.md`](dev/recipes/add-plugin.md) —— 那里有最小可用骨架，以及五个不会报错、只会让你以为哪里没装好的失败模式。
+
 ## 当前状态
 
 插件系统分为三层：
@@ -144,6 +146,8 @@ my_plugin/
 `main.py` 最小示例：
 
 ```python
+import sys
+
 from emoagent_plugin import Plugin, hook, tool
 
 plugin = Plugin()
@@ -151,7 +155,8 @@ plugin = Plugin()
 
 @hook("after_turn_end")
 async def after_turn_end(ctx):
-    await ctx.log("info", "turn ended", {"turn_id": ctx.turn.turn_id})
+    # 注意：ctx.log 当前是空转，不落盘。要看得到的诊断请写 stderr。
+    print(f"turn ended: {ctx.turn.turn_id}", file=sys.stderr)
     await ctx.kv_set("last_turn_id", ctx.turn.turn_id)
     return {"Annotations": {"my_plugin": "observed"}}
 
@@ -476,7 +481,7 @@ await ctx.facade_call("method.name", {"param": "value"})
 await ctx.provider_generate(...)
 await ctx.kv_get("key")
 await ctx.kv_set("key", {"value": 1})
-await ctx.log("info", "message", {"field": "value"})
+await ctx.log("info", "message", {"field": "value"})   # 空转，不落盘；排障请写 stderr
 ```
 
 Facade 调用会检查：
@@ -503,7 +508,7 @@ Facade 调用会检查：
 | `work.dispatch.annotate` | `work.dispatch.annotate` | `{"task_id": "...", "annotation": {...}}` | 当前返回 `{"ok": true}`。 |
 | `approval.observe` | `approval.observe` | `{"request_id": "...", "status": "..."}` | 当前返回 `{"ok": true}`。 |
 | `agent_affect.current` | `agent_affect.read` | `{"persona_id": "...", "session_id": "...", "view": "plugin_safe"}` | 当前 process facade 返回 `{"ok": true}`，不是完整 mood DTO。 |
-| `log.emit` | 无 | `{"level": "info", "message": "...", "fields": {...}}` | 当前返回 `{"ok": true}`。 |
+| `log.emit` | 无 | `{"level": "info", "message": "...", "fields": {...}}` | **空转：校验参数后直接返回 `{"ok": true}`，不落盘、不可检索。排障请写 stderr。** |
 | `metric.emit` | 无 | `{"name": "...", "value": 1, "fields": {...}}` | 当前返回 `{"ok": true}`。 |
 | `provider.generate` | `provider.generate` | 见下一节 | 调用宿主 provider 并记录 usage。 |
 | `web.search` | `network.web` | `{"query": "...", "limit": 5}` | 预留但未实现，当前返回错误。 |
@@ -574,9 +579,12 @@ async def echo(input_data, ctx):
 | `name` | 本地工具名。宿主会注册为 `plugin.<plugin_id>.<name>`。如果传入完整 `plugin.<plugin_id>.<name>` 也可；其他 `plugin.*` 前缀会被拒绝。 |
 | `description` | 给 LLM 的工具说明。 |
 | `parameters` | JSON Schema。工具调用前会校验输入。 |
-| `scope` | `emotion`、`work` 或 `both`。仅作为插件声明的展示/请求意图；最终可见范围由 Host 派生的 tool policy 决定。 |
-| `permission` | `read-only`、`workspace-write` 或 `approved-destructive`。仅作为兼容提示；最终权限、审批策略和是否暴露给 Emotion/Work 由 Host 生成。 |
+| `scope` | `emotion`、`work` 或 `both`。插件自报**不能提升**权限，但会决定降级结果：非 `emotion`/`both` 时该工具被强制归为 work，闲聊中不可见。 |
+| `permission` | `read-only`、`workspace-write` 或 `approved-destructive`。同上，不能提升权限；非 `read-only` 时被强制归为 work。 |
+| `routing_class` | `casual` 或 `work`，**缺省为 `work`**。可由 manifest 的 `tool_defaults.routing_class` 提供该插件所有工具的默认值。 |
 | `invocation_policy` | `ask`、`auto` 或 `deny`。默认 `ask`；Python SDK 会序列化为进程协议字段 `invocation`。只有安全、只读、无需用户逐次确认的工具才建议使用 `auto`。 |
+
+> **闲聊可见性由三者共同决定：** `permission=read-only` + `scope=emotion|both` + `routing_class=casual`，**三者缺一即被静默降级为 work，工具在正常聊天中永不触发且无任何报错**。这是插件开发最常踩的坑，详见 `docs/dev/recipes/add-plugin.md` 与 `docs/dev/invariants.md` 第 6 条。
 
 插件工具仍走宿主 `tool.Dispatcher`；插件自报 `scope`/`permission` 不能提升权限：
 
@@ -784,7 +792,9 @@ type BuiltinPlugin interface {
 | 启用后状态是 stopped 或 start failed | `/api/plugins/{id}/status` 和 `/api/plugins/{id}/logs`；确认 Python Toolchain Probe 成功，插件 uv environment 是 `ready`。 |
 | Windows 上启动失败，提示找不到 Python | managed 插件检查 `python_toolchain.python_executable`、`python_toolchain.uv_executable` 和该插件环境状态；legacy/dev 插件才检查 `plugins.runtime.python_executable`。 |
 | 依赖模块 import 失败 | 检查插件 `pyproject.toml` / `uv.lock` 是否包含依赖，执行 Repair/Sync 后确认环境状态为 `ready`。 |
-| stdout 协议错误 | Python 插件不要向 stdout 打普通日志；普通日志写 stderr，或使用 `ctx.log(...)`。 |
+| stdout 协议错误 | Python 插件不要向 stdout 打普通日志（stdout 被 JSON-RPC 独占）。普通日志一律写 stderr —— `/api/plugins/{id}/logs` 显示的就是 stderr tail。**不要用 `ctx.log(...)` 排障，它当前不落盘**，见 Facade API 表。 |
+| 工具在聊天里永不触发，且无任何报错 | 路由三元组：`permission=read-only` + `scope=emotion` 或 `both` + `routing_class=casual`，缺一即被静默降级为 work。见 `docs/dev/recipes/add-plugin.md`。 |
+| 状态是 backoff，但 `restart_count: 0`、stderr 为空 | 异常逃出工具处理函数会被记为运行时故障并降级整个插件（进程其实没崩）。工具处理函数必须有兜底 except。 |
 | `import emoagent_plugin` 失败 | 仓库内运行时会注入 `sdk/python`；独立插件开发时需要把 SDK 源码放入 `PYTHONPATH` 或随包携带。 |
 | 安装失败，提示 manifest decode/unknown field | `emo_plugin.yaml` 使用严格字段；删除未知字段并检查 `schema_version`、`runtime.entry`、capability、hook 名。 |
 | facade 调用被拒绝 | 看 `/api/plugins/{id}/access-events?limit=25`；确认 manifest 声明了 capability，且 `user_grant_json` 没有收窄掉该 capability。 |
